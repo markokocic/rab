@@ -54,7 +54,7 @@ fn welcome_messages(config: &TuiConfig) -> Vec<DisplayMsg> {
         tool_names.join(", ")
     )));
     msgs.push(DisplayMsg::Info(
-        "Enter  submit · Ctrl+C  clear · Ctrl+D  quit · F1  help · Ctrl+T  thinking · Ctrl+O  tools\n\
+        "Enter  submit · /quit  exit · Ctrl+D  quit · Ctrl+C  clear · F1  help · Ctrl+T  thinking · Ctrl+O  tools\n\
          Shift+Enter  newline · Esc  clear · ↑↓ PgUp/PgDn  scroll"
             .to_string(),
     ));
@@ -384,6 +384,7 @@ fn help_lines() -> Vec<Line<'static>> {
         Line::from(""),
         Line::from(Span::styled("  Enter              Submit message", dim)),
         Line::from(Span::styled("  Shift+Enter        Newline", dim)),
+        Line::from(Span::styled("  /quit              Exit rab", dim)),
         Line::from(Span::styled("  Ctrl+C             Clear editor", dim)),
         Line::from(Span::styled(
             "  Ctrl+D             Quit (editor empty)",
@@ -539,6 +540,15 @@ fn handle_key(app: &mut App, key: KeyEvent) {
 }
 
 fn submit_message(app: &mut App, message: String) {
+    // Handle slash commands
+    if message.trim() == "/quit" {
+        app.messages
+            .push(DisplayMsg::Info("/quit — exiting".to_string()));
+        app.editor = create_editor();
+        app.should_quit = true;
+        return;
+    }
+
     let provider = Arc::clone(&app.provider);
     let shared = Arc::clone(&app.shared);
     let model = app.model.clone();
