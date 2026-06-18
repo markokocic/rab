@@ -341,6 +341,13 @@ run `cargo build --target wasm32-wasip2`, and drop the `.wasm` into
 
 ## TODO
 
+### Markdown rendering, diff display, code syntax highlighting
+- Render assistant messages as markdown (headings, links, code blocks, quotes, lists) with pi theme colors
+- Render diffs inline with `toolDiffAdded`/`toolDiffRemoved`/`toolDiffContext` colors (pi-style)
+- Syntax highlighting for code blocks in markdown and tool output
+- Theme colors: `mdHeading`, `mdLink`, `mdCode`, `mdQuote`, `syntax*` fields from pi's theme schema
+- Reuse or port pi's syntax highlighting approach (`getLanguageFromPath`, `highlightCode`)
+
 ### Slash command autocomplete selector
 - Replace current inline Tab-completion with a proper autocomplete dropdown
   - Show command list when typing `/` (like pi)
