@@ -30,6 +30,7 @@ pub struct TuiConfig {
     pub cwd: PathBuf,
     pub thinking_level: Option<String>,
     pub git_branch: Option<String>,
+    pub available_models: Vec<String>,
 }
 
 // ── Display messages ───────────────────────────────────────────────
@@ -268,7 +269,7 @@ fn welcome_messages(config: &TuiConfig) -> Vec<DisplayMsg> {
         )));
     }
     msgs.push(DisplayMsg::Info(
-        "Enter  submit · Ctrl+C  interrupt/clear · Ctrl+D  quit · F1  help · Ctrl+T  thinking · Ctrl+O  tools\n\
+        "Enter  submit · Ctrl+C  interrupt/clear · Ctrl+D  quit · F1  help · Ctrl+L  model · Ctrl+T  thinking · Ctrl+O  tools\n\
          Shift+Enter  newline · Esc  clear · ↑↓  history"
             .to_string(),
     ));
@@ -329,6 +330,12 @@ struct App {
 
     /// Frame counter for spinner animation.
     frame_count: u64,
+
+    // ── Model selector state ──
+    available_models: Vec<String>,
+    show_model_selector: bool,
+    model_search: String,
+    model_selector_selection: usize,
 }
 
 // ── Public entry point ─────────────────────────────────────────────
@@ -405,6 +412,10 @@ fn run_app(
         agent_abort: None,
         history_index: None,
         frame_count: 0,
+        available_models: config.available_models,
+        show_model_selector: false,
+        model_search: String::new(),
+        model_selector_selection: 0,
     };
 
     loop {
@@ -447,6 +458,11 @@ fn create_editor() -> Editor {
 
 fn ui(frame: &mut Frame, app: &App) {
     let area = frame.area();
+
+    if app.show_model_selector {
+        render_model_selector(frame, area, app);
+        return;
+    }
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -625,6 +641,10 @@ fn help_lines(app: &App) -> Vec<Line<'static>> {
             dim,
         )),
         Line::from(Span::styled("  Escape             Clear editor", dim)),
+        Line::from(Span::styled(
+            "  Ctrl+L             Open model selector",
+            dim,
+        )),
         Line::from(Span::styled("  Ctrl+T             Toggle thinking", dim)),
         Line::from(Span::styled("  Ctrl+O             Toggle tool output", dim)),
         Line::from(Span::styled("  F1                 Show this help", dim)),
@@ -792,6 +812,120 @@ fn pad_right(s: &str, width: usize) -> String {
     }
 }
 
+// ── Model selector ─────────────────────────────────────────────────
+
+/// Filter available models by search query (case-insensitive substring match).
+fn filter_models<'a>(models: &'a [String], query: &str) -> Vec<&'a str> {
+    if query.is_empty() {
+        return models.iter().map(|s| s.as_str()).collect();
+    }
+    let lower = query.to_lowercase();
+    models
+        .iter()
+        .filter(|m| m.to_lowercase().contains(&lower))
+        .map(|s| s.as_str())
+        .collect()
+}
+
+/// Render the model selector as a centered overlay.
+fn render_model_selector(frame: &mut Frame, area: Rect, app: &App) {
+    let th = &app.theme;
+
+    let filtered = filter_models(&app.available_models, &app.model_search);
+
+    // Compute overlay dimensions
+    let overlay_width = (area.width as usize).min(60) as u16;
+    let overlay_height = (area.height as usize).min(filtered.len() + 6).max(8) as u16;
+    let overlay_x = area.x + (area.width.saturating_sub(overlay_width)) / 2;
+    let overlay_y = area.y + (area.height.saturating_sub(overlay_height)) / 2;
+
+    let overlay_area = Rect::new(overlay_x, overlay_y, overlay_width, overlay_height);
+
+    // Dim background
+    let bg = Paragraph::new(Text::raw("\n".repeat(area.height as usize))).style(
+        Style::default()
+            .bg(Color::Rgb(0x00, 0x00, 0x00))
+            .fg(Color::Rgb(0x00, 0x00, 0x00)),
+    );
+    frame.render_widget(bg, area);
+
+    // Overlay border
+    let block = Block::default()
+        .title(" Select Model ")
+        .title_alignment(ratatui::layout::Alignment::Center)
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(th.accent));
+    let inner = block.inner(overlay_area);
+    frame.render_widget(block, overlay_area);
+
+    // Render content inside the overlay
+    let mut lines: Vec<Line<'static>> = Vec::new();
+
+    // Search input line (hardware cursor handles blinking)
+    let search_label = Span::styled("> ", Style::default().fg(th.accent));
+    let search_value = Span::styled(app.model_search.clone() + " ", Style::default().fg(th.text));
+    lines.push(Line::from(vec![search_label, search_value]));
+    lines.push(Line::from(""));
+
+    // Set hardware cursor at the end of the search input
+    let cursor_col = inner.x + 2 + app.model_search.chars().count() as u16;
+    let cursor_row = inner.y;
+    frame.set_cursor_position((cursor_col, cursor_row));
+
+    // Render visible models (scrolling)
+    let max_visible = inner.height.saturating_sub(4) as usize;
+    let selected = app.model_selector_selection;
+    let start = selected.saturating_sub(max_visible / 2);
+    let end = (start + max_visible).min(filtered.len());
+    let start = end.saturating_sub(max_visible); // re-center
+
+    for i in start..end {
+        if i >= filtered.len() {
+            break;
+        }
+        let model = filtered[i];
+        let is_current = model == app.model || format!("opencode_go::{model}") == app.model;
+        let is_selected = i == selected;
+
+        let prefix = if is_selected { "→ " } else { "  " };
+        let check = if is_current { " ✓" } else { "" };
+
+        let style = if is_selected {
+            Style::default()
+                .fg(th.accent)
+                .add_modifier(ratatui::style::Modifier::BOLD)
+        } else if is_current {
+            Style::default().fg(th.success)
+        } else {
+            Style::default().fg(th.text)
+        };
+
+        lines.push(Line::from(Span::styled(
+            format!("{prefix}{model}{check}"),
+            style,
+        )));
+    }
+
+    // Empty state
+    if filtered.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  No matching models",
+            Style::default().fg(th.dim),
+        )));
+    }
+
+    // Hint line
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "  Enter to select · Esc to cancel · Type to filter",
+        Style::default().fg(th.dim),
+    )));
+
+    let text = Text::from(lines);
+    let para = Paragraph::new(text).style(Style::default().bg(Color::Rgb(0x1e, 0x1e, 0x2e)));
+    frame.render_widget(para, inner);
+}
+
 // ── History recall ────────────────────────────────────────────────
 
 /// Recall a previous user message into the editor (pi-style arrow-key history).
@@ -863,6 +997,12 @@ fn handle_key(app: &mut App, key: KeyEvent) {
     let shift = key.modifiers.contains(KeyModifiers::SHIFT);
     let alt = key.modifiers.contains(KeyModifiers::ALT);
 
+    // ── Model selector input mode ──
+    if app.show_model_selector {
+        handle_model_selector_key(app, key);
+        return;
+    }
+
     match key.code {
         // Tab: slash command autocomplete (handle both Tab and Char('\t'))
         KeyCode::Tab | KeyCode::Char('\t') => {
@@ -926,6 +1066,16 @@ fn handle_key(app: &mut App, key: KeyEvent) {
         KeyCode::Char('t') if ctrl => {
             app.thinking_collapsed = !app.thinking_collapsed;
         }
+        // Ctrl+L: open model selector (pi-style)
+        KeyCode::Char('l') if ctrl => {
+            app.show_model_selector = true;
+            app.model_search.clear();
+            app.model_selector_selection = app
+                .available_models
+                .iter()
+                .position(|m| m == &app.model || format!("opencode_go::{m}") == app.model)
+                .unwrap_or(0);
+        }
         // Ctrl+O: toggle tool output
         KeyCode::Char('o') if ctrl => {
             app.tool_output_collapsed = !app.tool_output_collapsed;
@@ -966,6 +1116,76 @@ fn handle_key(app: &mut App, key: KeyEvent) {
             app.editor
                 .handle_key(key.code, key.modifiers.contains(KeyModifiers::CONTROL));
         }
+    }
+}
+
+/// Handle keyboard input when the model selector is active.
+fn handle_model_selector_key(app: &mut App, key: KeyEvent) {
+    let filtered = filter_models(&app.available_models, &app.model_search);
+    let max_index = filtered.len().saturating_sub(1);
+
+    match key.code {
+        KeyCode::Esc => {
+            app.show_model_selector = false;
+            app.model_search.clear();
+        }
+        KeyCode::Enter => {
+            if app.model_selector_selection < filtered.len() {
+                let selected = filtered[app.model_selector_selection].to_string();
+                app.show_model_selector = false;
+                app.model_search.clear();
+                app.model = selected.clone();
+                app.messages.push(DisplayMsg::Info(format!(
+                    "Model: {}",
+                    selected.replace("opencode_go::", "")
+                )));
+                app.auto_scroll.set(true);
+            }
+        }
+        KeyCode::Up => {
+            if !filtered.is_empty() {
+                app.model_selector_selection = if app.model_selector_selection == 0 {
+                    max_index
+                } else {
+                    app.model_selector_selection - 1
+                };
+            }
+        }
+        KeyCode::Down => {
+            if !filtered.is_empty() {
+                app.model_selector_selection = if app.model_selector_selection >= max_index {
+                    0
+                } else {
+                    app.model_selector_selection + 1
+                };
+            }
+        }
+        // Tab cycles to top/bottom
+        KeyCode::Tab => {
+            if !filtered.is_empty() {
+                app.model_selector_selection = 0;
+            }
+        }
+        // Home / End jump to first / last
+        KeyCode::Home => {
+            if !filtered.is_empty() {
+                app.model_selector_selection = 0;
+            }
+        }
+        KeyCode::End => {
+            app.model_selector_selection = max_index;
+        }
+        // Backspace: delete last char from search
+        KeyCode::Backspace => {
+            app.model_search.pop();
+            app.model_selector_selection = app.model_selector_selection.min(max_index);
+        }
+        // Char: add to search, reset selection
+        KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.model_search.push(c);
+            app.model_selector_selection = 0;
+        }
+        _ => {}
     }
 }
 
@@ -1065,47 +1285,68 @@ fn submit_message(app: &mut App, message: String) {
             None => (trimmed.trim_start_matches('/'), ""),
         };
 
-        let commands = collect_commands(app);
-        if let Some(cmd) = commands.iter().find(|c| c.name == cmd_name) {
-            let result = cmd.handler.execute(args);
-            apply_command_result(app, result);
-            return;
-        }
-
-        let lower = cmd_name.to_lowercase();
-        let prefix_matches: Vec<&&SlashCommand> = commands
-            .iter()
-            .filter(|c| c.name.to_lowercase().starts_with(&lower))
+        // First collect all commands into owned values to release the borrow on app
+        // before we potentially mutate app for error messages or model selector.
+        let cmds: Vec<(String, String)> = collect_commands(app)
+            .into_iter()
+            .map(|c| (c.name.clone(), c.description.clone()))
             .collect();
 
-        if prefix_matches.len() == 1 {
-            let result = prefix_matches[0].handler.execute(args);
-            drop(prefix_matches);
-            drop(commands);
-            apply_command_result(app, result);
-            return;
-        }
+        // Resolve the command name: exact match first, then unique prefix
+        let resolved_name: Option<String> = {
+            if let Some(cmd) = cmds.iter().find(|(n, _)| n == cmd_name) {
+                Some(cmd.0.clone())
+            } else {
+                let lower = cmd_name.to_lowercase();
+                let prefix_matches: Vec<&(String, String)> = cmds
+                    .iter()
+                    .filter(|(n, _)| n.to_lowercase().starts_with(&lower))
+                    .collect();
+                if prefix_matches.len() == 1 {
+                    Some(prefix_matches[0].0.clone())
+                } else if prefix_matches.len() > 1 {
+                    let names: Vec<String> =
+                        prefix_matches.iter().map(|c| format!("/{}", c.0)).collect();
+                    app.messages.push(DisplayMsg::Info(format!(
+                        "Did you mean: {}?",
+                        names.join(", ")
+                    )));
+                    app.editor = create_editor();
+                    app.auto_scroll.set(true);
+                    None
+                } else {
+                    app.messages.push(DisplayMsg::Info(format!(
+                        "Unknown command: /{}. Type / for available commands.",
+                        cmd_name
+                    )));
+                    app.editor = create_editor();
+                    app.auto_scroll.set(true);
+                    None
+                }
+            }
+        };
 
-        if prefix_matches.len() > 1 {
-            let names: Vec<String> = prefix_matches
-                .iter()
-                .map(|c| format!("/{}", c.name))
-                .collect();
-            app.messages.push(DisplayMsg::Info(format!(
-                "Did you mean: {}?",
-                names.join(", ")
-            )));
-            app.editor = create_editor();
-            app.auto_scroll.set(true);
-            return;
+        if let Some(ref name) = resolved_name {
+            // /model (or prefix match to model) without args opens the model selector
+            if name == "model" && args.is_empty() {
+                app.show_model_selector = true;
+                app.model_search.clear();
+                app.model_selector_selection = app
+                    .available_models
+                    .iter()
+                    .position(|m| m == &app.model || format!("opencode_go::{m}") == app.model)
+                    .unwrap_or(0);
+                app.editor = create_editor();
+                return;
+            }
+            // Execute the command via handler
+            let commands = collect_commands(app);
+            if let Some(cmd) = commands.iter().find(|c| c.name == name.as_str()) {
+                let result = cmd.handler.execute(args);
+                apply_command_result(app, result);
+                return;
+            }
         }
-
-        app.messages.push(DisplayMsg::Info(format!(
-            "Unknown command: /{}. Type / for available commands.",
-            cmd_name
-        )));
-        app.editor = create_editor();
-        app.auto_scroll.set(true);
         return;
     }
 

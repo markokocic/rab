@@ -49,7 +49,7 @@ async fn main() -> anyhow::Result<()> {
     // Build extensions
     // Built-in tools and commands use the same Extension trait
     let extensions: Vec<Box<dyn Extension>> = vec![
-        Box::new(CommandsExtension::new(available_models)),
+        Box::new(CommandsExtension::new(available_models.clone())),
         Box::new(ReadExtension::new(cwd.clone())),
         Box::new(WriteExtension::new(cwd.clone())),
         Box::new(EditExtension::new(cwd.clone())),
@@ -80,6 +80,7 @@ async fn main() -> anyhow::Result<()> {
             cwd,
             thinking_level: thinking_level.map(|s| s.to_string()),
             git_branch,
+            available_models,
         };
         rab::tui::run(config).await
     } else {
