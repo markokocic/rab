@@ -1,5 +1,9 @@
 # rab — Implementation Plan
 
+## Bugs
+
+- **Wrapping doesn't work in chat and editor** — Text wrapping is broken in both the chat messages area and the editor widget. Long lines overflow without proper word-wrapping.
+
 Reference implementation: `~/src/cvstree/pi-mono/` (TypeScript, same architecture).
 Study these files before implementing each Rust equivalent.
 
@@ -222,6 +226,10 @@ context compaction, settings, slash commands, and custom compile-time extensions
 - [ ] **Bash sandboxing** — Configurable per-project sandbox:
   - bubblewrap / landlock support
   - Configured in `.rab/settings.json`
+- [ ] **Investigate hashed edit from oh-my-pi** — Study the hashed edit approach from the oh-my-pi implementation
+  - Review pi's edit-diff.ts for hash-based edit strategies
+  - Evaluate if hashed edit improves reliability over current edit tool
+  - Port or adapt as appropriate
 - [ ] **Multi-model cycling** — Ctrl+P model switching with registry
   - Model metadata: context window, costs, capabilities
 - [ ] **Provider fallback** — Retry with alternate provider on failure
@@ -319,6 +327,11 @@ run `cargo build --target wasm32-wasip2`, and drop the `.wasm` into
 
 ## Known Issues
 
+### Terminal chat area scrolling
+- Scrolling in the chat messages area doesn't work at all (no mouse wheel, no Page Up/Down, no arrow key scrolling)
+- When messages overflow the viewport, there is no way to scroll back to see earlier messages
+- Scrollback is completely missing
+
 ### Editor cursor
 - Cursor display is buggy on empty editor (sometimes not visible until typing starts)
 - Cursor positioning may be off on lines with multi-byte Unicode characters (byte vs char index)
@@ -354,3 +367,9 @@ run `cargo build --target wasm32-wasip2`, and drop the `.wasm` into
   - Show argument completions when typing `/cmd ` (like pi)
   - Allow Tab/Enter to select, Esc to dismiss
   - Theme-aware styling matching pi's autocomplete dropdown
+
+### Proper word wrapping in n editor and elsewhere
+- Editor: implement proper word wrapping (not just character wrapping) in the TUI editor widget
+- Messages area: word-wrap long lines in assistant messages, tool output, and user messages
+- Respect word boundaries when wrapping to avoid splitting words across lines
+- Consider off-by-one / width-edge-case fixes for wrapped lines
