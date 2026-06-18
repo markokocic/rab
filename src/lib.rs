@@ -5,4 +5,5 @@ pub mod builtin;
 pub mod extension;
 pub mod provider;
 pub mod settings;
+pub mod tui;
 pub mod types;
