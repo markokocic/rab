@@ -1,5 +1,4 @@
 use crate::agent::{AgentEvent, LoopConfig, run_agent_loop};
-use crate::editor::Editor;
 use crate::extension::{AgentTool, CommandResult, Extension, SlashCommand};
 use crate::provider::{Provider, ToolDef};
 use crate::theme::{DARK, Theme};
@@ -42,6 +41,203 @@ enum DisplayMsg {
     ToolCall { name: String, args: String },
     ToolResult { content: String, is_error: bool },
     Info(String),
+}
+
+// ── Editor state ────────────────────────────────────────────────────
+
+/// Minimal multi-line editor state.
+struct Editor {
+    lines: Vec<String>,
+    cursor_row: usize,
+    cursor_col: usize,
+    block: Block<'static>,
+}
+
+impl Editor {
+    fn new() -> Self {
+        Self {
+            lines: vec![String::new()],
+            cursor_row: 0,
+            cursor_col: 0,
+            block: Block::default(),
+        }
+    }
+
+    fn set_block(&mut self, block: Block<'static>) {
+        self.block = block;
+    }
+
+    fn block(&self) -> &Block<'static> {
+        &self.block
+    }
+
+    fn is_empty(&self) -> bool {
+        self.lines.len() == 1 && self.lines[0].is_empty()
+    }
+
+    fn text(&self) -> String {
+        self.lines.join("\n")
+    }
+
+    fn lines(&self) -> &[String] {
+        &self.lines
+    }
+
+    fn set_text(&mut self, text: &str) {
+        self.lines = if text.is_empty() {
+            vec![String::new()]
+        } else {
+            text.split('\n').map(|s| s.to_string()).collect()
+        };
+        self.cursor_row = self.lines.len() - 1;
+        self.cursor_col = self.lines[self.cursor_row].len();
+    }
+
+    fn cursor(&self) -> (usize, usize) {
+        (self.cursor_row, self.cursor_col)
+    }
+
+    fn insert_at_cursor(&mut self, s: &str) {
+        let line = &mut self.lines[self.cursor_row];
+        line.insert_str(self.cursor_col, s);
+        self.cursor_col += s.len();
+    }
+
+    fn handle_key(&mut self, code: ratatui::crossterm::event::KeyCode, ctrl: bool) {
+        match code {
+            // ── Emacs navigation (ctrl) ──
+            ratatui::crossterm::event::KeyCode::Char('a') if ctrl => {
+                self.cursor_col = 0;
+            }
+            ratatui::crossterm::event::KeyCode::Char('e') if ctrl => {
+                self.cursor_col = self.lines[self.cursor_row].len();
+            }
+            ratatui::crossterm::event::KeyCode::Char('b') if ctrl => {
+                if self.cursor_col > 0 {
+                    self.cursor_col -= 1;
+                } else if self.cursor_row > 0 {
+                    self.cursor_row -= 1;
+                    self.cursor_col = self.lines[self.cursor_row].len();
+                }
+            }
+            ratatui::crossterm::event::KeyCode::Char('f') if ctrl => {
+                if self.cursor_col < self.lines[self.cursor_row].len() {
+                    self.cursor_col += 1;
+                } else if self.cursor_row + 1 < self.lines.len() {
+                    self.cursor_row += 1;
+                    self.cursor_col = 0;
+                }
+            }
+            ratatui::crossterm::event::KeyCode::Char('p') if ctrl => {
+                if self.cursor_row > 0 {
+                    self.cursor_row -= 1;
+                    self.cursor_col = self.cursor_col.min(self.lines[self.cursor_row].len());
+                }
+            }
+            ratatui::crossterm::event::KeyCode::Char('n') if ctrl => {
+                if self.cursor_row + 1 < self.lines.len() {
+                    self.cursor_row += 1;
+                    self.cursor_col = self.cursor_col.min(self.lines[self.cursor_row].len());
+                }
+            }
+            // ── Emacs editing (ctrl) ──
+            ratatui::crossterm::event::KeyCode::Char('k') if ctrl => {
+                let line = &mut self.lines[self.cursor_row];
+                if self.cursor_col < line.len() {
+                    line.truncate(self.cursor_col);
+                } else if self.cursor_row + 1 < self.lines.len() {
+                    self.lines.remove(self.cursor_row + 1);
+                }
+            }
+            ratatui::crossterm::event::KeyCode::Char('u') if ctrl => {
+                let line = &mut self.lines[self.cursor_row];
+                line.drain(..self.cursor_col);
+                self.cursor_col = 0;
+            }
+            ratatui::crossterm::event::KeyCode::Char('w') if ctrl => {
+                let line = &mut self.lines[self.cursor_row];
+                let start = line[..self.cursor_col]
+                    .rfind(|c: char| c.is_ascii_punctuation() || c.is_ascii_whitespace())
+                    .map(|i| i + 1)
+                    .unwrap_or(0);
+                if start < self.cursor_col {
+                    line.drain(start..self.cursor_col);
+                    self.cursor_col = start;
+                }
+            }
+            // ── Regular character ──
+            ratatui::crossterm::event::KeyCode::Char(c) if !ctrl => {
+                self.insert_at_cursor(&c.to_string());
+            }
+            ratatui::crossterm::event::KeyCode::Backspace => {
+                if self.cursor_col > 0 {
+                    self.cursor_col -= 1;
+                    self.lines[self.cursor_row].remove(self.cursor_col);
+                } else if self.cursor_row > 0 {
+                    let rest = self.lines[self.cursor_row].clone();
+                    self.lines.remove(self.cursor_row);
+                    self.cursor_row -= 1;
+                    self.cursor_col = self.lines[self.cursor_row].len();
+                    self.lines[self.cursor_row].push_str(&rest);
+                }
+            }
+            ratatui::crossterm::event::KeyCode::Delete => {
+                let line = &mut self.lines[self.cursor_row];
+                if self.cursor_col < line.len() {
+                    line.remove(self.cursor_col);
+                } else if self.cursor_row + 1 < self.lines.len() {
+                    let next = self.lines.remove(self.cursor_row + 1);
+                    self.lines[self.cursor_row].push_str(&next);
+                }
+            }
+            ratatui::crossterm::event::KeyCode::Left => {
+                if self.cursor_col > 0 {
+                    self.cursor_col -= 1;
+                } else if self.cursor_row > 0 {
+                    self.cursor_row -= 1;
+                    self.cursor_col = self.lines[self.cursor_row].len();
+                }
+            }
+            ratatui::crossterm::event::KeyCode::Right => {
+                if self.cursor_col < self.lines[self.cursor_row].len() {
+                    self.cursor_col += 1;
+                } else if self.cursor_row + 1 < self.lines.len() {
+                    self.cursor_row += 1;
+                    self.cursor_col = 0;
+                }
+            }
+            ratatui::crossterm::event::KeyCode::Up => {
+                if self.cursor_row > 0 {
+                    self.cursor_row -= 1;
+                    self.cursor_col = self.cursor_col.min(self.lines[self.cursor_row].len());
+                }
+            }
+            ratatui::crossterm::event::KeyCode::Down => {
+                if self.cursor_row + 1 < self.lines.len() {
+                    self.cursor_row += 1;
+                    self.cursor_col = self.cursor_col.min(self.lines[self.cursor_row].len());
+                }
+            }
+            ratatui::crossterm::event::KeyCode::Enter => {
+                self.newline();
+            }
+            ratatui::crossterm::event::KeyCode::Home => {
+                self.cursor_col = 0;
+            }
+            ratatui::crossterm::event::KeyCode::End => {
+                self.cursor_col = self.lines[self.cursor_row].len();
+            }
+            _ => {}
+        }
+    }
+
+    fn newline(&mut self) {
+        let rest = self.lines[self.cursor_row][self.cursor_col..].to_string();
+        self.lines[self.cursor_row].truncate(self.cursor_col);
+        self.lines.insert(self.cursor_row + 1, rest);
+        self.cursor_row += 1;
+        self.cursor_col = 0;
+    }
 }
 
 fn welcome_messages(config: &TuiConfig) -> Vec<DisplayMsg> {
@@ -698,7 +894,7 @@ fn handle_key(app: &mut App, key: KeyEvent) {
                 app.history_index = None;
             }
         }
-        // Ctrl+D: quit when editor empty, interrupt when streaming
+        // Ctrl+D: quit when streaming or editor empty
         KeyCode::Char('d') if ctrl => {
             if app.show_help {
                 app.show_help = false;
@@ -713,13 +909,17 @@ fn handle_key(app: &mut App, key: KeyEvent) {
                 app.should_quit = true;
             }
         }
-        // Escape: clear editor or close help
+        // Escape: close help or abort streaming (pi: app.interrupt)
         KeyCode::Esc => {
             if app.show_help {
                 app.show_help = false;
-            } else {
-                app.editor = create_editor();
-                app.history_index = None;
+            } else if app.is_streaming {
+                if let Some(handle) = app.agent_abort.take() {
+                    handle.abort();
+                }
+                app.is_streaming = false;
+                app.messages.push(DisplayMsg::Info("Aborted".to_string()));
+                app.auto_scroll.set(true);
             }
         }
         // Ctrl+T: toggle thinking
@@ -730,12 +930,20 @@ fn handle_key(app: &mut App, key: KeyEvent) {
         KeyCode::Char('o') if ctrl => {
             app.tool_output_collapsed = !app.tool_output_collapsed;
         }
+        // Ctrl+J: newline (terminal-independent)
+        KeyCode::Char('j') if ctrl => {
+            app.editor.handle_key(KeyCode::Enter, false);
+        }
         // F1: show help
         KeyCode::F(1) => {
             app.show_help = !app.show_help;
         }
-        // Enter: submit (Shift+Enter / Alt+Enter: newline)
-        KeyCode::Enter if !shift && !alt && !ctrl => {
+        // Shift+Enter / Alt+Enter / Ctrl+Enter: newline
+        KeyCode::Enter if shift || alt || ctrl => {
+            app.editor.handle_key(KeyCode::Enter, false);
+        }
+        // Enter (no modifiers): submit
+        KeyCode::Enter => {
             let text = app.editor.text();
             let trimmed = text.trim();
             if !trimmed.is_empty() && !app.is_streaming {
@@ -762,6 +970,7 @@ fn handle_key(app: &mut App, key: KeyEvent) {
 }
 
 /// Handle Tab autocomplete for slash commands.
+/// Tab only completes in-place, never executes. Execution happens on Enter.
 fn handle_slash_completion(app: &mut App, text: &str) {
     let trimmed = text.trim();
     let commands = collect_commands(app);
@@ -777,8 +986,8 @@ fn handle_slash_completion(app: &mut App, text: &str) {
                 .collect();
 
             if matches.len() == 1 {
-                let cmd_text = format!("/{}", matches[0].name);
-                submit_message(app, cmd_text);
+                let new_text = format!("/{} ", matches[0].name);
+                set_editor_text(app, &new_text);
             } else if matches.len() > 1 {
                 let common =
                     common_prefix(&matches.iter().map(|c| c.name.as_str()).collect::<Vec<_>>());
@@ -800,8 +1009,8 @@ fn handle_slash_completion(app: &mut App, text: &str) {
             if let Some(cmd) = commands.iter().find(|c| c.name == cmd_name) {
                 let completions = cmd.handler.argument_completions(arg_prefix);
                 if completions.len() == 1 {
-                    let cmd_text = format!("/{} {}", cmd_name, completions[0].value);
-                    submit_message(app, cmd_text);
+                    let new_text = format!("/{} {}", cmd_name, completions[0].value);
+                    set_editor_text(app, &new_text);
                 } else if completions.len() > 1 {
                     let values: Vec<String> = completions.iter().map(|c| c.value.clone()).collect();
                     let common =

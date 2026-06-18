@@ -22,6 +22,7 @@ Study these files before implementing each Rust equivalent.
 | `system_prompt.rs` (Phase 1) | `packages/coding-agent/src/core/system-prompt.ts` |
 | `commands.rs` (Phase 1) | `packages/coding-agent/src/core/slash-commands.ts` |
 | `tui.rs` (Phase 1) | `packages/coding-agent/src/modes/interactive/` (ink-based TUI, not ratatui — different rendering model) |
+| `settings.rs` | `packages/coding-agent/src/core/settings-manager.ts` |
 | `skills.rs` (Phase 2) | `packages/coding-agent/src/core/skills.ts` |
 
 ---
@@ -271,15 +272,18 @@ run `cargo build --target wasm32-wasip2`, and drop the `.wasm` into
 
 ### Phase 1 (partial)
 
-- [x] **`tui.rs`** — Terminal UI with ratatui + custom editor + crossterm:
+- [x] **`tui.rs`** — Terminal UI with ratatui + crossterm:
   - Pi-style layout: messages → working indicator → editor → footer
   - Messages widget: scrollable chat, pi dark theme colors, tool output collapsed by default, thinking block folding
-  - Editor: custom multiline editor, reverse-video cursor, pi-style accent borders, hardware cursor positioning
+  - Editor: custom multiline editor inlined in tui.rs, rendered with ratatui Paragraph, hardware cursor via Frame
   - Footer: 2-line pi-style (cwd + git branch, tokens left + model right with thinking level)
-  - Keyboard: Enter submit, Shift+Enter newline, Ctrl+C/D interrupt/clear/quit, Tab slash completion, arrow history
-  - Slash command autocomplete: Tab completes command names and arguments, Enter does prefix matching
+  - Keyboard: Enter submit, Shift+Enter/Alt+Enter/Ctrl+Enter/Ctrl+J newline, Ctrl+C abort+clear, Ctrl+D quit (empty), Esc abort (streaming), Tab complete, arrow history
+  - Slash command autocomplete: Tab completes in-place, Enter executes prefix match
   - Working indicator: animated braille spinner above editor during streaming
-  - Agent abort: Ctrl+C/Ctrl+D during streaming aborts the tokio task
+  - Agent abort: Esc/Ctrl+C during streaming aborts the tokio task
+  - Emacs navigation: Ctrl+A/E/B/F/P/N for line start/end/left/right/up/down
+  - Emacs editing: Ctrl+K/U/W for kill/delete operations
+  - Pi-style keybindings: Esc→interrupt (no clear), Ctrl+C→clear+abort, Ctrl+D→quit
 - [x] **Unified command system** — Commands use the same `Extension` trait as tools:
   - `CommandHandler` trait with `execute()` and `argument_completions()`
   - `CommandResult` enum (Info, Quit, ModelChanged)
@@ -290,32 +294,25 @@ run `cargo build --target wasm32-wasip2`, and drop the `.wasm` into
   - Chat styles: user_msg, tool_pending/success/error, thinking, dim, accent
   - Footer and editor styles
   - Style helper methods, ready for future theming support
-- [x] **`editor.rs`** — Custom minimal editor widget:
-  - Multi-line editing, cursor navigation, insert/delete, newline
-  - Hardware cursor positioning via Frame::set_cursor_position
-  - Block-style cursor with reverse video
-  - Block borders (top + bottom) matching pi's accent color
 - [x] **Arrow-key history** — ↑↓ recalls previous user messages when editor is empty
-- [x] **Tests** — 65 total: commands (11), editor behavior (19), plus all PoC tests
+- [x] **`auth.rs`** — Supports both `api_key` and `oauth` credential types (pi-compatible)
+- [x] **`~/.rab/agent/settings.json`** — Global config: provider, model, thinking level, theme
+- [x] **`~/.rab/agent/auth.json`** — Provider credentials (copied from pi)
+- [x] **`Cargo.toml`** — Switched to `native-tls` (rustls-platform-verifier panics on Termux/Android)
+- [x] **`.cargo/config.toml`** — OPENSSL_DIR for Termux build without pkg-config
+- [x] **Tests** — 65 total: auth (4), settings (6), commands (11), editor behavior (19), tools (19), types (6)
 
 ## Known Issues
 
 ### Editor cursor
 - Cursor display is buggy on empty editor (sometimes not visible until typing starts)
-- Cursor positioning is off by 1 column on multi-line text (no border offset compensation)
-- Backspace at start of line doesn't join with previous line properly on Ratatui 0.30 buffer
+- Cursor positioning may be off on lines with multi-byte Unicode characters (byte vs char index)
 - No visual cursor-line highlight (pi uses subtle background on the cursor row)
 
 ### Editor shortcuts missing
-- Ctrl+A (beginning of line) — not implemented
-- Ctrl+E (end of line) — not implemented
-- Ctrl+K (kill to end of line) — not implemented
-- Ctrl+U (kill to start of line) — not implemented
-- Ctrl+W (delete word backward) — not implemented
 - Alt+Arrow (word movement) — not implemented
 - Ctrl+Left/Right (jump word) — not implemented
 - No kill ring (yank/pop) — not implemented
-- Delete key is mapped but produces wrong char
 
 ### TUI colors and styles
 - Assistant markdown text not styled with pi's markdown theme colors (headings, code, links, quotes)
