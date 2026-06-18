@@ -529,10 +529,10 @@ fn build_message_text(app: &App) -> Text<'static> {
                     lines.push(Line::from(""));
                 }
                 for line in text.lines() {
-                    lines.push(Line::from(Span::styled(
-                        format!(" {line}"),
-                        th.user_msg_style(),
-                    )));
+                    lines.push(
+                        Line::from(Span::styled(format!(" {line}"), th.user_msg_style()))
+                            .style(th.user_msg_style()),
+                    );
                 }
             }
             DisplayMsg::AssistantText(text) => {
@@ -553,17 +553,17 @@ fn build_message_text(app: &App) -> Text<'static> {
                     {
                         lines.push(Line::from(""));
                     }
-                    lines.push(Line::from(Span::styled(
-                        " Thinking…",
-                        th.thinking_label_style(),
-                    )));
+                    lines.push(
+                        Line::from(Span::styled(" Thinking…", th.thinking_label_style()))
+                            .style(th.thinking_label_style()),
+                    );
                     continue;
                 }
                 for line in text.lines() {
-                    lines.push(Line::from(Span::styled(
-                        format!(" {line}"),
-                        th.thinking_style(),
-                    )));
+                    lines.push(
+                        Line::from(Span::styled(format!(" {line}"), th.thinking_style()))
+                            .style(th.thinking_style()),
+                    );
                 }
             }
             DisplayMsg::ToolCall { name, args, .. } => {
@@ -580,7 +580,10 @@ fn build_message_text(app: &App) -> Text<'static> {
                 } else {
                     format!(" {name}  {truncated}")
                 };
-                lines.push(Line::from(Span::styled(line_text, th.tool_pending_style())));
+                lines.push(
+                    Line::from(Span::styled(line_text, th.tool_pending_style()))
+                        .style(th.tool_pending_style()),
+                );
             }
             DisplayMsg::ToolResult {
                 content, is_error, ..
@@ -594,14 +597,16 @@ fn build_message_text(app: &App) -> Text<'static> {
                     let first = content.lines().next().unwrap_or("");
                     let truncated: String = first.chars().take(120).collect();
                     let suffix = if first.len() > 120 { "…" } else { "" };
-                    lines.push(Line::from(Span::styled(
-                        format!(" {truncated}{suffix}"),
-                        style,
-                    )));
+                    lines.push(
+                        Line::from(Span::styled(format!(" {truncated}{suffix}"), style))
+                            .style(style),
+                    );
                 } else {
-                    for line in content.lines() {
-                        let truncated: String = line.chars().take(140).collect();
-                        lines.push(Line::from(Span::styled(format!(" {truncated}"), style)));
+                    for line_content in content.lines() {
+                        let truncated: String = line_content.chars().take(140).collect();
+                        lines.push(
+                            Line::from(Span::styled(format!(" {truncated}"), style)).style(style),
+                        );
                     }
                 }
             }

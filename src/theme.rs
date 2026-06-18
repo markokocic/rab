@@ -23,7 +23,8 @@ pub struct Theme {
     pub tool_output: Color,
 
     // ── Thinking ──
-    pub thinking_text: Color, // also used for the "Thinking…" label
+    pub thinking_text: Color,
+    pub thinking_bg: Color, // background for thinking blocks and label
 
     // ── Editor ──
     pub editor_border: Color,
@@ -54,6 +55,7 @@ pub const DARK: Theme = Theme {
     tool_output: Color::Rgb(0x80, 0x80, 0x80),
 
     thinking_text: Color::Rgb(0x80, 0x80, 0x80),
+    thinking_bg: Color::Rgb(0x2c, 0x2c, 0x36),
 
     editor_border: Color::Rgb(0x8a, 0xbe, 0xb7),
 
@@ -87,12 +89,14 @@ impl Theme {
     pub fn thinking_style(&self) -> Style {
         Style::default()
             .fg(self.thinking_text)
+            .bg(self.thinking_bg)
             .add_modifier(Modifier::ITALIC)
     }
 
     pub fn thinking_label_style(&self) -> Style {
         Style::default()
             .fg(self.thinking_text)
+            .bg(self.thinking_bg)
             .add_modifier(Modifier::ITALIC)
     }
 
