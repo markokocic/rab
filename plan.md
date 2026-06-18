@@ -47,21 +47,24 @@ Both models use the `/chat/completions` endpoint with standard OpenAI
 request/response format. Auth is `Authorization: Bearer <api_key>`.
 API key and base URL come from settings files, not environment variables.
 
-Settings live at `~/.rab/settings.json` (global) with project overrides from
-`.rab/settings.json`, matching pi's schema:
+Settings live at `~/.rab/agent/settings.json` (global) with project overrides from
+`.rab/settings.json`, matching pi's schema. Auth lives at `~/.rab/agent/auth.json`.
 
+`~/.rab/agent/settings.json`:
 ```json
 {
-    "model": "deepseek-v4-flash",
-    "thinking": "off",
-    "env": {
-        "OPENCODE_API_KEY": "oc_..."
-    },
-    "providers": {
-        "opencode-go": {
-            "base_url": "https://opencode.ai/zen/go/v1",
-            "api_key": "oc_..."
-        }
+    "defaultModel": "deepseek-v4-flash",
+    "defaultThinkingLevel": "max",
+    "defaultProvider": "opencode_go"
+}
+```
+
+`~/.rab/agent/auth.json`:
+```json
+{
+    "opencode_go": {
+        "type": "api_key",
+        "key": "oc_..."
     }
 }
 ```
@@ -91,11 +94,13 @@ Settings live at `~/.rab/settings.json` (global) with project overrides from
   - Tool execution: parallel by default
   - `CancellationToken` support (stubbed)
   - Event emission via `EventSink`
-- [ ] **`settings.rs`** — Load settings from `~/.rab/settings.json` + `.rab/settings.json` overlay
-  - Same JSON schema as pi: `model`, `thinking`, `env`, `providers`
+- [ ] **`settings.rs`** — Load settings from `~/.rab/agent/settings.json` + `.rab/settings.json` overlay
+  - Same JSON schema as pi: `defaultModel`, `defaultThinkingLevel`, `defaultProvider`, `tools`, `theme`
   - Load order: global first, then project-local merges on top
-  - No env var fallback — all config comes from files
-  - Used by `adapter/genai.rs` for api key + base url, by `agent.rs` for model selection
+- [ ] **`auth.rs`** — Load API keys from `~/.rab/agent/auth.json` (same format as pi)
+  - `{"provider_name": {"type": "api_key", "key": "..."}}`
+  - Used by adapter to authenticate with providers
+  - No env var fallback
 - [ ] **`main.rs`** — Minimal CLI: `rab "message"` → loads settings, runs agent loop in print mode
   - `--model deepseek-v4-pro` overrides settings file
   - No clap yet — just `std::env::args()`
@@ -112,8 +117,8 @@ genai wraps the HTTP layer and streaming. No reqwest needed at this stage.
 
 ### Deliverable
 
-A binary that reads provider/model config from `~/.rab/settings.json`, connects
-to OpenCode Go (DeepSeek V4 Flash by default), runs the agent loop with tool
+A binary that reads provider/model config from `~/.rab/agent/settings.json` and
+`~/.rab/agent/auth.json`, connects to OpenCode Go (DeepSeek V4 Flash by default), runs the agent loop with tool
 calling, and prints the result. No session files, no TUI, no env vars.
 
 ---

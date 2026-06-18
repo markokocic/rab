@@ -296,7 +296,9 @@ JSONL file, one object per line. Same format as pi's sessions.
 
 ```
 ~/.rab/
-├── settings.json              # global settings
+├── agent/
+│   ├── settings.json          # global settings
+│   └── auth.json              # API keys and OAuth credentials
 ├── models.json                # custom provider/model definitions
 ├── keybindings.json           # custom keybinds (phase 2)
 ├── AGENTS.md                  # global context file
@@ -588,19 +590,21 @@ AgentMessages (e.g. for compaction, later).
 
 ## Settings (`settings.rs`)
 
-Same file names and format as pi, but under `~/.rab/` instead of
-`~/.pi/agent/`.
+Same file names and format as pi, but under `~/.rab/agent/` instead of
+`~/.pi/agent/`. Auth lives in `~/.rab/agent/auth.json`, settings in
+`~/.rab/agent/settings.json`.
 
 ### Config files
 
 | Pi path | rab path | Purpose |
 |---|---|---|
-| `~/.pi/agent/settings.json` | `~/.rab/settings.json` | Global settings (model, thinking, session dir) |
+| `~/.pi/agent/settings.json` | `~/.rab/agent/settings.json` | Global settings (model, thinking, tools, theme) |
 | `.pi/settings.json` | `.rab/settings.json` | Project-local overrides |
+| `~/.pi/agent/auth.json` | `~/.rab/agent/auth.json` | API keys and OAuth credentials |
+| `~/.pi/agent/models.json` | `~/.rab/models.json` | Custom provider/model definitions |
 | `~/.pi/agent/AGENTS.md` | `~/.rab/AGENTS.md` | Global context instructions |
 | `AGENTS.md` / `CLAUDE.md` | `AGENTS.md` / `CLAUDE.md` | Project context files (walked up from cwd) |
 | `~/.pi/agent/keybindings.json` | `~/.rab/keybindings.json` | Custom keybinds (phase 2) |
-| `~/.pi/agent/models.json` | `~/.rab/models.json` | Custom provider/model definitions |
 | `~/.pi/agent/sessions/` | `~/.rab/sessions/` | Session files |
 | `~/.pi/agent/extensions/` | `~/.rab/extensions/` | User extensions (phase 2 — WASM) |
 | `~/.pi/agent/skills/` | `~/.rab/skills/` | Agent skills (phase 2) |
@@ -612,23 +616,30 @@ Same JSON schema as pi:
 
 ```json
 {
-    "model": "claude-sonnet-4-20250514",
-    "thinking": "high",
-    "models": ["claude-*", "gpt-4o"],
-    "sessionDir": null,
-    "noBuiltinTools": false,
+    "defaultModel": "deepseek-v4-flash",
+    "defaultThinkingLevel": "high",
+    "defaultProvider": "opencode_go",
     "tools": ["read", "write", "edit", "bash"],
     "excludeTools": [],
-    "env": {
-        "ANTHROPIC_API_KEY": "sk-ant-...",
-        "OPENAI_API_KEY": "sk-..."
-    },
     "theme": "dark",
     "verbose": false
 }
 ```
 
-Load order: global `~/.rab/settings.json` first, then project `.rab/settings.json`
+### `auth.json` format
+
+Same JSON schema as pi:
+
+```json
+{
+    "opencode_go": {
+        "type": "api_key",
+        "key": "oc_..."
+    }
+}
+```
+
+Load order: global `~/.rab/agent/settings.json` first, then project `.rab/settings.json`
 overlays. CLI flags (`--model`, `--thinking`, `--no-tools`) take precedence
 over both.
 
