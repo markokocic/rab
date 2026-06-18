@@ -69,16 +69,19 @@ async fn main() -> anyhow::Result<()> {
     let provider = adapter::GenaiProvider::new(&auth, thinking_level)?;
 
     if message_parts.is_empty() {
-        run_interactive(
-            cwd,
+        let git_branch = get_git_branch(&cwd);
+        let config = rab::tui::TuiConfig {
             model,
             system_prompt,
             tools,
             agent_tools,
             extensions,
-            provider,
-        )
-        .await
+            provider: Box::new(provider),
+            cwd,
+            thinking_level: thinking_level.map(|s| s.to_string()),
+            git_branch,
+        };
+        rab::tui::run(config).await
     } else {
         let message = message_parts.join(" ");
         run_print_mode(
@@ -183,25 +186,19 @@ async fn run_print_mode(
     Ok(())
 }
 
-async fn run_interactive(
-    cwd: std::path::PathBuf,
-    model: String,
-    system_prompt: String,
-    tools: Vec<rab::provider::ToolDef>,
-    agent_tools: Vec<Box<dyn rab::extension::AgentTool>>,
-    extensions: Vec<Box<dyn Extension>>,
-    provider: adapter::GenaiProvider,
-) -> anyhow::Result<()> {
-    let config = rab::tui::TuiConfig {
-        model,
-        system_prompt,
-        tools,
-        agent_tools,
-        extensions,
-        provider: Box::new(provider),
-        cwd,
-    };
-    rab::tui::run(config).await
+fn get_git_branch(cwd: &std::path::Path) -> Option<String> {
+    let output = std::process::Command::new("git")
+        .args(["branch", "--show-current"])
+        .current_dir(cwd)
+        .output()
+        .ok()?;
+    if output.status.success() {
+        let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if !branch.is_empty() {
+            return Some(branch);
+        }
+    }
+    None
 }
 
 fn build_system_prompt(extensions: &[Box<dyn Extension>]) -> String {

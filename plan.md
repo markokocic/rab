@@ -262,9 +262,38 @@ run `cargo build --target wasm32-wasip2`, and drop the `.wasm` into
 - [x] **`builtin/edit.rs`** — Edit tool (multi-edit, uniqueness check, overlap detection, camelCase args)
 - [x] **`builtin/bash.rs`** — Bash tool (sh -c, timeout, stdout+stderr, truncation)
 - [x] **`agent.rs`** — `run_agent_loop()` with inner loop, streaming, parallel tool execution, hook pipeline, `AgentEvent` emission
-- [x] **`main.rs`** — Minimal CLI: `rab [--model <m>] <message>`, print-mode emitter, loads command extensions
+- [x] **`main.rs`** — Minimal CLI: `rab [--model <m>] <message>`, print-mode emitter, loads command extensions, git branch detection
 - [x] **`builtin/commands.rs`** — Built-in commands extension: `/quit`, `/model` with argument completions
 - [x] **`settings.rs`** — Load `~/.rab/agent/settings.json` + `.rab/settings.json` overlay, pi schema, camelCase
 - [x] **`auth.rs`** — Load `~/.rab/agent/auth.json`, pi format (`{"provider": {"type": "api_key", "key": "..."}}`)
 - [x] **`lib.rs`** — Crate root exposing all modules for integration tests
 - [x] **Tests** — 45 integration tests: types (6), settings (6), auth (4), read (4), write (3), edit (6), bash (6)
+
+### Phase 1 (partial)
+
+- [x] **`tui.rs`** — Terminal UI with ratatui + custom editor + crossterm:
+  - Pi-style layout: messages → working indicator → editor → footer
+  - Messages widget: scrollable chat, pi dark theme colors, tool output collapsed by default, thinking block folding
+  - Editor: custom multiline editor, reverse-video cursor, pi-style accent borders, hardware cursor positioning
+  - Footer: 2-line pi-style (cwd + git branch, tokens left + model right with thinking level)
+  - Keyboard: Enter submit, Shift+Enter newline, Ctrl+C/D interrupt/clear/quit, Tab slash completion, arrow history
+  - Slash command autocomplete: Tab completes command names and arguments, Enter does prefix matching
+  - Working indicator: animated braille spinner above editor during streaming
+  - Agent abort: Ctrl+C/Ctrl+D during streaming aborts the tokio task
+- [x] **Unified command system** — Commands use the same `Extension` trait as tools:
+  - `CommandHandler` trait with `execute()` and `argument_completions()`
+  - `CommandResult` enum (Info, Quit, ModelChanged)
+  - `/quit` and `/model` via `CommandsExtension` (built-in)
+  - Exact match first, then prefix match (e.g. `/q` → `/quit`)
+  - "Did you mean" suggestions for ambiguous prefixes
+- [x] **`theme.rs`** — Theme struct with pi's exact dark theme colors:
+  - Chat styles: user_msg, tool_pending/success/error, thinking, dim, accent
+  - Footer and editor styles
+  - Style helper methods, ready for future theming support
+- [x] **`editor.rs`** — Custom minimal editor widget:
+  - Multi-line editing, cursor navigation, insert/delete, newline
+  - Hardware cursor positioning via Frame::set_cursor_position
+  - Block-style cursor with reverse video
+  - Block borders (top + bottom) matching pi's accent color
+- [x] **Arrow-key history** — ↑↓ recalls previous user messages when editor is empty
+- [x] **Tests** — 65 total: commands (11), editor behavior (19), plus all PoC tests

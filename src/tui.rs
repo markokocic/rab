@@ -1,4 +1,5 @@
 use crate::agent::{AgentEvent, LoopConfig, run_agent_loop};
+use crate::editor::Editor;
 use crate::extension::{AgentTool, CommandResult, Extension, SlashCommand};
 use crate::provider::{Provider, ToolDef};
 use crate::theme::{DARK, Theme};
@@ -7,9 +8,9 @@ use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Modifier, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span, Text},
-    widgets::{Block, Paragraph},
+    widgets::{Block, Borders, Paragraph},
 };
 use std::cell::Cell;
 use std::path::PathBuf;
@@ -28,6 +29,8 @@ pub struct TuiConfig {
     pub extensions: Vec<Box<dyn Extension>>,
     pub provider: Box<dyn Provider>,
     pub cwd: PathBuf,
+    pub thinking_level: Option<String>,
+    pub git_branch: Option<String>,
 }
 
 // ── Display messages ───────────────────────────────────────────────
@@ -89,6 +92,8 @@ struct SharedState {
 struct App {
     cwd: PathBuf,
     model: String,
+    thinking_level: Option<String>,
+    git_branch: Option<String>,
     system_prompt: String,
     shared: Arc<SharedState>,
     provider: Arc<dyn Provider>,
@@ -103,7 +108,7 @@ struct App {
     scroll_line: Cell<usize>,
     auto_scroll: Cell<bool>,
 
-    editor: tui_textarea::TextArea<'static>,
+    editor: Editor,
     event_tx: mpsc::UnboundedSender<AgentEvent>,
     event_rx: mpsc::UnboundedReceiver<AgentEvent>,
 
@@ -125,6 +130,9 @@ struct App {
     /// History: index into conversation user messages for arrow-key recall.
     /// None = not navigating history; Some(i) = pointing at conversation[i].
     history_index: Option<usize>,
+
+    /// Frame counter for spinner animation.
+    frame_count: u64,
 }
 
 // ── Public entry point ─────────────────────────────────────────────
@@ -175,8 +183,10 @@ fn run_app(
     });
 
     let mut app = App {
-        cwd: config.cwd,
+        cwd: config.cwd.clone(),
         model: config.model.clone(),
+        thinking_level: config.thinking_level.clone(),
+        git_branch: config.git_branch.clone(),
         system_prompt: config.system_prompt,
         shared,
         provider: Arc::from(config.provider),
@@ -198,9 +208,11 @@ fn run_app(
         last_usage: None,
         agent_abort: None,
         history_index: None,
+        frame_count: 0,
     };
 
     loop {
+        app.frame_count = app.frame_count.wrapping_add(1);
         terminal.draw(|f| ui(f, &app))?;
 
         // Poll for keyboard events
@@ -225,12 +237,14 @@ fn run_app(
     Ok(())
 }
 
-fn create_editor() -> tui_textarea::TextArea<'static> {
-    let mut editor = tui_textarea::TextArea::default();
-    editor.set_cursor_line_style(Style::default());
+fn create_editor() -> Editor {
+    let mut editor = Editor::new();
     editor.set_cursor_style(Style::default().add_modifier(Modifier::REVERSED));
-    // No block border — we render top/bottom lines manually (pi-style)
-    editor.set_block(Block::default());
+    editor.set_block(
+        Block::default()
+            .borders(Borders::TOP | Borders::BOTTOM)
+            .border_style(Style::default().fg(Color::Rgb(0x8a, 0xbe, 0xb7))),
+    );
     editor
 }
 
@@ -245,7 +259,7 @@ fn ui(frame: &mut Frame, app: &App) {
             Constraint::Min(1),                      // messages
             Constraint::Length(working_height(app)), // working indicator
             Constraint::Length(editor_height(app)),  // editor
-            Constraint::Length(1),                   // footer
+            Constraint::Length(2),                   // footer (2 lines: cwd + stats)
         ])
         .split(area);
 
@@ -261,7 +275,6 @@ fn working_height(app: &App) -> u16 {
 
 fn editor_height(app: &App) -> u16 {
     let lines = app.editor.lines().len().max(1);
-    // +2 for top/bottom border lines, clamp to 3..10 (pi: 1 content + 2 borders = 3 min)
     (lines + 2).clamp(3, 10) as u16
 }
 
@@ -451,80 +464,133 @@ fn help_lines(app: &App) -> Vec<Line<'static>> {
 }
 
 fn render_editor(frame: &mut Frame, area: Rect, app: &App) {
-    let border_style = app.theme.editor_border_style();
-    // Pi-style: horizontal lines above and below the editor
-    let horizontal = "─".repeat(area.width as usize);
-    let top_line = Line::from(Span::styled(&horizontal, border_style));
-    let bottom_line = Line::from(Span::styled(&horizontal, border_style));
-
-    // Top border
-    frame.render_widget(
-        Paragraph::new(top_line),
-        Rect::new(area.x, area.y, area.width, 1),
-    );
-    // Editor content (skip top border line)
-    let content_area = Rect::new(
-        area.x,
-        area.y + 1,
-        area.width,
-        area.height.saturating_sub(2),
-    );
-    frame.render_widget(&app.editor, content_area);
-    // Bottom border
-    frame.render_widget(
-        Paragraph::new(bottom_line),
-        Rect::new(area.x, area.y + area.height - 1, area.width, 1),
-    );
+    frame.render_widget(&app.editor, area);
+    // Set hardware cursor position (ratatui 0.30 uses Frame, not Buffer)
+    let border_height = 1u16; // TOP border
+    let (row, col) = app.editor.cursor();
+    let cx = area.x + 1 + col.min(area.width.saturating_sub(2) as usize) as u16;
+    let cy = area.y + border_height + row.min(area.height.saturating_sub(2) as usize) as u16;
+    frame.set_cursor_position((cx, cy));
 }
 
 fn render_working(frame: &mut Frame, area: Rect, app: &App) {
     if !app.is_streaming {
         return;
     }
-    let text = Span::styled(" ⠋ Working…", app.theme.working_style());
+    let spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+    let idx = (app.frame_count as usize / 8) % spinner.len();
+    let text = Span::styled(
+        format!(" {} Working…", spinner[idx]),
+        app.theme.working_style(),
+    );
     frame.render_widget(Paragraph::new(Line::from(text)), area);
 }
 
 fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
     let th = &app.theme;
-    let status = if app.is_streaming {
-        Span::styled(" ● ", th.streaming_dot_style())
-    } else {
-        Span::styled(" ○ ", th.idle_dot_style())
-    };
+    let w = area.width as usize;
 
+    // ── Line 1: working directory + git branch ──
+    let home = std::env::var("HOME").unwrap_or_default();
     let cwd_str = app.cwd.to_str().unwrap_or("?");
-    let model_str = &app.model;
+    let cwd_display = if !home.is_empty() && cwd_str.starts_with(&home) {
+        format!("~{}", &cwd_str[home.len()..])
+    } else {
+        cwd_str.to_string()
+    };
+    let cwd_line = if let Some(ref branch) = app.git_branch {
+        format!("{cwd_display} ({branch})")
+    } else {
+        cwd_display
+    };
+    let cwd_line = truncate_str(&cwd_line, w);
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(cwd_line, th.footer_style()))),
+        Rect::new(area.x, area.y, area.width, 1),
+    );
 
+    // ── Line 2: tokens + model ──
     let tokens_str = app.last_usage.as_ref().map_or(String::new(), |u| {
         let input = u.input_tokens.unwrap_or(0);
         let output = u.output_tokens.unwrap_or(0);
-        format!("↑{} ↓{}", input, output)
+        format!("↑{} ↓{}", fmt_tokens(input), fmt_tokens(output))
     });
 
-    let mut spans: Vec<Span> = vec![
-        Span::styled(cwd_str, th.footer_style()),
-        Span::raw(" · "),
-        Span::styled(model_str, th.footer_style()),
-        Span::raw("  "),
-        status,
-    ];
+    let model_display = app.model.replace("opencode_go::", "");
+    let thinking_str = app
+        .thinking_level
+        .as_deref()
+        .filter(|t| *t != "off" && *t != "none")
+        .map(|t| format!(" • {t}"))
+        .unwrap_or_default();
 
-    if app.thinking_collapsed {
-        spans.push(Span::styled(" T ", th.muted_style()));
-    }
-    if app.tool_output_collapsed {
-        spans.push(Span::styled(" O ", th.muted_style()));
-    }
+    // Build line: tokens left, model right (pi-style)
+    let model_str = if app.model.starts_with("opencode_go::") {
+        format!("(opencode-go) {model_display}{thinking_str}")
+    } else {
+        format!("{model_display}{thinking_str}")
+    };
 
-    if !tokens_str.is_empty() {
-        spans.push(Span::raw("  "));
-        spans.push(Span::styled(tokens_str, th.footer_style()));
+    if tokens_str.is_empty() {
+        let line = pad_right(&model_str, w);
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(line, th.footer_style()))),
+            Rect::new(area.x, area.y + 1, area.width, 1),
+        );
+    } else {
+        let min_pad = 2;
+        let left = &tokens_str;
+        let right = &model_str;
+        let left_w = left.chars().count();
+        let right_w = right.chars().count();
+        let line = if left_w + min_pad + right_w <= w {
+            let padding = w - left_w - right_w;
+            format!("{left}{}{right}", " ".repeat(padding))
+        } else {
+            let available = w.saturating_sub(left_w + min_pad);
+            if available > 0 {
+                let truncated = truncate_str(right, available);
+                let padding = w - left_w - truncated.chars().count();
+                format!("{left}{}{truncated}", " ".repeat(padding))
+            } else {
+                left.to_string()
+            }
+        };
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(line, th.footer_style()))),
+            Rect::new(area.x, area.y + 1, area.width, 1),
+        );
     }
+}
 
-    let line = Line::from(spans);
-    let para = Paragraph::new(line);
-    frame.render_widget(para, area);
+fn fmt_tokens(n: i32) -> String {
+    if n < 1000 {
+        n.to_string()
+    } else if n < 10000 {
+        format!("{:.1}k", n as f64 / 1000.0)
+    } else if n < 1_000_000 {
+        format!("{}k", n / 1000)
+    } else {
+        format!("{:.1}M", n as f64 / 1_000_000.0)
+    }
+}
+
+fn truncate_str(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        let truncated: String = s.chars().take(max.saturating_sub(1)).collect();
+        format!("{truncated}…")
+    }
+}
+
+fn pad_right(s: &str, width: usize) -> String {
+    let len = s.chars().count();
+    if len >= width {
+        s.to_string()
+    } else {
+        format!("{}{}", " ".repeat(width - len), s)
+    }
 }
 
 // ── History recall ────────────────────────────────────────────────
@@ -569,7 +635,7 @@ fn recall_history(app: &mut App, direction: isize) {
         app.history_index = None;
     } else {
         let mut editor = create_editor();
-        editor.insert_str(user_messages[new_index]);
+        editor.set_text(user_messages[new_index]);
         app.editor = editor;
         app.history_index = Some(new_index);
     }
@@ -605,12 +671,13 @@ fn handle_key(app: &mut App, key: KeyEvent) {
                 app.show_help = false;
                 return;
             }
-            let text = app.editor.lines().join("\n");
+            let text = app.editor.text();
             if text.trim().starts_with('/') {
                 handle_slash_completion(app, &text);
                 return;
             }
-            app.editor.input(Event::Key(key));
+            app.editor
+                .handle_key(key.code, key.modifiers.contains(KeyModifiers::CONTROL));
         }
         // Ctrl+C: interrupt streaming, or clear editor (pi: app.interrupt)
         KeyCode::Char('c') if ctrl => {
@@ -666,7 +733,7 @@ fn handle_key(app: &mut App, key: KeyEvent) {
         }
         // Enter: submit (Shift+Enter / Alt+Enter: newline)
         KeyCode::Enter if !shift && !alt && !ctrl => {
-            let text = app.editor.lines().join("\n");
+            let text = app.editor.text();
             let trimmed = text.trim();
             if !trimmed.is_empty() && !app.is_streaming {
                 submit_message(app, trimmed.to_string());
@@ -685,7 +752,8 @@ fn handle_key(app: &mut App, key: KeyEvent) {
         KeyCode::PageDown => scroll_down(app, 10),
         // Everything else: pass to editor
         _ => {
-            app.editor.input(Event::Key(key));
+            app.editor
+                .handle_key(key.code, key.modifiers.contains(KeyModifiers::CONTROL));
         }
     }
 }
@@ -750,7 +818,7 @@ fn handle_slash_completion(app: &mut App, text: &str) {
 
 fn set_editor_text(app: &mut App, text: &str) {
     let mut editor = create_editor();
-    editor.insert_str(text);
+    editor.set_text(text);
     app.editor = editor;
 }
 
