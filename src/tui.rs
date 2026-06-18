@@ -1163,6 +1163,10 @@ fn handle_model_selector_key(app: &mut App, key: KeyEvent) {
                 app.show_model_selector = false;
                 app.model_search.clear();
                 app.model = selected.clone();
+                if let Ok(mut settings) = crate::settings::Settings::load(&app.cwd) {
+                    settings.default_model = Some(selected.clone());
+                    let _ = settings.save();
+                }
                 app.messages.push(DisplayMsg::Info(format!(
                     "Model: {}",
                     selected.replace("opencode_go::", "")
@@ -1428,6 +1432,10 @@ fn apply_command_result(app: &mut App, result: anyhow::Result<CommandResult>) {
         }
         Ok(CommandResult::ModelChanged(new_model)) => {
             app.model = new_model.clone();
+            if let Ok(mut settings) = crate::settings::Settings::load(&app.cwd) {
+                settings.default_model = Some(new_model.clone());
+                let _ = settings.save();
+            }
             app.messages.push(DisplayMsg::Info(format!(
                 "Model: {}",
                 new_model.replace("opencode_go::", "")

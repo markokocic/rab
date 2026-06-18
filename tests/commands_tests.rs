@@ -74,6 +74,22 @@ fn prefix_mo_resolves_to_model() {
 }
 
 #[test]
+fn prefix_hotkeys_resolves_to_hotkeys() {
+    let ext: Box<dyn Extension> = Box::new(CommandsExtension::new(vec![]));
+    let exts: Vec<Box<dyn Extension>> = vec![ext];
+    let result = resolve_command("/hot", &exts);
+    assert_eq!(result, Some(("hotkeys".into(), String::new())));
+}
+
+#[test]
+fn prefix_reload_resolves_to_reload() {
+    let ext: Box<dyn Extension> = Box::new(CommandsExtension::new(vec![]));
+    let exts: Vec<Box<dyn Extension>> = vec![ext];
+    let result = resolve_command("/rel", &exts);
+    assert_eq!(result, Some(("reload".into(), String::new())));
+}
+
+#[test]
 fn unknown_command_no_match() {
     let ext: Box<dyn Extension> = Box::new(CommandsExtension::new(vec!["m1".into(), "m2".into()]));
     let exts: Vec<Box<dyn Extension>> = vec![ext];
@@ -156,4 +172,75 @@ fn test_model_argument_completions() {
     assert_eq!(completions[0].value, "deepseek-v4-flash");
     let completions = model_cmd.handler.argument_completions("zzz");
     assert_eq!(completions.len(), 0);
+}
+
+// ── /hotkeys ──────────────────────────────────────────────────────
+
+#[test]
+fn hotkeys_command_returns_show_help() {
+    let ext = CommandsExtension::new(vec![]);
+    let cmds = ext.commands();
+    let cmd = cmds.iter().find(|c| c.name == "hotkeys").unwrap();
+    let result = cmd.handler.execute("");
+    assert!(result.is_ok());
+    match result.unwrap() {
+        CommandResult::ShowHelp => {}
+        other => panic!("Expected ShowHelp, got {:?}", other),
+    }
+}
+
+#[test]
+fn hotkeys_ignores_args() {
+    let ext = CommandsExtension::new(vec![]);
+    let cmds = ext.commands();
+    let cmd = cmds.iter().find(|c| c.name == "hotkeys").unwrap();
+    let result = cmd.handler.execute("anything");
+    assert!(result.is_ok());
+    match result.unwrap() {
+        CommandResult::ShowHelp => {}
+        other => panic!("Expected ShowHelp, got {:?}", other),
+    }
+}
+
+// ── /reload ───────────────────────────────────────────────────────
+
+#[test]
+fn reload_command_returns_reloaded() {
+    let ext = CommandsExtension::new(vec![]);
+    let cmds = ext.commands();
+    let cmd = cmds.iter().find(|c| c.name == "reload").unwrap();
+    let result = cmd.handler.execute("");
+    assert!(result.is_ok());
+    match result.unwrap() {
+        CommandResult::Reloaded => {}
+        other => panic!("Expected Reloaded, got {:?}", other),
+    }
+}
+
+// ── /new ──────────────────────────────────────────────────────────
+
+#[test]
+fn new_command_returns_new_session() {
+    let ext = CommandsExtension::new(vec![]);
+    let cmds = ext.commands();
+    let cmd = cmds.iter().find(|c| c.name == "new").unwrap();
+    let result = cmd.handler.execute("");
+    assert!(result.is_ok());
+    match result.unwrap() {
+        CommandResult::NewSession => {}
+        other => panic!("Expected NewSession, got {:?}", other),
+    }
+}
+
+#[test]
+fn new_ignores_args() {
+    let ext = CommandsExtension::new(vec![]);
+    let cmds = ext.commands();
+    let cmd = cmds.iter().find(|c| c.name == "new").unwrap();
+    let result = cmd.handler.execute("some args");
+    assert!(result.is_ok());
+    match result.unwrap() {
+        CommandResult::NewSession => {}
+        other => panic!("Expected NewSession, got {:?}", other),
+    }
 }

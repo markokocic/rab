@@ -284,23 +284,29 @@ run `cargo build --target wasm32-wasip2`, and drop the `.wasm` into
   - Emacs navigation: Ctrl+A/E/B/F/P/N for line start/end/left/right/up/down
   - Emacs editing: Ctrl+K/U/W for kill/delete operations
   - Pi-style keybindings: Esc→interrupt (no clear), Ctrl+C→clear+abort, Ctrl+D→quit
+  - Model selector overlay: Ctrl+L opens centered overlay with search, filtering, arrow navigation, Enter to select
+  - Thinking toggle Ctrl+T persisted to settings.json (`hideThinkingBlock`), shows status message
+  - Tool output toggle Ctrl+O persisted to settings.json (`collapseToolOutput`), shows status message
+- [x] **Model persistence** — Model changes via selector or `/model` command save `defaultModel` to `~/.rab/agent/settings.json`
 - [x] **Unified command system** — Commands use the same `Extension` trait as tools:
   - `CommandHandler` trait with `execute()` and `argument_completions()`
-  - `CommandResult` enum (Info, Quit, ModelChanged)
-  - `/quit` and `/model` via `CommandsExtension` (built-in)
+  - `CommandResult` enum (Info, Quit, ModelChanged, ShowHelp, Reloaded, NewSession)
+  - `/quit`, `/model`, `/hotkeys`, `/reload`, `/new` via `CommandsExtension` (built-in)
   - Exact match first, then prefix match (e.g. `/q` → `/quit`)
   - "Did you mean" suggestions for ambiguous prefixes
+  - `/model` and `/m` without args open the model selector overlay (pi-style)
 - [x] **`theme.rs`** — Theme struct with pi's exact dark theme colors:
   - Chat styles: user_msg, tool_pending/success/error, thinking, dim, accent
   - Footer and editor styles
   - Style helper methods, ready for future theming support
 - [x] **Arrow-key history** — ↑↓ recalls previous user messages when editor is empty
 - [x] **`auth.rs`** — Supports both `api_key` and `oauth` credential types (pi-compatible)
-- [x] **`~/.rab/agent/settings.json`** — Global config: provider, model, thinking level, theme
+- [x] **`settings.rs`** — Load + save `~/.rab/agent/settings.json`, pi keys (`hideThinkingBlock`, `collapseToolOutput`), `save_to()` for testing, `Option<bool>` for proper merge semantics
+- [x] **`~/.rab/agent/settings.json`** — Global config: provider, model, thinking level, theme, thinking/tool-output toggles
 - [x] **`~/.rab/agent/auth.json`** — Provider credentials (copied from pi)
 - [x] **`Cargo.toml`** — Switched to `native-tls` (rustls-platform-verifier panics on Termux/Android)
 - [x] **`.cargo/config.toml`** — OPENSSL_DIR for Termux build without pkg-config
-- [x] **Tests** — 65 total: auth (4), settings (6), commands (11), editor behavior (19), tools (19), types (6)
+- [x] **Tests** — 130 total: auth (4), settings (24), commands (18), model selector (30), editor behavior (19), tools (19), types (6)
 
 ## Known Issues
 
@@ -326,16 +332,9 @@ run `cargo build --target wasm32-wasip2`, and drop the `.wasm` into
 
 ## TODO
 
-### Selector components
-- Create reusable `Selector` widget similar to pi's `SelectList`
-  - Fuzzy-filterable list with keyboard navigation (↑↓, Enter to select, Esc to cancel)
-  - Autocomplete dropdown that overlays above/below the editor
-  - Used by `/model` selector, slash-command autocomplete
-  - Theme-aware styling matching pi's select list colors
-
 ### Slash command autocomplete selector
 - Replace current inline Tab-completion with a proper autocomplete dropdown
   - Show command list when typing `/` (like pi)
   - Show argument completions when typing `/cmd ` (like pi)
   - Allow Tab/Enter to select, Esc to dismiss
-  - Reuse the Selector widget for consistency
+  - Theme-aware styling matching pi's autocomplete dropdown

@@ -267,3 +267,73 @@ fn save_creates_parent_directory() {
     assert!(content.contains(r#"hideThinkingBlock"#));
     assert!(content.contains(r#"collapseToolOutput"#));
 }
+
+// ── Model persistence ──────────────────────────────────────────────
+
+#[test]
+fn model_save_persists_default_model() {
+    let tmp = tmp_dir();
+    let global = tmp.join("global.json");
+    write_file(&global, r#"{}"#);
+
+    let mut s = Settings::default();
+    s.default_model = Some("deepseek-v4-pro".into());
+    s.save_to(global.clone()).unwrap();
+
+    let content = read_file(&global);
+    assert!(content.contains(r#"defaultModel"#));
+    assert!(content.contains(r#"deepseek-v4-pro"#));
+}
+
+#[test]
+fn model_save_roundtrip() {
+    let tmp = tmp_dir();
+    let global = tmp.join("global.json");
+
+    let mut s = Settings::default();
+    s.default_model = Some("deepseek-v4-flash".into());
+    s.save_to(global.clone()).unwrap();
+
+    let loaded = Settings::load_from(global, &tmp).unwrap();
+    assert_eq!(loaded.model(), "deepseek-v4-flash");
+}
+
+#[test]
+fn model_override_takes_precedence_over_settings() {
+    // Simulates main.rs behavior: --model flag > settings.defaultModel
+    let tmp = tmp_dir();
+    let global = tmp.join("global.json");
+    write_file(&global, r#"{"defaultModel": "deepseek-v4-flash"}"#);
+
+    let settings = Settings::load_from(global.clone(), &tmp).unwrap();
+    let model_override: Option<String> = Some("deepseek-v4-pro".into());
+    let model = model_override.unwrap_or_else(|| settings.model().to_string());
+
+    assert_eq!(model, "deepseek-v4-pro");
+    // Settings still has the original value
+    assert_eq!(settings.model(), "deepseek-v4-flash");
+}
+
+#[test]
+fn model_loads_from_settings_when_no_override() {
+    let tmp = tmp_dir();
+    let global = tmp.join("global.json");
+    write_file(&global, r#"{"defaultModel": "deepseek-v4-pro"}"#);
+
+    let settings = Settings::load_from(global.clone(), &tmp).unwrap();
+    let model_override: Option<String> = None;
+    let model = model_override.unwrap_or_else(|| settings.model().to_string());
+
+    assert_eq!(model, "deepseek-v4-pro");
+}
+
+#[test]
+fn model_defaults_when_not_set() {
+    let tmp = tmp_dir();
+    let global = tmp.join("global.json");
+    write_file(&global, r#"{}"#);
+
+    let settings = Settings::load_from(global, &tmp).unwrap();
+    // Uses the hardcoded default in settings.model()
+    assert_eq!(settings.model(), "deepseek-v4-flash");
+}
