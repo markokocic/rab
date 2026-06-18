@@ -96,7 +96,7 @@ async fn timeout_kills_command() {
     let result = tool
         .execute(
             "id".into(),
-            serde_json::json!({"command": "sleep 10", "timeout_secs": 1}),
+            serde_json::json!({"command": "sleep 10", "timeout": 1}),
         )
         .await;
 

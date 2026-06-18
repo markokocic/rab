@@ -48,13 +48,10 @@ async fn read_respects_offset() {
         .await
         .unwrap();
 
-    // Line 5 should be first, line 1-4 should not appear as content
+    // Line 5-10 should appear, line 1-4 should not
+    assert!(result.contains("line 5"), "should contain line 5: {result}");
     assert!(
-        result.contains("5: line 5"),
-        "should contain line 5: {result}"
-    );
-    assert!(
-        !result.contains("1: line 1"),
+        !result.contains("line 1\n"),
         "should not contain line 1: {result}"
     );
 }
@@ -78,9 +75,9 @@ async fn read_respects_limit() {
         .await
         .unwrap();
 
-    assert!(result.contains("1: line 1"));
-    assert!(result.contains("3: line 3"));
-    assert!(!result.contains("4: line 4"));
+    assert!(result.contains("line 1"));
+    assert!(result.contains("line 3"));
+    assert!(!result.contains("line 4\n"));
 }
 
 #[tokio::test]

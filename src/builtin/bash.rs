@@ -49,9 +49,9 @@ impl AgentTool for BashTool {
                     "type": "string",
                     "description": "Bash command to execute"
                 },
-                "timeout_secs": {
+                "timeout": {
                     "type": "number",
-                    "description": "Timeout in seconds (optional, default 120)"
+                    "description": "Timeout in seconds (optional, no default timeout)"
                 }
             }
         })
@@ -70,9 +70,9 @@ impl AgentTool for BashTool {
         let command = args["command"]
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("Missing 'command' argument"))?;
-        let timeout_secs = args["timeout_secs"].as_u64().unwrap_or(120);
+        let timeout = args["timeout"].as_u64();
 
-        let output = tokio::process::Command::new("sh")
+        let output_future = tokio::process::Command::new("sh")
             .arg("-c")
             .arg(command)
             .current_dir(&self.cwd)
@@ -80,34 +80,49 @@ impl AgentTool for BashTool {
             .stderr(std::process::Stdio::piped())
             .output();
 
-        let output = tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), output)
-            .await
-            .map_err(|_| anyhow::anyhow!("Command timed out after {} seconds", timeout_secs))??;
+        let output = if let Some(secs) = timeout {
+            tokio::time::timeout(std::time::Duration::from_secs(secs), output_future)
+                .await
+                .map_err(|_| anyhow::anyhow!("Command timed out after {} seconds", secs))??
+        } else {
+            output_future.await?
+        };
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
         let combined = format!("{}{}", stdout, stderr);
 
-        let mut result = combined.clone();
-        let lines: Vec<&str> = result.lines().collect();
-
-        // Truncate to last 2000 lines
+        let total_lines = combined.lines().count();
         const MAX_LINES: usize = 2000;
-        if lines.len() > MAX_LINES {
-            let start = lines.len() - MAX_LINES;
-            result = format!(
-                "[Truncated: showing last {} of {} lines]\n{}",
-                MAX_LINES,
-                lines.len(),
-                lines[start..].join("\n")
-            );
+        const MAX_BYTES: usize = 50 * 1024;
+
+        // Truncate from the end (pi-style): keep last N lines, last N bytes
+        let mut result = combined.clone();
+        if result.len() > MAX_BYTES {
+            // Find the nearest newline before MAX_BYTES from the end
+            let byte_start = result.len().saturating_sub(MAX_BYTES);
+            if let Some(newline_pos) = result[byte_start..].find('\n') {
+                result = result[(byte_start + newline_pos + 1)..].to_string();
+            } else {
+                result = result[byte_start..].to_string();
+            }
         }
 
-        // Truncate to ~50KB
-        const MAX_BYTES: usize = 50 * 1024;
-        if result.len() > MAX_BYTES {
-            result.truncate(MAX_BYTES);
-            result.push_str("\n\n[Output truncated at 50KB]");
+        let lines: Vec<&str> = result.lines().collect();
+        let shown_lines = lines.len();
+
+        if lines.len() > MAX_LINES {
+            let start = lines.len() - MAX_LINES;
+            result = lines[start..].join("\n");
+        }
+
+        // Check if we truncated and add continuation notice
+        if total_lines > shown_lines || combined.len() > MAX_BYTES {
+            let start_line = total_lines - shown_lines + 1;
+            result.push_str(&format!(
+                "\n\n[Showing lines {}-{} of {}.]",
+                start_line, total_lines, total_lines,
+            ));
         }
 
         if !output.status.success() {

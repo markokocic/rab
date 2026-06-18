@@ -96,7 +96,15 @@ impl AgentTool for ReadTool {
 
         // Apply offset (1-indexed → 0-indexed)
         let start = if offset > 0 {
-            (offset - 1).min(total_lines)
+            let zero_based = offset - 1;
+            if zero_based >= total_lines {
+                return Err(anyhow::anyhow!(
+                    "Offset {} is beyond end of file ({} lines total)",
+                    offset,
+                    total_lines
+                ));
+            }
+            zero_based
         } else {
             0
         };
@@ -108,43 +116,50 @@ impl AgentTool for ReadTool {
             total_lines
         };
 
-        let selected: Vec<String> = lines[start..end]
-            .iter()
-            .enumerate()
-            .map(|(i, line)| format!("{:>6}: {}", start + i + 1, line))
-            .collect();
+        let selected = lines[start..end].join("\n");
 
-        let mut output = selected.join("\n");
+        let mut output = selected;
+        let total_file_lines = total_lines;
+        let shown_lines = end - start;
 
-        // Truncate to ~50KB
+        // Apply truncation, matching pi's output format
         const MAX_BYTES: usize = 50 * 1024;
+        const MAX_LINES: usize = 2000;
+
         if output.len() > MAX_BYTES {
             output.truncate(MAX_BYTES);
-            output.push_str("\n\n[Output truncated at 50KB]");
-        }
-
-        // Truncate to 2000 lines
-        const MAX_LINES: usize = 2000;
-        if selected.len() > MAX_LINES {
-            let truncated: Vec<&String> = selected.iter().take(MAX_LINES).collect();
-            output = truncated
-                .iter()
-                .map(|s| s.as_str())
-                .collect::<Vec<_>>()
-                .join("\n");
+            let newline_pos = output.rfind('\n').unwrap_or(0);
+            output.truncate(newline_pos);
+            let line_count = output.lines().count();
+            let end_line = start + line_count;
+            let next_offset = end_line + 1;
             output.push_str(&format!(
-                "\n\n[Truncated to {} lines. Use offset={} to continue.]",
-                MAX_LINES,
-                start + MAX_LINES + 1
+                "\n\n[Showing lines {}-{} of {} ({}KB limit). Use offset={} to continue.]",
+                start + 1,
+                end_line,
+                total_file_lines,
+                MAX_BYTES / 1024,
+                next_offset
             ));
-        }
-
-        // If more lines remain, suggest offset
-        if limit.is_none() && end < total_lines {
+        } else if shown_lines > MAX_LINES {
+            let truncated: Vec<&str> = lines[start..end].iter().take(MAX_LINES).copied().collect();
+            output = truncated.join("\n");
+            let end_line = start + MAX_LINES;
+            let next_offset = end_line + 1;
+            output.push_str(&format!(
+                "\n\n[Showing lines {}-{} of {} ({} line limit). Use offset={} to continue.]",
+                start + 1,
+                end_line,
+                total_file_lines,
+                MAX_LINES,
+                next_offset
+            ));
+        } else if limit.is_none() && end < total_lines {
+            let next_offset = end + 1;
             output.push_str(&format!(
                 "\n\n[{} more lines in file. Use offset={} to continue.]",
                 total_lines - end,
-                end + 1
+                next_offset
             ));
         }
 
