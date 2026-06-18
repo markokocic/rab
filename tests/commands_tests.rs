@@ -6,7 +6,10 @@ use rab::extension::{CommandResult, Extension};
 fn resolve_command(typed: &str, exts: &[Box<dyn Extension>]) -> Option<(String, String)> {
     let (cmd_part, args) = match typed.trim().split_once(' ') {
         Some((cmd, rest)) => (cmd.trim_start_matches('/').to_string(), rest.to_string()),
-        None => (typed.trim().trim_start_matches('/').to_string(), String::new()),
+        None => (
+            typed.trim().trim_start_matches('/').to_string(),
+            String::new(),
+        ),
     };
     let lower = cmd_part.to_lowercase();
 

@@ -2,7 +2,7 @@ use crate::agent::{AgentEvent, LoopConfig, run_agent_loop};
 use crate::extension::{AgentTool, CommandResult, Extension, SlashCommand};
 use crate::provider::{Provider, ToolDef};
 use crate::types::AgentMessage;
-use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers, MouseEventKind};
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
@@ -122,11 +122,7 @@ struct App {
 pub async fn run(config: TuiConfig) -> anyhow::Result<()> {
     crossterm::terminal::enable_raw_mode()?;
     let mut stdout = std::io::stdout();
-    crossterm::execute!(
-        stdout,
-        crossterm::terminal::EnterAlternateScreen,
-        crossterm::event::EnableMouseCapture
-    )?;
+    crossterm::execute!(stdout, crossterm::terminal::EnterAlternateScreen)?;
     let backend = ratatui::backend::CrosstermBackend::new(stdout);
     let mut terminal = ratatui::Terminal::new(backend)?;
 
@@ -135,8 +131,7 @@ pub async fn run(config: TuiConfig) -> anyhow::Result<()> {
     crossterm::terminal::disable_raw_mode()?;
     crossterm::execute!(
         terminal.backend_mut(),
-        crossterm::terminal::LeaveAlternateScreen,
-        crossterm::event::DisableMouseCapture
+        crossterm::terminal::LeaveAlternateScreen
     )?;
     result
 }
@@ -194,11 +189,6 @@ fn run_app(
         if crossterm::event::poll(Duration::from_millis(10))? {
             match crossterm::event::read()? {
                 Event::Key(key) => handle_key(&mut app, key),
-                Event::Mouse(mouse) => match mouse.kind {
-                    MouseEventKind::ScrollUp => scroll_up(&mut app, 3),
-                    MouseEventKind::ScrollDown => scroll_down(&mut app, 3),
-                    _ => {}
-                },
                 Event::Resize(..) => {}
                 _ => {}
             }
@@ -237,7 +227,6 @@ fn ui(frame: &mut Frame, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1),                   // header
             Constraint::Min(1),                      // messages
             Constraint::Length(editor_height(app)),  // editor
             Constraint::Length(working_height(app)), // working indicator
@@ -245,11 +234,10 @@ fn ui(frame: &mut Frame, app: &App) {
         ])
         .split(area);
 
-    render_header(frame, chunks[0], app);
-    render_messages(frame, chunks[1], app);
-    render_editor(frame, chunks[2], app);
-    render_working(frame, chunks[3], app);
-    render_footer(frame, chunks[4], app);
+    render_messages(frame, chunks[0], app);
+    render_editor(frame, chunks[1], app);
+    render_working(frame, chunks[2], app);
+    render_footer(frame, chunks[3], app);
 }
 
 fn working_height(app: &App) -> u16 {
@@ -260,18 +248,6 @@ fn editor_height(app: &App) -> u16 {
     let lines = app.editor.lines().len().max(1);
     // +1 for top border, clamp to 3..10
     (lines + 1).clamp(3, 10) as u16
-}
-
-fn render_header(frame: &mut Frame, area: Rect, app: &App) {
-    let model_display = app.model.replace("opencode_go::", "");
-    let header = Span::styled(
-        format!(" rab · {} ", model_display),
-        Style::default()
-            .fg(Color::Black)
-            .bg(Color::DarkGray)
-            .add_modifier(Modifier::BOLD),
-    );
-    frame.render_widget(Paragraph::new(Line::from(header)), area);
 }
 
 fn render_messages(frame: &mut Frame, area: Rect, app: &App) {
