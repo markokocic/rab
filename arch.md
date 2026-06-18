@@ -10,7 +10,7 @@ lets it act on your codebase.
 |---|---|---|
 | `pi-ai` (providers, streaming, models) | `Provider` trait + `adapter/genai.rs` → [genai](https://github.com/jeremychone/rust-genai) crate | Isolated behind trait; swappable. PoC targets [OpenCode Go](https://opencode.ai/docs/go/) (DeepSeek V4 Flash/Pro) via genai's OpenAI adapter. Phase 1 adds Anthropic, OpenAI, Google, Ollama |
 | `pi-agent-core` (agent loop, session, compaction, skills) | `agent.rs`, `session.rs`, `compaction.rs`, `types.rs` | Loop ported directly from `agent-loop.ts` |
-| `pi-tui` (terminal UI, components, editor) | [ratatui](https://ratatui.rs) 0.29 + [tui-textarea](https://github.com/rhysd/tui-textarea) 0.7 + [crossterm](https://github.com/crossterm-rs/crossterm) 0.28 | Thin glue in `tui.rs` (~150 lines). ratatui does diff, layout, widgets |
+| `pi-tui` (terminal UI, components, editor) | `editor.rs` + [ratatui](https://ratatui.rs) 0.30 + [crossterm](https://github.com/crossterm-rs/crossterm) 0.29 | Custom `Editor` widget replaces tui-textarea. ratatui does layout, diff, widgets |
 | `coding-agent` (CLI, extensions, built-in tools, settings, commands) | `cli.rs`, `extension.rs`, `builtin/`, `settings.rs` | Single `Extension` trait for built-in + user extensions; commands use same `CommandHandler` interface; built-in commands in `builtin/commands.rs` |
 | `coding-agent/modes/interactive` | `tui.rs` module | Same crate, different event sink |
 | MCP extensions (third-party) | `pi-mcp-adapter` built-in extension | Phase 2. Uses `rmcp` crate. Configured via `.rab/mcp.json` |
@@ -56,23 +56,23 @@ isolated behind a trait — replaceable with no changes to core logic.
 │  │  depends on: Provider trait (not genai)           │   │
 │  └────┬──────────┬──────────┬──────────┬────────────┘   │
 │       │          │          │          │                  │
-│  ┌────▼──┐ ┌────▼──┐ ┌────▼──┐ ┌────▼──┐ ┌────▼──┐     │
-│  │builtin│ │session│ │commands│ │settings│ │  sys  │     │
-│  │read   │ │.rs    │ │.rs     │ │.rs     │ │prompt │     │
-│  │write  │ │JSONL  │ │/quit   │ │~/.rab/ │ │.rs    │     │
-│  │edit   │ │append │ │/model  │ │settings│ │AGENTS │     │
-│  │bash   │ │walk   │ │        │ │        │ │.md    │     │
-│  │commands│───────┘ └───────┘ └────────┘ └───────┘     │
-│  └──┬────┘  impl Extension trait                        │
-│  ┌──▼───────────────────────────────────────────────┐   │
-│  │            extension.rs  (Extension trait)         │   │
-│  │  pub trait Extension {                             │   │
-│  │    fn tools(&self) -> Vec<Box<dyn AgentTool>>;     │   │
-│  │    fn commands(&self) -> Vec<SlashCommand>;        │   │
-│  │  }                                                 │   │
-│  │  pub trait CommandHandler { execute, completions } │   │
-│  │  Builtin + user extensions share this trait        │   │
-│  └───────────────────────────────────────────────────┘   │
+│  ┌────▼──┐ ┌────▼──┐ ┌────▼──┐ ┌────▼──┐ ┌────▼──┐ ┌────▼──┐     │
+│  │builtin│ │editor │ │commands│ │settings│ │ sys   │ │theme  │     │
+│  │read   │ │.rs    │ │.rs     │ │.rs     │ │prompt │ │.rs    │     │
+│  │write  │ │widget │ │/quit   │ │~/.rab/ │ │.rs    │ │dark   │     │
+│  │edit   │ │       │ │/model  │ │settings│ │AGENTS │ │theme  │     │
+│  │bash   │ │       │ │        │ │        │ │.md    │ │       │     │
+│  │commands│───────┘ └───────┘ └────────┘ └───────┘ └───────┘     │
+│  └──┬────┘  impl Extension trait                        │         │
+│  ┌──▼──────────────────────────────────────────────────────────┐│
+│  │            extension.rs  (Extension trait)                   ││
+│  │  pub trait Extension {                                       ││
+│  │    fn tools(&self) -> Vec<Box<dyn AgentTool>>;               ││
+│  │    fn commands(&self) -> Vec<SlashCommand>;                  ││
+│  │  }                                                           ││
+│  │  pub trait CommandHandler { execute, completions }           ││
+│  │  Builtin + user extensions share this trait                  ││
+│  └──────────────────────────────────────────────────────────────┘│
 │                                                          │
 │  ┌──────────────────────────────────────────────────┐   │
 │  │            provider.rs  (rab trait)                │   │
@@ -379,7 +379,7 @@ pub trait Extension: Send + Sync {
     /// Tools this extension provides (LLM-callable).
     fn tools(&self) -> Vec<Box<dyn AgentTool>> { vec![] }
 
-    /// Slash commands this extension provides (e.g. `/quit`, `/model`).
+    /// Slash commands (e.g. `/quit`, `/model`).
     /// Built-in commands and extension commands use the same interface.
     fn commands(&self) -> Vec<SlashCommand> { vec![] }
 
@@ -391,10 +391,9 @@ pub trait Extension: Send + Sync {
         -> Option<String> { None }
 }
 
-#[async_trait]
 pub trait CommandHandler: Send + Sync {
-    /// Execute the command. Returns CommandResult indicating the action.
-    async fn execute(&self, args: &str) -> anyhow::Result<CommandResult>;
+    /// Execute the command. Returns CommandResult (sync — no I/O needed).
+    fn execute(&self, args: &str) -> anyhow::Result<CommandResult>;
 
     /// Get argument completions for autocomplete.
     fn argument_completions(&self, prefix: &str) -> Vec<AutocompleteItem>;
@@ -404,6 +403,12 @@ pub enum CommandResult {
     Info(String),         // Show info message
     Quit,                 // Request graceful shutdown
     ModelChanged(String), // Switched to new model
+}
+
+pub struct SlashCommand {
+    pub name: String,             // e.g. "quit"
+    pub description: String,      // e.g. "Exit rab"
+    pub handler: Box<dyn CommandHandler>,
 }
 ```
 
@@ -729,16 +734,19 @@ separate abstraction layer needed.
 
 ---
 
-## TUI (`tui.rs`)
+## TUI (`tui.rs` + `editor.rs`)
 
-~100—200 lines. Thin glue between `AgentEvent` stream and ratatui rendering.
+~700 lines. Thin glue between `AgentEvent` stream and ratatui rendering.
 No abstraction layer on top of ratatui — ratatui **is** the abstraction.
+
+Custom `Editor` widget (`editor.rs`) handles multiline input, cursor
+positioning, and block borders — replacing tui-textarea.
 
 | pi-tui (3,000+ lines) | ratatui + crossterm (library code) |
 |---|---|
 | `Component.render(width) → lines` + diff engine | `Widget::render(area, buf)` + `Frame` diff — built-in |
 | `TUI` class: component tree, focus, overlays | 30 lines of `Layout::vertical` in `tui.rs` |
-| `EditorComponent` (1,200+ lines) | `tui-textarea` — third-party widget, 3K+ ⭐ |
+| `EditorComponent` (1,200+ lines) | `editor.rs` (~230 lines) — custom `Editor` widget |
 | Keyboard handling, keybindings | `crossterm::event::read()` — raw event loop |
 | `Overlay` / `FocusManager` / `ComponentTree` | Not needed — ratatui renders widgets directly to layout areas |
 | Kitty image protocol | `crossterm` raw escape sequences |
@@ -819,12 +827,10 @@ to widget state.
 ```
 
 Components:
-- **Messages widget** — scrollable chat history, collapsible tool output,
-  thinking block folding
-- **Editor widget** — multiline input via `tui-textarea`, `@` file completion,
-  Tab path completion, `!command` / `!!command` detection
-- **Header** — model name, thinking level, shortcut hints
-- **Footer** — working directory, session ID, token usage, cost
+- **Messages widget** — scrollable chat history, pi dark theme colors, collapsible tool output (Ctrl+O), thinking block folding (Ctrl+T)
+- **Editor widget** — custom multiline input via `editor.rs`, reverse-video block cursor, accent-colored top/bottom borders, arrow-key history
+- **Working indicator** — animated braille spinner above editor during LLM streaming
+- **Footer** — 2-line: cwd + git branch, token usage left-aligned + model/thinking right-aligned
 
 ---
 
@@ -1089,9 +1095,8 @@ rab (EPL-2.0)
 ├── async-trait 0.1        (MIT)        — trait async fn
 ├── colored 2              (MPL-2.0)    — terminal colors
 ├── tracing 0.1            (MIT)        — structured logging
-├── ratatui 0.29           (MIT)        — TUI framework
-├── crossterm 0.28         (MIT)        — terminal backend
-├── tui-textarea 0.7       (MIT)        — multiline editor
+├── ratatui 0.30           (MIT)        — TUI framework
+├── crossterm 0.29         (MIT)        — terminal backend
 ├── wasmtime 26+           (Apache 2.0) — WASM runtime for dynamic plugins (phase 2)
 ├── notify 7               (CC0-1.0)    — file watcher for plugin hot reload (phase 2)
 └── rmcp 1                 (MIT)        — MCP client for pi-mcp-adapter (phase 2)
