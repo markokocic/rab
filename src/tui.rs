@@ -1,14 +1,15 @@
 use crate::agent::{AgentEvent, LoopConfig, run_agent_loop};
 use crate::extension::{AgentTool, CommandResult, Extension, SlashCommand};
 use crate::provider::{Provider, ToolDef};
+use crate::theme::{DARK, Theme};
 use crate::types::AgentMessage;
-use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span, Text},
-    widgets::{Block, Borders, Paragraph},
+    widgets::{Block, Paragraph},
 };
 use std::cell::Cell;
 use std::path::PathBuf;
@@ -68,8 +69,8 @@ fn welcome_messages(config: &TuiConfig) -> Vec<DisplayMsg> {
         )));
     }
     msgs.push(DisplayMsg::Info(
-        "Enter  submit · Ctrl+D  quit · Ctrl+C  clear · F1  help · Ctrl+T  thinking · Ctrl+O  tools\n\
-         Shift+Enter  newline · Esc  clear · ↑↓ PgUp/PgDn  scroll"
+        "Enter  submit · Ctrl+C  interrupt/clear · Ctrl+D  quit · F1  help · Ctrl+T  thinking · Ctrl+O  tools\n\
+         Shift+Enter  newline · Esc  clear · ↑↓  history"
             .to_string(),
     ));
     msgs
@@ -91,6 +92,7 @@ struct App {
     system_prompt: String,
     shared: Arc<SharedState>,
     provider: Arc<dyn Provider>,
+    theme: Theme,
 
     /// Conversation history (AgentMessage, not DisplayMsg)
     conversation: Vec<AgentMessage>,
@@ -110,28 +112,41 @@ struct App {
     pending_thinking: Option<String>,
 
     thinking_collapsed: bool,
+    /// Tool output collapsed by default (matches pi). Ctrl+O to expand.
     tool_output_collapsed: bool,
     show_help: bool,
 
     should_quit: bool,
     last_usage: Option<crate::types::Usage>,
+
+    /// Handle to abort the running agent task (for Ctrl+C interrupt).
+    agent_abort: Option<tokio::task::AbortHandle>,
+
+    /// History: index into conversation user messages for arrow-key recall.
+    /// None = not navigating history; Some(i) = pointing at conversation[i].
+    history_index: Option<usize>,
 }
 
 // ── Public entry point ─────────────────────────────────────────────
 
 pub async fn run(config: TuiConfig) -> anyhow::Result<()> {
-    crossterm::terminal::enable_raw_mode()?;
+    ratatui::crossterm::terminal::enable_raw_mode()?;
     let mut stdout = std::io::stdout();
-    crossterm::execute!(stdout, crossterm::terminal::EnterAlternateScreen)?;
+    ratatui::crossterm::execute!(
+        stdout,
+        ratatui::crossterm::terminal::EnterAlternateScreen,
+        ratatui::crossterm::cursor::Show,
+        ratatui::crossterm::cursor::SetCursorStyle::BlinkingBlock
+    )?;
     let backend = ratatui::backend::CrosstermBackend::new(stdout);
     let mut terminal = ratatui::Terminal::new(backend)?;
 
     let result = run_app(&mut terminal, config);
 
-    crossterm::terminal::disable_raw_mode()?;
-    crossterm::execute!(
+    ratatui::crossterm::terminal::disable_raw_mode()?;
+    ratatui::crossterm::execute!(
         terminal.backend_mut(),
-        crossterm::terminal::LeaveAlternateScreen
+        ratatui::crossterm::terminal::LeaveAlternateScreen
     )?;
     result
 }
@@ -165,6 +180,7 @@ fn run_app(
         system_prompt: config.system_prompt,
         shared,
         provider: Arc::from(config.provider),
+        theme: DARK,
         conversation: Vec::new(),
         messages: welcome,
         scroll_line: Cell::new(0),
@@ -176,18 +192,20 @@ fn run_app(
         pending_text: None,
         pending_thinking: None,
         thinking_collapsed: false,
-        tool_output_collapsed: false,
+        tool_output_collapsed: true,
         show_help: false,
         should_quit: false,
         last_usage: None,
+        agent_abort: None,
+        history_index: None,
     };
 
     loop {
         terminal.draw(|f| ui(f, &app))?;
 
         // Poll for keyboard events
-        if crossterm::event::poll(Duration::from_millis(10))? {
-            match crossterm::event::read()? {
+        if ratatui::crossterm::event::poll(Duration::from_millis(10))? {
+            match ratatui::crossterm::event::read()? {
                 Event::Key(key) => handle_key(&mut app, key),
                 Event::Resize(..) => {}
                 _ => {}
@@ -211,11 +229,8 @@ fn create_editor() -> tui_textarea::TextArea<'static> {
     let mut editor = tui_textarea::TextArea::default();
     editor.set_cursor_line_style(Style::default());
     editor.set_cursor_style(Style::default().add_modifier(Modifier::REVERSED));
-    editor.set_block(
-        Block::default()
-            .borders(Borders::TOP)
-            .border_style(Style::default().fg(Color::DarkGray)),
-    );
+    // No block border — we render top/bottom lines manually (pi-style)
+    editor.set_block(Block::default());
     editor
 }
 
@@ -228,15 +243,15 @@ fn ui(frame: &mut Frame, app: &App) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Min(1),                      // messages
-            Constraint::Length(editor_height(app)),  // editor
             Constraint::Length(working_height(app)), // working indicator
+            Constraint::Length(editor_height(app)),  // editor
             Constraint::Length(1),                   // footer
         ])
         .split(area);
 
     render_messages(frame, chunks[0], app);
-    render_editor(frame, chunks[1], app);
-    render_working(frame, chunks[2], app);
+    render_working(frame, chunks[1], app);
+    render_editor(frame, chunks[2], app);
     render_footer(frame, chunks[3], app);
 }
 
@@ -246,8 +261,8 @@ fn working_height(app: &App) -> u16 {
 
 fn editor_height(app: &App) -> u16 {
     let lines = app.editor.lines().len().max(1);
-    // +1 for top border, clamp to 3..10
-    (lines + 1).clamp(3, 10) as u16
+    // +2 for top/bottom border lines, clamp to 3..10 (pi: 1 content + 2 borders = 3 min)
+    (lines + 2).clamp(3, 10) as u16
 }
 
 fn render_messages(frame: &mut Frame, area: Rect, app: &App) {
@@ -274,98 +289,101 @@ fn render_messages(frame: &mut Frame, area: Rect, app: &App) {
 fn build_message_text(app: &App) -> Text<'static> {
     let mut lines: Vec<Line<'static>> = Vec::new();
 
-    // Help overlay
     if app.show_help {
         lines.extend(help_lines(app));
         return Text::from(lines);
     }
 
+    let th = &app.theme;
+
     for msg in &app.messages {
         match msg {
             DisplayMsg::User(text) => {
-                lines.push(Line::from(Span::styled(
-                    format!("▸ {}", text),
-                    Style::default()
-                        .fg(Color::Cyan)
-                        .add_modifier(Modifier::BOLD),
-                )));
-                lines.push(Line::from(""));
-            }
-            DisplayMsg::Thinking(text) => {
-                if app.thinking_collapsed {
-                    continue;
+                if !lines.is_empty() {
+                    lines.push(Line::from(""));
                 }
                 for line in text.lines() {
                     lines.push(Line::from(Span::styled(
-                        format!("  {}", line),
-                        Style::default()
-                            .fg(Color::DarkGray)
-                            .add_modifier(Modifier::ITALIC),
+                        format!(" {line}"),
+                        th.user_msg_style(),
                     )));
                 }
             }
             DisplayMsg::AssistantText(text) => {
                 for line in text.lines() {
-                    lines.push(Line::from(line.to_string()));
+                    if line.is_empty() {
+                        lines.push(Line::from(""));
+                    } else {
+                        lines.push(Line::from(line.to_string()));
+                    }
                 }
-                if !lines.is_empty()
-                    && !lines
-                        .last()
-                        .is_none_or(|l| l.spans.iter().all(|s| s.content.is_empty()))
-                {
-                    lines.push(Line::from(""));
+            }
+            DisplayMsg::Thinking(text) => {
+                if app.thinking_collapsed {
+                    if !lines.is_empty()
+                        && !lines.last().is_none_or(|l| {
+                            l.spans.is_empty() || l.spans.iter().all(|s| s.content.is_empty())
+                        })
+                    {
+                        lines.push(Line::from(""));
+                    }
+                    lines.push(Line::from(Span::styled(
+                        " Thinking…",
+                        th.thinking_label_style(),
+                    )));
+                    continue;
+                }
+                for line in text.lines() {
+                    lines.push(Line::from(Span::styled(
+                        format!(" {line}"),
+                        th.thinking_style(),
+                    )));
                 }
             }
             DisplayMsg::ToolCall { name, args, .. } => {
-                let args_display = if args.len() > 100 {
-                    let truncated: String = args.chars().take(100).collect();
-                    format!("{}…", truncated)
+                if !lines.is_empty() {
+                    lines.push(Line::from(""));
+                }
+                let truncated = if args.len() > 80 {
+                    format!("{}…", &args[..80])
                 } else {
                     args.clone()
                 };
-                lines.push(Line::from(""));
-                lines.push(Line::from(vec![
-                    Span::styled(" ⚙ ", Style::default().fg(Color::Yellow)),
-                    Span::styled(
-                        name.clone(),
-                        Style::default()
-                            .fg(Color::Yellow)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::raw(" "),
-                    Span::styled(args_display, Style::default().fg(Color::DarkGray)),
-                ]));
+                let line_text = if truncated == "{}" || truncated.is_empty() {
+                    format!(" {name} ")
+                } else {
+                    format!(" {name}  {truncated}")
+                };
+                lines.push(Line::from(Span::styled(line_text, th.tool_pending_style())));
             }
             DisplayMsg::ToolResult {
                 content, is_error, ..
             } => {
-                if app.tool_output_collapsed {
-                    continue;
-                }
-                let (prefix, style) = if *is_error {
-                    (" ✗ ", Style::default().fg(Color::Red))
+                let style = if *is_error {
+                    th.tool_error_style()
                 } else {
-                    (" ✓ ", Style::default().fg(Color::DarkGray))
+                    th.tool_success_style()
                 };
-                for (i, line) in content.lines().take(3).enumerate() {
-                    let truncated: String = line.chars().take(140).collect();
-                    let suffix = if line.len() > 140 || (i == 2 && content.lines().count() > 3) {
-                        " …"
-                    } else {
-                        ""
-                    };
+                if app.tool_output_collapsed {
+                    let first = content.lines().next().unwrap_or("");
+                    let truncated: String = first.chars().take(120).collect();
+                    let suffix = if first.len() > 120 { "…" } else { "" };
                     lines.push(Line::from(Span::styled(
-                        format!("{}{}{}", prefix, truncated, suffix),
+                        format!(" {truncated}{suffix}"),
                         style,
                     )));
+                } else {
+                    for line in content.lines() {
+                        let truncated: String = line.chars().take(140).collect();
+                        lines.push(Line::from(Span::styled(format!(" {truncated}"), style)));
+                    }
                 }
             }
             DisplayMsg::Info(text) => {
-                lines.push(Line::from(Span::styled(
-                    text.clone(),
-                    Style::default().fg(Color::Gray),
-                )));
-                lines.push(Line::from(""));
+                if !lines.is_empty() {
+                    lines.push(Line::from(""));
+                }
+                lines.push(Line::from(Span::styled(text.clone(), th.dim_style())));
             }
         }
     }
@@ -373,7 +391,7 @@ fn build_message_text(app: &App) -> Text<'static> {
     if lines.is_empty() {
         lines.push(Line::from(Span::styled(
             "Type a message and press Enter to send.",
-            Style::default().fg(Color::DarkGray),
+            th.dim_style(),
         )));
     }
 
@@ -381,19 +399,21 @@ fn build_message_text(app: &App) -> Text<'static> {
 }
 
 fn help_lines(app: &App) -> Vec<Line<'static>> {
-    let dim = Style::default().fg(Color::DarkGray);
-    let accent = Style::default()
-        .fg(Color::Cyan)
-        .add_modifier(Modifier::BOLD);
+    let th = &app.theme;
+    let dim = th.dim_style();
+    let accent = th.accent_style();
 
     let mut lines = vec![
         Line::from(Span::styled("Keyboard Shortcuts", accent)),
         Line::from(""),
         Line::from(Span::styled("  Enter              Submit message", dim)),
         Line::from(Span::styled("  Shift+Enter        Newline", dim)),
-        Line::from(Span::styled("  Ctrl+C             Clear editor", dim)),
         Line::from(Span::styled(
-            "  Ctrl+D             Quit (editor empty)",
+            "  Ctrl+C             Interrupt / clear editor",
+            dim,
+        )),
+        Line::from(Span::styled(
+            "  Ctrl+D             Quit (empty) / interrupt",
             dim,
         )),
         Line::from(Span::styled("  Escape             Clear editor", dim)),
@@ -401,7 +421,7 @@ fn help_lines(app: &App) -> Vec<Line<'static>> {
         Line::from(Span::styled("  Ctrl+O             Toggle tool output", dim)),
         Line::from(Span::styled("  F1                 Show this help", dim)),
         Line::from(Span::styled(
-            "  ↑↓                 Scroll (editor empty)",
+            "  ↑↓                 History (editor empty)",
             dim,
         )),
         Line::from(Span::styled("  PgUp / PgDn        Page scroll", dim)),
@@ -431,14 +451,46 @@ fn help_lines(app: &App) -> Vec<Line<'static>> {
 }
 
 fn render_editor(frame: &mut Frame, area: Rect, app: &App) {
-    frame.render_widget(&app.editor, area);
+    let border_style = app.theme.editor_border_style();
+    // Pi-style: horizontal lines above and below the editor
+    let horizontal = "─".repeat(area.width as usize);
+    let top_line = Line::from(Span::styled(&horizontal, border_style));
+    let bottom_line = Line::from(Span::styled(&horizontal, border_style));
+
+    // Top border
+    frame.render_widget(
+        Paragraph::new(top_line),
+        Rect::new(area.x, area.y, area.width, 1),
+    );
+    // Editor content (skip top border line)
+    let content_area = Rect::new(
+        area.x,
+        area.y + 1,
+        area.width,
+        area.height.saturating_sub(2),
+    );
+    frame.render_widget(&app.editor, content_area);
+    // Bottom border
+    frame.render_widget(
+        Paragraph::new(bottom_line),
+        Rect::new(area.x, area.y + area.height - 1, area.width, 1),
+    );
+}
+
+fn render_working(frame: &mut Frame, area: Rect, app: &App) {
+    if !app.is_streaming {
+        return;
+    }
+    let text = Span::styled(" ⠋ Working…", app.theme.working_style());
+    frame.render_widget(Paragraph::new(Line::from(text)), area);
 }
 
 fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
+    let th = &app.theme;
     let status = if app.is_streaming {
-        Span::styled(" ● ", Style::default().fg(Color::Yellow))
+        Span::styled(" ● ", th.streaming_dot_style())
     } else {
-        Span::styled(" ○ ", Style::default().fg(Color::Green))
+        Span::styled(" ○ ", th.idle_dot_style())
     };
 
     let cwd_str = app.cwd.to_str().unwrap_or("?");
@@ -451,44 +503,76 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
     });
 
     let mut spans: Vec<Span> = vec![
-        Span::styled(cwd_str, Style::default().fg(Color::DarkGray)),
+        Span::styled(cwd_str, th.footer_style()),
         Span::raw(" · "),
-        Span::styled(model_str, Style::default().fg(Color::DarkGray)),
+        Span::styled(model_str, th.footer_style()),
         Span::raw("  "),
         status,
     ];
 
-    // Collapse indicators
     if app.thinking_collapsed {
-        spans.push(Span::styled(" T ", Style::default().fg(Color::Yellow)));
+        spans.push(Span::styled(" T ", th.muted_style()));
     }
     if app.tool_output_collapsed {
-        spans.push(Span::styled(" O ", Style::default().fg(Color::Yellow)));
+        spans.push(Span::styled(" O ", th.muted_style()));
     }
 
     if !tokens_str.is_empty() {
         spans.push(Span::raw("  "));
-        spans.push(Span::styled(
-            tokens_str,
-            Style::default().fg(Color::DarkGray),
-        ));
+        spans.push(Span::styled(tokens_str, th.footer_style()));
     }
 
     let line = Line::from(spans);
-    let para = Paragraph::new(line).block(
-        Block::default()
-            .borders(Borders::TOP)
-            .border_style(Style::default().fg(Color::DarkGray)),
-    );
+    let para = Paragraph::new(line);
     frame.render_widget(para, area);
 }
 
-fn render_working(frame: &mut Frame, area: Rect, app: &App) {
-    if !app.is_streaming {
+// ── History recall ────────────────────────────────────────────────
+
+/// Recall a previous user message into the editor (pi-style arrow-key history).
+/// direction: -1 for older, 1 for newer.
+fn recall_history(app: &mut App, direction: isize) {
+    // Collect user messages from conversation (newest last)
+    let user_messages: Vec<&str> = app
+        .conversation
+        .iter()
+        .filter_map(|m| {
+            if m.role == crate::types::Role::User && !m.content.is_empty() {
+                Some(m.content.as_str())
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    if user_messages.is_empty() {
         return;
     }
-    let text = Span::styled(" Working…", Style::default().fg(Color::Yellow));
-    frame.render_widget(Paragraph::new(Line::from(text)), area);
+
+    let len = user_messages.len();
+    let current = app.history_index.unwrap_or(len);
+
+    let new_index = if direction < 0 {
+        if current == 0 {
+            return;
+        }
+        current.saturating_sub(1)
+    } else {
+        if current >= len {
+            return;
+        }
+        current + 1
+    };
+
+    if new_index >= len {
+        app.editor = create_editor();
+        app.history_index = None;
+    } else {
+        let mut editor = create_editor();
+        editor.insert_str(user_messages[new_index]);
+        app.editor = editor;
+        app.history_index = Some(new_index);
+    }
 }
 
 // ── Scroll helpers ─────────────────────────────────────────────────
@@ -501,11 +585,10 @@ fn scroll_up(app: &mut App, lines: usize) {
 
 fn scroll_down(app: &mut App, lines: usize) {
     if app.auto_scroll.get() {
-        return; // already at bottom
+        return;
     }
     let current = app.scroll_line.get();
     app.scroll_line.set(current.saturating_add(lines));
-    // auto_scroll will resume when render detects we're at bottom
 }
 
 // ── Keyboard handling ──────────────────────────────────────────────
@@ -527,20 +610,36 @@ fn handle_key(app: &mut App, key: KeyEvent) {
                 handle_slash_completion(app, &text);
                 return;
             }
-            // Not a slash command — pass Tab through to editor
             app.editor.input(Event::Key(key));
         }
-        // Ctrl+C: clear editor (pi: app.clear)
+        // Ctrl+C: interrupt streaming, or clear editor (pi: app.interrupt)
         KeyCode::Char('c') if ctrl => {
             if app.show_help {
                 app.show_help = false;
+            } else if app.is_streaming {
+                if let Some(handle) = app.agent_abort.take() {
+                    handle.abort();
+                }
+                app.is_streaming = false;
+                app.messages.push(DisplayMsg::Info("Aborted".to_string()));
+                app.auto_scroll.set(true);
             } else {
                 app.editor = create_editor();
+                app.history_index = None;
             }
         }
-        // Ctrl+D: quit when editor empty (pi: app.exit)
+        // Ctrl+D: quit when editor empty, interrupt when streaming
         KeyCode::Char('d') if ctrl => {
-            if app.editor.is_empty() && !app.show_help {
+            if app.show_help {
+                app.show_help = false;
+            } else if app.is_streaming {
+                if let Some(handle) = app.agent_abort.take() {
+                    handle.abort();
+                }
+                app.is_streaming = false;
+                app.messages.push(DisplayMsg::Info("Aborted".to_string()));
+                app.auto_scroll.set(true);
+            } else if app.editor.is_empty() {
                 app.should_quit = true;
             }
         }
@@ -550,13 +649,14 @@ fn handle_key(app: &mut App, key: KeyEvent) {
                 app.show_help = false;
             } else {
                 app.editor = create_editor();
+                app.history_index = None;
             }
         }
-        // Ctrl+T: toggle thinking (pi: app.thinking.toggle)
+        // Ctrl+T: toggle thinking
         KeyCode::Char('t') if ctrl => {
             app.thinking_collapsed = !app.thinking_collapsed;
         }
-        // Ctrl+O: toggle tool output (pi: app.tools.expand)
+        // Ctrl+O: toggle tool output
         KeyCode::Char('o') if ctrl => {
             app.tool_output_collapsed = !app.tool_output_collapsed;
         }
@@ -572,13 +672,17 @@ fn handle_key(app: &mut App, key: KeyEvent) {
                 submit_message(app, trimmed.to_string());
             }
         }
+        // Arrow up: recall previous message when editor is empty
+        KeyCode::Up if app.editor.is_empty() && !app.is_streaming => {
+            recall_history(app, -1);
+        }
+        // Arrow down: recall next message when editor is empty
+        KeyCode::Down if app.editor.is_empty() && !app.is_streaming => {
+            recall_history(app, 1);
+        }
         // PageUp/PageDown → scroll messages
         KeyCode::PageUp => scroll_up(app, 10),
         KeyCode::PageDown => scroll_down(app, 10),
-        // Arrow up: scroll messages when editor empty, otherwise move cursor
-        KeyCode::Up if app.editor.is_empty() => scroll_up(app, 1),
-        // Arrow down: scroll messages when editor empty
-        KeyCode::Down if app.editor.is_empty() => scroll_down(app, 1),
         // Everything else: pass to editor
         _ => {
             app.editor.input(Event::Key(key));
@@ -587,8 +691,6 @@ fn handle_key(app: &mut App, key: KeyEvent) {
 }
 
 /// Handle Tab autocomplete for slash commands.
-/// If the text is just `/` or a partial command name, completes the command.
-/// If the text is `/cmd ` with partial args, uses argument_completions.
 fn handle_slash_completion(app: &mut App, text: &str) {
     let trimmed = text.trim();
     let commands = collect_commands(app);
@@ -596,7 +698,6 @@ fn handle_slash_completion(app: &mut App, text: &str) {
     let space_idx = trimmed.find(' ');
     match space_idx {
         None => {
-            // No space: completing the command name (e.g. "/mo" → "/model")
             let prefix = trimmed.trim_start_matches('/');
             let lower = prefix.to_lowercase();
             let matches: Vec<&&SlashCommand> = commands
@@ -605,18 +706,15 @@ fn handle_slash_completion(app: &mut App, text: &str) {
                 .collect();
 
             if matches.len() == 1 {
-                // Exact one match: execute the command
                 let cmd_text = format!("/{}", matches[0].name);
                 submit_message(app, cmd_text);
             } else if matches.len() > 1 {
-                // Multiple matches: show common prefix completion
                 let common =
                     common_prefix(&matches.iter().map(|c| c.name.as_str()).collect::<Vec<_>>());
                 if common.len() > prefix.len() {
                     let new_text = format!("/{}", common);
                     set_editor_text(app, &new_text);
                 } else {
-                    // Show available commands as info
                     let names: Vec<String> =
                         matches.iter().map(|c| format!("/{}", c.name)).collect();
                     app.messages.push(DisplayMsg::Info(names.join("  ")));
@@ -625,14 +723,12 @@ fn handle_slash_completion(app: &mut App, text: &str) {
             }
         }
         Some(idx) => {
-            // Has space: completing the argument (e.g. "/model deep")
             let cmd_name = trimmed[..idx].trim_start_matches('/');
             let arg_prefix = &trimmed[idx..].trim();
 
             if let Some(cmd) = commands.iter().find(|c| c.name == cmd_name) {
                 let completions = cmd.handler.argument_completions(arg_prefix);
                 if completions.len() == 1 {
-                    // Single match: execute the command
                     let cmd_text = format!("/{} {}", cmd_name, completions[0].value);
                     submit_message(app, cmd_text);
                 } else if completions.len() > 1 {
@@ -652,16 +748,12 @@ fn handle_slash_completion(app: &mut App, text: &str) {
     }
 }
 
-/// Set editor text and move cursor to end.
 fn set_editor_text(app: &mut App, text: &str) {
     let mut editor = create_editor();
     editor.insert_str(text);
     app.editor = editor;
-    // tui_textarea doesn't have a direct set_text with cursor-to-end,
-    // but insert_str on empty editor places cursor after the inserted text.
 }
 
-/// Find the longest common prefix of a list of strings.
 fn common_prefix(strings: &[&str]) -> String {
     if strings.is_empty() {
         return String::new();
@@ -681,46 +773,18 @@ fn common_prefix(strings: &[&str]) -> String {
     first[..end].to_string()
 }
 
-/// Apply a command result to the app state.
-fn apply_command_result(app: &mut App, result: anyhow::Result<CommandResult>) {
-    match result {
-        Ok(CommandResult::Info(text)) => {
-            app.messages.push(DisplayMsg::Info(text));
-        }
-        Ok(CommandResult::Quit) => {
-            app.messages
-                .push(DisplayMsg::Info("/quit — exiting".to_string()));
-            app.editor = create_editor();
-            app.should_quit = true;
-            return;
-        }
-        Ok(CommandResult::ModelChanged(new_model)) => {
-            app.model = new_model.clone();
-            app.messages.push(DisplayMsg::Info(format!(
-                "Model: {}",
-                new_model.replace("opencode_go::", "")
-            )));
-        }
-        Err(e) => {
-            app.messages
-                .push(DisplayMsg::Info(format!("Command error: {:#}", e)));
-        }
-    }
-    app.editor = create_editor();
-    app.auto_scroll.set(true);
-}
+// ── Command result handling ────────────────────────────────────────
 
 fn submit_message(app: &mut App, message: String) {
+    app.history_index = None;
     let trimmed = message.trim();
 
-    // Handle slash commands via extension handlers
     if trimmed.starts_with('/') {
         let (cmd_name, args) = match trimmed.split_once(' ') {
             Some((cmd, rest)) => (cmd.trim_start_matches('/'), rest),
             None => (trimmed.trim_start_matches('/'), ""),
         };
 
-        // Try exact match first
         let commands = collect_commands(app);
         if let Some(cmd) = commands.iter().find(|c| c.name == cmd_name) {
             let result = cmd.handler.execute(args);
@@ -728,7 +792,6 @@ fn submit_message(app: &mut App, message: String) {
             return;
         }
 
-        // Try prefix match — execute if exactly one, suggest if multiple
         let lower = cmd_name.to_lowercase();
         let prefix_matches: Vec<&&SlashCommand> = commands
             .iter()
@@ -757,7 +820,6 @@ fn submit_message(app: &mut App, message: String) {
             return;
         }
 
-        // No match at all
         app.messages.push(DisplayMsg::Info(format!(
             "Unknown command: /{}. Type / for available commands.",
             cmd_name
@@ -774,20 +836,18 @@ fn submit_message(app: &mut App, message: String) {
     let tools = collect_tool_defs_from_shared(&shared);
     let tx = app.event_tx.clone();
 
-    // Add user message to display and conversation
     app.messages.push(DisplayMsg::User(trimmed.to_string()));
     app.auto_scroll.set(true);
 
     let prompt = AgentMessage::user(trimmed);
     app.conversation.push(prompt.clone());
 
-    // Clear editor and set streaming
     app.editor = create_editor();
     app.is_streaming = true;
     app.pending_text = None;
     app.pending_thinking = None;
 
-    tokio::spawn(async move {
+    let handle = tokio::spawn(async move {
         let loop_config = LoopConfig {
             model,
             system_prompt,
@@ -802,6 +862,35 @@ fn submit_message(app: &mut App, message: String) {
 
         let _ = run_agent_loop(vec![prompt], &loop_config, &*provider, &mut emit).await;
     });
+    app.agent_abort = Some(handle.abort_handle());
+}
+
+fn apply_command_result(app: &mut App, result: anyhow::Result<CommandResult>) {
+    match result {
+        Ok(CommandResult::Info(text)) => {
+            app.messages.push(DisplayMsg::Info(text));
+        }
+        Ok(CommandResult::Quit) => {
+            app.messages
+                .push(DisplayMsg::Info("/quit — exiting".to_string()));
+            app.editor = create_editor();
+            app.should_quit = true;
+            return;
+        }
+        Ok(CommandResult::ModelChanged(new_model)) => {
+            app.model = new_model.clone();
+            app.messages.push(DisplayMsg::Info(format!(
+                "Model: {}",
+                new_model.replace("opencode_go::", "")
+            )));
+        }
+        Err(e) => {
+            app.messages
+                .push(DisplayMsg::Info(format!("Command error: {:#}", e)));
+        }
+    }
+    app.editor = create_editor();
+    app.auto_scroll.set(true);
 }
 
 /// Collect tool defs, avoiding duplicate names.
@@ -886,7 +975,7 @@ fn handle_agent_event(app: &mut App, event: AgentEvent) {
         AgentEvent::AgentEnd { ref messages } => {
             flush_all(app);
             app.is_streaming = false;
-            // Extract usage from the last assistant message
+            app.agent_abort = None;
             if let Some(last) = messages.iter().rev().find(|m| m.usage.is_some()) {
                 app.last_usage = last.usage.clone();
             }
