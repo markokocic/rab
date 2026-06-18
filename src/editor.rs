@@ -1,9 +1,4 @@
-use ratatui::{
-    buffer::Buffer,
-    layout::Rect,
-    style::{Modifier, Style},
-    widgets::{Block, Widget},
-};
+use ratatui::widgets::Block;
 
 /// Minimal multi-line editor widget.
 /// Supports: typing, backspace, delete, arrows, home/end, newline.
@@ -12,7 +7,6 @@ pub struct Editor {
     cursor_row: usize,
     cursor_col: usize,
     block: Block<'static>,
-    cursor_style: Style,
 }
 
 impl Editor {
@@ -22,7 +16,6 @@ impl Editor {
             cursor_row: 0,
             cursor_col: 0,
             block: Block::default(),
-            cursor_style: Style::default().add_modifier(Modifier::REVERSED),
         }
     }
 
@@ -30,8 +23,8 @@ impl Editor {
         self.block = block;
     }
 
-    pub fn set_cursor_style(&mut self, style: Style) {
-        self.cursor_style = style;
+    pub fn block(&self) -> &Block<'static> {
+        &self.block
     }
 
     pub fn is_empty(&self) -> bool {
@@ -157,70 +150,5 @@ impl Editor {
 impl Default for Editor {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-impl Widget for &Editor {
-    fn render(self, area: Rect, buf: &mut Buffer) {
-        let content = self.block.inner(area);
-        self.block.clone().render(area, buf);
-
-        let max_w = content.width as usize;
-        let max_h = content.height as usize;
-
-        for (i, line) in self.lines.iter().enumerate() {
-            if i >= max_h {
-                break;
-            }
-            let y = content.y + i as u16;
-            let x = content.x;
-
-            if i == self.cursor_row {
-                // Render cursor line with highlighting
-                let before = &line[..self.cursor_col.min(line.len())];
-                let at_cursor = if self.cursor_col < line.len() {
-                    &line[self.cursor_col..self.cursor_col + 1]
-                } else {
-                    " "
-                };
-                let after = if self.cursor_col < line.len() {
-                    &line[self.cursor_col + 1..]
-                } else {
-                    ""
-                };
-
-                // Build with spans for cursor highlighting
-                let mut col_offset = 0usize;
-                for ch in before.chars() {
-                    if col_offset < max_w {
-                        buf[(x + col_offset as u16, y)].set_char(ch);
-                    }
-                    col_offset += 1;
-                }
-                // Cursor character
-                if col_offset < max_w {
-                    buf[(x + col_offset as u16, y)]
-                        .set_char(at_cursor.chars().next().unwrap_or(' '))
-                        .set_style(self.cursor_style);
-                }
-                col_offset += 1;
-                // After cursor
-                for ch in after.chars() {
-                    if col_offset < max_w {
-                        buf[(x + col_offset as u16, y)].set_char(ch);
-                    }
-                    col_offset += 1;
-                }
-            } else {
-                for (j, ch) in line.chars().enumerate() {
-                    if j < max_w {
-                        buf[(x + j as u16, y)].set_char(ch);
-                    }
-                }
-            }
-        }
-
-        // Position hardware cursor via Frame (tui.rs handles this)
-        // Buffer no longer has set_cursor_position in ratatui 0.30.
     }
 }

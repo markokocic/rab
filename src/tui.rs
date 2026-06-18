@@ -8,7 +8,7 @@ use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::{Color, Style},
     text::{Line, Span, Text},
     widgets::{Block, Borders, Paragraph},
 };
@@ -239,7 +239,6 @@ fn run_app(
 
 fn create_editor() -> Editor {
     let mut editor = Editor::new();
-    editor.set_cursor_style(Style::default().add_modifier(Modifier::REVERSED));
     editor.set_block(
         Block::default()
             .borders(Borders::TOP | Borders::BOTTOM)
@@ -464,12 +463,16 @@ fn help_lines(app: &App) -> Vec<Line<'static>> {
 }
 
 fn render_editor(frame: &mut Frame, area: Rect, app: &App) {
-    frame.render_widget(&app.editor, area);
-    // Set hardware cursor position (ratatui 0.30 uses Frame, not Buffer)
-    let border_height = 1u16; // TOP border
+    let text = Text::from(app.editor.text());
+    let block = app.editor.block();
+    let para = Paragraph::new(text).block(block.clone());
+    frame.render_widget(para, area);
+
+    // Hardware cursor via Frame (no custom software cursor)
+    let inner = block.inner(area);
     let (row, col) = app.editor.cursor();
-    let cx = area.x + 1 + col.min(area.width.saturating_sub(2) as usize) as u16;
-    let cy = area.y + border_height + row.min(area.height.saturating_sub(2) as usize) as u16;
+    let cx = inner.x + col.min(inner.width.saturating_sub(1) as usize) as u16;
+    let cy = inner.y + row.min(inner.height.saturating_sub(1) as usize) as u16;
     frame.set_cursor_position((cx, cy));
 }
 
