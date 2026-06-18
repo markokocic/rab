@@ -26,7 +26,7 @@ Study these files before implementing each Rust equivalent.
 
 ---
 
-## PoC Phase
+## PoC Phase ✅
 
 **Goal:** End-to-end agent loop via [OpenCode Go](https://opencode.ai/docs/go/) with
 DeepSeek V4 Flash and Pro models plus four built-in tools. Uses settings files
@@ -47,78 +47,35 @@ Both models use the `/chat/completions` endpoint with standard OpenAI
 request/response format. Auth is `Authorization: Bearer <api_key>`.
 API key and base URL come from settings files, not environment variables.
 
-Settings live at `~/.rab/agent/settings.json` (global) with project overrides from
-`.rab/settings.json`, matching pi's schema. Auth lives at `~/.rab/agent/auth.json`.
-
 `~/.rab/agent/settings.json`:
 ```json
 {
     "defaultModel": "deepseek-v4-flash",
     "defaultThinkingLevel": "max",
-    "defaultProvider": "opencode_go"
+    "defaultProvider": "opencode-go"
 }
 ```
 
 `~/.rab/agent/auth.json`:
 ```json
 {
-    "opencode_go": {
+    "opencode-go": {
         "type": "api_key",
         "key": "oc_..."
     }
 }
 ```
 
-### Tasks
-
-- [ ] **Project scaffold** — `cargo init`, Cargo.toml with PoC dependencies
-- [ ] **`types.rs`** — `AgentMessage`, `Role`, `ToolCall`, `Usage`, no session tree (MVP: linear, no `parentId`)
-- [ ] **`provider.rs`** — `Provider` trait + `StreamEvent` enum + `StopReason` enum (per arch.md)
-- [ ] **`adapter/genai.rs`** — `GenaiProvider` wrapping `genai::Client`, implements `Provider`
-  - Takes `Settings` struct at construction (api key, base url, model)
-  - Uses genai's OpenAI adapter internally (OpenCode Go is OpenAI-compatible)
-  - Translates `AgentMessage` → genai chat messages, `StreamEvent` ← genai stream events
-  - Model IDs passed through: `deepseek-v4-flash`, `deepseek-v4-pro`
-  - The only file that imports genai — per arch.md isolation behind `Provider` trait
-- [ ] **`extension.rs`** — `Extension` trait, `AgentTool` trait, `SlashCommand` struct, `BlockReason`
-- [ ] **`builtin/read.rs`** — Read tool extension (reads files, line numbers, 50KB truncation)
-- [ ] **`builtin/write.rs`** — Write tool extension (temp file + atomic rename, creates parent dirs)
-- [ ] **`builtin/edit.rs`** — Edit tool extension (exact-match search/replace, errors on 0 or >1 matches)
-- [ ] **`builtin/bash.rs`** — Bash tool extension (runs `sh -c <command>`, timeout, truncation)
-- [ ] **`agent.rs`** — `run_agent_loop()` per arch.md pseudocode:
-  - System prompt (hardcoded base prompt, no AGENTS.md loading)
-  - Default model: `deepseek-v4-flash` (fast/cheap); `deepseek-v4-pro` selectable via arg
-  - Steering queue and follow-up queue (stubbed — no runtime injection yet)
-  - Inner loop: stream LLM → execute tools → repeat
-  - Outer loop: handle follow-up
-  - Tool execution: parallel by default
-  - `CancellationToken` support (stubbed)
-  - Event emission via `EventSink`
-- [ ] **`settings.rs`** — Load settings from `~/.rab/agent/settings.json` + `.rab/settings.json` overlay
-  - Same JSON schema as pi: `defaultModel`, `defaultThinkingLevel`, `defaultProvider`, `tools`, `theme`
-  - Load order: global first, then project-local merges on top
-- [ ] **`auth.rs`** — Load API keys from `~/.rab/agent/auth.json` (same format as pi)
-  - `{"provider_name": {"type": "api_key", "key": "..."}}`
-  - Used by adapter to authenticate with providers
-  - No env var fallback
-- [ ] **`main.rs`** — Minimal CLI: `rab "message"` → loads settings, runs agent loop in print mode
-  - `--model deepseek-v4-pro` overrides settings file
-  - No clap yet — just `std::env::args()`
-  - Errors if settings file missing or api key not configured
-- [ ] **Integration smoke test** — `rab "list .rs files in src/"` produces correct output with tool calls
-
 ### Dependencies
 
 ```
-tokio, serde, serde_json, uuid, chrono, anyhow, futures, async-trait, colored, genai
+tokio, serde, serde_json, uuid, chrono, anyhow, futures, async-trait, colored, genai, directories, async-stream
 ```
-
-genai wraps the HTTP layer and streaming. No reqwest needed at this stage.
 
 ### Deliverable
 
 A binary that reads provider/model config from `~/.rab/agent/settings.json` and
-`~/.rab/agent/auth.json`, connects to OpenCode Go (DeepSeek V4 Flash by default), runs the agent loop with tool
+`~/.rab/agent/auth.json`, connects to OpenCode Go, runs the agent loop with tool
 calling, and prints the result. No session files, no TUI, no env vars.
 
 ---
@@ -187,7 +144,7 @@ Everything in arch.md that isn't explicitly Phase 2.
   - Footer: working directory, session ID, token usage, cost
   - Subscribes to `AgentEvent` stream from agent loop
   - Keyboard handling via crossterm event loop
-- [ ] **Hook pipeline** — Extension hooks wired into agent loop:
+- [ ] **Hook pipeline** — Extend PoC hooks with `AgentContext` parameter and `CancellationToken`:
   - `before_tool_call` — all extensions consulted, first block wins
   - `after_tool_call` — result patching
   - `CancellationToken` passed to every hook
@@ -195,8 +152,7 @@ Everything in arch.md that isn't explicitly Phase 2.
   - Steering: injected after current turn's tool calls finish (mid-run user input)
   - Follow-up: injected after agent would stop (post-run follow-up)
   - Drain modes: `one-at-a-time` and `all`
-- [ ] **Tool execution modes** — Parallel (default) vs sequential
-  - `AgentTool::execution_mode` override
+- [ ] **Tool execution modes** — `AgentTool::execution_mode` override (PoC has parallel only)
   - Sequential: execute one tool, feed result before starting next
 - [ ] **Compile-time user extensions** — `Extension` trait impls registered at startup
   - `--no-extensions` flag
@@ -286,3 +242,28 @@ Complete rab with dynamic plugin system, skills, MCP integration, and all
 polish features. Plugin authors run `rab plugin new hello`, implement a trait,
 run `cargo build --target wasm32-wasip2`, and drop the `.wasm` into
 `~/.rab/extensions/` — hot reload picks it up automatically.
+
+---
+
+## Implemented
+
+### PoC
+
+- [x] **Project scaffold** — `cargo init`, Cargo.toml with PoC dependencies
+- [x] **`types.rs`** — `AgentMessage`, `Role`, `ToolCall`, `Usage`, serde camelCase
+- [x] **`provider.rs`** — `Provider` trait + `StreamEvent` enum + `StopReason` enum
+- [x] **`adapter/genai.rs`** — `GenaiProvider` wrapping `genai::Client`, implements `Provider`
+  - OpenCode Go via `opencode_go::` namespace with `AuthResolver` (no env vars)
+  - Reasoning effort from settings mapped to genai `ReasoningEffort`
+  - Proper `ToolResponse` for round-tripping tool results
+- [x] **`extension.rs`** — `Extension` trait, `AgentTool` trait, `SlashCommand`, `BlockReason`
+- [x] **`builtin/read.rs`** — Read tool (offset, limit, line numbers, 50KB/2000-line truncation)
+- [x] **`builtin/write.rs`** — Write tool (parent dirs, temp file + atomic rename)
+- [x] **`builtin/edit.rs`** — Edit tool (multi-edit, uniqueness check, overlap detection, camelCase args)
+- [x] **`builtin/bash.rs`** — Bash tool (sh -c, timeout, stdout+stderr, truncation)
+- [x] **`agent.rs`** — `run_agent_loop()` with inner loop, streaming, parallel tool execution, hook pipeline, `AgentEvent` emission
+- [x] **`main.rs`** — Minimal CLI: `rab [--model <m>] <message>`, print-mode emitter
+- [x] **`settings.rs`** — Load `~/.rab/agent/settings.json` + `.rab/settings.json` overlay, pi schema, camelCase
+- [x] **`auth.rs`** — Load `~/.rab/agent/auth.json`, pi format (`{"provider": {"type": "api_key", "key": "..."}}`)
+- [x] **`lib.rs`** — Crate root exposing all modules for integration tests
+- [x] **Tests** — 45 integration tests: types (6), settings (6), auth (4), read (4), write (3), edit (6), bash (6)
