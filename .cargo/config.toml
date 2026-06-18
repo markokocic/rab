@@ -1,0 +1,5 @@
+# Termux (Android) needs an explicit OPENSSL_DIR because pkg-config is not
+# available by default and rustls-platform-verifier panics without JVM init.
+# Using native-tls instead of the default rustls-tls avoids that panic.
+[env]
+OPENSSL_DIR = "/data/data/com.termux/files/usr"

@@ -9,6 +9,14 @@ use std::path::PathBuf;
 pub enum AuthCredential {
     #[serde(rename = "api_key")]
     ApiKey { key: String },
+    #[serde(rename = "oauth")]
+    Oauth {
+        access: String,
+        refresh: Option<String>,
+        expires: Option<i64>,
+        #[serde(rename = "enterpriseUrl")]
+        enterprise_url: Option<String>,
+    },
 }
 
 /// Auth storage loaded from ~/.rab/auth.json.
@@ -37,10 +45,19 @@ impl AuthStorage {
         Ok(dir.home_dir().join(".rab").join("agent").join("auth.json"))
     }
 
-    /// Get the API key for a provider. Returns None if not configured.
+    /// Get the API key for a provider. Returns None if not configured or if OAuth.
     pub fn api_key(&self, provider: &str) -> Option<String> {
-        self.0.get(provider).map(|cred| match cred {
-            AuthCredential::ApiKey { key } => key.clone(),
+        self.0.get(provider).and_then(|cred| match cred {
+            AuthCredential::ApiKey { key } => Some(key.clone()),
+            AuthCredential::Oauth { .. } => None,
+        })
+    }
+
+    /// Get the OAuth access token for a provider. Returns None if not configured or if API key.
+    pub fn oauth_token(&self, provider: &str) -> Option<String> {
+        self.0.get(provider).and_then(|cred| match cred {
+            AuthCredential::Oauth { access, .. } => Some(access.clone()),
+            AuthCredential::ApiKey { .. } => None,
         })
     }
 }
