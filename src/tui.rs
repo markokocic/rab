@@ -31,6 +31,8 @@ pub struct TuiConfig {
     pub thinking_level: Option<String>,
     pub git_branch: Option<String>,
     pub available_models: Vec<String>,
+    pub hide_thinking: bool,
+    pub collapse_tool_output: bool,
 }
 
 // ── Display messages ───────────────────────────────────────────────
@@ -313,7 +315,7 @@ struct App {
     pending_text: Option<String>,
     pending_thinking: Option<String>,
 
-    thinking_collapsed: bool,
+    hide_thinking: bool,
     /// Tool output collapsed by default (matches pi). Ctrl+O to expand.
     tool_output_collapsed: bool,
     show_help: bool,
@@ -404,8 +406,8 @@ fn run_app(
         is_streaming: false,
         pending_text: None,
         pending_thinking: None,
-        thinking_collapsed: false,
-        tool_output_collapsed: true,
+        hide_thinking: config.hide_thinking,
+        tool_output_collapsed: config.collapse_tool_output,
         show_help: false,
         should_quit: false,
         last_usage: None,
@@ -543,7 +545,7 @@ fn build_message_text(app: &App) -> Text<'static> {
                 }
             }
             DisplayMsg::Thinking(text) => {
-                if app.thinking_collapsed {
+                if app.hide_thinking {
                     if !lines.is_empty()
                         && !lines.last().is_none_or(|l| {
                             l.spans.is_empty() || l.spans.iter().all(|s| s.content.is_empty())
@@ -1062,9 +1064,22 @@ fn handle_key(app: &mut App, key: KeyEvent) {
                 app.auto_scroll.set(true);
             }
         }
-        // Ctrl+T: toggle thinking
+        // Ctrl+T: toggle thinking (pi-style, persisted to settings.json)
         KeyCode::Char('t') if ctrl => {
-            app.thinking_collapsed = !app.thinking_collapsed;
+            app.hide_thinking = !app.hide_thinking;
+            if let Ok(mut settings) = crate::settings::Settings::load(&app.cwd) {
+                settings.hide_thinking = Some(app.hide_thinking);
+                let _ = settings.save();
+            }
+            app.messages.push(DisplayMsg::Info(format!(
+                "Thinking blocks: {}",
+                if app.hide_thinking {
+                    "hidden"
+                } else {
+                    "visible"
+                }
+            )));
+            app.auto_scroll.set(true);
         }
         // Ctrl+L: open model selector (pi-style)
         KeyCode::Char('l') if ctrl => {
@@ -1076,9 +1091,22 @@ fn handle_key(app: &mut App, key: KeyEvent) {
                 .position(|m| m == &app.model || format!("opencode_go::{m}") == app.model)
                 .unwrap_or(0);
         }
-        // Ctrl+O: toggle tool output
+        // Ctrl+O: toggle tool output (pi-style, persisted to settings.json)
         KeyCode::Char('o') if ctrl => {
             app.tool_output_collapsed = !app.tool_output_collapsed;
+            if let Ok(mut settings) = crate::settings::Settings::load(&app.cwd) {
+                settings.collapse_tool_output = Some(app.tool_output_collapsed);
+                let _ = settings.save();
+            }
+            app.messages.push(DisplayMsg::Info(format!(
+                "Tool output: {}",
+                if app.tool_output_collapsed {
+                    "collapsed"
+                } else {
+                    "expanded"
+                }
+            )));
+            app.auto_scroll.set(true);
         }
         // Ctrl+J: newline (terminal-independent)
         KeyCode::Char('j') if ctrl => {

@@ -1,10 +1,10 @@
 use anyhow::Context;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 /// Settings schema matching pi's settings.json format.
 /// API keys live in auth.json, not here.
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct Settings {
     #[serde(default)]
@@ -27,6 +27,14 @@ pub struct Settings {
 
     #[serde(default)]
     pub verbose: bool,
+
+    /// Hide thinking blocks (Ctrl+T toggle). Persisted to settings.json.
+    #[serde(default, rename = "hideThinkingBlock")]
+    pub hide_thinking: Option<bool>,
+
+    /// Collapse tool output (Ctrl+O toggle). Persisted to settings.json.
+    #[serde(default, rename = "collapseToolOutput")]
+    pub collapse_tool_output: Option<bool>,
 }
 
 impl Settings {
@@ -85,7 +93,27 @@ impl Settings {
             },
             theme: project.theme.or(global.theme),
             verbose: project.verbose || global.verbose,
+            hide_thinking: project.hide_thinking.or(global.hide_thinking),
+            collapse_tool_output: project.collapse_tool_output.or(global.collapse_tool_output),
         }
+    }
+
+    /// Save settings to the global config path.
+    pub fn save(&self) -> anyhow::Result<()> {
+        let path = Self::global_path()?;
+        self.save_to(path)
+    }
+
+    /// Save settings to a specific path (for testing).
+    pub fn save_to(&self, path: std::path::PathBuf) -> anyhow::Result<()> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let content = serde_json::to_string_pretty(self)
+            .with_context(|| format!("Failed to serialize settings to {}", path.display()))?;
+        std::fs::write(&path, &content)
+            .with_context(|| format!("Failed to write {}", path.display()))?;
+        Ok(())
     }
 
     /// Resolved model name (defaults to deepseek-v4-flash).

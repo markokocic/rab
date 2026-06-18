@@ -81,6 +81,8 @@ async fn main() -> anyhow::Result<()> {
             thinking_level: thinking_level.map(|s| s.to_string()),
             git_branch,
             available_models,
+            hide_thinking: settings.hide_thinking.unwrap_or(false),
+            collapse_tool_output: settings.collapse_tool_output.unwrap_or(false),
         };
         rab::tui::run(config).await
     } else {
