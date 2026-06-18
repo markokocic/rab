@@ -1,5 +1,5 @@
 use crate::agent::{AgentEvent, LoopConfig, run_agent_loop};
-use crate::extension::{AgentTool, Extension};
+use crate::extension::{AgentTool, CommandResult, Extension, SlashCommand};
 use crate::provider::{Provider, ToolDef};
 use crate::types::AgentMessage;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers, MouseEventKind};
@@ -45,6 +45,14 @@ fn welcome_messages(config: &TuiConfig) -> Vec<DisplayMsg> {
     let cwd_str = config.cwd.to_str().unwrap_or("?");
     let tool_names: Vec<String> = config.tools.iter().map(|t| t.name.clone()).collect();
 
+    // Collect slash commands from all extensions
+    let commands: Vec<SlashCommand> = config
+        .extensions
+        .iter()
+        .flat_map(|e| e.commands())
+        .collect();
+    let cmd_names: Vec<String> = commands.iter().map(|c| format!("/{}", c.name)).collect();
+
     let mut msgs = Vec::new();
     msgs.push(DisplayMsg::Info(format!(
         "rab · model {model_display} · {cwd_str}"
@@ -53,8 +61,14 @@ fn welcome_messages(config: &TuiConfig) -> Vec<DisplayMsg> {
         "Tools: {}",
         tool_names.join(", ")
     )));
+    if !cmd_names.is_empty() {
+        msgs.push(DisplayMsg::Info(format!(
+            "Commands: {}",
+            cmd_names.join(", ")
+        )));
+    }
     msgs.push(DisplayMsg::Info(
-        "Enter  submit · /quit  exit · Ctrl+D  quit · Ctrl+C  clear · F1  help · Ctrl+T  thinking · Ctrl+O  tools\n\
+        "Enter  submit · Ctrl+D  quit · Ctrl+C  clear · F1  help · Ctrl+T  thinking · Ctrl+O  tools\n\
          Shift+Enter  newline · Esc  clear · ↑↓ PgUp/PgDn  scroll"
             .to_string(),
     ));
@@ -67,6 +81,8 @@ fn welcome_messages(config: &TuiConfig) -> Vec<DisplayMsg> {
 struct SharedState {
     agent_tools: Vec<Box<dyn AgentTool>>,
     extensions: Vec<Box<dyn Extension>>,
+    /// Flattened slash commands from all extensions.
+    commands: Vec<SlashCommand>,
 }
 
 struct App {
@@ -135,9 +151,17 @@ fn run_app(
 
     let welcome = welcome_messages(&config);
 
+    // Collect slash commands from all extensions
+    let commands: Vec<SlashCommand> = config
+        .extensions
+        .iter()
+        .flat_map(|e| e.commands())
+        .collect();
+
     let shared = Arc::new(SharedState {
         agent_tools: config.agent_tools,
         extensions: config.extensions,
+        commands,
     });
 
     let mut app = App {
@@ -213,17 +237,23 @@ fn ui(frame: &mut Frame, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1),                  // header
-            Constraint::Min(1),                     // messages
-            Constraint::Length(editor_height(app)), // editor
-            Constraint::Length(1),                  // footer
+            Constraint::Length(1),                   // header
+            Constraint::Min(1),                      // messages
+            Constraint::Length(editor_height(app)),  // editor
+            Constraint::Length(working_height(app)), // working indicator
+            Constraint::Length(1),                   // footer
         ])
         .split(area);
 
     render_header(frame, chunks[0], app);
     render_messages(frame, chunks[1], app);
     render_editor(frame, chunks[2], app);
-    render_footer(frame, chunks[3], app);
+    render_working(frame, chunks[3], app);
+    render_footer(frame, chunks[4], app);
+}
+
+fn working_height(app: &App) -> u16 {
+    if app.is_streaming { 1 } else { 0 }
 }
 
 fn editor_height(app: &App) -> u16 {
@@ -270,7 +300,7 @@ fn build_message_text(app: &App) -> Text<'static> {
 
     // Help overlay
     if app.show_help {
-        lines.extend(help_lines());
+        lines.extend(help_lines(app));
         return Text::from(lines);
     }
 
@@ -374,17 +404,17 @@ fn build_message_text(app: &App) -> Text<'static> {
     Text::from(lines)
 }
 
-fn help_lines() -> Vec<Line<'static>> {
+fn help_lines(app: &App) -> Vec<Line<'static>> {
     let dim = Style::default().fg(Color::DarkGray);
     let accent = Style::default()
         .fg(Color::Cyan)
         .add_modifier(Modifier::BOLD);
-    vec![
+
+    let mut lines = vec![
         Line::from(Span::styled("Keyboard Shortcuts", accent)),
         Line::from(""),
         Line::from(Span::styled("  Enter              Submit message", dim)),
         Line::from(Span::styled("  Shift+Enter        Newline", dim)),
-        Line::from(Span::styled("  /quit              Exit rab", dim)),
         Line::from(Span::styled("  Ctrl+C             Clear editor", dim)),
         Line::from(Span::styled(
             "  Ctrl+D             Quit (editor empty)",
@@ -400,9 +430,28 @@ fn help_lines() -> Vec<Line<'static>> {
         )),
         Line::from(Span::styled("  PgUp / PgDn        Page scroll", dim)),
         Line::from(Span::styled("  Mouse wheel        Scroll", dim)),
-        Line::from(""),
-        Line::from(Span::styled("Press any key to close help.", dim)),
-    ]
+    ];
+
+    // List slash commands from extensions
+    let commands = collect_commands(app);
+    if !commands.is_empty() {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled("Slash Commands", accent)));
+        lines.push(Line::from(""));
+        for cmd in &commands {
+            lines.push(Line::from(Span::styled(
+                format!("  /{:<20} {}", cmd.name, cmd.description),
+                dim,
+            )));
+        }
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "Press any key to close help.",
+        dim,
+    )));
+    lines
 }
 
 fn render_editor(frame: &mut Frame, area: Rect, app: &App) {
@@ -458,6 +507,14 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(para, area);
 }
 
+fn render_working(frame: &mut Frame, area: Rect, app: &App) {
+    if !app.is_streaming {
+        return;
+    }
+    let text = Span::styled(" Working…", Style::default().fg(Color::Yellow));
+    frame.render_widget(Paragraph::new(Line::from(text)), area);
+}
+
 // ── Scroll helpers ─────────────────────────────────────────────────
 
 fn scroll_up(app: &mut App, lines: usize) {
@@ -483,6 +540,20 @@ fn handle_key(app: &mut App, key: KeyEvent) {
     let alt = key.modifiers.contains(KeyModifiers::ALT);
 
     match key.code {
+        // Tab: slash command autocomplete (handle both Tab and Char('\t'))
+        KeyCode::Tab | KeyCode::Char('\t') => {
+            if app.show_help {
+                app.show_help = false;
+                return;
+            }
+            let text = app.editor.lines().join("\n");
+            if text.trim().starts_with('/') {
+                handle_slash_completion(app, &text);
+                return;
+            }
+            // Not a slash command — pass Tab through to editor
+            app.editor.input(Event::Key(key));
+        }
         // Ctrl+C: clear editor (pi: app.clear)
         KeyCode::Char('c') if ctrl => {
             if app.show_help {
@@ -539,13 +610,184 @@ fn handle_key(app: &mut App, key: KeyEvent) {
     }
 }
 
+/// Handle Tab autocomplete for slash commands.
+/// If the text is just `/` or a partial command name, completes the command.
+/// If the text is `/cmd ` with partial args, uses argument_completions.
+fn handle_slash_completion(app: &mut App, text: &str) {
+    let trimmed = text.trim();
+    let commands = collect_commands(app);
+
+    let space_idx = trimmed.find(' ');
+    match space_idx {
+        None => {
+            // No space: completing the command name (e.g. "/mo" → "/model")
+            let prefix = trimmed.trim_start_matches('/');
+            let lower = prefix.to_lowercase();
+            let matches: Vec<&&SlashCommand> = commands
+                .iter()
+                .filter(|c| c.name.to_lowercase().starts_with(&lower))
+                .collect();
+
+            if matches.len() == 1 {
+                // Exact one match: execute the command
+                let cmd_text = format!("/{}", matches[0].name);
+                submit_message(app, cmd_text);
+            } else if matches.len() > 1 {
+                // Multiple matches: show common prefix completion
+                let common =
+                    common_prefix(&matches.iter().map(|c| c.name.as_str()).collect::<Vec<_>>());
+                if common.len() > prefix.len() {
+                    let new_text = format!("/{}", common);
+                    set_editor_text(app, &new_text);
+                } else {
+                    // Show available commands as info
+                    let names: Vec<String> =
+                        matches.iter().map(|c| format!("/{}", c.name)).collect();
+                    app.messages.push(DisplayMsg::Info(names.join("  ")));
+                    app.auto_scroll.set(true);
+                }
+            }
+        }
+        Some(idx) => {
+            // Has space: completing the argument (e.g. "/model deep")
+            let cmd_name = trimmed[..idx].trim_start_matches('/');
+            let arg_prefix = &trimmed[idx..].trim();
+
+            if let Some(cmd) = commands.iter().find(|c| c.name == cmd_name) {
+                let completions = cmd.handler.argument_completions(arg_prefix);
+                if completions.len() == 1 {
+                    // Single match: execute the command
+                    let cmd_text = format!("/{} {}", cmd_name, completions[0].value);
+                    submit_message(app, cmd_text);
+                } else if completions.len() > 1 {
+                    let values: Vec<String> = completions.iter().map(|c| c.value.clone()).collect();
+                    let common =
+                        common_prefix(&values.iter().map(|s| s.as_str()).collect::<Vec<_>>());
+                    if common.len() > arg_prefix.len() {
+                        let new_text = format!("/{} {}", cmd_name, common);
+                        set_editor_text(app, &new_text);
+                    } else {
+                        app.messages.push(DisplayMsg::Info(values.join("  ")));
+                        app.auto_scroll.set(true);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Set editor text and move cursor to end.
+fn set_editor_text(app: &mut App, text: &str) {
+    let mut editor = create_editor();
+    editor.insert_str(text);
+    app.editor = editor;
+    // tui_textarea doesn't have a direct set_text with cursor-to-end,
+    // but insert_str on empty editor places cursor after the inserted text.
+}
+
+/// Find the longest common prefix of a list of strings.
+fn common_prefix(strings: &[&str]) -> String {
+    if strings.is_empty() {
+        return String::new();
+    }
+    let first = strings[0];
+    let mut end = first.len();
+    for s in &strings[1..] {
+        end = end.min(
+            first
+                .chars()
+                .zip(s.chars())
+                .take(end)
+                .take_while(|(a, b)| a == b)
+                .count(),
+        );
+    }
+    first[..end].to_string()
+}
+
+/// Apply a command result to the app state.
+fn apply_command_result(app: &mut App, result: anyhow::Result<CommandResult>) {
+    match result {
+        Ok(CommandResult::Info(text)) => {
+            app.messages.push(DisplayMsg::Info(text));
+        }
+        Ok(CommandResult::Quit) => {
+            app.messages
+                .push(DisplayMsg::Info("/quit — exiting".to_string()));
+            app.editor = create_editor();
+            app.should_quit = true;
+            return;
+        }
+        Ok(CommandResult::ModelChanged(new_model)) => {
+            app.model = new_model.clone();
+            app.messages.push(DisplayMsg::Info(format!(
+                "Model: {}",
+                new_model.replace("opencode_go::", "")
+            )));
+        }
+        Err(e) => {
+            app.messages
+                .push(DisplayMsg::Info(format!("Command error: {:#}", e)));
+        }
+    }
+    app.editor = create_editor();
+    app.auto_scroll.set(true);
+}
+
 fn submit_message(app: &mut App, message: String) {
-    // Handle slash commands
-    if message.trim() == "/quit" {
-        app.messages
-            .push(DisplayMsg::Info("/quit — exiting".to_string()));
+    let trimmed = message.trim();
+
+    // Handle slash commands via extension handlers
+    if trimmed.starts_with('/') {
+        let (cmd_name, args) = match trimmed.split_once(' ') {
+            Some((cmd, rest)) => (cmd.trim_start_matches('/'), rest),
+            None => (trimmed.trim_start_matches('/'), ""),
+        };
+
+        // Try exact match first
+        let commands = collect_commands(app);
+        if let Some(cmd) = commands.iter().find(|c| c.name == cmd_name) {
+            let result = cmd.handler.execute(args);
+            apply_command_result(app, result);
+            return;
+        }
+
+        // Try prefix match — execute if exactly one, suggest if multiple
+        let lower = cmd_name.to_lowercase();
+        let prefix_matches: Vec<&&SlashCommand> = commands
+            .iter()
+            .filter(|c| c.name.to_lowercase().starts_with(&lower))
+            .collect();
+
+        if prefix_matches.len() == 1 {
+            let result = prefix_matches[0].handler.execute(args);
+            drop(prefix_matches);
+            drop(commands);
+            apply_command_result(app, result);
+            return;
+        }
+
+        if prefix_matches.len() > 1 {
+            let names: Vec<String> = prefix_matches
+                .iter()
+                .map(|c| format!("/{}", c.name))
+                .collect();
+            app.messages.push(DisplayMsg::Info(format!(
+                "Did you mean: {}?",
+                names.join(", ")
+            )));
+            app.editor = create_editor();
+            app.auto_scroll.set(true);
+            return;
+        }
+
+        // No match at all
+        app.messages.push(DisplayMsg::Info(format!(
+            "Unknown command: /{}. Type / for available commands.",
+            cmd_name
+        )));
         app.editor = create_editor();
-        app.should_quit = true;
+        app.auto_scroll.set(true);
         return;
     }
 
@@ -557,10 +799,10 @@ fn submit_message(app: &mut App, message: String) {
     let tx = app.event_tx.clone();
 
     // Add user message to display and conversation
-    app.messages.push(DisplayMsg::User(message.clone()));
+    app.messages.push(DisplayMsg::User(trimmed.to_string()));
     app.auto_scroll.set(true);
 
-    let prompt = AgentMessage::user(&message);
+    let prompt = AgentMessage::user(trimmed);
     app.conversation.push(prompt.clone());
 
     // Clear editor and set streaming
@@ -599,6 +841,18 @@ fn collect_tool_defs_from_shared(shared: &SharedState) -> Vec<ToolDef> {
         }
     }
     defs
+}
+
+/// Collect slash commands from shared state (flattened, deduplicated by name).
+fn collect_commands(app: &App) -> Vec<&SlashCommand> {
+    let mut seen = std::collections::HashSet::new();
+    let mut cmds: Vec<&SlashCommand> = Vec::new();
+    for cmd in &app.shared.commands {
+        if seen.insert(&cmd.name) {
+            cmds.push(cmd);
+        }
+    }
+    cmds
 }
 
 // ── Agent event handling ───────────────────────────────────────────
@@ -653,9 +907,13 @@ fn handle_agent_event(app: &mut App, event: AgentEvent) {
         AgentEvent::TurnEnd => {
             flush_all(app);
         }
-        AgentEvent::AgentEnd { .. } => {
+        AgentEvent::AgentEnd { ref messages } => {
             flush_all(app);
             app.is_streaming = false;
+            // Extract usage from the last assistant message
+            if let Some(last) = messages.iter().rev().find(|m| m.usage.is_some()) {
+                app.last_usage = last.usage.clone();
+            }
         }
     }
 }

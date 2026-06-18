@@ -12,12 +12,47 @@ pub enum BlockReason {
     Other(String),
 }
 
-/// A slash command registered by an extension.
+/// An autocomplete item for slash command arguments.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
+pub struct AutocompleteItem {
+    /// The value to insert when selected.
+    pub value: String,
+    /// Display label.
+    pub label: String,
+    /// Optional description.
+    pub description: Option<String>,
+}
+
+/// A slash command handler (built-in or extension-provided).
+/// Commands use the same Extension trait as tools — built-ins and
+/// user extensions register commands through a uniform interface.
+pub trait CommandHandler: Send + Sync {
+    /// Execute the command with the given arguments string.
+    fn execute(&self, args: &str) -> anyhow::Result<CommandResult>;
+
+    /// Get argument completions for autocomplete.
+    /// Called when user types `/cmd ` — returns matching autocomplete items.
+    fn argument_completions(&self, _prefix: &str) -> Vec<AutocompleteItem> {
+        vec![]
+    }
+}
+
+/// Result of executing a slash command.
+#[derive(Debug, Clone)]
+pub enum CommandResult {
+    /// Command handled, show this info message.
+    Info(String),
+    /// Command caused a quit request.
+    Quit,
+    /// Command switched the model (new model name).
+    ModelChanged(String),
+}
+
+/// A registered slash command.
 pub struct SlashCommand {
-    pub name: &'static str,
-    pub description: &'static str,
+    pub name: String,
+    pub description: String,
+    pub handler: Box<dyn CommandHandler>,
 }
 
 /// An LLM-callable tool.
@@ -47,7 +82,8 @@ pub trait Extension: Send + Sync {
         vec![]
     }
 
-    /// Additional slash commands (e.g. `/mycommand`).
+    /// Slash commands this extension provides (e.g. `/quit`, `/model`).
+    /// Built-in commands and extension commands use the same interface.
     fn commands(&self) -> Vec<SlashCommand> {
         vec![]
     }

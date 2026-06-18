@@ -1,7 +1,8 @@
 use rab::adapter;
 use rab::agent::{self, AgentEvent, LoopConfig};
 use rab::builtin::{
-    bash::BashExtension, edit::EditExtension, read::ReadExtension, write::WriteExtension,
+    bash::BashExtension, commands::CommandsExtension, edit::EditExtension, read::ReadExtension,
+    write::WriteExtension,
 };
 use rab::extension::Extension;
 use rab::settings::Settings;
@@ -39,8 +40,16 @@ async fn main() -> anyhow::Result<()> {
     // Load auth
     let auth = rab::auth::AuthStorage::load()?;
 
+    // Available models (hardcoded for now; will come from model registry later)
+    let available_models = vec![
+        "deepseek-v4-flash".to_string(),
+        "deepseek-v4-pro".to_string(),
+    ];
+
     // Build extensions
+    // Built-in tools and commands use the same Extension trait
     let extensions: Vec<Box<dyn Extension>> = vec![
+        Box::new(CommandsExtension::new(available_models)),
         Box::new(ReadExtension::new(cwd.clone())),
         Box::new(WriteExtension::new(cwd.clone())),
         Box::new(EditExtension::new(cwd.clone())),

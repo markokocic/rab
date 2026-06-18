@@ -11,7 +11,7 @@ lets it act on your codebase.
 | `pi-ai` (providers, streaming, models) | `Provider` trait + `adapter/genai.rs` → [genai](https://github.com/jeremychone/rust-genai) crate | Isolated behind trait; swappable. PoC targets [OpenCode Go](https://opencode.ai/docs/go/) (DeepSeek V4 Flash/Pro) via genai's OpenAI adapter. Phase 1 adds Anthropic, OpenAI, Google, Ollama |
 | `pi-agent-core` (agent loop, session, compaction, skills) | `agent.rs`, `session.rs`, `compaction.rs`, `types.rs` | Loop ported directly from `agent-loop.ts` |
 | `pi-tui` (terminal UI, components, editor) | [ratatui](https://ratatui.rs) 0.29 + [tui-textarea](https://github.com/rhysd/tui-textarea) 0.7 + [crossterm](https://github.com/crossterm-rs/crossterm) 0.28 | Thin glue in `tui.rs` (~150 lines). ratatui does diff, layout, widgets |
-| `coding-agent` (CLI, extensions, built-in tools, settings) | `cli.rs`, `extension.rs`, `builtin/`, `commands.rs`, `settings.rs` | Single `Extension` trait for built-in + user extensions; core commands in `commands.rs` |
+| `coding-agent` (CLI, extensions, built-in tools, settings, commands) | `cli.rs`, `extension.rs`, `builtin/`, `settings.rs` | Single `Extension` trait for built-in + user extensions; commands use same `CommandHandler` interface; built-in commands in `builtin/commands.rs` |
 | `coding-agent/modes/interactive` | `tui.rs` module | Same crate, different event sink |
 | MCP extensions (third-party) | `pi-mcp-adapter` built-in extension | Phase 2. Uses `rmcp` crate. Configured via `.rab/mcp.json` |
 | Config files (`~/.pi/agent/`) | `~/.rab/` | Same file names and JSON schema as pi |
@@ -59,18 +59,18 @@ isolated behind a trait — replaceable with no changes to core logic.
 │  ┌────▼──┐ ┌────▼──┐ ┌────▼──┐ ┌────▼──┐ ┌────▼──┐     │
 │  │builtin│ │session│ │commands│ │settings│ │  sys  │     │
 │  │read   │ │.rs    │ │.rs     │ │.rs     │ │prompt │     │
-│  │write  │ │JSONL  │ │/model  │ │~/.rab/ │ │.rs    │     │
-│  │edit   │ │append │ │/tree   │ │settings│ │AGENTS │     │
-│  │bash   │ │walk   │ │/compact│ │        │ │.md    │     │
-│  └──┬────┘ └───────┘ └───────┘ └────────┘ └───────┘     │
-│     │  impl Extension trait                               │
+│  │write  │ │JSONL  │ │/quit   │ │~/.rab/ │ │.rs    │     │
+│  │edit   │ │append │ │/model  │ │settings│ │AGENTS │     │
+│  │bash   │ │walk   │ │        │ │        │ │.md    │     │
+│  │commands│───────┘ └───────┘ └────────┘ └───────┘     │
+│  └──┬────┘  impl Extension trait                        │
 │  ┌──▼───────────────────────────────────────────────┐   │
 │  │            extension.rs  (Extension trait)         │   │
 │  │  pub trait Extension {                             │   │
-│  │    fn tools(&self) -> Vec<AgentTool>;              │   │
+│  │    fn tools(&self) -> Vec<Box<dyn AgentTool>>;     │   │
 │  │    fn commands(&self) -> Vec<SlashCommand>;        │   │
-│  │    fn hooks(&self) -> ...;                         │   │
 │  │  }                                                 │   │
+│  │  pub trait CommandHandler { execute, completions } │   │
 │  │  Builtin + user extensions share this trait        │   │
 │  └───────────────────────────────────────────────────┘   │
 │                                                          │
@@ -366,37 +366,57 @@ overflow causes an error.
 ## Extension trait (`extension.rs`)
 
 All capability — built-in or user-provided — comes through the same trait.
-There is no separate tool registration path.
+There is no separate tool registration path. **Slash commands use the same
+`Extension` trait as tools** — built-in commands (`/quit`, `/model`) and
+user-provided commands go through the same `commands()` method and the same
+`CommandHandler` interface.
 
 ```rust
 #[async_trait]
 pub trait Extension: Send + Sync {
-    fn name(&self) -> &str;
+    fn name(&self) -> Cow<'static, str>;
 
     /// Tools this extension provides (LLM-callable).
     fn tools(&self) -> Vec<Box<dyn AgentTool>> { vec![] }
 
-    /// Additional slash commands (e.g. `/mycommand`).
-    /// Core commands (/model, /tree, /compact, ...) are handled by the agent,
-    /// not through this trait.
+    /// Slash commands this extension provides (e.g. `/quit`, `/model`).
+    /// Built-in commands and extension commands use the same interface.
     fn commands(&self) -> Vec<SlashCommand> { vec![] }
 
     /// Called before any tool executes. Return Some(reason) to block.
-    async fn before_tool_call(&self, _tc: &ToolCall, _ctx: &AgentContext)
-        -> Option<BlockReason> { None }
+    async fn before_tool_call(&self, _tc: &ToolCall) -> Option<BlockReason> { None }
 
     /// Called after a tool executes. Return Some(text) to replace result.
     async fn after_tool_call(&self, _tc: &ToolCall, _result: &str)
         -> Option<String> { None }
 }
+
+#[async_trait]
+pub trait CommandHandler: Send + Sync {
+    /// Execute the command. Returns CommandResult indicating the action.
+    async fn execute(&self, args: &str) -> anyhow::Result<CommandResult>;
+
+    /// Get argument completions for autocomplete.
+    fn argument_completions(&self, prefix: &str) -> Vec<AutocompleteItem>;
+}
+
+pub enum CommandResult {
+    Info(String),         // Show info message
+    Quit,                 // Request graceful shutdown
+    ModelChanged(String), // Switched to new model
+}
 ```
 
 At startup, extensions are collected from builtins and (later) user-provided
-paths. Tools are derived by flattening all extensions:
+paths. Tools and commands are derived by flattening all extensions:
 
 ```rust
 fn collect_tools(exts: &[Box<dyn Extension>]) -> Vec<Box<dyn AgentTool>> {
     exts.iter().flat_map(|ext| ext.tools()).collect()
+}
+
+fn collect_commands(exts: &[Box<dyn Extension>]) -> Vec<SlashCommand> {
+    exts.iter().flat_map(|ext| ext.commands()).collect()
 }
 ```
 
@@ -405,8 +425,22 @@ still load. `--no-extensions` skips both.
 
 ## Built-in extensions (`builtin/`)
 
-Each built-in tool is an `Extension` that provides exactly one tool. They
-serve as the reference implementation for user extensions.
+Each built-in is an `Extension` that provides tools or commands. They serve
+as the reference implementation for user extensions.
+
+### commands
+
+Provides core slash commands (`/quit`, `/model`) via the `CommandHandler` trait.
+Same interface as user-provided commands — no special path for built-ins.
+
+| Command | Handler | Description |
+|---------|---------|-------------|
+| `/quit` | `QuitCommand` | Returns `CommandResult::Quit`, TUI breaks event loop |
+| `/model <name>` | `ModelCommand` | Switches active model; no args shows available models |
+
+`/model` provides argument completions via `argument_completions()` — when the
+user types `/model ` followed by a partial model name, matching models are
+suggested.
 
 ### read
 
@@ -440,47 +474,40 @@ serve as the reference implementation for user extensions.
 
 ## Slash commands
 
-Core commands live in the agent, not in extensions. Extensions can register
-additional commands via `Extension::commands()`.
+**Slash commands use the same `Extension` trait as tools.** Built-in commands
+and extension commands go through the same `CommandHandler` interface — there
+is no separate path for core vs. user commands.
 
-### Built-in commands
+When the user types a slash command (e.g. `/quit`, `/model deepseek-v4-pro`),
+the TUI dispatches it to the matching `CommandHandler::execute()`. The result
+(`CommandResult`) determines what happens: show info, quit, or switch models.
 
-| Command | Handler |
-|---|---|
-| `/model <name>` | Switches active model. Parses provider from name prefix (`claude*`, `gpt*`, `gemini*`). |
-| `/thinking <level>` | Sets thinking level: `off`, `minimal`, `low`, `medium`, `high`. |
-| `/compact [prompt]` | Manually compacts context. Optional custom summary prompt. |
-| `/session` | Prints current session ID, path, message count, token totals. |
-| `/name <text>` | Sets session display name (saved in session metadata). |
-| `/tree` | Opens session branch navigator (TUI). |
-| `/fork` | Forks session from a previous user message into a new session file. |
-| `/clone` | Duplicates current active branch into a new session file. |
-| `/resume` | Lists previous sessions in cwd for selection. |
-| `/new` | Starts a fresh session, saving the current one. |
-| `/copy` | Copies last assistant message to clipboard. |
-| `/export [path]` | Exports session to HTML file. |
-| `/settings` | Opens settings editor (TUI) or prints current settings (print mode). |
-| `/reload` | Reloads AGENTS.md, skills, settings. |
-| `/quit` | Exits (interactive mode only). |
+### Built-in commands (via `CommandsExtension`)
+
+| Command | Result | Description |
+|---|---|---|
+| `/quit` | `CommandResult::Quit` | Graceful shutdown |
+| `/model <name>` | `CommandResult::ModelChanged(name)` or `Info` | Switch model; no args lists available models |
+
+More commands will be added as the session layer matures (`/new`, `/compact`, etc.).
 
 ### Extension commands
 
-```rust
-// Extension trait (in extension.rs)
-trait Extension {
-    fn commands(&self) -> Vec<SlashCommand> { vec![] }
-}
+User extensions provide commands through the exact same interface:
 
-struct SlashCommand {
-    name: &'static str,     // "/mycommand"
-    description: &'static str,
-    handler: fn(args: &str, ctx: &mut CommandContext) -> Result<String>,
+```rust
+// In any Extension impl:
+fn commands(&self) -> Vec<SlashCommand> {
+    vec![SlashCommand {
+        name: "mycommand".into(),
+        description: "Does something useful".into(),
+        handler: Box::new(MyCommandHandler),
+    }]
 }
 ```
 
-User extensions add custom `/` commands through the same trait. Conflict
-resolution: first registered wins (builtins first, then user extensions
-in load order).
+Conflict resolution: first registered wins (builtins first, then user extensions
+in load order). Commands are deduplicated by name when collected.
 
 ---
 

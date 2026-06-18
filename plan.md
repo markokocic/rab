@@ -256,13 +256,14 @@ run `cargo build --target wasm32-wasip2`, and drop the `.wasm` into
   - OpenCode Go via `opencode_go::` namespace with `AuthResolver` (no env vars)
   - Reasoning effort from settings mapped to genai `ReasoningEffort`
   - Proper `ToolResponse` for round-tripping tool results
-- [x] **`extension.rs`** — `Extension` trait, `AgentTool` trait, `SlashCommand`, `BlockReason`
+- [x] **`extension.rs`** — `Extension` trait, `AgentTool` trait, `CommandHandler` trait, `CommandResult`, `SlashCommand`, `BlockReason`
 - [x] **`builtin/read.rs`** — Read tool (offset, limit, line numbers, 50KB/2000-line truncation)
 - [x] **`builtin/write.rs`** — Write tool (parent dirs, temp file + atomic rename)
 - [x] **`builtin/edit.rs`** — Edit tool (multi-edit, uniqueness check, overlap detection, camelCase args)
 - [x] **`builtin/bash.rs`** — Bash tool (sh -c, timeout, stdout+stderr, truncation)
 - [x] **`agent.rs`** — `run_agent_loop()` with inner loop, streaming, parallel tool execution, hook pipeline, `AgentEvent` emission
-- [x] **`main.rs`** — Minimal CLI: `rab [--model <m>] <message>`, print-mode emitter
+- [x] **`main.rs`** — Minimal CLI: `rab [--model <m>] <message>`, print-mode emitter, loads command extensions
+- [x] **`builtin/commands.rs`** — Built-in commands extension: `/quit`, `/model` with argument completions
 - [x] **`settings.rs`** — Load `~/.rab/agent/settings.json` + `.rab/settings.json` overlay, pi schema, camelCase
 - [x] **`auth.rs`** — Load `~/.rab/agent/auth.json`, pi format (`{"provider": {"type": "api_key", "key": "..."}}`)
 - [x] **`lib.rs`** — Crate root exposing all modules for integration tests
