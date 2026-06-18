@@ -216,3 +216,85 @@ fn common_prefix_partial() {
 fn common_prefix_no_match() {
     assert_eq!(common_prefix(&["abc", "xyz"]), "");
 }
+
+// ── Bang command parsing ───────────────────────────────────────────
+
+/// Parse a ! or !! command from trimmed input (extracted from tui.rs).
+fn parse_bang_command(input: &str) -> Option<(&str, bool)> {
+    if let Some(rest) = input.strip_prefix("!!") {
+        let cmd = rest.trim();
+        if cmd.is_empty() {
+            None
+        } else {
+            Some((cmd, true))
+        }
+    } else if let Some(rest) = input.strip_prefix('!') {
+        let cmd = rest.trim();
+        if cmd.is_empty() {
+            None
+        } else {
+            Some((cmd, false))
+        }
+    } else {
+        None
+    }
+}
+
+#[test]
+fn bang_basic_command() {
+    let result = parse_bang_command("!echo hello");
+    assert_eq!(result, Some(("echo hello", false)));
+}
+
+#[test]
+fn bang_trims_whitespace() {
+    let result = parse_bang_command("!  ls -la");
+    assert_eq!(result, Some(("ls -la", false)));
+}
+
+#[test]
+fn bang_double_excludes_from_context() {
+    let result = parse_bang_command("!!whoami");
+    assert_eq!(result, Some(("whoami", true)));
+}
+
+#[test]
+fn bang_double_with_spaces() {
+    let result = parse_bang_command("!!  pwd");
+    assert_eq!(result, Some(("pwd", true)));
+}
+
+#[test]
+fn bang_empty_returns_none() {
+    assert_eq!(parse_bang_command("!"), None);
+    assert_eq!(parse_bang_command("!!"), None);
+    assert_eq!(parse_bang_command("!  "), None);
+    assert_eq!(parse_bang_command("!!  "), None);
+}
+
+#[test]
+fn bang_no_bang_returns_none() {
+    assert_eq!(parse_bang_command("echo hello"), None);
+    assert_eq!(parse_bang_command("/quit"), None);
+    assert_eq!(parse_bang_command(""), None);
+}
+
+#[test]
+fn bang_does_not_confuse_with_double_bang() {
+    // !! should be treated as the prefix "!!", not as "!" + "!command"
+    let result = parse_bang_command("!!echo");
+    assert_eq!(result, Some(("echo", true))); // excluded, not regular
+}
+
+#[test]
+fn bang_preserves_trailing_spaces_in_output() {
+    // Trim only the leading bang and surrounding spaces, content is preserved
+    let result = parse_bang_command("!  hello world  ");
+    assert_eq!(result, Some(("hello world", false)));
+}
+
+#[test]
+fn bang_double_preserves_content() {
+    let result = parse_bang_command("!!  grep '!pattern' file");
+    assert_eq!(result, Some(("grep '!pattern' file", true)));
+}

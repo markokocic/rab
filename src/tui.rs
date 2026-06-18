@@ -272,7 +272,7 @@ fn welcome_messages(config: &TuiConfig) -> Vec<DisplayMsg> {
     }
     msgs.push(DisplayMsg::Info(
         "Enter  submit · Ctrl+C  interrupt/clear · Ctrl+D  quit · F1  help · Ctrl+L  model · Ctrl+T  thinking · Ctrl+O  tools\n\
-         Shift+Enter  newline · Esc  clear · ↑↓  history"
+         Shift+Enter  newline · Esc  clear · ↑↓  history · !  bash"
             .to_string(),
     ));
     msgs
@@ -645,6 +645,11 @@ fn help_lines(app: &App) -> Vec<Line<'static>> {
         Line::from(Span::styled("  Escape             Clear editor", dim)),
         Line::from(Span::styled(
             "  Ctrl+L             Open model selector",
+            dim,
+        )),
+        Line::from(Span::styled("  !<command>         Run bash inline", dim)),
+        Line::from(Span::styled(
+            "  !!<command>        Run bash (excluded from context)",
             dim,
         )),
         Line::from(Span::styled("  Ctrl+T             Toggle thinking", dim)),
@@ -1305,11 +1310,149 @@ fn common_prefix(strings: &[&str]) -> String {
     first[..end].to_string()
 }
 
+/// Parse a ! or !! command from trimmed input.
+/// Returns Some((command, is_excluded)) if input starts with ! or !! and has content.
+fn parse_bang_command(input: &str) -> Option<(&str, bool)> {
+    if let Some(rest) = input.strip_prefix("!!") {
+        let cmd = rest.trim();
+        if cmd.is_empty() {
+            None
+        } else {
+            Some((cmd, true))
+        }
+    } else if let Some(rest) = input.strip_prefix('!') {
+        let cmd = rest.trim();
+        if cmd.is_empty() {
+            None
+        } else {
+            Some((cmd, false))
+        }
+    } else {
+        None
+    }
+}
+
 // ── Command result handling ────────────────────────────────────────
 
 fn submit_message(app: &mut App, message: String) {
     app.history_index = None;
     let trimmed = message.trim();
+
+    // !command — execute bash inline (pi-style)
+    // !!command — execute bash, excluded from agent context
+    if let Some((command, exclude_from_context)) = parse_bang_command(trimmed) {
+        let cwd = app.cwd.clone();
+        let cmd = command.to_string();
+        let tx = app.event_tx.clone();
+
+        // Show the command as a user message
+        let label = if exclude_from_context { "!!" } else { "!" };
+        app.messages
+            .push(DisplayMsg::User(format!("{label} {command}")));
+        app.editor = create_editor();
+        app.auto_scroll.set(true);
+
+        app.is_streaming = true;
+        app.pending_text = None;
+        app.pending_thinking = None;
+
+        let handle = tokio::spawn(async move {
+            // We use tokio::process::Command directly (same as bash tool)
+            let started = std::time::Instant::now();
+            let output = tokio::process::Command::new("sh")
+                .arg("-c")
+                .arg(&cmd)
+                .current_dir(&cwd)
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .output()
+                .await;
+
+            let elapsed = started.elapsed();
+
+            match output {
+                Ok(output) => {
+                    let stdout = String::from_utf8_lossy(&output.stdout);
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    let combined = format!("{}{}", stdout, stderr);
+
+                    let mut result = combined.clone();
+                    let total_lines = result.lines().count();
+                    const MAX_LINES: usize = 2000;
+                    const MAX_BYTES: usize = 50 * 1024;
+
+                    if result.len() > MAX_BYTES {
+                        let byte_start = result.len().saturating_sub(MAX_BYTES);
+                        result = if let Some(newline_pos) = result[byte_start..].find('\n') {
+                            result[(byte_start + newline_pos + 1)..].to_string()
+                        } else {
+                            result[byte_start..].to_string()
+                        };
+                    }
+
+                    let lines: Vec<&str> = result.lines().collect();
+                    let shown_lines = lines.len();
+                    if lines.len() > MAX_LINES {
+                        let start = lines.len() - MAX_LINES;
+                        result = lines[start..].join("\n");
+                    }
+
+                    if total_lines > shown_lines || combined.len() > MAX_BYTES {
+                        let start_line = total_lines - shown_lines + 1;
+                        result.push_str(&format!(
+                            "\n\n[Showing lines {}-{} of {}.]",
+                            start_line, total_lines, total_lines,
+                        ));
+                    }
+
+                    if !output.status.success() {
+                        let exit_code = output.status.code().unwrap_or(-1);
+                        if !result.is_empty() {
+                            result
+                                .push_str(&format!("\n\n[Command exited with code {}]", exit_code));
+                        } else {
+                            result = format!("Command exited with code {}", exit_code);
+                        }
+                    } else if result.is_empty() {
+                        result = "(no output)".into();
+                    }
+
+                    let _ = tx.send(AgentEvent::TurnStart);
+                    // Emit tool call display
+                    let _ = tx.send(AgentEvent::ToolCall {
+                        id: String::new(),
+                        name: "bash".into(),
+                        args: serde_json::json!({}),
+                    });
+                    // Emit the output
+                    let _ = tx.send(AgentEvent::ToolResult {
+                        id: String::new(),
+                        name: "bash".into(),
+                        content: format!(
+                            "$ {}\n\n{}\n\n[{}s]",
+                            cmd,
+                            result.trim(),
+                            elapsed.as_secs_f64()
+                        ),
+                        is_error: !output.status.success(),
+                    });
+                    let _ = tx.send(AgentEvent::TurnEnd);
+                    let _ = tx.send(AgentEvent::AgentEnd { messages: vec![] });
+                }
+                Err(e) => {
+                    let _ = tx.send(AgentEvent::ToolResult {
+                        id: String::new(),
+                        name: "bash".into(),
+                        content: format!("Failed to execute: {:#}", e),
+                        is_error: true,
+                    });
+                    let _ = tx.send(AgentEvent::AgentEnd { messages: vec![] });
+                }
+            }
+        });
+        app.agent_abort = Some(handle.abort_handle());
+        return;
+    }
 
     if trimmed.starts_with('/') {
         let (cmd_name, args) = match trimmed.split_once(' ') {
