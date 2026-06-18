@@ -8,9 +8,9 @@ lets it act on your codebase.
 
 | pi (`packages/`) | rab equivalent | Notes |
 |---|---|---|
-| `pi-ai` (providers, streaming, models) | `Provider` trait + `adapter/genai.rs` → [genai](https://github.com/jeremychone/rust-genai) crate | Isolated behind trait; swappable |
+| `pi-ai` (providers, streaming, models) | `Provider` trait + `adapter/genai.rs` → [genai](https://github.com/jeremychone/rust-genai) crate | Isolated behind trait; swappable. PoC targets [OpenCode Go](https://opencode.ai/docs/go/) (DeepSeek V4 Flash/Pro) via genai's OpenAI adapter. Phase 1 adds Anthropic, OpenAI, Google, Ollama |
 | `pi-agent-core` (agent loop, session, compaction, skills) | `agent.rs`, `session.rs`, `compaction.rs`, `types.rs` | Loop ported directly from `agent-loop.ts` |
-| `pi-tui` (terminal UI, components, editor) | [ratatui](https://ratatui.rs) 0.29 + [tui-textarea](https://github.com/rhysd/tui-textarea) 0.7 + [crossterm](https://github.com/crossterm-rs/crossterm) 0.28 | Phase 2. Thin glue in `tui.rs` (~150 lines). ratatui does diff, layout, widgets |
+| `pi-tui` (terminal UI, components, editor) | [ratatui](https://ratatui.rs) 0.29 + [tui-textarea](https://github.com/rhysd/tui-textarea) 0.7 + [crossterm](https://github.com/crossterm-rs/crossterm) 0.28 | Thin glue in `tui.rs` (~150 lines). ratatui does diff, layout, widgets |
 | `coding-agent` (CLI, extensions, built-in tools, settings) | `cli.rs`, `extension.rs`, `builtin/`, `commands.rs`, `settings.rs` | Single `Extension` trait for built-in + user extensions; core commands in `commands.rs` |
 | `coding-agent/modes/interactive` | `tui.rs` module | Same crate, different event sink |
 | MCP extensions (third-party) | `pi-mcp-adapter` built-in extension | Phase 2. Uses `rmcp` crate. Configured via `.rab/mcp.json` |
@@ -26,7 +26,6 @@ lets it act on your codebase.
   trait. The default implementation wraps [genai](https://github.com/jeremychone/rust-genai)
   (Apache 2.0, 711★, 50 contributors). The agent loop depends only on the trait,
   so genai can be swapped for another backend without touching loop logic.
-- **Print mode first** — ship non-interactive mode before building the TUI.
 - **Agent loop mirrors pi** — steering queues, follow-up queues, hook-based
   tool lifecycle, event stream. Ported from pi's `runAgentLoop` in
   `packages/agent/src/agent-loop.ts`.
@@ -548,8 +547,15 @@ Each adapter translates rab types into its own backend format internally.
 
 ### Genai adapter (`adapter/genai.rs`)
 
-The default (and only MVP) implementation. Wraps `genai::Client`. This is
-the **only file** that imports genai.
+The **only file** that imports genai. Wraps `genai::Client`, configured for the
+target provider.
+
+**PoC:** Client configured for OpenCode Go (`https://opencode.ai/zen/go/v1`)
+using genai's OpenAI adapter. Models: `deepseek-v4-flash` (default), `deepseek-v4-pro`.
+
+**Phase 1:** Extended with provider auto-detection from model name prefix —
+`claude*` → Anthropic, `gpt*` → OpenAI, `gemini*` → Google, fallback → Ollama.
+OpenCode Go remains available as an explicit provider.
 
 ```rust
 pub struct GenaiProvider {
@@ -593,7 +599,7 @@ Same file names and format as pi, but under `~/.rab/` instead of
 | `.pi/settings.json` | `.rab/settings.json` | Project-local overrides |
 | `~/.pi/agent/AGENTS.md` | `~/.rab/AGENTS.md` | Global context instructions |
 | `AGENTS.md` / `CLAUDE.md` | `AGENTS.md` / `CLAUDE.md` | Project context files (walked up from cwd) |
-| `~/.pi/agent/keybindings.json` | `~/.rab/keybindings.json` | Custom keybinds (phase 2 — TUI) |
+| `~/.pi/agent/keybindings.json` | `~/.rab/keybindings.json` | Custom keybinds (phase 2) |
 | `~/.pi/agent/models.json` | `~/.rab/models.json` | Custom provider/model definitions |
 | `~/.pi/agent/sessions/` | `~/.rab/sessions/` | Session files |
 | `~/.pi/agent/extensions/` | `~/.rab/extensions/` | User extensions (phase 2 — WASM) |
@@ -662,7 +668,7 @@ fallback → Ollama.
 
 ## Run modes
 
-### Print mode (MVP target)
+### Print mode
 
 ```
 $ rab -p "What does git status do?"
@@ -685,9 +691,7 @@ separate abstraction layer needed.
 
 ---
 
-## Phase 2
-
-### TUI (`tui.rs`)
+## TUI (`tui.rs`)
 
 ~100—200 lines. Thin glue between `AgentEvent` stream and ratatui rendering.
 No abstraction layer on top of ratatui — ratatui **is** the abstraction.
@@ -784,7 +788,11 @@ Components:
 - **Header** — model name, thinking level, shortcut hints
 - **Footer** — working directory, session ID, token usage, cost
 
-### User extensions
+---
+
+## Phase 2
+
+### User extensions (compile-time)
 
 Same `Extension` trait used by builtins. To add a custom tool, implement the
 trait and register it at startup:
@@ -802,7 +810,167 @@ if !args.no_extensions {
 }
 ```
 
-Later: dynamic loading from `~/.rab/extensions/` via a compile step or WASM.
+### Dynamic plugin system (WASM via wasmtime)
+
+The primary mechanism for user plugins. Plugins are `.wasm` components loaded
+at runtime from `~/.rab/extensions/` (global) and `.rab/extensions/` (project).
+WASM was chosen because: sandboxed by default (plugin crashes can't take down the
+host), hot reload is trivial (recompile → replace file), and the WIT interface
+is stable across Rust compiler versions (unlike C ABI for dylib). For plugins that
+need C libraries (rare), a native dylib escape hatch can be added later.
+
+#### Architecture
+
+```
+┌──────────────────────────────────────────────────────────┐
+│                      rab host                             │
+│                                                          │
+│  ┌──────────────────────┐   ┌────────────────────────┐  │
+│  │   BuiltinExtension   │   │   WasmExtension         │  │
+│  │   (read/write/...)   │   │                         │  │
+│  │   impl Extension     │   │   impl Extension {      │  │
+│  │                      │   │     name()              │  │
+│  │                      │   │     tools() → delegates │  │
+│  │                      │   │       to wasm instance  │  │
+│  │                      │   │   }                     │  │
+│  └──────────────────────┘   └───────────┬────────────┘  │
+│                                         │ WIT calls      │
+│                               ┌─────────▼────────────┐  │
+│                               │  PluginRegistry       │  │
+│                               │  ├─ wasmtime Engine   │  │
+│                               │  ├─ Vec<LoadedPlugin> │  │
+│                               │  ├─ load(path)        │  │
+│                               │  ├─ unload(name)      │  │
+│                               │  └─ reload_all()      │  │
+│                               └───────────────────────┘  │
+└──────────────────────────────────────────────────────────┘
+```
+
+`WasmExtension` implements the host `Extension` trait by forwarding calls into
+a wasm component via WIT bindings. The agent loop sees no difference between
+a builtin and a wasm plugin.
+
+#### WIT interface
+
+```wit
+package rab:plugin;
+
+interface types {
+    record tool-def {
+        name: string,
+        description: string,
+        parameters: string,   // JSON Schema
+        label: string,
+    }
+
+    record slash-command {
+        name: string,
+        description: string,
+    }
+}
+
+world rab-plugin {
+    export name: func() -> string;
+    export tools: func() -> list<tool-def>;
+    export commands: func() -> list<slash-command>;
+    // tool-call-id and args-json come as strings; host owns serialization
+    export execute-tool: func(
+        tool-name: string,
+        tool-call-id: string,
+        args-json: string
+    ) -> result<string, string>;
+}
+```
+
+#### Plugin author experience
+
+A `rab-plugin-sdk` crate provides a `Plugin` trait and an `export_plugin!` macro
+that hides WIT internals. Plugin authors write plain Rust — no `extern "C"`,
+no `#[repr(C)]`, no unsafe:
+
+```rust
+// my-plugin/src/lib.rs
+use rab_plugin_sdk::*;
+
+struct MyPlugin;
+
+impl Plugin for MyPlugin {
+    fn name() -> String { "my-tool".into() }
+
+    fn tools() -> Vec<ToolDef> {
+        vec![ToolDef {
+            name: "hello".into(),
+            description: "Says hello".into(),
+            parameters: json!({"type": "object", "properties": {}}),
+            label: "Hello Tool".into(),
+        }]
+    }
+
+    fn execute(tool: &str, call_id: &str, args: Value) -> Result<String, String> {
+        match tool {
+            "hello" => Ok(format!("Hello from plugin! call_id={call_id}")),
+            _ => Err(format!("Unknown tool: {tool}")),
+        }
+    }
+}
+
+export_plugin!(MyPlugin);
+```
+
+Minimal `Cargo.toml`:
+
+```toml
+[package]
+name = "my-plugin"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+rab-plugin-sdk = "0.1"
+serde_json = "1"
+```
+
+Build: `cargo build --target wasm32-wasip2 --release`, copy the `.wasm` to
+`~/.rab/extensions/`. The host picks it up on next startup (and on `/reload`
+in TUI mode).
+
+Scaffolding: `rab plugin new my-plugin` generates the Cargo.toml, lib.rs, and
+WIT file automatically.
+
+#### Plugin lifecycle
+
+| Operation | Behaviour |
+|---|---|
+| **Load** | `PluginRegistry::load(path)` compiles `.wasm` → native via cranelift, instantiates the component, calls `name()` and `tools()` for metadata |
+| **Unload** | Drop the `WasmExtension` + `Store` + `Instance`. Wasmtime releases all guest memory |
+| **Hot reload** | File watcher (`notify` crate) detects change → unload old → load new. `/reload-plugins` slash command for manual trigger |
+| **Validation** | On load, call `self-test` export (optional). If it returns `err`, print warning, skip plugin |
+| **Error isolation** | If tool execution panics inside wasm, wasmtime catches it as a `Trap`. `WasmExtension` returns `ToolResult::error`. Host process unaffected |
+| **Resource limits** | `Store::set_fuel(1_000_000)` ~covers most tool logic. Configurable per-plugin in `.rab/extensions.toml` (future) |
+
+#### Directory layout
+
+```
+~/.rab/extensions/           ← global plugins (available in every project)
+├── hello.wasm
+├── code-reviewer/
+│   ├── code-reviewer.wasm
+│   └── config.toml          ← plugin metadata, resource limits (future)
+└── sources/                 ← optional: keep source alongside
+
+./.rab/extensions/           ← project-local plugins
+└── project-tool.wasm
+```
+
+#### Future: native dylib escape hatch
+
+For plugins that need C libraries (e.g. `libgit2`, `tree-sitter`), a parallel
+native path via `crate-type = ["cdylib"]` + `dlopen2`. Same `Plugin` trait,
+different compile target. Requires matching Rust compiler version between host
+and plugin — documented as a power-user feature, not the default path.
 
 ### Skills
 
@@ -850,9 +1018,8 @@ built-in Phase 2 extension.
 
 ## Open questions
 
-- **Dynamic extension loading** — WASM via wasmtime? Rhai scripting? dylib?
-  All require a stable `Extension` trait (already defined). Deferred until
-  user extensions are needed beyond compile-time.
+- **Dynamic extension loading** — Resolved: WASM via wasmtime + WIT
+  Component Model. See §Dynamic plugin system.
 - **OAuth** — genai's `AuthResolver` supports dynamic tokens, but browser
   login flow, token refresh, and credential storage need a separate crate
   (e.g. `oauth2`). MVP uses env API keys only.
@@ -884,16 +1051,19 @@ rab (EPL-2.0)
 ├── async-trait 0.1        (MIT)        — trait async fn
 ├── colored 2              (MPL-2.0)    — terminal colors
 ├── tracing 0.1            (MIT)        — structured logging
-├── ratatui 0.29           (MIT)        — TUI framework (phase 2)
-├── crossterm 0.28         (MIT)        — terminal backend (phase 2)
-├── tui-textarea 0.7       (MIT)        — multiline editor (phase 2)
+├── ratatui 0.29           (MIT)        — TUI framework
+├── crossterm 0.28         (MIT)        — terminal backend
+├── tui-textarea 0.7       (MIT)        — multiline editor
+├── wasmtime 26+           (Apache 2.0) — WASM runtime for dynamic plugins (phase 2)
+├── notify 7               (CC0-1.0)    — file watcher for plugin hot reload (phase 2)
 └── rmcp 1                 (MIT)        — MCP client for pi-mcp-adapter (phase 2)
 ```
 
-No GPL dependencies. All are permissive (MIT / Apache 2.0 / MPL-2.0), fully
+No GPL dependencies. All are permissive (MIT / Apache 2.0 / MPL-2.0 / CC0-1.0), fully
 compatible with EPL-2.0. genai is the only external provider dependency and
 is swappable via the `Provider` trait — replace or remove it without touching
 core logic.
 
-Phase 2 dependencies (ratatui, crossterm, tui-textarea, rmcp) are gated
-behind Cargo features: `tui` and `mcp`. MVP compiles without them.
+Phase 2 dependencies (wasmtime, notify, rmcp)
+are gated behind Cargo features: `plugins` and `mcp`. MVP compiles
+without them.
