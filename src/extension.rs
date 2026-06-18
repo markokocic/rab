@@ -46,6 +46,12 @@ pub enum CommandResult {
     Quit,
     /// Command switched the model (new model name).
     ModelChanged(String),
+    /// Show keyboard shortcuts help overlay.
+    ShowHelp,
+    /// Reload settings and auth from disk.
+    Reloaded,
+    /// Start a new session (clear conversation).
+    NewSession,
 }
 
 /// A registered slash command.

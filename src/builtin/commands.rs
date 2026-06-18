@@ -34,6 +34,21 @@ impl Extension for CommandsExtension {
                     available_models: self.available_models.clone(),
                 }),
             },
+            SlashCommand {
+                name: "hotkeys".to_string(),
+                description: "Show keyboard shortcuts".to_string(),
+                handler: Box::new(HotkeysCommand),
+            },
+            SlashCommand {
+                name: "reload".to_string(),
+                description: "Reload settings and auth from disk".to_string(),
+                handler: Box::new(ReloadCommand),
+            },
+            SlashCommand {
+                name: "new".to_string(),
+                description: "Start a new session (clear conversation)".to_string(),
+                handler: Box::new(NewCommand),
+            },
         ]
     }
 }
@@ -88,5 +103,35 @@ impl CommandHandler for ModelCommand {
                 description: None,
             })
             .collect()
+    }
+}
+
+// ── /hotkeys ──────────────────────────────────────────────────────
+
+struct HotkeysCommand;
+
+impl CommandHandler for HotkeysCommand {
+    fn execute(&self, _args: &str) -> anyhow::Result<CommandResult> {
+        Ok(CommandResult::ShowHelp)
+    }
+}
+
+// ── /reload ───────────────────────────────────────────────────────
+
+struct ReloadCommand;
+
+impl CommandHandler for ReloadCommand {
+    fn execute(&self, _args: &str) -> anyhow::Result<CommandResult> {
+        Ok(CommandResult::Reloaded)
+    }
+}
+
+// ── /new ──────────────────────────────────────────────────────────
+
+struct NewCommand;
+
+impl CommandHandler for NewCommand {
+    fn execute(&self, _args: &str) -> anyhow::Result<CommandResult> {
+        Ok(CommandResult::NewSession)
     }
 }

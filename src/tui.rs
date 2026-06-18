@@ -1405,6 +1405,50 @@ fn apply_command_result(app: &mut App, result: anyhow::Result<CommandResult>) {
                 new_model.replace("opencode_go::", "")
             )));
         }
+        Ok(CommandResult::ShowHelp) => {
+            app.show_help = true;
+            app.editor = create_editor();
+            return;
+        }
+        Ok(CommandResult::Reloaded) => {
+            let mut changes = Vec::new();
+            if let Ok(settings) = crate::settings::Settings::load(&app.cwd) {
+                if let Some(model) = &settings.default_model
+                    && *model != app.model
+                {
+                    app.model = model.clone();
+                    changes.push(format!("model: {}", model));
+                }
+                if let Some(level) = &settings.default_thinking_level
+                    && Some(level) != app.thinking_level.as_ref()
+                {
+                    app.thinking_level = Some(level.clone());
+                    changes.push(format!("thinking: {}", level));
+                }
+            }
+            if let Ok(auth) = crate::auth::AuthStorage::load()
+                && auth.api_key("opencode-go").is_some()
+            {
+                changes.push("auth: reloaded".into());
+            }
+            if changes.is_empty() {
+                app.messages.push(DisplayMsg::Info(
+                    "/reload — no changes detected".to_string(),
+                ));
+            } else {
+                app.messages.push(DisplayMsg::Info(format!(
+                    "/reload — {}",
+                    changes.join(", ")
+                )));
+            }
+        }
+        Ok(CommandResult::NewSession) => {
+            app.conversation.clear();
+            app.messages.clear();
+            app.last_usage = None;
+            app.messages
+                .push(DisplayMsg::Info("/new — session cleared".to_string()));
+        }
         Err(e) => {
             app.messages
                 .push(DisplayMsg::Info(format!("Command error: {:#}", e)));
