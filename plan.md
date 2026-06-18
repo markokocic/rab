@@ -297,3 +297,48 @@ run `cargo build --target wasm32-wasip2`, and drop the `.wasm` into
   - Block borders (top + bottom) matching pi's accent color
 - [x] **Arrow-key history** — ↑↓ recalls previous user messages when editor is empty
 - [x] **Tests** — 65 total: commands (11), editor behavior (19), plus all PoC tests
+
+## Known Issues
+
+### Editor cursor
+- Cursor display is buggy on empty editor (sometimes not visible until typing starts)
+- Cursor positioning is off by 1 column on multi-line text (no border offset compensation)
+- Backspace at start of line doesn't join with previous line properly on Ratatui 0.30 buffer
+- No visual cursor-line highlight (pi uses subtle background on the cursor row)
+
+### Editor shortcuts missing
+- Ctrl+A (beginning of line) — not implemented
+- Ctrl+E (end of line) — not implemented
+- Ctrl+K (kill to end of line) — not implemented
+- Ctrl+U (kill to start of line) — not implemented
+- Ctrl+W (delete word backward) — not implemented
+- Alt+Arrow (word movement) — not implemented
+- Ctrl+Left/Right (jump word) — not implemented
+- No kill ring (yank/pop) — not implemented
+- Delete key is mapped but produces wrong char
+
+### TUI colors and styles
+- Assistant markdown text not styled with pi's markdown theme colors (headings, code, links, quotes)
+- Tool call lines missing bold tool name, only one uniform style
+- Tool result background colors not matching pi's exact shades
+- Thinking blocks use same dim color for all lines, pi has per-line indentation
+- User messages not rendering as markdown (pi renders user text + skills as markdown)
+- No visual distinction between streaming/pending text and final text
+- Status dot colors reversed (green when idle, accent when streaming, pi uses dim circle when idle)
+- Footer tokens not padded/right-aligned properly on narrow terminals
+
+## TODO
+
+### Selector components
+- Create reusable `Selector` widget similar to pi's `SelectList`
+  - Fuzzy-filterable list with keyboard navigation (↑↓, Enter to select, Esc to cancel)
+  - Autocomplete dropdown that overlays above/below the editor
+  - Used by `/model` selector, slash-command autocomplete
+  - Theme-aware styling matching pi's select list colors
+
+### Slash command autocomplete selector
+- Replace current inline Tab-completion with a proper autocomplete dropdown
+  - Show command list when typing `/` (like pi)
+  - Show argument completions when typing `/cmd ` (like pi)
+  - Allow Tab/Enter to select, Esc to dismiss
+  - Reuse the Selector widget for consistency
