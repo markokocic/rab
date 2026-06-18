@@ -295,10 +295,11 @@ run `cargo build --target wasm32-wasip2`, and drop the `.wasm` into
   - Exact match first, then prefix match (e.g. `/q` → `/quit`)
   - "Did you mean" suggestions for ambiguous prefixes
   - `/model` and `/m` without args open the model selector overlay (pi-style)
-- [x] **`theme.rs`** — Theme struct with pi's exact dark theme colors:
-  - Chat styles: user_msg, tool_pending/success/error, thinking, dim, accent
+- [x] **`theme.rs`** — Theme struct with pi-style color fields:
+  - Chat styles: user_msg, tool_pending/success/error, thinking (with `thinking_bg`), dim, accent
   - Footer and editor styles
-  - Style helper methods, ready for future theming support
+  - Full-width `Line::style()` backgrounds for user, tool, and thinking messages
+  - Style helper methods, ready for JSON theme file loading
 - [x] **Arrow-key history** — ↑↓ recalls previous user messages when editor is empty
 - [x] **`auth.rs`** — Supports both `api_key` and `oauth` credential types (pi-compatible)
 - [x] **`settings.rs`** — Load + save `~/.rab/agent/settings.json`, pi keys (`hideThinkingBlock`, `collapseToolOutput`), `save_to()` for testing, `Option<bool>` for proper merge semantics
@@ -306,7 +307,15 @@ run `cargo build --target wasm32-wasip2`, and drop the `.wasm` into
 - [x] **`~/.rab/agent/auth.json`** — Provider credentials (copied from pi)
 - [x] **`Cargo.toml`** — Switched to `native-tls` (rustls-platform-verifier panics on Termux/Android)
 - [x] **`.cargo/config.toml`** — OPENSSL_DIR for Termux build without pkg-config
-- [x] **Tests** — 130 total: auth (4), settings (24), commands (18), model selector (30), editor behavior (19), tools (19), types (6)
+- [x] **`!` / `!!` bash inline execution** — pi-style bang commands:
+  - `!command` runs bash inline, shows output in messages area (no agent round-trip)
+  - `!!command` same, flagged as excluded from agent context
+  - Truncation from end (last 2000 lines / 50KB), exit code display, duration
+  - Abortable via Esc/Ctrl+C
+- [x] **Tool alignment with pi** — bash, read tools fixed:
+  - Bash: `timeout_secs` → `timeout` parameter name, no default timeout, truncation from end
+  - Read: no line number prefixes, error on offset beyond file, pi-style truncation notices
+- [x] **Tests** — 139 total: auth (4), settings (24), commands (18), model selector (30), editor behavior (28), tools (19), types (6)
 
 ## Known Issues
 
@@ -323,9 +332,9 @@ run `cargo build --target wasm32-wasip2`, and drop the `.wasm` into
 ### TUI colors and styles
 - Assistant markdown text not styled with pi's markdown theme colors (headings, code, links, quotes)
 - Tool call lines missing bold tool name, only one uniform style
-- Tool result background colors not matching pi's exact shades
-- Thinking blocks use same dim color for all lines, pi has per-line indentation
-- User messages not rendering as markdown (pi renders user text + skills as markdown)
+- No markdown syntax highlighting in rendered output
+- No per-thinking-level colors (pi has 6 levels: off→xhigh)
+- User messages not rendering as markdown
 - No visual distinction between streaming/pending text and final text
 - Status dot colors reversed (green when idle, accent when streaming, pi uses dim circle when idle)
 - Footer tokens not padded/right-aligned properly on narrow terminals
