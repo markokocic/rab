@@ -1,6 +1,6 @@
 # rab TUI Library Design
 
-This document plans the Rust port of pi-tui — a main-screen, diff-rendering terminal UI library built on crossterm. It separates the **core TUI library** (`src/tui/`) from **rab-specific UI** (`src/ui/`), mirroring how pi splits `@earendil-works/pi-tui` from the coding-agent's app components.
+This document plans the Rust port of pi-tui — a main-screen, diff-rendering terminal UI library built on crossterm. It separates the **core TUI library** (`src/tui/`) from **rab-specific UI** (`src/agent/ui/`), mirroring how pi splits `@earendil-works/pi-tui` from the coding-agent's app components.
 
 ---
 
@@ -8,7 +8,7 @@ This document plans the Rust port of pi-tui — a main-screen, diff-rendering te
 
 ```
 ┌──────────────────────────────────────────────────┐
-│  src/ui/           rab-specific UI               │
+│  src/agent/ui/     rab-specific UI               │
 │  ChatEditor, Messages, Footer, ModelSelector, …  │
 │                                                  │
 │  src/tui/          core TUI library              │
@@ -21,7 +21,7 @@ This document plans the Rust port of pi-tui — a main-screen, diff-rendering te
 └──────────────────────────────────────────────────┘
 ```
 
-`src/tui/` is generic and reusable. `src/ui/` is rab's app. There is no ratatui dependency.
+`src/tui/` is generic and reusable. `src/agent/ui/` is rab's app. There is no ratatui dependency.
 
 ---
 
@@ -76,7 +76,7 @@ All Tier 1 components are implemented and tested. 83 tests pass with zero warnin
 | **Key** | `keys.ts` (1,400 lines) | `src/tui/keys.rs` (✅ 267 lines) | Key identifiers (`Key::Enter`, `Key::Up`, `Key::Ctrl('c')`, `Key::CtrlShift('p')`). `matches_key(event, key) -> bool`. Wraps crossterm's `KeyEvent` — no Kitty protocol parsing needed. |
 | **Util** | `utils.ts` (1,188 lines) | `src/tui/util.rs` (✅ 817 lines) | `visible_width(s) -> usize` (strip ANSI, measure Unicode). `truncate_to_width(s, w) -> String`. `wrap_text_with_ansi(s, w) -> Vec<String>`. `slice_by_column(s, start, end) -> String`. |
 | **Fuzzy** | `fuzzy.ts` (137 lines) | `src/tui/fuzzy.rs` (✅ 263 lines) | `fuzzy_match(query, text) -> FuzzyMatch` with score and match positions. `fuzzy_filter(query, items) -> Vec<usize>`. Supports swapped alphanumeric tokens. |
-| **Theme** | N/A (pi's theme is in coding-agent) | `src/tui/theme.rs` (✅ 34 lines) | Trait for colors. `fg(color: &str, text: &str) -> String`, `bg(color: &str, text: &str) -> String`, `bold(text: &str) -> String`. Concrete implementation in `src/ui/`. |
+| **Theme** | N/A (pi's theme is in coding-agent) | `src/tui/theme.rs` (✅ 34 lines) | Trait for colors. `fg(color: &str, text: &str) -> String`, `bg(color: &str, text: &str) -> String`, `bold(text: &str) -> String`. Concrete implementation in `src/agent/ui/`. |
 
 #### Deliberately Skipped (not needed for rab)
 
@@ -92,20 +92,20 @@ pi-tui components we are NOT porting:
 
 ---
 
-### Tier 2: App-Specific UI (`src/ui/`) ✅ IMPLEMENTED
+### Tier 2: App-Specific UI (`src/agent/ui/`) ✅ IMPLEMENTED
 
 These are rab's application components, built on `src/tui/` primitives. They are NOT part of the core TUI library.
 
 | Component | Rust module | Purpose |
 |---|---|---|
-| **ChatEditor** | `src/ui/chat_editor.rs` (✅ 102 lines) | Thin wrapper around `tui::Editor`. Provides rab-specific behaviors: slash command list, theme integration. |
-| **MessageList** | `src/ui/messages.rs` (✅ 155 lines) | Renders conversation history as styled text lines. Handles: user messages, assistant text, thinking blocks, tool calls, tool results. Respects `hide_thinking`, `collapse_tool_output`. |
-| **WorkingIndicator** | `src/ui/working.rs` (✅ 73 lines) | Spinner shown during streaming. |
-| **Footer** | `src/ui/footer.rs` (✅ 103 lines) | Two-line footer: cwd + git branch on line 1, token stats + model on line 2. |
-| **ModelSelector** | `src/ui/model_selector.rs` (✅ 96 lines) | Full-screen overlay for picking a model. Uses `tui::SelectList`. Searchable. |
-| **HelpOverlay** | `src/ui/help.rs` (✅ 98 lines) | `/help` display showing available commands and keybindings. |
-| **Theme** | `src/ui/theme.rs` (✅ 105 lines) | rab's concrete color theme. Implements the `tui::Theme` trait with direct ANSI emission matching pi's dark theme. |
-| **App** | `src/ui/app.rs` (✅ 731 lines) | Main event loop and state. Owns the `tui::Screen`, composes the component tree each tick, dispatches input, handles agent events (streaming deltas → message list). |
+| **ChatEditor** | `src/agent/ui/chat_editor.rs` (✅ 102 lines) | Thin wrapper around `tui::Editor`. Provides rab-specific behaviors: slash command list, theme integration. |
+| **MessageList** | `src/agent/ui/messages.rs` (✅ 155 lines) | Renders conversation history as styled text lines. Handles: user messages, assistant text, thinking blocks, tool calls, tool results. Respects `hide_thinking`, `collapse_tool_output`. |
+| **WorkingIndicator** | `src/agent/ui/working.rs` (✅ 73 lines) | Spinner shown during streaming. |
+| **Footer** | `src/agent/ui/footer.rs` (✅ 103 lines) | Two-line footer: cwd + git branch on line 1, token stats + model on line 2. |
+| **ModelSelector** | `src/agent/ui/model_selector.rs` (✅ 96 lines) | Full-screen overlay for picking a model. Uses `tui::SelectList`. Searchable. |
+| **HelpOverlay** | `src/agent/ui/help.rs` (✅ 98 lines) | `/help` display showing available commands and keybindings. |
+| **Theme** | `src/agent/ui/theme.rs` (✅ 105 lines) | rab's concrete color theme. Implements the `tui::Theme` trait with direct ANSI emission matching pi's dark theme. |
+| **App** | `src/agent/ui/app.rs` (✅ 731 lines) | Main event loop and state. Owns the `tui::Screen`, composes the component tree each tick, dispatches input, handles agent events (streaming deltas → message list). |
 
 ### Pi Reference: Where App Components Live in pi
 
@@ -179,31 +179,33 @@ src/
 │       ├── input.rs                 # ✅ Input
 │       └── editor.rs                # ✅ Editor
 │
-├── ui/                              # ✅ Rab-specific UI
-│   ├── mod.rs
-│   ├── app.rs                       # ✅ Main event loop, App state, run()
-│   ├── chat_editor.rs               # ✅ ChatEditor
-│   ├── messages.rs                  # ✅ MessageList
-│   ├── working.rs                   # ✅ WorkingIndicator
-│   ├── footer.rs                    # ✅ Footer
-│   ├── model_selector.rs            # ✅ ModelSelector
-│   ├── help.rs                      # ✅ HelpOverlay
-│   └── theme.rs                     # ✅ RabTheme
+├── agent/                           # ✅ Agent framework + interactive UI
+│   ├── mod.rs                       # ✅ Re-exports
+│   ├── loop.rs                      # ✅ AgentEvent, LoopConfig, run_agent_loop()
+│   ├── extension.rs                 # ✅ AgentTool, Extension, CommandHandler traits
+│   └── ui/                          # ✅ Interactive mode
+│       ├── mod.rs
+│       ├── app.rs                   # ✅ Main event loop, App state, run()
+│       ├── chat_editor.rs           # ✅ ChatEditor
+│       ├── messages.rs              # ✅ MessageList
+│       ├── working.rs               # ✅ WorkingIndicator
+│       ├── footer.rs                # ✅ Footer
+│       ├── model_selector.rs        # ✅ ModelSelector
+│       ├── help.rs                  # ✅ HelpOverlay
+│       └── theme.rs                 # ✅ RabTheme
 │
-├── lib.rs                           # ✅ pub mod tui; pub mod ui;
-├── main.rs                          # ✅ CLI entry point (wired to ui::run)
+├── lib.rs                           # ✅ pub mod agent; pub mod tui;
+├── main.rs                          # ✅ CLI entry point (wired to agent::ui::run)
 ├── adapter.rs                       # (unchanged)
-├── agent.rs                         # (unchanged)
 ├── auth.rs                          # (unchanged)
 ├── builtin/                         # (unchanged)
-├── extension.rs                     # (unchanged)
 ├── provider.rs                      # (unchanged)
 ├── session.rs                       # (unchanged)
 ├── settings.rs                      # (unchanged)
 └── types.rs                         # (unchanged)
 
-src/rattui/                          # ✅ DELETED — replaced by src/tui/ + src/ui/
-src/theme.rs                         # ✅ DELETED — replaced by src/ui/theme.rs
+src/rattui/                          # ✅ DELETED — replaced by src/tui/ + src/agent/ui/
+src/theme.rs                         # ✅ DELETED — replaced by src/agent/ui/theme.rs
 ```
 
 ---
@@ -377,7 +379,7 @@ Rust reduces line count because: no need for `isPasteMarker()` segmenter wrappin
 
 ### What Changes vs pi-tui
 
-1. **Autocomplete is async-simplified.** pi-tui debounces autocomplete requests with `AbortController` and request tokens. In Rust, the app layer (`src/ui/app.rs`) spawns autocomplete tasks and the Editor just holds the current `AutocompleteSuggestions` result.
+1. **Autocomplete is async-simplified.** pi-tui debounces autocomplete requests with `AbortController` and request tokens. In Rust, the app layer (`src/agent/ui/app.rs`) spawns autocomplete tasks and the Editor just holds the current `AutocompleteSuggestions` result.
 
 2. **No `Intl.Segmenter`.** We use `unicode-segmentation` crate for grapheme iteration and `unicode-width` for display width.
 
@@ -577,7 +579,7 @@ The algorithm is a direct port of `TUI.doRender()` from `tui.ts` (lines ~1050-15
 
 ## Key Design Decisions
 
-1. **No async in Component trait.** `render()` and `handle_input()` are synchronous. Async lives in the app event loop (`src/ui/app.rs`), which feeds events to components and triggers re-renders.
+1. **No async in Component trait.** `render()` and `handle_input()` are synchronous. Async lives in the app event loop (`src/agent/ui/app.rs`), which feeds events to components and triggers re-renders.
 
 2. **Components own their state.** No global state. `Editor` owns its text buffer, cursor, history. `SelectList` owns its items, selection index, search query. `Loader` owns its frame counter.
 
@@ -589,6 +591,6 @@ The algorithm is a direct port of `TUI.doRender()` from `tui.ts` (lines ~1050-15
 
 6. **Line-level diffing, not cell-level.** pi-tui compares strings. ratatui compares `Cell` structs (char + style). Line-level is simpler and sufficient for a chat UI where most changes are full-line replacements or appends.
 
-7. **Editor lives in tui/components/ not ui/.** The Editor is a general-purpose component (like Text or SelectList). rab's app wrap it with `ChatEditor` in `src/ui/chat_editor.rs` for app-specific behavior (slash commands, file paths, submission hook).
+7. **Editor lives in tui/components/ not ui/.** The Editor is a general-purpose component (like Text or SelectList). rab's app wrap it with `ChatEditor` in `src/agent/ui/chat_editor.rs` for app-specific behavior (slash commands, file paths, submission hook).
 
 8. **Input is separate from Editor.** The `Input` component provides single-line text entry with horizontal scrolling. It is lighter than `Editor` (no word-wrap, no multiline, no autocomplete, no character jump) but shares kill-ring, undo-stack, grapheme-aware cursor, and `Focusable` support. `SettingsList` uses `Input` for its search box.

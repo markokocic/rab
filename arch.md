@@ -9,10 +9,10 @@ lets it act on your codebase.
 | pi (`packages/`) | rab equivalent | Notes |
 |---|---|---|
 | `pi-ai` (providers, streaming, models) | `Provider` trait + `adapter/genai.rs` → [genai](https://github.com/jeremychone/rust-genai) crate | Isolated behind trait; swappable. PoC targets [OpenCode Go](https://opencode.ai/docs/go/) (DeepSeek V4 Flash/Pro) via genai's OpenAI adapter. Phase 1 adds Anthropic, OpenAI, Google, Ollama |
-| `pi-agent-core` (agent loop, session, compaction, skills) | `agent.rs`, `session.rs`, `compaction.rs`, `types.rs` | Loop ported directly from `agent-loop.ts` |
-| `pi-tui` (terminal UI, components, editor) | `src/tui/` + `src/ui/` ✅ — direct Rust port of `@earendil-works/pi-tui` on top of [crossterm](https://github.com/crossterm-rs/crossterm) 0.28 | Full port: diff renderer, Component trait, Editor, Input, SelectList, SettingsList, etc. No ratatui. Main-screen mode (no alternate screen), native terminal scrolling. See [`tui.md`](tui.md) for full design. |
-| `coding-agent` (CLI, extensions, built-in tools, settings, commands) | `cli.rs`, `extension.rs`, `builtin/`, `settings.rs` | Single `Extension` trait for built-in + user extensions; commands use same `CommandHandler` interface; built-in commands in `builtin/commands.rs` |
-| `coding-agent/modes/interactive` | `src/ui/` (app-specific UI components) | ChatEditor, MessageList, Footer, ModelSelector — built on `src/tui/` primitives |
+| `pi-agent-core` (agent loop, session, compaction, skills) | `src/agent/`, `session.rs`, `compaction.rs`, `types.rs` | Loop ported directly from `agent-loop.ts` |
+| `pi-tui` (terminal UI, components, editor) | `src/tui/` + `src/agent/ui/` ✅ — direct Rust port of `@earendil-works/pi-tui` on top of [crossterm](https://github.com/crossterm-rs/crossterm) 0.28 | Full port: diff renderer, Component trait, Editor, Input, SelectList, SettingsList, etc. No ratatui. Main-screen mode (no alternate screen), native terminal scrolling. See [`tui.md`](tui.md) for full design. |
+| `coding-agent` (CLI, extensions, built-in tools, settings, commands) | `cli.rs`, `src/agent/extension.rs`, `builtin/`, `settings.rs` | Single `Extension` trait for built-in + user extensions; commands use same `CommandHandler` interface; built-in commands in `builtin/commands.rs` |
+| `coding-agent/modes/interactive` | `src/agent/ui/` (app-specific UI components) | ChatEditor, MessageList, Footer, ModelSelector — built on `src/tui/` primitives |
 | MCP extensions (third-party) | `pi-mcp-adapter` built-in extension | Phase 2. Uses `rmcp` crate. Configured via `.rab/mcp.json` |
 | Config files (`~/.pi/agent/`) | `~/.rab/` | Same file names and JSON schema as pi |
 
@@ -58,17 +58,17 @@ isolated behind a trait — replaceable with no changes to core logic.
 │       │          │          │          │                  │
 │  ┌────▼──┐ ┌────▼──┐ ┌────▼──┐ ┌────▼──┐ ┌────▼──┐      │
 │  │builtin│ │  tui/  │ │commands│ │settings│ │ sys   │      │
-│  │read   │ │  ui/   │ │.rs     │ │.rs     │ │prompt │      │
-│  │write  │ │screen  │ │/quit   │ │~/.rab/ │ │.rs    │      │
-│  │edit   │ │editor  │ │/model  │ │settings│ │AGENTS │      │
-│  │bash   │ │select  │ │        │ │        │ │.md    │      │
+│  │read   │ │ agent/ │ │.rs     │ │.rs     │ │prompt │      │
+│  │write  │ │ ui/    │ │/quit   │ │~/.rab/ │ │.rs    │      │
+│  │edit   │ │screen  │ │/model  │ │settings│ │AGENTS │      │
+│  │bash   │ │editor  │ │        │ │        │ │.md    │      │
 │  │commands│  list   │ └───────┘ └────────┘ └───────┘      │
 │  └──┬────┘ └───┬────┘                                      │
 │     │          │ crossterm (0.28)                          │
 │     │          │ unicode-segmentation, unicode-width       │
-│  └──┬────┘  impl Extension trait                        │         │
+│  └──┬────┘  impl agent::extension::Extension trait       │         │
 │  ┌──▼──────────────────────────────────────────────────────────┐│
-│  │            extension.rs  (Extension trait)                   ││
+│  │       agent/extension.rs  (AgentTool, Extension traits)     ││
 │  │  pub trait Extension {                                       ││
 │  │    fn tools(&self) -> Vec<Box<dyn AgentTool>>;               ││
 │  │    fn commands(&self) -> Vec<SlashCommand>;                  ││
@@ -154,7 +154,7 @@ AgentEvent
 
 ---
 
-## Agent loop (`agent.rs`)
+## Agent loop (`src/agent/`)
 
 Adapted directly from pi's `runAgentLoop` in `agent-loop.ts`. The loop is the
 heart of the system — everything else feeds into or reads from it.
@@ -366,7 +366,7 @@ overflow causes an error.
 
 ---
 
-## Extension trait (`extension.rs`)
+## Extension trait (`src/agent/extension.rs`)
 
 All capability — built-in or user-provided — comes through the same trait.
 There is no separate tool registration path. **Slash commands use the same
@@ -541,7 +541,7 @@ Disable with `--no-context-files` / `-nc`.
 
 rab defines its own provider abstraction. The agent loop depends on this
 trait, never on genai directly. To swap backends, write a new impl — no
-changes to `agent.rs`.
+changes to `src/agent/`.
 
 ```rust
 /// Events emitted during a streaming LLM request.
@@ -616,7 +616,7 @@ impl Provider for GenaiProvider {
 }
 ```
 
-`agent.rs` only sees `Box<dyn Provider>`.
+`src/agent/` only sees `Box<dyn Provider>`.
 
 Before the provider call, `transform_context` can prune or inject
 AgentMessages (e.g. for compaction, later).
@@ -737,7 +737,7 @@ Same crate — no separate abstraction layer needed.
 
 ---
 
-## TUI (`src/tui/` + `src/ui/`)
+## TUI (`src/tui/` + `src/agent/ui/`)
 
 Direct Rust port of pi's `@earendil-works/pi-tui` package. The TUI runs in the
 **main terminal screen** (no alternate screen), using native terminal scrolling
@@ -750,7 +750,7 @@ API specifications, keybinding tables, render layout diagrams, and porting estim
 
 ```
 ┌──────────────────────────────────────────────────┐
-│  src/ui/           rab-specific UI               │
+│  src/agent/ui/           rab-specific UI               │
 │  ChatEditor, Messages, Footer, ModelSelector, …  │
 │                                                  │
 │  src/tui/          core TUI library              │
@@ -764,7 +764,7 @@ API specifications, keybinding tables, render layout diagrams, and porting estim
 ```
 
 `src/tui/` is generic and reusable — ports pi's `@earendil-works/pi-tui` core.
-`src/ui/` is rab's app layer — ports pi's `coding-agent` interactive mode components.
+`src/agent/ui/` is rab's app layer — ports pi's `coding-agent` interactive mode components.
 
 ### Key differences from the old ratatui approach
 
@@ -804,7 +804,7 @@ API specifications, keybinding tables, render layout diagrams, and porting estim
 | `text.rs`, `truncated_text.rs`, `spacer.rs`, `box.rs` | Structural primitives. |
 | `loader.rs`, `cancellable_loader.rs` | Spinners. |
 
-### App components (`src/ui/`)
+### App components (`src/agent/ui/`)
 
 | Component | Purpose |
 |---|---|

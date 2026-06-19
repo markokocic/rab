@@ -10,7 +10,7 @@ Study these files before implementing each Rust equivalent.
 | `types.rs` | `packages/agent/src/types.ts`, `packages/coding-agent/src/core/extensions/types.ts` |
 | `provider.rs` | `packages/ai/src/types.ts`, `packages/ai/src/providers/openai-completions.ts` |
 | `adapter/genai.rs` | pi has no genai; rab uses genai crate for HTTP+streaming. Study `openai-completions.ts` for the OpenAI chat completions protocol that OpenCode Go uses |
-| `extension.rs` | `packages/agent/src/types.ts` (`AgentTool`, `AgentContext`, `AgentEvent`) |
+| `agent/extension.rs` ✅ | `packages/agent/src/types.ts` (`AgentTool`, `AgentContext`, `AgentEvent`) |
 | `tui/components/editor.rs` ✅ | `packages/tui/src/components/editor.ts` (full port), `packages/tui/src/autocomplete.ts` |
 | `tui/components/input.rs` ✅ | `packages/tui/src/components/input.ts` |
 | `tui/components/settings_list.rs` ✅ | `packages/tui/src/components/settings-list.ts` |
@@ -24,13 +24,13 @@ Study these files before implementing each Rust equivalent.
 | `builtin/write.rs` | `packages/coding-agent/src/core/tools/write.ts` |
 | `builtin/edit.rs` | `packages/coding-agent/src/core/tools/edit.ts`, `edit-diff.ts` |
 | `builtin/bash.rs` | `packages/coding-agent/src/core/tools/bash.ts`, `packages/coding-agent/src/utils/shell.ts` |
-| `agent.rs` | `packages/agent/src/agent-loop.ts` (the canonical loop) |
+| `agent/loop.rs` ✅ | `packages/agent/src/agent-loop.ts` (the canonical loop) |
 | `session.rs` | `packages/agent/src/harness/session/`, `packages/coding-agent/src/core/session-manager.ts` |
 | `compaction.rs` | `packages/agent/src/harness/compaction/compaction.ts`, `packages/coding-agent/src/core/compaction/` |
 | `settings.rs` | `packages/coding-agent/src/core/settings-manager.ts` |
 | `system_prompt.rs` | `packages/coding-agent/src/core/system-prompt.ts` |
 | `commands.rs` | `packages/coding-agent/src/core/slash-commands.ts` |
-| `ui/` (new) | `packages/coding-agent/src/modes/interactive/` (app-specific UI components) |
+| `agent/ui/` ✅ | `packages/coding-agent/src/modes/interactive/` (app-specific UI components) |
 | `skills.rs` (Phase 2) | `packages/coding-agent/src/core/skills.ts` |
 
 ---
@@ -163,7 +163,7 @@ Everything in arch.md that isn't explicitly Phase 2.
   - Tool output toggle Ctrl+O persisted to settings.json ✅
   - `!`/`!!` bash inline execution with abort support ✅
   - Pi-style paste detection: 20ms timing heuristic avoids auto-submit ✅
-  - **↓ BEING REPLACED BY `src/tui/` + `src/ui/` (see New TUI section)**
+  - **↓ BEING REPLACED BY `src/tui/` + `src/agent/ui/` (see New TUI section)**
 - [ ] **Hook pipeline** — Extend PoC hooks with `AgentContext` parameter and `CancellationToken`:
   - `before_tool_call` — all extensions consulted, first block wins
   - `after_tool_call` — result patching
@@ -189,7 +189,7 @@ Everything in arch.md that isn't explicitly Phase 2.
 ```
 
 **ratatui is dropped.** The TUI is rebuilt as a native main-screen library
-(`src/tui/` + `src/ui/`) porting pi's `@earendil-works/pi-tui` package directly.
+(`src/tui/` + `src/agent/ui/`) porting pi's `@earendil-works/pi-tui` package directly.
 See [`tui.md`](tui.md) for full design.
 
 ### New TUI (replaces ratatui-based TUI) ✅ IMPLEMENTED
@@ -212,7 +212,7 @@ See [`tui.md`](tui.md) for full design.
   - [x] `components/settings_list.rs` (353) — Toggleable settings picker (cycle values, search).
   - [x] `components/input.rs` (549) — Single-line text input (grapheme cursor, kill-ring, undo).
   - [x] `components/editor.rs` (776) — Multi-line editor (word-wrap, kill-ring, undo, history).
-- [x] **`src/ui/`** — Rab-specific app components built on `src/tui/`:
+- [x] **`src/agent/ui/`** — Rab-specific app components built on `src/tui/`:
   - [x] `app.rs` (731) — Main event loop, App state.
   - [x] `chat_editor.rs` (102) — Thin wrapper around `tui::Editor` for slash commands.
   - [x] `messages.rs` (155) — Renders conversation history as styled lines.
@@ -249,12 +249,12 @@ persistent sessions, context compaction, settings, slash commands, and custom co
 - [x] **`types.rs`** — `AgentMessage`, `Role`, `ToolCall`, `Usage`, serde camelCase
 - [x] **`provider.rs`** — `Provider` trait + `StreamEvent` enum + `StopReason` enum
 - [x] **`adapter/genai.rs`** — `GenaiProvider` wrapping `genai::Client`, implements `Provider`
-- [x] **`extension.rs`** — `Extension` trait, `AgentTool` trait, `CommandHandler` trait, `CommandResult`, `SlashCommand`, `BlockReason`
+- [x] **`agent/extension.rs`** ✅ — `Extension` trait, `AgentTool` trait, `CommandHandler` trait, `CommandResult`, `SlashCommand`, `BlockReason`
 - [x] **`builtin/read.rs`** — Read tool (offset, limit, line numbers, 50KB/2000-line truncation)
 - [x] **`builtin/write.rs`** — Write tool (parent dirs, temp file + atomic rename)
 - [x] **`builtin/edit.rs`** — Edit tool (multi-edit, uniqueness check, overlap detection, camelCase args)
 - [x] **`builtin/bash.rs`** — Bash tool (sh -c, timeout, stdout+stderr, truncation)
-- [x] **`agent.rs`** — `run_agent_loop()` with inner loop, streaming, parallel tool execution, hook pipeline, `AgentEvent` emission
+- [x] **`agent/loop.rs`** ✅ — `run_agent_loop()` with inner loop, streaming, parallel tool execution, hook pipeline, `AgentEvent` emission
 - [x] **`main.rs`** — CLI: `rab [--model <m>] <message>`, print-mode emitter, session flags, git branch detection
 - [x] **`builtin/commands.rs`** — Built-in commands: `/quit`, `/model`, `/hotkeys`, `/reload`, `/new`, `/resume`, `/session`, `/name`
 - [x] **`settings.rs`** — Load/save `~/.rab/agent/settings.json` + `.rab/settings.json` overlay
@@ -275,7 +275,7 @@ persistent sessions, context compaction, settings, slash commands, and custom co
   - Pi-style paste detection (20ms timing heuristic)
   - Session history loading, message persistence on AgentEnd
   - 6 unit tests (session message conversion)
-  - **↓ BEING REPLACED BY `src/tui/` + `src/ui/` (see New TUI section)**
+  - **↓ BEING REPLACED BY `src/tui/` + `src/agent/ui/` (see New TUI section)**
 - [x] **`theme.rs`** — Theme struct with pi-style color fields, style helpers
 - [x] **`session.rs`** — SessionManager with JSONL tree storage, 66 unit tests
 - [x] **`settings.rs`** — Pi keys (`hideThinkingBlock`, `collapseToolOutput`), `save_to()` for testing
