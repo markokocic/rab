@@ -10,7 +10,7 @@ lets it act on your codebase.
 |---|---|---|
 | `pi-ai` (providers, streaming, models) | `Provider` trait + `adapter/genai.rs` → [genai](https://github.com/jeremychone/rust-genai) crate | Isolated behind trait; swappable. PoC targets [OpenCode Go](https://opencode.ai/docs/go/) (DeepSeek V4 Flash/Pro) via genai's OpenAI adapter. Phase 1 adds Anthropic, OpenAI, Google, Ollama |
 | `pi-agent-core` (agent loop, session, compaction, skills) | `agent.rs`, `session.rs`, `compaction.rs`, `types.rs` | Loop ported directly from `agent-loop.ts` |
-| `pi-tui` (terminal UI, components, editor) | `src/tui/` + `src/ui/` — direct Rust port of `@earendil-works/pi-tui` on top of [crossterm](https://github.com/crossterm-rs/crossterm) 0.29 | Full port: diff renderer, Component trait, Editor, Input, SelectList, SettingsList, etc. No ratatui. Main-screen mode (no alternate screen), native terminal scrolling. See [`tui.md`](tui.md) for full design. |
+| `pi-tui` (terminal UI, components, editor) | `src/tui/` + `src/ui/` ✅ — direct Rust port of `@earendil-works/pi-tui` on top of [crossterm](https://github.com/crossterm-rs/crossterm) 0.28 | Full port: diff renderer, Component trait, Editor, Input, SelectList, SettingsList, etc. No ratatui. Main-screen mode (no alternate screen), native terminal scrolling. See [`tui.md`](tui.md) for full design. |
 | `coding-agent` (CLI, extensions, built-in tools, settings, commands) | `cli.rs`, `extension.rs`, `builtin/`, `settings.rs` | Single `Extension` trait for built-in + user extensions; commands use same `CommandHandler` interface; built-in commands in `builtin/commands.rs` |
 | `coding-agent/modes/interactive` | `src/ui/` (app-specific UI components) | ChatEditor, MessageList, Footer, ModelSelector — built on `src/tui/` primitives |
 | MCP extensions (third-party) | `pi-mcp-adapter` built-in extension | Phase 2. Uses `rmcp` crate. Configured via `.rab/mcp.json` |
@@ -56,13 +56,16 @@ isolated behind a trait — replaceable with no changes to core logic.
 │  │  depends on: Provider trait (not genai)           │   │
 │  └────┬──────────┬──────────┬──────────┬────────────┘   │
 │       │          │          │          │                  │
-│  ┌────▼──┐ ┌────▼──┐ ┌────▼──┐ ┌────▼──┐ ┌────▼──┐ ┌────▼──┐     │
-│  │builtin│ │editor │ │commands│ │settings│ │ sys   │ │theme  │     │
-│  │read   │ │.rs    │ │.rs     │ │.rs     │ │prompt │ │.rs    │     │
-│  │write  │ │widget │ │/quit   │ │~/.rab/ │ │.rs    │ │dark   │     │
-│  │edit   │ │       │ │/model  │ │settings│ │AGENTS │ │theme  │     │
-│  │bash   │ │       │ │        │ │        │ │.md    │ │       │     │
-│  │commands│───────┘ └───────┘ └────────┘ └───────┘ └───────┘     │
+│  ┌────▼──┐ ┌────▼──┐ ┌────▼──┐ ┌────▼──┐ ┌────▼──┐      │
+│  │builtin│ │  tui/  │ │commands│ │settings│ │ sys   │      │
+│  │read   │ │  ui/   │ │.rs     │ │.rs     │ │prompt │      │
+│  │write  │ │screen  │ │/quit   │ │~/.rab/ │ │.rs    │      │
+│  │edit   │ │editor  │ │/model  │ │settings│ │AGENTS │      │
+│  │bash   │ │select  │ │        │ │        │ │.md    │      │
+│  │commands│  list   │ └───────┘ └────────┘ └───────┘      │
+│  └──┬────┘ └───┬────┘                                      │
+│     │          │ crossterm (0.28)                          │
+│     │          │ unicode-segmentation, unicode-width       │
 │  └──┬────┘  impl Extension trait                        │         │
 │  ┌──▼──────────────────────────────────────────────────────────┐│
 │  │            extension.rs  (Extension trait)                   ││

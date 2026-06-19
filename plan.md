@@ -11,15 +11,15 @@ Study these files before implementing each Rust equivalent.
 | `provider.rs` | `packages/ai/src/types.ts`, `packages/ai/src/providers/openai-completions.ts` |
 | `adapter/genai.rs` | pi has no genai; rab uses genai crate for HTTP+streaming. Study `openai-completions.ts` for the OpenAI chat completions protocol that OpenCode Go uses |
 | `extension.rs` | `packages/agent/src/types.ts` (`AgentTool`, `AgentContext`, `AgentEvent`) |
-| `tui/components/editor.rs` (new) | `packages/tui/src/components/editor.ts` (full port), `packages/tui/src/autocomplete.ts` |
-| `tui/components/input.rs` (new) | `packages/tui/src/components/input.ts` |
-| `tui/components/settings_list.rs` (new) | `packages/tui/src/components/settings-list.ts` |
-| `tui/components/select_list.rs` (new) | `packages/tui/src/components/select-list.ts` |
-| `tui/screen.rs` (new) | `packages/tui/src/tui.ts` (doRender diff engine) |
-| `tui/terminal.rs` (new) | `packages/tui/src/terminal.ts` |
-| `tui/keys.rs` (new) | `packages/tui/src/keys.ts` |
-| `tui/util.rs` (new) | `packages/tui/src/utils.ts` |
-| `tui/fuzzy.rs` (new) | `packages/tui/src/fuzzy.ts` |
+| `tui/components/editor.rs` ✅ | `packages/tui/src/components/editor.ts` (full port), `packages/tui/src/autocomplete.ts` |
+| `tui/components/input.rs` ✅ | `packages/tui/src/components/input.ts` |
+| `tui/components/settings_list.rs` ✅ | `packages/tui/src/components/settings-list.ts` |
+| `tui/components/select_list.rs` ✅ | `packages/tui/src/components/select-list.ts` |
+| `tui/screen.rs` ✅ | `packages/tui/src/tui.ts` (doRender diff engine) |
+| `tui/terminal.rs` ✅ | `packages/tui/src/terminal.ts` |
+| `tui/keys.rs` ✅ | `packages/tui/src/keys.ts` |
+| `tui/util.rs` ✅ | `packages/tui/src/utils.ts` |
+| `tui/fuzzy.rs` ✅ | `packages/tui/src/fuzzy.ts` |
 | `builtin/read.rs` | `packages/coding-agent/src/core/tools/read.ts` |
 | `builtin/write.rs` | `packages/coding-agent/src/core/tools/write.ts` |
 | `builtin/edit.rs` | `packages/coding-agent/src/core/tools/edit.ts`, `edit-diff.ts` |
@@ -192,38 +192,39 @@ Everything in arch.md that isn't explicitly Phase 2.
 (`src/tui/` + `src/ui/`) porting pi's `@earendil-works/pi-tui` package directly.
 See [`tui.md`](tui.md) for full design.
 
-### New TUI (replaces ratatui-based TUI)
+### New TUI (replaces ratatui-based TUI) ✅ IMPLEMENTED
 
-- [ ] **`src/tui/`** — Core TUI library (generic, reusable). Port of `@earendil-works/pi-tui`:
-  - [ ] `screen.rs` — Diff renderer (~400 lines). Line-level comparison, ANSI cursor moves, synchronized output. Port of `tui.ts:doRender()`.
-  - [ ] `terminal.rs` — Crossterm wrapper: raw mode, events, cursor, resize.
-  - [ ] `keys.rs` — Key identifiers, `matches_key()`. Wrap crossterm `KeyEvent`.
-  - [ ] `util.rs` — ANSI-aware width, wrap, truncate, slice.
-  - [ ] `component.rs` — `Component` trait, `Focusable` trait, `CURSOR_MARKER`.
-  - [ ] `container.rs` — `Container` struct.
-  - [ ] `fuzzy.rs` — `fuzzy_match()`, `fuzzy_filter()`.
-  - [ ] `theme.rs` — `Theme` trait (fg/bg color functions).
-  - [ ] `kill_ring.rs` — Emacs kill/yank ring buffer.
-  - [ ] `undo_stack.rs` — Generic undo stack.
-  - [ ] `word_nav.rs` — `find_word_backward()`, `find_word_forward()`.
-  - [ ] `components/text.rs`, `truncated_text.rs`, `spacer.rs`, `box.rs` — Structural primitives.
-  - [ ] `components/loader.rs`, `cancellable_loader.rs` — Spinners.
-  - [ ] `components/select_list.rs` — Scrollable selection list with fuzzy search.
-  - [ ] `components/settings_list.rs` — Toggleable settings picker (cycle values, submenus).
-  - [ ] `components/input.rs` — Single-line text input (grapheme cursor, kill-ring, undo).
-  - [ ] `components/editor.rs` — **Full pi-tui editor port** (~1,450 lines). Multi-line, word-wrap, kill-ring, undo, paste markers, bracketed paste, autocomplete, history recall, character jump. Port of `editor.ts` (2,307 lines).
-- [ ] **`src/ui/`** — Rab-specific app components built on `src/tui/`:
-  - [ ] `app.rs` — Main event loop, App state.
-  - [ ] `chat_editor.rs` — Thin wrapper around `tui::Editor` for slash commands, file autocomplete, submission hook.
-  - [ ] `messages.rs` — Renders conversation history as styled lines.
-  - [ ] `working.rs` — Spinner during streaming.
-  - [ ] `footer.rs` — Cwd + git branch + token stats + model.
-  - [ ] `model_selector.rs` — Model picker overlay using `tui::SelectList`.
-  - [ ] `help.rs` — `/help` display.
-  - [ ] `theme.rs` — Concrete color theme, direct ANSI emission (replaces ratatui `Style`).
-- [ ] **Remove** `src/rattui/` (old ratatui-based TUI, ~3,200 lines)
-- [ ] **Remove** `src/theme.rs` (ratatui `Style`-based, 171 lines — colors move to `src/ui/theme.rs`)
-- [ ] **Remove** `ratatui` from Cargo.toml dependencies
+- [x] **`src/tui/`** — Core TUI library (generic, reusable). Port of `@earendil-works/pi-tui`:
+  - [x] `screen.rs` — Diff renderer (379 lines). Line-level comparison, ANSI cursor moves, synchronized output. Port of `tui.ts:doRender()`.
+  - [x] `terminal.rs` — Crossterm wrapper (125 lines): raw mode, events, cursor, resize.
+  - [x] `keys.rs` — Key identifiers (267 lines), `matches_key()`. Wrap crossterm `KeyEvent`.
+  - [x] `util.rs` — ANSI-aware width, wrap, truncate, slice (817 lines).
+  - [x] `component.rs` — `Component` trait, `Focusable` trait, `CURSOR_MARKER`.
+  - [x] `container.rs` — `Container` struct.
+  - [x] `fuzzy.rs` — `fuzzy_match()`, `fuzzy_filter()` (263 lines).
+  - [x] `theme.rs` — `Theme` trait (fg/bg/bold color functions).
+  - [x] `kill_ring.rs` — Emacs kill/yank ring buffer (128 lines).
+  - [x] `undo_stack.rs` — Generic undo stack (73 lines).
+  - [x] `word_nav.rs` — `find_word_backward()`, `find_word_forward()` (281 lines).
+  - [x] `components/text.rs` (142), `truncated_text.rs` (72), `spacer.rs` (38), `box.rs` (113) — Structural primitives.
+  - [x] `components/loader.rs` (109), `cancellable_loader.rs` (82) — Spinners.
+  - [x] `components/select_list.rs` (305) — Scrollable selection list with fuzzy search.
+  - [x] `components/settings_list.rs` (353) — Toggleable settings picker (cycle values, search).
+  - [x] `components/input.rs` (549) — Single-line text input (grapheme cursor, kill-ring, undo).
+  - [x] `components/editor.rs` (776) — Multi-line editor (word-wrap, kill-ring, undo, history).
+- [x] **`src/ui/`** — Rab-specific app components built on `src/tui/`:
+  - [x] `app.rs` (731) — Main event loop, App state.
+  - [x] `chat_editor.rs` (102) — Thin wrapper around `tui::Editor` for slash commands.
+  - [x] `messages.rs` (155) — Renders conversation history as styled lines.
+  - [x] `working.rs` (73) — Spinner during streaming.
+  - [x] `footer.rs` (103) — Cwd + git branch + token stats + model.
+  - [x] `model_selector.rs` (96) — Model picker overlay using `tui::SelectList`.
+  - [x] `help.rs` (98) — `/help` display.
+  - [x] `theme.rs` (105) — Concrete color theme, direct ANSI emission.
+- [x] **Remove** `src/rattui/` (old ratatui-based TUI, ~3,200 lines)
+- [x] **Remove** `src/theme.rs` (ratatui `Style`-based, 171 lines)
+- [x] **Remove** `ratatui` from Cargo.toml dependencies
+- [x] **Add** `crossterm 0.28` and `unicode-width 0.2` to Cargo.toml
 
 ### Deliverable
 
