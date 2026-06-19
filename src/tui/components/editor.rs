@@ -1,6 +1,7 @@
 #![allow(clippy::type_complexity)]
 
 use crate::tui::component::Component;
+use crate::tui::components::select_list::{SelectItem, SelectList, SelectListTheme};
 use crate::tui::focusable::{CURSOR_MARKER, Focusable};
 use crate::tui::keys::{Key, key_event_to_string, matches_key};
 use crate::tui::kill_ring::KillRing;
@@ -67,6 +68,10 @@ pub struct Editor {
     pub on_submit: Option<Box<dyn FnMut(String)>>,
     pub on_change: Option<Box<dyn FnMut(&str)>>,
     pub disable_submit: bool,
+
+    // Pi-style autocomplete state (uses SelectList)
+    autocomplete_list: Option<SelectList>,
+    pub autocomplete_active: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -96,6 +101,8 @@ impl Editor {
             on_submit: None,
             on_change: None,
             disable_submit: false,
+            autocomplete_list: None,
+            autocomplete_active: false,
         }
     }
 
@@ -135,6 +142,52 @@ impl Editor {
         self.last_action = None;
         self.push_undo();
         self.insert_text_internal(text);
+    }
+
+    // ── Autocomplete (pi-style: uses SelectList) ──
+
+    pub fn set_autocomplete(&mut self, items: Vec<SelectItem>) {
+        if items.is_empty() {
+            self.autocomplete_active = false;
+            self.autocomplete_list = None;
+            return;
+        }
+        // Build SelectListTheme with standalone closures (Box<dyn Fn> is not Clone).
+        let theme = SelectListTheme {
+            selected_prefix: Box::new(|s| {
+                format!("\x1b[7m\x1b[38;2;138;190;183m→ {}\x1b[27m\x1b[39m", s)
+            }),
+            selected_text: Box::new(|s| {
+                format!("\x1b[7m\x1b[38;2;138;190;183m{}\x1b[27m\x1b[39m", s)
+            }),
+            normal_text: Box::new(|s| format!("\x1b[38;2;128;128;128m{}\x1b[39m", s)),
+            description: Box::new(|s| format!("\x1b[38;2;128;128;128m{}\x1b[39m", s)),
+            scroll_info: Box::new(|s| format!("\x1b[38;2;128;128;128m{}\x1b[39m", s)),
+            no_match: Box::new(|s| s.to_string()),
+            hint: Box::new(|s| s.to_string()),
+        };
+        let mut list = SelectList::new(items, 5, theme);
+        list.set_selected_index(0);
+        self.autocomplete_list = Some(list);
+        self.autocomplete_active = true;
+    }
+
+    pub fn clear_autocomplete(&mut self) {
+        self.autocomplete_active = false;
+        self.autocomplete_list = None;
+    }
+
+    pub fn autocomplete_selected_value(&self) -> Option<String> {
+        self.autocomplete_list
+            .as_ref()
+            .and_then(|l| l.selected_item())
+            .map(|item| item.value.clone())
+    }
+
+    pub fn autocomplete_is_empty(&self) -> bool {
+        self.autocomplete_list
+            .as_ref()
+            .is_none_or(|l| l.items().is_empty())
     }
 
     // ── Undo ──
@@ -648,10 +701,42 @@ impl Component for Editor {
             result.push((self.theme.border)(&horizontal.repeat(width)));
         }
 
+        // ── Autocomplete dropdown (pi-style: renders SelectList below bottom border) ──
+        if self.autocomplete_active
+            && let Some(ref list) = self.autocomplete_list
+        {
+            let list_lines = list.render(width);
+            result.extend(list_lines);
+        }
+
         result
     }
 
     fn handle_input(&mut self, key: &KeyEvent) -> bool {
+        // ── Autocomplete: route to SelectList (pi-style) ──
+        if let Some(ref mut list) = self.autocomplete_list {
+            // Escape closes dropdown without accepting
+            if matches_key(key, &Key::Escape) {
+                self.clear_autocomplete();
+                return true;
+            }
+            // Enter/Tab accept the selected item
+            if matches_key(key, &Key::Enter) || matches_key(key, &Key::Tab) {
+                if let Some(val) = list.selected_item().map(|i| i.value.clone()) {
+                    self.set_text(&format!("/{} ", val));
+                }
+                self.clear_autocomplete();
+                return true;
+            }
+            // Up/Down delegate to SelectList
+            if matches_key(key, &Key::Up) || matches_key(key, &Key::Down) {
+                list.handle_input(key);
+                return true;
+            }
+            // Any other key dismisses autocomplete
+            self.clear_autocomplete();
+        }
+
         // ── Enter / Submit ──
         if matches_key(key, &Key::Enter) {
             if self.disable_submit {

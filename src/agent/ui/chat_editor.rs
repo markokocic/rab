@@ -63,17 +63,20 @@ impl ChatEditor {
     }
 
     /// Check if the current input should trigger autocomplete.
-    pub fn get_autocomplete_suggestions(&self) -> Vec<String> {
+    /// Returns pi-style SelectItems with value + label + description.
+    pub fn get_autocomplete_suggestions(
+        &self,
+    ) -> Vec<crate::tui::components::select_list::SelectItem> {
         let text = self.editor.get_text();
 
         // Slash command completion
         if text.starts_with('/') {
             let cmd_part = text.trim_start_matches('/');
-            let matches: Vec<String> = self
+            let matches: Vec<_> = self
                 .slash_commands
                 .iter()
                 .filter(|c| c.starts_with(cmd_part))
-                .cloned()
+                .map(|c| crate::tui::components::select_list::SelectItem::new(c.clone(), c.clone()))
                 .collect();
             return matches;
         }

@@ -38,41 +38,6 @@ Study these files before implementing each Rust equivalent.
 
 ---
 
-## PoC Phase ✅
-
-**Goal:** End-to-end agent loop via [OpenCode Go](https://opencode.ai/docs/go/) with
-DeepSeek V4 Flash and Pro models plus four built-in tools. Uses settings files
-(same schema as pi) for provider and model configuration. Everything else is
-in-memory, no persistence.
-
-### Provider: OpenCode Go
-
-OpenCode Go is a subscription service ($10/month) providing an OpenAI-compatible
-API at `https://opencode.ai/zen/go/v1`. Models:
-
-| Model | ID | Reasoning |
-|---|---|---|
-| DeepSeek V4 Flash | `deepseek-v4-flash` | `off`, `high`, `max` |
-| DeepSeek V4 Pro | `deepseek-v4-pro` | `off`, `high`, `max` |
-
-Both models use the `/chat/completions` endpoint with standard OpenAI
-request/response format. Auth is `Authorization: Bearer <api_key>`.
-API key and base URL come from settings files, not environment variables.
-
-### Dependencies
-
-```
-tokio, serde, serde_json, uuid, chrono, anyhow, futures, async-trait, colored, genai, directories, async-stream
-```
-
-### Deliverable
-
-A binary that reads provider/model config from `~/.rab/agent/settings.json` and
-`~/.rab/agent/auth.json`, connects to OpenCode Go, runs the agent loop with tool
-calling, and prints the result. No session files, no TUI, no env vars.
-
----
-
 ## Phase 1
 
 **Goal:** Full-featured coding agent with TUI, sessions, settings, compaction.
@@ -170,6 +135,12 @@ Everything in arch.md that isn't explicitly Phase 2.
   - Cursor position calculations use consistent (updated) viewport ✅
   - `prev_viewport_top` recalculated at end: `max(viewport_top, render_end - height + 1)` ✅
   - `max_lines_rendered` tracked during differential renders for correct `clear_on_shrink` ✅
+- [x] **Slash command autocomplete** — Pi-style dropdown below editor border:
+  - Tab triggers completion for `/command` prefix ✅
+  - Up/Down navigates dropdown with wrap-around ✅
+  - Enter/Tab accepts selection ✅
+  - Escape closes dropdown ✅
+  - Suggestions from ChatEditor.get_autocomplete_suggestions() ✅
 - [x] **Layout stability** — Working indicator always rendered:
   - Removed `if is_streaming` guard — one empty line when inactive keeps line count stable ✅
   - Eliminates full-screen clears when streaming starts/stops ✅

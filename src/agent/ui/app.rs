@@ -107,6 +107,9 @@ pub struct App {
     /// Working indicator.
     working: WorkingIndicator,
 
+    /// Transient status text (pi-style: replaces previous status, not added to chat).
+    status_text: Option<String>,
+
     /// Agent tools (for tool execution).
     agent_tools: Arc<Vec<Box<dyn AgentTool>>>,
     /// Extensions.
@@ -184,6 +187,7 @@ impl App {
             extensions: Arc::new(config.extensions),
             queued_messages: Vec::new(),
             settings: config.settings,
+            status_text: None,
         }
     }
 }
@@ -211,6 +215,9 @@ pub async fn run(config: AppConfig, session: SessionManager) -> anyhow::Result<(
 
         // Render to screen
         screen.render(lines, cols, rows, &mut stdout)?;
+
+        // Pi: clear transient status after rendering
+        app.status_text = None;
 
         // Poll for events
         let timeout = if app.is_streaming || app.working.active {
@@ -326,6 +333,12 @@ fn compose_ui(app: &mut App, width: usize, _height: usize) -> Vec<String> {
         }
     }
 
+    // ── Transient status text (pi-style: replaces previous status, not added to chat) ──
+    if let Some(ref status) = app.status_text {
+        let line = app.theme.fg("dim", &format!(" {}", status));
+        lines.push(crate::agent::ui::messages::pad_to_width(&line, width));
+    }
+
     // ── Queued messages (pi-style: shown between chat and editor) ──
     if !app.queued_messages.is_empty() {
         for msg in &app.queued_messages {
@@ -375,10 +388,7 @@ fn handle_input(app: &mut App, key: &KeyEvent) {
             if let Some(ref model) = ms.selected_model {
                 app.model = model.clone();
                 app.footer.set_model(model);
-                app.messages.push(DisplayMsg::Info(format!(
-                    "Model: {}",
-                    model.replace("opencode_go::", "")
-                )));
+                app.status_text = Some(format!("Model: {}", model.replace("opencode_go::", "")));
             }
             app.show_model_selector = false;
             app.model_selector = None;
@@ -404,7 +414,7 @@ fn handle_input(app: &mut App, key: &KeyEvent) {
                 app.queued_messages.clear();
             }
 
-            app.messages.push(DisplayMsg::Info("Interrupted".into()));
+            app.status_text = Some("Interrupted".into());
         } else {
             // Clear editor
             app.editor.editor.set_text("");
@@ -413,6 +423,11 @@ fn handle_input(app: &mut App, key: &KeyEvent) {
     }
 
     if matches_key(key, &Key::Escape) {
+        // Pi-style: close autocomplete first if active
+        if app.editor.editor.autocomplete_active {
+            app.editor.editor.clear_autocomplete();
+            return;
+        }
         // Pi-style: Escape aborts current operation
         if app.is_streaming {
             // Abort agent task (same as Ctrl+C)
@@ -430,7 +445,7 @@ fn handle_input(app: &mut App, key: &KeyEvent) {
                 app.queued_messages.clear();
             }
 
-            app.messages.push(DisplayMsg::Info("Interrupted".into()));
+            app.status_text = Some("Interrupted".into());
         } else {
             app.editor.editor.set_text("");
             app.history_index = None;
@@ -484,6 +499,17 @@ fn handle_input(app: &mut App, key: &KeyEvent) {
         return;
     }
 
+    // Tab = autocomplete slash command (pi-style)
+    // Tab = trigger or navigate autocomplete (pi-style)
+    if matches_key(key, &Key::Tab) && !app.editor.editor.autocomplete_active {
+        let text = app.editor.editor.get_text();
+        if text.starts_with('/') {
+            let suggestions = app.editor.get_autocomplete_suggestions();
+            app.editor.editor.set_autocomplete(suggestions);
+        }
+        return;
+    }
+
     // F1 = help
     if key.code == KeyCode::F(1) {
         app.show_help = true;
@@ -507,15 +533,17 @@ fn handle_input(app: &mut App, key: &KeyEvent) {
         return;
     }
 
-    // Up/Down for history
-    if matches_key(key, &Key::Up) && app.editor.editor.get_text().is_empty() {
-        recall_history(app, -1);
-        return;
-    }
+    // Up/Down for history (pi: not when autocomplete is active)
+    if !app.editor.editor.autocomplete_active {
+        if matches_key(key, &Key::Up) && app.editor.editor.get_text().is_empty() {
+            recall_history(app, -1);
+            return;
+        }
 
-    if matches_key(key, &Key::Down) && app.editor.editor.get_text().is_empty() {
-        recall_history(app, 1);
-        return;
+        if matches_key(key, &Key::Down) && app.editor.editor.get_text().is_empty() {
+            recall_history(app, 1);
+            return;
+        }
     }
 
     // PageUp/Down for scroll
@@ -626,10 +654,10 @@ fn handle_slash_command(app: &mut App, input: &str) {
     }
 
     // Unknown command
-    app.messages.push(DisplayMsg::Info(format!(
+    app.status_text = Some(format!(
         "Unknown command: /{}. Type /help for available commands.",
         cmd_name
-    )));
+    ));
 }
 
 /// Handle ! and !! bang commands.

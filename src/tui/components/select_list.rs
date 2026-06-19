@@ -95,6 +95,28 @@ impl SelectList {
     }
 
     /// Update the items list.
+    pub fn set_on_select(&mut self, cb: Box<dyn FnMut(String)>) {
+        self.on_select = Some(cb);
+    }
+
+    pub fn set_on_cancel(&mut self, cb: Box<dyn FnMut()>) {
+        self.on_cancel = Some(cb);
+    }
+
+    pub fn items(&self) -> &[SelectItem] {
+        &self.items
+    }
+
+    pub fn selected_index(&self) -> usize {
+        self.selected_index
+    }
+
+    pub fn set_selected_index(&mut self, index: usize) {
+        let max = self.filtered_indices.len().saturating_sub(1);
+        self.selected_index = index.min(max);
+        self.adjust_scroll();
+    }
+
     pub fn set_items(&mut self, items: Vec<SelectItem>) {
         self.items = items;
         self.filtered_indices = (0..self.items.len()).collect();

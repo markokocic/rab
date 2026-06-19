@@ -1,7 +1,6 @@
 use crate::agent::ui::theme::RabTheme;
 use crate::tui::Component;
 use crate::tui::Theme;
-use crate::tui::util::visible_width;
 
 /// Help overlay showing available commands and keybindings.
 pub struct HelpOverlay {
@@ -25,13 +24,16 @@ impl HelpOverlay {
 impl Component for HelpOverlay {
     fn render(&self, width: usize) -> Vec<String> {
         let mut lines = Vec::new();
-        let _w = width.saturating_sub(4);
 
-        // Title
-        lines.push(format!(
-            "  {}",
-            self.theme.bold(&self.theme.accent("Keyboard Shortcuts"))
-        ));
+        // Reusable Text + Spacer for each section
+        let push = |l: &mut Vec<String>, text: &str| {
+            l.push(crate::tui::util::truncate_to_width(text, width, "", true));
+        };
+
+        push(
+            &mut lines,
+            &self.theme.bold(&self.theme.accent("  Keyboard Shortcuts")),
+        );
         lines.push(String::new());
 
         let shortcuts = [
@@ -56,16 +58,15 @@ impl Component for HelpOverlay {
                 self.theme.bold(&self.theme.accent(key)),
                 self.theme.dim(desc)
             );
-            lines.push(line);
+            push(&mut lines, &line);
         }
 
-        // Slash commands
         if !self.commands.is_empty() {
             lines.push(String::new());
-            lines.push(format!(
-                "  {}",
-                self.theme.bold(&self.theme.accent("Slash Commands"))
-            ));
+            push(
+                &mut lines,
+                &self.theme.bold(&self.theme.accent("  Slash Commands")),
+            );
             lines.push(String::new());
             for (name, desc) in &self.commands {
                 let line = format!(
@@ -73,20 +74,15 @@ impl Component for HelpOverlay {
                     self.theme.bold(&self.theme.accent(name)),
                     self.theme.dim(desc)
                 );
-                lines.push(line);
+                push(&mut lines, &line);
             }
         }
 
         lines.push(String::new());
-        lines.push(self.theme.dim("  Press any key to close help."));
-
-        // Pad all lines to width
-        lines.iter_mut().for_each(|l| {
-            let vw = visible_width(l);
-            if vw < width {
-                l.push_str(&" ".repeat(width - vw));
-            }
-        });
+        push(
+            &mut lines,
+            &self.theme.dim("  Press any key to close help."),
+        );
 
         lines
     }
