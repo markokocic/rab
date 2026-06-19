@@ -1048,9 +1048,6 @@ mod tests {
     fn up_key() -> KeyEvent {
         KeyEvent::new(KeyCode::Up, KeyModifiers::NONE)
     }
-    fn down_key() -> KeyEvent {
-        KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)
-    }
     fn char_key(c: char) -> KeyEvent {
         KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
     }

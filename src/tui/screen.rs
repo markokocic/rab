@@ -376,4 +376,36 @@ mod tests {
         let output_str = String::from_utf8(output.clone()).unwrap();
         assert!(output_str.contains("rust"));
     }
+
+    #[test]
+    fn test_type_character_single_line_change() {
+        let mut screen = Screen::new();
+        let mut output = Vec::new();
+
+        // Simulate compose_ui: 12 lines, editor content at index 7
+        let mut initial: Vec<String> = Vec::new();
+        for i in 0..12 {
+            initial.push(format!("line {:02}", i));
+        }
+        screen.render(initial.clone(), 40, 24, &mut output).unwrap();
+        output.clear();
+
+        // Type "/" — only index 7 changes
+        let mut after = initial.clone();
+        after[7] = "line 07/".to_string();
+        screen.render(after, 40, 24, &mut output).unwrap();
+
+        let text = String::from_utf8_lossy(&output);
+        // Should contain the changed text
+        assert!(
+            text.contains("line 07/"),
+            "Missing changed text in: {}",
+            text
+        );
+        // Should NOT do a full clear
+        assert!(
+            !text.contains("\x1b[2J"),
+            "Should not full-clear on single line change"
+        );
+    }
 }
