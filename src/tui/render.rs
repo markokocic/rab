@@ -39,22 +39,38 @@ pub(crate) fn editor_height(app: &App) -> u16 {
     (lines + 2).clamp(3, 10) as u16
 }
 
+/// Resolve the scroll position from the current state.
+/// Returns (scroll_line, new_auto_scroll).
+pub(crate) fn resolve_scroll(
+    total_lines: usize,
+    viewport: usize,
+    scroll_offset: usize,
+    auto_scroll: bool,
+) -> (usize, bool) {
+    let max_scroll = total_lines.saturating_sub(viewport);
+
+    if auto_scroll {
+        (max_scroll, true)
+    } else {
+        let clamped = scroll_offset.min(max_scroll);
+        let snapped = clamped >= max_scroll;
+        (clamped, snapped)
+    }
+}
+
 pub(crate) fn render_messages(frame: &mut Frame, area: Rect, app: &App) {
     let text = build_message_text(app);
     let total_lines = text.lines.len().saturating_sub(1);
     let viewport = area.height.saturating_sub(1) as usize;
-    let bottom = total_lines.saturating_sub(viewport);
 
-    let scroll = if app.auto_scroll.get() {
-        app.scroll_line.set(bottom);
-        bottom
-    } else {
-        let clamped = app.scroll_line.get().min(bottom);
-        if clamped >= bottom {
-            app.auto_scroll.set(true);
-        }
-        clamped
-    };
+    let (scroll, new_auto) = resolve_scroll(
+        total_lines,
+        viewport,
+        app.scroll_offset.get(),
+        app.auto_scroll.get(),
+    );
+    app.scroll_offset.set(scroll);
+    app.auto_scroll.set(new_auto);
 
     let para = Paragraph::new(text).scroll((scroll as u16, 0));
     frame.render_widget(para, area);
@@ -169,5 +185,89 @@ pub(crate) fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
             Paragraph::new(Line::from(Span::styled(line, th.footer_style()))),
             Rect::new(area.x, area.y + 1, area.width, 1),
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_scroll;
+
+    #[test]
+    fn auto_scroll_follows_bottom() {
+        // Content fits exactly — max_scroll = 0, scroll stays at 0
+        let (scroll, auto) = resolve_scroll(5, 5, 0, true);
+        assert_eq!(scroll, 0);
+        assert!(auto);
+
+        // Content overflows — max_scroll = 3, auto_scroll snaps to it
+        let (scroll, auto) = resolve_scroll(10, 5, 0, true);
+        assert_eq!(scroll, 5);
+        assert!(auto);
+    }
+
+    #[test]
+    fn manual_scroll_stays_put() {
+        // User scrolled up to line 3, content overflows
+        let (scroll, auto) = resolve_scroll(20, 5, 3, false);
+        assert_eq!(scroll, 3);
+        assert!(!auto);
+    }
+
+    #[test]
+    fn manual_scroll_clamped_to_max() {
+        // scroll_offset beyond max_scroll is clamped to bottom, snaps to auto
+        let (scroll, auto) = resolve_scroll(10, 5, 100, false);
+        assert_eq!(scroll, 5);
+        assert!(auto); // clamped to bottom → auto re-engages
+    }
+
+    #[test]
+    fn snap_to_bottom_when_scrolled_to_end() {
+        // User manually scrolled to exactly the bottom
+        let (scroll, auto) = resolve_scroll(10, 5, 5, false);
+        assert_eq!(scroll, 5);
+        assert!(auto); // snaps back to auto
+    }
+
+    #[test]
+    fn snap_when_content_shrinks_below_viewport() {
+        // Content shrunk from large to below viewport — old scroll_offset
+        // no longer exists, clamped to 0, snaps to auto
+        let (scroll, auto) = resolve_scroll(3, 5, 50, false);
+        assert_eq!(scroll, 0);
+        assert!(auto);
+    }
+
+    #[test]
+    fn auto_scroll_ignores_offset() {
+        // offset is ignored when auto_scroll is true
+        let (scroll, auto) = resolve_scroll(100, 5, 42, true);
+        assert_eq!(scroll, 95);
+        assert!(auto);
+    }
+
+    #[test]
+    fn empty_content() {
+        let (scroll, auto) = resolve_scroll(0, 5, 0, true);
+        assert_eq!(scroll, 0);
+        assert!(auto);
+    }
+
+    #[test]
+    fn manual_scroll_survives_content_shrink() {
+        // Content shrinks but scroll_offset still within new bounds
+        let (scroll, auto) = resolve_scroll(50, 5, 30, false);
+        assert_eq!(scroll, 30);
+        assert!(!auto);
+    }
+
+    #[test]
+    fn manual_scroll_up_then_content_grows() {
+        // User scrolled up to line 5 when max_scroll was 10
+        // Content grows, max_scroll becomes 15
+        // scroll_offset should stay at 5, auto remains false
+        let (scroll, auto) = resolve_scroll(20, 5, 5, false);
+        assert_eq!(scroll, 5);
+        assert!(!auto);
     }
 }

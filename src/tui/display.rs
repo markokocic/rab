@@ -221,8 +221,8 @@ pub(crate) fn help_lines(app: &App) -> Vec<Line<'static>> {
             "  ↑↓                 History (editor empty)",
             dim,
         )),
-        Line::from(Span::styled("  PgUp / PgDn        Page scroll", dim)),
-        Line::from(Span::styled("  Mouse wheel        Scroll", dim)),
+        Line::from(Span::styled("  PgUp / PgDn        Scroll messages", dim)),
+        Line::from(Span::styled("  Mouse wheel        Scroll messages", dim)),
     ];
 
     // List slash commands from extensions

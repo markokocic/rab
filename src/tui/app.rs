@@ -1,6 +1,6 @@
 use super::display::{DisplayMsg, session_messages_to_display, welcome_messages};
 use super::editor::{Editor, SlashCommandInfo};
-use super::keyboard::{handle_key, parse_bang_command};
+use super::keyboard::{handle_key, parse_bang_command, scroll_down, scroll_up};
 use super::render::ui;
 use crate::agent::{AgentEvent, LoopConfig, run_agent_loop};
 use crate::extension::{AgentTool, CommandResult, Extension, SlashCommand};
@@ -8,7 +8,7 @@ use crate::provider::{Provider, ToolDef};
 use crate::session::SessionManager;
 use crate::theme::{DARK, Theme};
 use crate::types::AgentMessage;
-use ratatui::crossterm::event::Event;
+use ratatui::crossterm::event::{Event, MouseEventKind};
 use ratatui::style::{Color, Style};
 use ratatui::widgets::{Block, Borders};
 use std::cell::Cell;
@@ -79,7 +79,8 @@ pub(crate) struct App {
     /// Rendered display messages
     pub(crate) messages: Vec<DisplayMsg>,
     /// Scroll state: top line index (from top of content). Managed via Cell for render access.
-    pub(crate) scroll_line: Cell<usize>,
+    pub(crate) scroll_offset: Cell<usize>,
+    /// When true, new messages auto-scroll to bottom.
     pub(crate) auto_scroll: Cell<bool>,
 
     pub(crate) editor: Editor,
@@ -125,6 +126,7 @@ pub async fn run(config: TuiConfig, session: SessionManager) -> anyhow::Result<(
         ratatui::crossterm::cursor::Show,
         ratatui::crossterm::cursor::SetCursorStyle::BlinkingBlock,
         ratatui::crossterm::event::EnableBracketedPaste,
+        ratatui::crossterm::event::EnableMouseCapture,
     )?;
     let backend = ratatui::backend::CrosstermBackend::new(stdout);
     let mut terminal = ratatui::Terminal::new(backend)?;
@@ -136,6 +138,7 @@ pub async fn run(config: TuiConfig, session: SessionManager) -> anyhow::Result<(
         terminal.backend_mut(),
         ratatui::crossterm::terminal::LeaveAlternateScreen,
         ratatui::crossterm::event::DisableBracketedPaste,
+        ratatui::crossterm::event::DisableMouseCapture,
     )?;
     result
 }
@@ -192,7 +195,7 @@ fn run_app(
             all.extend(welcome);
             all
         },
-        scroll_line: Cell::new(0),
+        scroll_offset: Cell::new(0),
         auto_scroll: Cell::new(true),
         editor: create_editor_with(&command_infos, &config.cwd),
         event_tx: tx,
@@ -229,6 +232,15 @@ fn run_app(
                     app.editor.handle_paste(&data);
                 }
                 Event::Resize(..) => {}
+                Event::Mouse(mouse) => match mouse.kind {
+                    MouseEventKind::ScrollUp => {
+                        scroll_up(&mut app, 3);
+                    }
+                    MouseEventKind::ScrollDown => {
+                        scroll_down(&mut app, 3);
+                    }
+                    _ => {}
+                },
                 _ => {}
             }
         }
@@ -398,7 +410,6 @@ pub(crate) fn submit_message(app: &mut App, message: String) {
                         names.join(", ")
                     )));
                     app.editor = create_editor(app);
-                    app.auto_scroll.set(true);
                     None
                 } else {
                     app.messages.push(DisplayMsg::Info(format!(
@@ -406,7 +417,6 @@ pub(crate) fn submit_message(app: &mut App, message: String) {
                         cmd_name
                     )));
                     app.editor = create_editor(app);
-                    app.auto_scroll.set(true);
                     None
                 }
             }
@@ -576,7 +586,6 @@ pub(crate) fn apply_command_result(app: &mut App, result: anyhow::Result<Command
         }
     }
     app.editor = create_editor(app);
-    app.auto_scroll.set(true);
 }
 
 pub(crate) fn collect_tool_defs_from_shared(shared: &SharedState) -> Vec<ToolDef> {
@@ -619,7 +628,6 @@ pub(crate) fn handle_agent_event(app: &mut App, event: AgentEvent) {
                 flush_thinking(app);
                 app.pending_text = Some(delta);
             }
-            app.auto_scroll.set(true);
         }
         AgentEvent::ThinkingDelta { delta } => {
             if let Some(ref mut text) = app.pending_thinking {
@@ -628,7 +636,6 @@ pub(crate) fn handle_agent_event(app: &mut App, event: AgentEvent) {
                 flush_text(app);
                 app.pending_thinking = Some(delta);
             }
-            app.auto_scroll.set(true);
         }
         AgentEvent::ToolCall {
             ref name, ref args, ..
@@ -638,7 +645,6 @@ pub(crate) fn handle_agent_event(app: &mut App, event: AgentEvent) {
                 name: name.clone(),
                 args: serde_json::to_string(args).unwrap_or_default(),
             });
-            app.auto_scroll.set(true);
         }
         AgentEvent::ToolResult {
             ref content,
@@ -649,7 +655,6 @@ pub(crate) fn handle_agent_event(app: &mut App, event: AgentEvent) {
                 content: content.clone(),
                 is_error,
             });
-            app.auto_scroll.set(true);
         }
         AgentEvent::TurnEnd => {
             flush_all(app);

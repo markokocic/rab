@@ -4,6 +4,20 @@ use super::model_selector::filter_models;
 use crate::extension::SlashCommand;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
+pub(crate) fn scroll_up(app: &mut App, lines: usize) {
+    app.auto_scroll.set(false);
+    let current = app.scroll_offset.get();
+    app.scroll_offset.set(current.saturating_sub(lines));
+}
+
+pub(crate) fn scroll_down(app: &mut App, lines: usize) {
+    if app.auto_scroll.get() {
+        return;
+    }
+    let current = app.scroll_offset.get();
+    app.scroll_offset.set(current.saturating_add(lines));
+}
+
 pub(crate) fn recall_history(app: &mut App, direction: isize) {
     // Collect user messages from conversation (newest last)
     let user_messages: Vec<&str> = app
@@ -48,20 +62,6 @@ pub(crate) fn recall_history(app: &mut App, direction: isize) {
     }
 }
 
-pub(crate) fn scroll_up(app: &mut App, lines: usize) {
-    app.auto_scroll.set(false);
-    let current = app.scroll_line.get();
-    app.scroll_line.set(current.saturating_sub(lines));
-}
-
-pub(crate) fn scroll_down(app: &mut App, lines: usize) {
-    if app.auto_scroll.get() {
-        return;
-    }
-    let current = app.scroll_line.get();
-    app.scroll_line.set(current.saturating_add(lines));
-}
-
 pub(crate) fn handle_key(app: &mut App, key: KeyEvent) {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let _shift = key.modifiers.contains(KeyModifiers::SHIFT);
@@ -98,7 +98,6 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) {
                 }
                 app.is_streaming = false;
                 app.messages.push(DisplayMsg::Info("Aborted".to_string()));
-                app.auto_scroll.set(true);
             } else {
                 app.editor = create_editor(app);
                 app.history_index = None;
@@ -114,7 +113,6 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) {
                 }
                 app.is_streaming = false;
                 app.messages.push(DisplayMsg::Info("Aborted".to_string()));
-                app.auto_scroll.set(true);
             } else if app.editor.is_empty() {
                 app.should_quit = true;
             }
@@ -129,7 +127,6 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) {
                 }
                 app.is_streaming = false;
                 app.messages.push(DisplayMsg::Info("Aborted".to_string()));
-                app.auto_scroll.set(true);
             }
         }
         // Ctrl+T: toggle thinking (pi-style, persisted to settings.json)
@@ -147,7 +144,6 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) {
                     "visible"
                 }
             )));
-            app.auto_scroll.set(true);
         }
         // Ctrl+L: open model selector (pi-style)
         KeyCode::Char('l') if ctrl => {
@@ -174,7 +170,6 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) {
                     "expanded"
                 }
             )));
-            app.auto_scroll.set(true);
         }
         // Ctrl+J: newline (terminal-independent, works on all terminals)
         KeyCode::Char('j') if ctrl => {
@@ -239,7 +234,6 @@ pub(crate) fn handle_model_selector_key(app: &mut App, key: KeyEvent) {
                     "Model: {}",
                     selected.replace("opencode_go::", "")
                 )));
-                app.auto_scroll.set(true);
             }
         }
         KeyCode::Up => {
@@ -332,7 +326,6 @@ fn handle_slash_completion(app: &mut App, text: &str) {
             } else {
                 let names: Vec<String> = matches.iter().map(|c| format!("/{}", c.name)).collect();
                 app.messages.push(DisplayMsg::Info(names.join("  ")));
-                app.auto_scroll.set(true);
             }
         }
     }
