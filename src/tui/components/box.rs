@@ -8,6 +8,7 @@ pub type BgFn = Box<dyn Fn(&str) -> String>;
 
 /// A container with padding and background color function.
 /// Children are rendered inside the padded area.
+/// Port of pi's `packages/tui/src/components/box.ts`.
 pub struct TuiBox {
     children: Vec<Box<dyn Component>>,
     padding_x: usize,
@@ -33,61 +34,64 @@ impl TuiBox {
         self.bg_fn = bg_fn;
     }
 
-    fn apply_bg_force(&self, line: &str, width: usize) -> String {
+    fn pad_to_width(&self, line: &str, width: usize) -> String {
+        format!(
+            "{}{}",
+            line,
+            " ".repeat(width.saturating_sub(visible_width(line)))
+        )
+    }
+
+    fn apply_bg(&self, line: &str, width: usize) -> String {
+        let padded = self.pad_to_width(line, width);
         match &self.bg_fn {
-            Some(bg_fn) => {
-                let padded = format!(
-                    "{}{}",
-                    line,
-                    " ".repeat(width.saturating_sub(visible_width(line)))
-                );
-                bg_fn(&padded)
-            }
-            None => format!(
-                "{}{}",
-                line,
-                " ".repeat(width.saturating_sub(visible_width(line)))
-            ),
+            Some(bg_fn) => bg_fn(&padded),
+            None => padded,
         }
     }
 }
 
 impl Component for TuiBox {
     fn render(&self, width: usize) -> Vec<String> {
-        let inner_width = width.saturating_sub(2 * self.padding_x);
-        if inner_width == 0 {
-            return vec![self.apply_bg_force(&" ".repeat(width), width)];
+        // Pi: return [] when no children
+        if self.children.is_empty() {
+            return vec![];
         }
 
-        let padding_str = " ".repeat(self.padding_x);
-        let mut lines = Vec::new();
+        let content_width = width.saturating_sub(2 * self.padding_x).max(1);
+        let left_pad = " ".repeat(self.padding_x);
 
-        // Render children at inner width
-        let child_lines: Vec<String> = self
-            .children
-            .iter()
-            .flat_map(|c| c.render(inner_width))
-            .collect();
+        // Render all children at content width
+        let mut child_lines: Vec<String> = Vec::new();
+        for child in &self.children {
+            for line in child.render(content_width) {
+                child_lines.push(format!("{}{}", left_pad, line));
+            }
+        }
 
-        // Top padding
+        // Pi: return [] when no child content produced
+        if child_lines.is_empty() {
+            return vec![];
+        }
+
+        let mut result: Vec<String> = Vec::new();
+
+        // Top padding (pi: paddingY lines of empty content with bg)
         for _ in 0..self.padding_y {
-            let line = format!("{}{}", padding_str, " ".repeat(inner_width));
-            lines.push(self.apply_bg_force(&line, width));
+            result.push(self.apply_bg("", width));
         }
 
-        // Children with horizontal padding
+        // Content lines with background
         for line in &child_lines {
-            let padded = format!("{}{}", padding_str, line);
-            lines.push(self.apply_bg_force(&padded, width));
+            result.push(self.apply_bg(line, width));
         }
 
         // Bottom padding
         for _ in 0..self.padding_y {
-            let line = format!("{}{}", padding_str, " ".repeat(inner_width));
-            lines.push(self.apply_bg_force(&line, width));
+            result.push(self.apply_bg("", width));
         }
 
-        lines
+        result
     }
 
     fn invalidate(&mut self) {

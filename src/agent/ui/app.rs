@@ -38,6 +38,7 @@ pub struct AppConfig {
     pub hide_thinking: bool,
     pub collapse_tool_output: bool,
     pub interactive: bool,
+    pub settings: crate::agent::settings::Settings,
 }
 
 /// Main application state.
@@ -113,6 +114,9 @@ pub struct App {
 
     /// Messages queued while streaming — submitted when current response finishes.
     queued_messages: Vec<String>,
+
+    /// Settings reference for persisting toggle changes.
+    settings: crate::agent::settings::Settings,
 }
 
 impl App {
@@ -179,6 +183,7 @@ impl App {
             agent_tools: Arc::new(config.agent_tools),
             extensions: Arc::new(config.extensions),
             queued_messages: Vec::new(),
+            settings: config.settings,
         }
     }
 }
@@ -273,7 +278,7 @@ fn compose_ui(app: &mut App, width: usize, _height: usize) -> Vec<String> {
 
     let hints = app.theme.fg(
         "dim",
-        "Enter submit · Ctrl+J newline · Esc clear · Ctrl+C interrupt · Ctrl+D quit · ↑↓ history · F1 help · Ctrl+L model",
+        "Enter submit · Ctrl+J · Esc clear · Ctrl+C · Ctrl+D · ↑↓ · F1 help · Ctrl+L model",
     );
     lines.push(format!(" {}", hints));
     lines.push(String::new());
@@ -309,18 +314,14 @@ fn compose_ui(app: &mut App, width: usize, _height: usize) -> Vec<String> {
         && !text.is_empty()
     {
         if app.hide_thinking {
-            lines.push(format!(
-                " {}",
-                app.theme
-                    .bg("thinking_bg", &app.theme.fg("thinking_text", " Thinking…"))
-            ));
+            let content = format!(" {}", app.theme.fg("thinking_text", " Thinking…"));
+            let padded = crate::agent::ui::messages::pad_to_width(&content, width);
+            lines.push(app.theme.bg("thinking_bg", &padded));
         } else {
             for line in text.lines() {
-                let styled = app.theme.bg(
-                    "thinking_bg",
-                    &format!(" {}", app.theme.fg("thinking_text", line)),
-                );
-                lines.push(crate::agent::ui::messages::pad_to_width(&styled, width));
+                let content = format!(" {}", app.theme.fg("thinking_text", line));
+                let padded = crate::agent::ui::messages::pad_to_width(&content, width);
+                lines.push(app.theme.bg("thinking_bg", &padded));
             }
         }
     }
@@ -412,8 +413,28 @@ fn handle_input(app: &mut App, key: &KeyEvent) {
     }
 
     if matches_key(key, &Key::Escape) {
-        app.editor.editor.set_text("");
-        app.history_index = None;
+        // Pi-style: Escape aborts current operation
+        if app.is_streaming {
+            // Abort agent task (same as Ctrl+C)
+            if let Some(handle) = app.agent_abort.take() {
+                handle.abort();
+            }
+            app.is_streaming = false;
+            app.working.stop();
+            app.footer.set_streaming(false);
+
+            // Restore queued messages to editor
+            if !app.queued_messages.is_empty() {
+                let queued = app.queued_messages.join("\n\n");
+                app.editor.editor.set_text(&queued);
+                app.queued_messages.clear();
+            }
+
+            app.messages.push(DisplayMsg::Info("Interrupted".into()));
+        } else {
+            app.editor.editor.set_text("");
+            app.history_index = None;
+        }
         return;
     }
 
@@ -428,11 +449,38 @@ fn handle_input(app: &mut App, key: &KeyEvent) {
 
     if matches_key(key, &Key::Ctrl('t')) {
         app.hide_thinking = !app.hide_thinking;
+        // Persist to settings (pi-style: settings survive restart)
+        app.settings.hide_thinking = Some(app.hide_thinking);
+        if let Err(e) = app.settings.save() {
+            app.messages.push(DisplayMsg::Info(format!(
+                "Failed to save thinking setting: {}",
+                e
+            )));
+        }
+        app.messages.push(DisplayMsg::Info(if app.hide_thinking {
+            "Thinking blocks: hidden".into()
+        } else {
+            "Thinking blocks: visible".into()
+        }));
         return;
     }
 
     if matches_key(key, &Key::Ctrl('o')) {
         app.collapse_tool_output = !app.collapse_tool_output;
+        // Persist to settings (pi-style: setting survives restart)
+        app.settings.collapse_tool_output = Some(app.collapse_tool_output);
+        if let Err(e) = app.settings.save() {
+            app.messages.push(DisplayMsg::Info(format!(
+                "Failed to save tool output setting: {}",
+                e
+            )));
+        }
+        app.messages
+            .push(DisplayMsg::Info(if app.collapse_tool_output {
+                "Tool output: collapsed".into()
+            } else {
+                "Tool output: expanded".into()
+            }));
         return;
     }
 
@@ -857,6 +905,7 @@ mod tests {
             hide_thinking: true,
             collapse_tool_output: true,
             interactive: true,
+            settings: crate::agent::settings::Settings::default(),
         };
 
         let mut app = App::new(config, session);
@@ -946,11 +995,9 @@ mod tests {
             && !app.hide_thinking
         {
             for line in text.lines() {
-                let styled = theme.bg(
-                    "thinking_bg",
-                    &format!(" {}", theme.fg("thinking_text", line)),
-                );
-                lines.push(crate::agent::ui::messages::pad_to_width(&styled, width));
+                let content = format!(" {}", theme.fg("thinking_text", line));
+                let padded = crate::agent::ui::messages::pad_to_width(&content, width);
+                lines.push(theme.bg("thinking_bg", &padded));
             }
         }
 
@@ -995,6 +1042,7 @@ mod tests {
             hide_thinking: true,
             collapse_tool_output: true,
             interactive: true,
+            settings: crate::agent::settings::Settings::default(),
         };
 
         let mut app = App::new(config, session);
@@ -1036,6 +1084,7 @@ mod tests {
             hide_thinking: true,
             collapse_tool_output: true,
             interactive: true,
+            settings: crate::agent::settings::Settings::default(),
         };
 
         let mut app = App::new(config, session);
@@ -1071,6 +1120,7 @@ mod tests {
             hide_thinking: true,
             collapse_tool_output: true,
             interactive: true,
+            settings: crate::agent::settings::Settings::default(),
         };
 
         let mut app = App::new(config, session);
@@ -1114,6 +1164,7 @@ mod tests {
             hide_thinking: true,
             collapse_tool_output: true,
             interactive: true,
+            settings: crate::agent::settings::Settings::default(),
         };
 
         let mut app = App::new(config, session);
@@ -1147,6 +1198,7 @@ mod tests {
             hide_thinking: false,
             collapse_tool_output: true,
             interactive: true,
+            settings: crate::agent::settings::Settings::default(),
         };
 
         let mut app = App::new(config, session);
@@ -1180,6 +1232,7 @@ mod tests {
             hide_thinking: true,
             collapse_tool_output: true,
             interactive: true,
+            settings: crate::agent::settings::Settings::default(),
         };
 
         let mut app = App::new(config, session);
@@ -1213,6 +1266,7 @@ mod tests {
             hide_thinking: true,
             collapse_tool_output: true,
             interactive: true,
+            settings: crate::agent::settings::Settings::default(),
         };
 
         let mut app = App::new(config, session);
@@ -1250,6 +1304,7 @@ mod tests {
             hide_thinking: true,
             collapse_tool_output: true,
             interactive: true,
+            settings: crate::agent::settings::Settings::default(),
         };
 
         let mut app = App::new(config, session);
@@ -1331,6 +1386,7 @@ mod tests {
             hide_thinking: true,
             collapse_tool_output: true,
             interactive: true,
+            settings: crate::agent::settings::Settings::default(),
         };
 
         let mut app = App::new(config, session);

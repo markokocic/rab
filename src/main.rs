@@ -138,6 +138,7 @@ async fn main() -> anyhow::Result<()> {
             hide_thinking: settings.hide_thinking.unwrap_or(false),
             collapse_tool_output: settings.collapse_tool_output.unwrap_or(false),
             interactive: true,
+            settings,
         };
         ui::run(config, session).await
     } else {

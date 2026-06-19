@@ -56,6 +56,10 @@ impl Theme for RabTheme {
     fn bold(&self, text: &str) -> String {
         format!("\x1b[1m{}\x1b[22m", text)
     }
+
+    fn italic(&self, text: &str) -> String {
+        format!("\x1b[3m{}\x1b[23m", text)
+    }
 }
 
 /// Helper functions for direct use in UI components.

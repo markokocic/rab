@@ -1,5 +1,5 @@
-use rab::builtin::commands::{CommandsExtension, SessionInfoInternal};
 use rab::agent::extension::{CommandResult, Extension};
+use rab::builtin::commands::{CommandsExtension, SessionInfoInternal};
 
 /// Simulate the prefix matching logic used by `submit_message`.
 /// Returns (command_name, args) when exactly one prefix match, or None.

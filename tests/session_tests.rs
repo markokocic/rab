@@ -1,6 +1,6 @@
-use rab::agent::{self, AgentEvent, LoopConfig};
 use rab::agent::extension::Extension;
 use rab::agent::session::SessionManager;
+use rab::agent::{self, AgentEvent, LoopConfig};
 use tempfile::TempDir;
 
 // ── Helpers ────────────────────────────────────────────────────────
@@ -46,12 +46,15 @@ fn empty_tools() -> Vec<Box<dyn rab::agent::extension::AgentTool>> {
 
 #[tokio::test]
 async fn test_agent_loop_with_history() {
-    let history = vec![rab::agent::types::AgentMessage::user("previous question"), {
-        let mut m = rab::agent::types::AgentMessage::user("dummy");
-        m.role = rab::agent::types::Role::Assistant;
-        m.content = "previous answer".to_string();
-        m
-    }];
+    let history = vec![
+        rab::agent::types::AgentMessage::user("previous question"),
+        {
+            let mut m = rab::agent::types::AgentMessage::user("dummy");
+            m.role = rab::agent::types::Role::Assistant;
+            m.content = "previous answer".to_string();
+            m
+        },
+    ];
 
     let prompt = rab::agent::types::AgentMessage::user("new question");
 

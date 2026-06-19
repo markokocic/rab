@@ -4,22 +4,15 @@ use crate::tui::Component;
 use crate::tui::util::{visible_width, wrap_text_with_ansi};
 
 /// Multi-line text component with word wrapping and padding.
+/// Port of pi's `packages/tui/src/components/text.ts`.
 pub struct Text {
     content: String,
     padding_x: usize,
     padding_y: usize,
     bg_fn: Option<Box<dyn Fn(&str) -> String>>,
-    cached_width: Option<usize>,
-    cached_lines: Vec<String>,
 }
 
 impl Text {
-    /// Create a new Text component.
-    ///
-    /// - `content`: The text to display (may contain newlines).
-    /// - `padding_x`: Horizontal padding (spaces on left and right).
-    /// - `padding_y`: Vertical padding (empty lines above and below).
-    /// - `bg_fn`: Optional background color function applied to each line.
     pub fn new(
         content: impl Into<String>,
         padding_x: usize,
@@ -31,83 +24,82 @@ impl Text {
             padding_x,
             padding_y,
             bg_fn,
-            cached_width: None,
-            cached_lines: Vec::new(),
         }
     }
 
-    /// Update the text content.
     pub fn set_text(&mut self, content: impl Into<String>) {
         self.content = content.into();
-        self.cached_width = None;
     }
 
-    /// Set the background color function.
     pub fn set_bg_fn(&mut self, bg_fn: Option<Box<dyn Fn(&str) -> String>>) {
         self.bg_fn = bg_fn;
-        self.cached_width = None;
     }
 }
 
 impl Component for Text {
     fn render(&self, width: usize) -> Vec<String> {
-        if self.cached_width == Some(width) {
-            return self.cached_lines.clone();
+        // Pi: return [] when content is empty or whitespace-only
+        if self.content.is_empty() || self.content.trim().is_empty() {
+            return vec![];
         }
 
-        let inner_width = width.saturating_sub(2 * self.padding_x);
-        if inner_width == 0 {
-            let empty = " ".repeat(width);
-            return vec![empty];
-        }
+        // Pi: replace tabs with 3 spaces
+        let normalized = self.content.replace('\t', "   ");
 
-        let padding_str = " ".repeat(self.padding_x);
-        let pad_right = " ".repeat(width.saturating_sub(self.padding_x));
+        // Pi: max(1, width - paddingX * 2)
+        let content_width = width.saturating_sub(2 * self.padding_x).max(1);
+        let left_margin = " ".repeat(self.padding_x);
 
-        let mut lines = Vec::new();
+        // Pi: wrap text (preserves ANSI, does NOT pad)
+        let wrapped = wrap_text_with_ansi(&normalized, content_width);
 
-        // Top padding
-        for _ in 0..self.padding_y {
-            lines.push(self.apply_bg(&format!("{}{}", padding_str, pad_right), width));
-        }
-
-        // Content with word wrapping
-        let wrapped = wrap_text_with_ansi(&self.content, inner_width);
+        let mut content_lines: Vec<String> = Vec::new();
         for line in wrapped {
-            let padded = format!("{}{}", padding_str, line);
-            let padded_line = if visible_width(&padded) < width {
-                format!("{}{}", padded, " ".repeat(width - visible_width(&padded)))
+            // Pi: left + content + right margins
+            let line_with_margins = format!("{}{}{}", left_margin, line, left_margin);
+            let vw = visible_width(&line_with_margins);
+            if let Some(ref bg_fn) = self.bg_fn {
+                let padded = if vw < width {
+                    format!("{}{}", line_with_margins, " ".repeat(width - vw))
+                } else {
+                    line_with_margins
+                };
+                content_lines.push(bg_fn(&padded));
             } else {
-                padded
-            };
-            lines.push(self.apply_bg(&padded_line, width));
+                let padded = if vw < width {
+                    format!("{}{}", line_with_margins, " ".repeat(width - vw))
+                } else {
+                    line_with_margins
+                };
+                content_lines.push(padded);
+            }
         }
 
-        // Bottom padding
+        // Pi: empty padding lines (full width spaces, with bg if present)
+        let empty_line = " ".repeat(width);
+        let empty_with_bg = self
+            .bg_fn
+            .as_ref()
+            .map(|bg| bg(&empty_line))
+            .unwrap_or_else(|| empty_line.clone());
+
+        let mut result = Vec::new();
+        // Pi: top padding
         for _ in 0..self.padding_y {
-            lines.push(self.apply_bg(&format!("{}{}", padding_str, pad_right), width));
+            result.push(empty_with_bg.clone());
+        }
+        // Pi: content
+        result.extend(content_lines);
+        // Pi: bottom padding
+        for _ in 0..self.padding_y {
+            result.push(empty_with_bg.clone());
         }
 
-        lines
+        result
     }
 
     fn invalidate(&mut self) {
-        self.cached_width = None;
-    }
-}
-
-impl Text {
-    fn apply_bg(&self, line: &str, width: usize) -> String {
-        if let Some(ref bg_fn) = self.bg_fn {
-            let padded = if visible_width(line) < width {
-                format!("{}{}", line, " ".repeat(width - visible_width(line)))
-            } else {
-                line.to_string()
-            };
-            bg_fn(&padded)
-        } else {
-            line.to_string()
-        }
+        // No cache to invalidate
     }
 }
 

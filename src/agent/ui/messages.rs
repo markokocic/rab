@@ -31,7 +31,6 @@ pub fn render_messages(
     let inner = width.saturating_sub(2);
 
     let mut lines: Vec<String> = Vec::new();
-    let mut first = true;
 
     for msg in messages {
         match msg {
@@ -39,22 +38,22 @@ pub fn render_messages(
                 lines.push(String::new());
             }
             DisplayMsg::User(text) => {
-                if !first {
+                // Pi: blank line before user messages when there's already content in the chat
+                if !lines.is_empty() {
                     lines.push(String::new());
                 }
-                // Pi: blue-grey background, 1px padding
+                // Pi: blue-grey background, 1px padding, userMessageText foreground.
                 for line in text.lines() {
                     let wrapped = wrap_text_with_ansi(line, inner.saturating_sub(2));
                     for w in wrapped {
-                        let padded = format!("  {}", w);
-                        let bg = theme.bg("user_message_bg", &pad_to_width(&padded, width));
-                        lines.push(bg);
+                        let content = theme.fg("text", &format!("  {}", w));
+                        let padded = pad_to_width(&content, width);
+                        lines.push(theme.bg("user_message_bg", &padded));
                     }
                 }
             }
             DisplayMsg::AssistantText(text) => {
                 if text.is_empty() {
-                    lines.push(String::new());
                     continue;
                 }
                 for line in text.lines() {
@@ -70,71 +69,72 @@ pub fn render_messages(
                 }
             }
             DisplayMsg::Thinking(text) => {
+                // Pi-style: italic + muted foreground on regular background, NO special bg
                 if hide_thinking {
-                    lines.push(format!(
-                        " {}",
-                        theme.bg("thinking_bg", &theme.fg("thinking_text", " Thinking…"))
-                    ));
+                    let content = theme.italic(&theme.fg("thinking_text", " Thinking…"));
+                    let padded = pad_to_width(&format!(" {}", content), width);
+                    lines.push(padded);
                     continue;
                 }
                 for line in text.lines() {
-                    let styled = theme.bg(
-                        "thinking_bg",
-                        &format!(" {}", theme.fg("thinking_text", line)),
-                    );
-                    lines.push(pad_to_width(&styled, width));
+                    let content = format!(" {}", theme.italic(&theme.fg("thinking_text", line)));
+                    lines.push(pad_to_width(&content, width));
                 }
             }
             DisplayMsg::ToolCall { name, args } => {
+                // Pi: tool calls are Box(paddingY=1) — blank line before
                 if !lines.is_empty() {
                     lines.push(String::new());
                 }
+                // Pi-style: bold tool name (title color) + muted args on toolPendingBg
                 let truncated = if args.len() > 80 {
                     format!("{}…", &args[..80])
                 } else {
                     args.clone()
                 };
-                let label = if truncated.is_empty() || truncated == "{}" {
-                    format!(" {} ", name)
+                let styled_name = theme.bold(name);
+                let content = if truncated.is_empty() || truncated == "{}" {
+                    format!(" {} ", styled_name)
                 } else {
-                    format!(" {}  {}", name, truncated)
+                    format!(" {}  {}", styled_name, theme.fg("muted", &truncated))
                 };
-                let styled = theme.bg("tool_pending_bg", &pad_to_width(&label, width));
-                lines.push(styled);
+                let padded = pad_to_width(&content, width);
+                lines.push(theme.bg("tool_pending_bg", &padded));
             }
             DisplayMsg::ToolResult { content, is_error } => {
+                // Pi: tool result is part of the same Box as the tool call — no extra blank line
                 let bg = if *is_error {
                     "tool_error_bg"
                 } else {
                     "tool_success_bg"
                 };
-                let fg = if *is_error { "error" } else { "text" };
+                // Pi uses toolOutput color (muted/gray) for result content, error fg for errors
+                let fg = if *is_error { "error" } else { "muted" };
 
                 if collapse_tool_output {
                     let first_line = content.lines().next().unwrap_or("");
                     let truncated: String = first_line.chars().take(120).collect();
                     let suffix = if first_line.len() > 120 { "…" } else { "" };
-                    let styled = theme.bg(bg, &theme.fg(fg, &format!(" {}{}", truncated, suffix)));
-                    lines.push(pad_to_width(&styled, width));
+                    let content = theme.fg(fg, &format!(" {}{}", truncated, suffix));
+                    let padded = pad_to_width(&content, width);
+                    lines.push(theme.bg(bg, &padded));
                 } else {
                     for line_content in content.lines() {
                         let truncated: String = line_content.chars().take(140).collect();
-                        let styled = theme.bg(bg, &theme.fg(fg, &format!(" {}", truncated)));
-                        lines.push(pad_to_width(&styled, width));
+                        let content = theme.fg(fg, &format!(" {}", truncated));
+                        let padded = pad_to_width(&content, width);
+                        lines.push(theme.bg(bg, &padded));
                     }
                 }
             }
             DisplayMsg::Info(text) => {
-                if !lines.is_empty() {
-                    lines.push(String::new());
-                }
+                // Pi: info messages stack directly, visual separation comes from styling
                 for line in text.lines() {
-                    let styled = theme.fg("dim", &format!(" {}", line));
-                    lines.push(pad_to_width(&styled, width));
+                    let content = theme.fg("dim", &format!(" {}", line));
+                    lines.push(pad_to_width(&content, width));
                 }
             }
         }
-        first = false;
     }
 
     if lines.is_empty() {

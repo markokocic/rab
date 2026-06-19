@@ -1,5 +1,5 @@
-use rab::builtin::edit::EditExtension;
 use rab::agent::extension::Extension;
+use rab::builtin::edit::EditExtension;
 
 fn tmp_dir() -> std::path::PathBuf {
     let d = std::env::temp_dir().join(format!("rab-test-{}", uuid::Uuid::new_v4()));

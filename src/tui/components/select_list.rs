@@ -127,24 +127,36 @@ impl SelectList {
     }
 
     fn move_up(&mut self) {
-        if self.selected_index > 0 {
+        // Pi: wrap to bottom when at top
+        if self.selected_index == 0 {
+            self.selected_index = self.filtered_indices.len().saturating_sub(1);
+        } else {
             self.selected_index -= 1;
         }
         self.adjust_scroll();
     }
 
     fn move_down(&mut self) {
-        if self.selected_index + 1 < self.filtered_indices.len() {
+        // Pi: wrap to top when at bottom
+        let last = self.filtered_indices.len().saturating_sub(1);
+        if self.selected_index >= last {
+            self.selected_index = 0;
+        } else {
             self.selected_index += 1;
         }
         self.adjust_scroll();
     }
 
     fn adjust_scroll(&mut self) {
-        if self.selected_index < self.scroll_offset {
-            self.scroll_offset = self.selected_index;
-        } else if self.selected_index >= self.scroll_offset + self.max_visible {
-            self.scroll_offset = self.selected_index - self.max_visible + 1;
+        // Pi: center the selected item in the visible window
+        if self.filtered_indices.len() <= self.max_visible {
+            self.scroll_offset = 0;
+        } else {
+            let half = self.max_visible / 2;
+            self.scroll_offset = self
+                .selected_index
+                .saturating_sub(half)
+                .min(self.filtered_indices.len() - self.max_visible);
         }
     }
 }
@@ -190,7 +202,7 @@ impl Component for SelectList {
             lines.push(truncate_to_width(&line, width, "", false));
         }
 
-        // Scroll indicator
+        // Scroll indicator (pi: only show when items exceed viewport)
         if self.filtered_indices.len() > self.max_visible {
             let indicator = format!(
                 "({}/{})",
@@ -199,9 +211,6 @@ impl Component for SelectList {
             );
             lines.push((self.theme.scroll_info)(&indicator));
         }
-
-        // Hint line
-        lines.push((self.theme.hint)("↑↓ navigate • enter select • esc cancel"));
 
         lines
     }
@@ -285,21 +294,19 @@ mod tests {
     #[test]
     fn test_selection_wraps() {
         let mut list = SelectList::new(make_items(), 10, SelectListTheme::default());
-        // Can't go above 0
+        // Pi: wraps to bottom when at top
         list.move_up();
-        assert_eq!(list.selected_item().unwrap().value, "a");
-
-        // Can't go past end
-        for _ in 0..5 {
-            list.move_down();
-        }
         assert_eq!(list.selected_item().unwrap().value, "c");
+
+        // Pi: wraps to top when at bottom
+        list.move_down();
+        assert_eq!(list.selected_item().unwrap().value, "a");
     }
 
     #[test]
     fn test_render() {
         let list = SelectList::new(make_items(), 10, SelectListTheme::default());
         let lines = list.render(40);
-        assert!(lines.len() >= 3); // items + hint
+        assert!(lines.len() >= 3); // items
     }
 }

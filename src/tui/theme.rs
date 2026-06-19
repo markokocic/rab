@@ -12,6 +12,9 @@ pub trait Theme {
 
     /// Apply bold styling.
     fn bold(&self, text: &str) -> String;
+
+    /// Apply italic styling (used for thinking blocks, matching pi).
+    fn italic(&self, text: &str) -> String;
 }
 
 /// A no-op theme that returns text unchanged.
@@ -29,6 +32,10 @@ impl Theme for NoopTheme {
     }
 
     fn bold(&self, text: &str) -> String {
+        text.to_string()
+    }
+
+    fn italic(&self, text: &str) -> String {
         text.to_string()
     }
 }
