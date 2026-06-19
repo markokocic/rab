@@ -28,6 +28,7 @@ pub struct Usage {
 
 /// A universal message type in the conversation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AgentMessage {
     pub id: String,
     pub parent_id: Option<String>,

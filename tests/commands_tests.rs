@@ -244,3 +244,142 @@ fn new_ignores_args() {
         other => panic!("Expected NewSession, got {:?}", other),
     }
 }
+
+// ── /resume ───────────────────────────────────────────────────────
+
+#[test]
+fn resume_command_returns_open_session_selector() {
+    let ext = CommandsExtension::new(vec![]);
+    let cmds = ext.commands();
+    let cmd = cmds.iter().find(|c| c.name == "resume").unwrap();
+    let result = cmd.handler.execute("");
+    assert!(result.is_ok());
+    match result.unwrap() {
+        CommandResult::OpenSessionSelector => {}
+        other => panic!("Expected OpenSessionSelector, got {:?}", other),
+    }
+}
+
+#[test]
+fn resume_ignores_args() {
+    let ext = CommandsExtension::new(vec![]);
+    let cmds = ext.commands();
+    let cmd = cmds.iter().find(|c| c.name == "resume").unwrap();
+    let result = cmd.handler.execute("some args");
+    assert!(result.is_ok());
+    match result.unwrap() {
+        CommandResult::OpenSessionSelector => {}
+        other => panic!("Expected OpenSessionSelector, got {:?}", other),
+    }
+}
+
+#[test]
+fn prefix_res_resolves_to_resume() {
+    let ext: Box<dyn Extension> = Box::new(CommandsExtension::new(vec![]));
+    let exts: Vec<Box<dyn Extension>> = vec![ext];
+    let result = resolve_command("/res", &exts);
+    assert_eq!(result, Some(("resume".into(), String::new())));
+}
+
+// ── /session ──────────────────────────────────────────────────────
+
+#[test]
+fn session_command_no_info() {
+    let ext = CommandsExtension::new(vec![]);
+    let cmds = ext.commands();
+    let cmd = cmds.iter().find(|c| c.name == "session").unwrap();
+    let result = cmd.handler.execute("");
+    assert!(result.is_ok());
+    match result.unwrap() {
+        CommandResult::Info(ref text) => {
+            assert!(text.contains("No active session"));
+        }
+        other => panic!("Expected Info, got {:?}", other),
+    }
+}
+
+#[test]
+fn session_command_with_info() {
+    use rab::builtin::commands::SessionInfoInternal;
+    let ext = CommandsExtension::new(vec![]);
+    ext.set_session_info(SessionInfoInternal {
+        session_id: "abc123".to_string(),
+        file_path: Some(std::path::PathBuf::from("/tmp/test.jsonl")),
+        name: Some("Test".to_string()),
+        message_count: 42,
+    });
+    let cmds = ext.commands();
+    let cmd = cmds.iter().find(|c| c.name == "session").unwrap();
+    let result = cmd.handler.execute("");
+    assert!(result.is_ok());
+    match result.unwrap() {
+        CommandResult::SessionInfo {
+            session_id,
+            file_path,
+            name,
+            message_count,
+        } => {
+            assert_eq!(session_id, "abc123");
+            assert_eq!(file_path, Some(std::path::PathBuf::from("/tmp/test.jsonl")));
+            assert_eq!(name, Some("Test".to_string()));
+            assert_eq!(message_count, 42);
+        }
+        other => panic!("Expected SessionInfo, got {:?}", other),
+    }
+}
+
+#[test]
+fn prefix_sess_resolves_to_session() {
+    let ext: Box<dyn Extension> = Box::new(CommandsExtension::new(vec![]));
+    let exts: Vec<Box<dyn Extension>> = vec![ext];
+    let result = resolve_command("/sess", &exts);
+    assert_eq!(result, Some(("session".into(), String::new())));
+}
+
+// ── /name ─────────────────────────────────────────────────────────
+
+#[test]
+fn name_command_sets_name() {
+    let ext = CommandsExtension::new(vec![]);
+    let cmds = ext.commands();
+    let cmd = cmds.iter().find(|c| c.name == "name").unwrap();
+    let result = cmd.handler.execute("My Task");
+    assert!(result.is_ok());
+    match result.unwrap() {
+        CommandResult::SessionNamed { ref name } => {
+            assert_eq!(name, "My Task");
+        }
+        other => panic!("Expected SessionNamed, got {:?}", other),
+    }
+}
+
+#[test]
+fn name_command_empty_shows_usage() {
+    let ext = CommandsExtension::new(vec![]);
+    let cmds = ext.commands();
+    let cmd = cmds.iter().find(|c| c.name == "name").unwrap();
+    let result = cmd.handler.execute("");
+    assert!(result.is_ok());
+    match result.unwrap() {
+        CommandResult::Info(ref text) => {
+            assert!(text.contains("Usage"));
+            assert!(text.contains("/name"));
+        }
+        other => panic!("Expected Info, got {:?}", other),
+    }
+}
+
+#[test]
+fn name_command_trims_whitespace() {
+    let ext = CommandsExtension::new(vec![]);
+    let cmds = ext.commands();
+    let cmd = cmds.iter().find(|c| c.name == "name").unwrap();
+    let result = cmd.handler.execute("   spaced   ");
+    assert!(result.is_ok());
+    match result.unwrap() {
+        CommandResult::SessionNamed { ref name } => {
+            assert_eq!(name, "spaced");
+        }
+        other => panic!("Expected SessionNamed, got {:?}", other),
+    }
+}

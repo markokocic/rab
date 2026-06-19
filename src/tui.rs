@@ -1,6 +1,7 @@
 use crate::agent::{AgentEvent, LoopConfig, run_agent_loop};
 use crate::extension::{AgentTool, CommandResult, Extension, SlashCommand};
 use crate::provider::{Provider, ToolDef};
+use crate::session::SessionManager;
 use crate::theme::{DARK, Theme};
 use crate::types::AgentMessage;
 use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
@@ -37,7 +38,8 @@ pub struct TuiConfig {
 
 // ── Display messages ───────────────────────────────────────────────
 
-enum DisplayMsg {
+#[derive(Debug)]
+pub(crate) enum DisplayMsg {
     User(String),
     AssistantText(String),
     Thinking(String),
@@ -278,6 +280,25 @@ fn welcome_messages(config: &TuiConfig) -> Vec<DisplayMsg> {
     msgs
 }
 
+/// Convert session AgentMessages to display messages for the TUI.
+/// This is extracted for testability — verifies history is properly loaded.
+pub(crate) fn session_messages_to_display(messages: &[AgentMessage]) -> Vec<DisplayMsg> {
+    messages
+        .iter()
+        .map(|m| match m.role {
+            crate::types::Role::User => DisplayMsg::User(m.content.clone()),
+            crate::types::Role::Assistant => DisplayMsg::AssistantText(m.content.clone()),
+            crate::types::Role::ToolResult => {
+                let prefix = if m.is_error { "✗" } else { "✓" };
+                DisplayMsg::ToolResult {
+                    content: format!("{} {}", prefix, m.content),
+                    is_error: m.is_error,
+                }
+            }
+        })
+        .collect()
+}
+
 // ── App state ──────────────────────────────────────────────────────
 
 /// Data shared between the TUI main thread and spawned agent tasks.
@@ -329,6 +350,8 @@ struct App {
     /// History: index into conversation user messages for arrow-key recall.
     /// None = not navigating history; Some(i) = pointing at conversation[i].
     history_index: Option<usize>,
+    /// Session for persistence (wrapped in Option for ownership).
+    session: Option<SessionManager>,
 
     /// Frame counter for spinner animation.
     frame_count: u64,
@@ -342,7 +365,7 @@ struct App {
 
 // ── Public entry point ─────────────────────────────────────────────
 
-pub async fn run(config: TuiConfig) -> anyhow::Result<()> {
+pub async fn run(config: TuiConfig, session: SessionManager) -> anyhow::Result<()> {
     ratatui::crossterm::terminal::enable_raw_mode()?;
     let mut stdout = std::io::stdout();
     ratatui::crossterm::execute!(
@@ -354,7 +377,7 @@ pub async fn run(config: TuiConfig) -> anyhow::Result<()> {
     let backend = ratatui::backend::CrosstermBackend::new(stdout);
     let mut terminal = ratatui::Terminal::new(backend)?;
 
-    let result = run_app(&mut terminal, config);
+    let result = run_app(&mut terminal, config, session);
 
     ratatui::crossterm::terminal::disable_raw_mode()?;
     ratatui::crossterm::execute!(
@@ -369,8 +392,14 @@ pub async fn run(config: TuiConfig) -> anyhow::Result<()> {
 fn run_app(
     terminal: &mut ratatui::Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
     config: TuiConfig,
+    session: SessionManager,
 ) -> anyhow::Result<()> {
     let (tx, rx) = mpsc::unbounded_channel();
+
+    // Load session history and convert to display messages
+    let context = session.build_session_context();
+    let history_messages = context.messages.clone();
+    let history_display = session_messages_to_display(&history_messages);
 
     let welcome = welcome_messages(&config);
 
@@ -396,8 +425,12 @@ fn run_app(
         shared,
         provider: Arc::from(config.provider),
         theme: DARK,
-        conversation: Vec::new(),
-        messages: welcome,
+        conversation: history_messages,
+        messages: {
+            let mut all = history_display;
+            all.extend(welcome);
+            all
+        },
         scroll_line: Cell::new(0),
         auto_scroll: Cell::new(true),
         editor: create_editor(),
@@ -413,6 +446,7 @@ fn run_app(
         last_usage: None,
         agent_abort: None,
         history_index: None,
+        session: Some(session),
         frame_count: 0,
         available_models: config.available_models,
         show_model_selector: false,
@@ -1536,6 +1570,7 @@ fn submit_message(app: &mut App, message: String) {
     let system_prompt = app.system_prompt.clone();
     let tools = collect_tool_defs_from_shared(&shared);
     let tx = app.event_tx.clone();
+    let history = app.conversation.clone();
 
     app.messages.push(DisplayMsg::User(trimmed.to_string()));
     app.auto_scroll.set(true);
@@ -1561,7 +1596,7 @@ fn submit_message(app: &mut App, message: String) {
             let _ = tx.send(event);
         };
 
-        let _ = run_agent_loop(vec![prompt], &loop_config, &*provider, &mut emit).await;
+        let _ = run_agent_loop(vec![prompt], history, &loop_config, &*provider, &mut emit).await;
     });
     app.agent_abort = Some(handle.abort_handle());
 }
@@ -1632,6 +1667,37 @@ fn apply_command_result(app: &mut App, result: anyhow::Result<CommandResult>) {
             app.last_usage = None;
             app.messages
                 .push(DisplayMsg::Info("/new — session cleared".to_string()));
+        }
+        Ok(CommandResult::SessionSwitched { path }) => {
+            app.messages.push(DisplayMsg::Info(format!(
+                "Switched to session: {}",
+                path.display()
+            )));
+        }
+        Ok(CommandResult::SessionInfo {
+            session_id,
+            file_path,
+            name,
+            message_count,
+        }) => {
+            let name_str = name.as_deref().unwrap_or("(unnamed)");
+            let file_str = file_path
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "(in-memory)".to_string());
+            app.messages.push(DisplayMsg::Info(format!(
+                "Session: {}\nName:    {}\nFile:    {}\nMessages: {}",
+                session_id, name_str, file_str, message_count
+            )));
+        }
+        Ok(CommandResult::OpenSessionSelector) => {
+            app.messages.push(DisplayMsg::Info(
+                "/resume — session selector not yet implemented".to_string(),
+            ));
+        }
+        Ok(CommandResult::SessionNamed { name }) => {
+            app.messages
+                .push(DisplayMsg::Info(format!("Session named: {}", name)));
         }
         Err(e) => {
             app.messages
@@ -1725,6 +1791,12 @@ fn handle_agent_event(app: &mut App, event: AgentEvent) {
             flush_all(app);
             app.is_streaming = false;
             app.agent_abort = None;
+            // Persist new messages to session
+            if let Some(ref mut session) = app.session {
+                for msg in messages {
+                    session.append_message(msg);
+                }
+            }
             if let Some(last) = messages.iter().rev().find(|m| m.usage.is_some()) {
                 app.last_usage = last.usage.clone();
             }
@@ -1751,4 +1823,101 @@ fn flush_thinking(app: &mut App) {
 fn flush_all(app: &mut App) {
     flush_text(app);
     flush_thinking(app);
+}
+
+// ── Tests ──────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::Role;
+
+    fn make_msg(role: Role, content: &str, is_error: bool) -> AgentMessage {
+        let is_tool = role == Role::ToolResult;
+        AgentMessage {
+            id: uuid::Uuid::new_v4().to_string(),
+            parent_id: None,
+            role,
+            content: content.to_string(),
+            tool_calls: vec![],
+            tool_call_id: if is_tool {
+                Some("tc1".to_string())
+            } else {
+                None
+            },
+            usage: None,
+            is_error,
+            timestamp: chrono::Utc::now().timestamp_millis(),
+        }
+    }
+
+    #[test]
+    fn test_session_messages_to_display_empty() {
+        let result = session_messages_to_display(&[]);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_session_messages_to_display_user() {
+        let msgs = vec![make_msg(Role::User, "hello", false)];
+        let result = session_messages_to_display(&msgs);
+        assert_eq!(result.len(), 1);
+        match &result[0] {
+            DisplayMsg::User(content) => assert_eq!(content, "hello"),
+            other => panic!("Expected User, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_session_messages_to_display_assistant() {
+        let msgs = vec![make_msg(Role::Assistant, "hi there", false)];
+        let result = session_messages_to_display(&msgs);
+        assert_eq!(result.len(), 1);
+        match &result[0] {
+            DisplayMsg::AssistantText(content) => assert_eq!(content, "hi there"),
+            other => panic!("Expected AssistantText, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_session_messages_to_display_tool_result_success() {
+        let msgs = vec![make_msg(Role::ToolResult, "file contents", false)];
+        let result = session_messages_to_display(&msgs);
+        assert_eq!(result.len(), 1);
+        match &result[0] {
+            DisplayMsg::ToolResult { content, is_error } => {
+                assert!(content.contains("file contents"));
+                assert!(content.starts_with('✓'));
+                assert!(!is_error);
+            }
+            other => panic!("Expected ToolResult, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_session_messages_to_display_tool_result_error() {
+        let msgs = vec![make_msg(Role::ToolResult, "permission denied", true)];
+        let result = session_messages_to_display(&msgs);
+        match &result[0] {
+            DisplayMsg::ToolResult { content, is_error } => {
+                assert!(content.starts_with('✗'));
+                assert!(*is_error);
+            }
+            other => panic!("Expected ToolResult, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_session_messages_to_display_mixed() {
+        let msgs = vec![
+            make_msg(Role::User, "question", false),
+            make_msg(Role::Assistant, "answer", false),
+            make_msg(Role::ToolResult, "tool output", false),
+        ];
+        let result = session_messages_to_display(&msgs);
+        assert_eq!(result.len(), 3);
+        assert!(matches!(&result[0], DisplayMsg::User(_)));
+        assert!(matches!(&result[1], DisplayMsg::AssistantText(_)));
+        assert!(matches!(&result[2], DisplayMsg::ToolResult { .. }));
+    }
 }

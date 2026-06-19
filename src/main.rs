@@ -5,6 +5,7 @@ use rab::builtin::{
     write::WriteExtension,
 };
 use rab::extension::Extension;
+use rab::session::SessionManager;
 use rab::settings::Settings;
 use std::io::Write;
 
@@ -12,11 +13,15 @@ use std::io::Write;
 async fn main() -> anyhow::Result<()> {
     let cwd = std::env::current_dir()?;
 
-    // Parse CLI: rab [--model <model>] [<message>]
-    // No message → interactive TUI. Message → print mode.
+    // Parse CLI flags
     let args: Vec<String> = std::env::args().collect();
     let mut model_override: Option<String> = None;
     let mut message_parts: Vec<String> = Vec::new();
+    let mut continue_session: bool = false;
+    let mut session_path: Option<String> = None;
+    let mut no_session: bool = false;
+    let mut session_name: Option<String> = None;
+    let mut session_dir_override: Option<String> = None;
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
@@ -26,6 +31,33 @@ async fn main() -> anyhow::Result<()> {
                     model_override = Some(args[i].clone());
                 }
             }
+            "-c" | "--continue" => {
+                continue_session = true;
+            }
+            "--session" => {
+                i += 1;
+                if i < args.len() {
+                    session_path = Some(args[i].clone());
+                }
+            }
+            "--no-session" => {
+                no_session = true;
+            }
+            "--name" | "-n" => {
+                i += 1;
+                if i < args.len() {
+                    session_name = Some(args[i].clone());
+                }
+            }
+            "--session-dir" => {
+                i += 1;
+                if i < args.len() {
+                    session_dir_override = Some(args[i].clone());
+                }
+            }
+            other if other.starts_with('-') => {
+                // Ignore unknown flags for now
+            }
             other => {
                 message_parts.push(other.to_string());
             }
@@ -33,38 +65,59 @@ async fn main() -> anyhow::Result<()> {
         i += 1;
     }
 
-    // Load settings
+    // Load settings and auth
     let settings = Settings::load(&cwd)?;
     let model = model_override.unwrap_or_else(|| settings.model().to_string());
-
-    // Load auth
     let auth = rab::auth::AuthStorage::load()?;
 
-    // Available models (hardcoded for now; will come from model registry later)
+    // Session management
+    let session_dir = session_dir_override.map(std::path::PathBuf::from);
+    let session = if no_session {
+        SessionManager::in_memory(&cwd)
+    } else if let Some(ref path) = session_path {
+        let path = std::path::PathBuf::from(path);
+        SessionManager::open(&path, session_dir.as_deref(), None)
+    } else if continue_session {
+        SessionManager::continue_recent(&cwd, session_dir.as_deref())
+    } else {
+        SessionManager::create(&cwd, session_dir.as_deref())
+    };
+
+    let mut session = session; // make mutable for appending
+
+    // Set session name if provided
+    if let Some(ref name) = session_name
+        && !name.trim().is_empty()
+    {
+        session.append_session_info(name);
+    }
+
+    // Load history from session
+    let context = session.build_session_context();
+    let history = context.messages;
+
+    // Available models
     let available_models = vec![
         "deepseek-v4-flash".to_string(),
         "deepseek-v4-pro".to_string(),
     ];
 
-    // Build extensions
-    // Built-in tools and commands use the same Extension trait
+    // Build extensions with session info for /session command
+    let commands_ext = CommandsExtension::new(available_models.clone());
+
     let extensions: Vec<Box<dyn Extension>> = vec![
-        Box::new(CommandsExtension::new(available_models.clone())),
+        Box::new(commands_ext),
         Box::new(ReadExtension::new(cwd.clone())),
         Box::new(WriteExtension::new(cwd.clone())),
         Box::new(EditExtension::new(cwd.clone())),
         Box::new(BashExtension::new(cwd.clone())),
     ];
 
-    // Build system prompt
     let system_prompt = build_system_prompt(&extensions);
-
-    // Build tool defs
     let tools = rab::agent::collect_tool_defs(&extensions);
     let agent_tools: Vec<Box<dyn rab::extension::AgentTool>> =
         extensions.iter().flat_map(|ext| ext.tools()).collect();
 
-    // Create provider
     let thinking_level = settings.default_thinking_level.as_deref();
     let provider = adapter::GenaiProvider::new(&auth, thinking_level)?;
 
@@ -84,7 +137,7 @@ async fn main() -> anyhow::Result<()> {
             hide_thinking: settings.hide_thinking.unwrap_or(false),
             collapse_tool_output: settings.collapse_tool_output.unwrap_or(false),
         };
-        rab::tui::run(config).await
+        rab::tui::run(config, session).await
     } else {
         let message = message_parts.join(" ");
         run_print_mode(
@@ -95,11 +148,14 @@ async fn main() -> anyhow::Result<()> {
             agent_tools,
             extensions,
             provider,
+            history,
+            &mut session,
         )
         .await
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_print_mode(
     message: String,
     model: String,
@@ -108,6 +164,8 @@ async fn run_print_mode(
     agent_tools: Vec<Box<dyn rab::extension::AgentTool>>,
     extensions: Vec<Box<dyn Extension>>,
     provider: adapter::GenaiProvider,
+    history: Vec<rab::types::AgentMessage>,
+    session: &mut SessionManager,
 ) -> anyhow::Result<()> {
     let loop_config = LoopConfig {
         model: model.clone(),
@@ -118,6 +176,9 @@ async fn run_print_mode(
     };
 
     let prompt = rab::types::AgentMessage::user(&message);
+
+    // Persist the user prompt
+    session.append_message(&prompt);
 
     let mut thinking_prefix_printed = false;
     let mut emitter = |event: AgentEvent| match event {
@@ -174,7 +235,14 @@ async fn run_print_mode(
     };
 
     let new_messages =
-        agent::run_agent_loop(vec![prompt], &loop_config, &provider, &mut emitter).await?;
+        agent::run_agent_loop(vec![prompt], history, &loop_config, &provider, &mut emitter).await?;
+
+    // Persist all new assistant + tool result messages
+    for msg in &new_messages {
+        if msg.role != rab::types::Role::User {
+            session.append_message(msg);
+        }
+    }
 
     if let Some(last_assistant) = new_messages
         .iter()

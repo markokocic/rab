@@ -66,13 +66,16 @@ fn find_tool<'a>(
 }
 
 /// Run the full agent loop. Returns all new messages added during the run.
+/// `history` contains pre-existing messages from a previous session (if continuing).
 pub async fn run_agent_loop(
     prompts: Vec<AgentMessage>,
+    history: Vec<AgentMessage>,
     config: &LoopConfig<'_>,
     provider: &dyn Provider,
     emit: &mut (dyn FnMut(AgentEvent) + Send),
 ) -> anyhow::Result<Vec<AgentMessage>> {
     let mut messages: Vec<AgentMessage> = Vec::new();
+    messages.extend(history);
     messages.extend(prompts.clone());
 
     let mut new_messages: Vec<AgentMessage> = prompts.clone();

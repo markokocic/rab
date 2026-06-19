@@ -52,6 +52,19 @@ pub enum CommandResult {
     Reloaded,
     /// Start a new session (clear conversation).
     NewSession,
+    /// Switch to a different session file.
+    SessionSwitched { path: std::path::PathBuf },
+    /// Show session info (ID, file, messages, tokens, cost).
+    SessionInfo {
+        session_id: String,
+        file_path: Option<std::path::PathBuf>,
+        name: Option<String>,
+        message_count: usize,
+    },
+    /// Open session selector UI.
+    OpenSessionSelector,
+    /// Name was set for the session.
+    SessionNamed { name: String },
 }
 
 /// A registered slash command.

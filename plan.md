@@ -97,18 +97,19 @@ Everything in arch.md that isn't explicitly Phase 2.
   - Anthropic, OpenAI, Google, DeepSeek (direct), Ollama
   - Provider auto-detection from model name prefix (`claude*`, `gpt*`, `gemini*`)
   - `rab connect` command for interactive provider setup (like pi's `/connect`)
-- [ ] **`cli.rs`** — clap-based CLI with all flags and subcommands:
-  - `[MESSAGE]...` positional (prompt)
-  - `-c, --continue`, `--session PATH`, `--no-session`
-  - `--model MODEL`, `--thinking LEVEL`
-  - `--no-tools`, `--no-builtin-tools`, `--no-extensions`
-  - `-nc, --no-context-files`
-  - `-V, --version`, `-h, --help`
-  - Mode dispatch: print mode (default) vs interactive mode (`-i` / TUI)
-- [ ] **`settings.rs`** — Extend PoC settings with full pi schema:
-  - Thinking level, tools allow/deny lists, theme, models list
-  - `~/.rab/models.json` for custom provider/model definitions
-  - CLI flags override settings file values
+- [x] **`cli.rs`** — clap-based CLI with all flags and subcommands (partial — hand-rolled parser, not clap):
+  - `[MESSAGE]...` positional (prompt) ✅
+  - `-c, --continue`, `--session PATH`, `--no-session`, `--name <name>`, `--session-dir <dir>` ✅
+  - `--model MODEL` ✅
+  - `--thinking LEVEL` ❌
+  - `--no-tools`, `--no-builtin-tools`, `--no-extensions` ❌
+  - `-nc, --no-context-files` ❌
+  - `-V, --version`, `-h, --help` ❌
+  - Mode dispatch: print mode (default) vs interactive mode (TUI) ✅
+- [x] **`settings.rs`** — Extend PoC settings with full pi schema:
+  - Thinking level, tools allow/deny lists, theme ✅
+  - `~/.rab/models.json` for custom provider/model definitions ❌
+  - CLI flags override settings file values ✅ (partial — --model only)
 - [ ] **`system_prompt.rs`** — Build system prompt from:
   - Base prompt (hardcoded tool descriptions, response format)
   - `~/.rab/AGENTS.md` (global context)
@@ -116,32 +117,36 @@ Everything in arch.md that isn't explicitly Phase 2.
   - Wrapped in `<project_context>` tags
   - Respect `APPEND_SYSTEM.md` / `SYSTEM.md` (full override)
   - `--no-context-files` flag
-- [ ] **`session.rs`** — `SessionManager` with JSONL storage:
-  - Create new session, continue recent, open by path
-  - Append `AgentMessage` entries
-  - Walk from root along active branch (tree with `parentId`)
-  - `~/.rab/sessions/<cwd-hash>/` directory structure
+- [x] **`session.rs`** — `SessionManager` with JSONL storage:
+  - Create new session, continue recent, open by path ✅
+  - Append `AgentMessage` entries ✅
+  - Walk from root along active branch (tree with `parentId`) ✅
+  - `~/.rab/sessions/<cwd-hash>/` directory structure ✅
+  - Corruption handling (malformed lines, empty files, missing headers) ✅
+  - All 10 pi entry types ✅
+  - Deferred flush (no file until first assistant message) ✅
+  - 66 unit tests
 - [ ] **`compaction.rs`** — Context window compaction:
   - Token estimation via model-specific heuristic or tiktoken-rs
   - Cut point finder (accumulate from oldest, preserve tail)
   - Summary generation (fast model prompt)
   - Replace old messages with synthetic summary message
   - Auto-trigger before context overflow; manual trigger via `/compact`
-- [ ] **`commands.rs`** — Core slash commands:
-  - `/model <name>` — switch active model
-  - `/thinking <level>` — set thinking level (off/minimal/low/medium/high)
-  - `/compact [prompt]` — manual compaction
-  - `/session` — print session info
-  - `/name <text>` — set session display name
-  - `/fork` — fork session from previous user message
-  - `/clone` — duplicate active branch into new session
-  - `/resume` — list previous sessions in cwd
-  - `/new` — start fresh session
-  - `/copy` — copy last assistant message to clipboard
-  - `/export [path]` — export session to HTML
-  - `/settings` — print or edit settings
-  - `/reload` — reload AGENTS.md, skills, settings
-  - `/quit` — exit (interactive mode)
+- [x] **`commands.rs`** — Core slash commands (partial):
+  - `/model <name>` — switch active model ✅
+  - `/thinking <level>` — set thinking level ❌
+  - `/compact [prompt]` — manual compaction ❌
+  - `/session` — print session info ✅
+  - `/name <text>` — set session display name ✅
+  - `/fork` — fork session from previous user message ❌
+  - `/clone` — duplicate active branch into new session ❌
+  - `/resume` — list previous sessions in cwd ✅ (returns OpenSessionSelector; UI not built)
+  - `/new` — start fresh session ✅
+  - `/copy` — copy last assistant message to clipboard ❌
+  - `/export [path]` — export session to HTML ❌
+  - `/settings` — print or edit settings ❌
+  - `/reload` — reload AGENTS.md, skills, settings ✅
+  - `/quit` — exit (interactive mode) ✅
 - [ ] **`tui.rs`** — Terminal UI with ratatui + tui-textarea + crossterm:
   - Header: model name, thinking level
   - Messages widget: scrollable chat history, collapsible tool output, thinking block folding
@@ -323,7 +328,27 @@ run `cargo build --target wasm32-wasip2`, and drop the `.wasm` into
 - [x] **Tool alignment with pi** — bash, read tools fixed:
   - Bash: `timeout_secs` → `timeout` parameter name, no default timeout, truncation from end
   - Read: no line number prefixes, error on offset beyond file, pi-style truncation notices
-- [x] **Tests** — 139 total: auth (4), settings (24), commands (18), model selector (30), editor behavior (28), tools (19), types (6)
+- [x] **Tests** — 227 total: auth (4), settings (24), commands (27), model selector (30), editor behavior (28), tools (19), types (6), session (66), session integration (12), TUI display conversion (6)
+- [x] **`session.rs`** — SessionManager with JSONL tree storage:
+  - All 10 pi-compatible entry types (serde tagged enum, camelCase)
+  - `create`, `open`, `continue_recent`, `in_memory` lifecycle
+  - `append_message`, `append_session_info`, `append_thinking_level_change`, `append_model_change`, `append_compaction`, `append_branch_summary`, `append_label_change`, `append_custom_entry`
+  - `build_session_context`, `branch`, `set_branch`, `reset_leaf`, `children`, `entry`
+  - `find_most_recent_session` (mtime-based), `read_session_header`, CWD encoding
+  - Deferred flush: no file until first assistant message
+  - Corruption handling: malformed lines skipped, empty/garbage files recovered, header-only files kept
+- [x] **`main.rs`** — Session CLI flags: `-c`/`--continue`, `--session`, `--no-session`, `--name`, `--session-dir`
+  - Session created/opened/continued in `main()`, passed to print mode and TUI
+  - Print mode: history loaded from session, new messages persisted after agent loop
+- [x] **`agent.rs`** — History parameter: `run_agent_loop()` accepts `history: Vec<AgentMessage>` prepended before prompts
+- [x] **`extension.rs`** — New `CommandResult` variants: `SessionSwitched`, `SessionInfo`, `OpenSessionSelector`, `SessionNamed`
+- [x] **`builtin/commands.rs`** — New commands: `/resume`, `/session` (reads shared session info), `/name <text>` (trims whitespace)
+- [x] **`tui.rs`** — TUI session integration:
+  - History loaded from session on startup (`build_session_context`)
+  - `session_messages_to_display()` converts AgentMessage → DisplayMsg
+  - `submit_message` passes conversation history to agent loop
+  - `handle_agent_event` persists new messages on `AgentEnd`
+  - New `CommandResult` variants handled with info messages
 
 ## Known Issues
 
