@@ -61,7 +61,7 @@ pub struct Editor {
     kill_ring: KillRing,
     undo_stack: UndoStack<EditorSnapshot>,
     history: Vec<String>,
-    history_index: i32, // -1 = not browsing
+    history_index: i32,
     preferred_col: Option<usize>,
     last_action: Option<String>,
     pub on_submit: Option<Box<dyn FnMut(String)>>,
@@ -169,7 +169,6 @@ impl Editor {
         if text.is_empty() {
             return;
         }
-
         let normalized = text.replace("\r\n", "\n").replace('\t', "    ");
         let inserted_lines: Vec<&str> = normalized.split('\n').collect();
         let current_line = self.lines[self.cursor_line].clone();
@@ -177,11 +176,9 @@ impl Editor {
         let after = &current_line[self.cursor_col.min(current_line.len())..];
 
         if inserted_lines.len() == 1 {
-            // Single line insert
             self.lines[self.cursor_line] = format!("{}{}{}", before, normalized, after);
             self.set_cursor_col(self.cursor_col + normalized.len());
         } else {
-            // Multi-line insert
             let mut new_lines: Vec<String> = Vec::new();
             new_lines.extend(self.lines[..self.cursor_line].iter().cloned());
             new_lines.push(format!("{}{}", before, inserted_lines[0]));
@@ -190,12 +187,10 @@ impl Editor {
             }
             new_lines.push(format!("{}{}", inserted_lines.last().unwrap_or(&""), after));
             new_lines.extend(self.lines[self.cursor_line + 1..].iter().cloned());
-
             self.lines = new_lines;
             self.cursor_line += inserted_lines.len() - 1;
             self.set_cursor_col(inserted_lines.last().map_or(0, |l| l.len()));
         }
-
         self.notify_change();
     }
 
@@ -209,11 +204,9 @@ impl Editor {
         self.exit_history();
         self.last_action = None;
         self.push_undo();
-
         let line = self.lines[self.cursor_line].clone();
         let before = &line[..self.cursor_col.min(line.len())];
         let after = &line[self.cursor_col.min(line.len())..];
-
         self.lines[self.cursor_line] = before.to_string();
         self.lines.insert(self.cursor_line + 1, after.to_string());
         self.cursor_line += 1;
@@ -226,15 +219,13 @@ impl Editor {
     fn backspace(&mut self) {
         self.exit_history();
         self.last_action = None;
-
         if self.cursor_col > 0 {
             self.push_undo();
             let line = self.lines[self.cursor_line].clone();
-            let before_cursor = &line[..self.cursor_col];
-            let graphemes: Vec<(usize, &str)> = before_cursor.grapheme_indices(true).collect();
+            let graphemes: Vec<(usize, &str)> =
+                line[..self.cursor_col].grapheme_indices(true).collect();
             if let Some(&(idx, g)) = graphemes.last() {
-                let end = idx + g.len();
-                self.lines[self.cursor_line].drain(idx..end);
+                self.lines[self.cursor_line].drain(idx..idx + g.len());
                 self.set_cursor_col(idx);
             }
         } else if self.cursor_line > 0 {
@@ -251,7 +242,6 @@ impl Editor {
     fn delete_forward(&mut self) {
         self.exit_history();
         self.last_action = None;
-
         let line = self.lines[self.cursor_line].clone();
         if self.cursor_col < line.len() {
             self.push_undo();
@@ -275,7 +265,6 @@ impl Editor {
     fn delete_to_line_start(&mut self) {
         self.exit_history();
         let line = self.lines[self.cursor_line].clone();
-
         if self.cursor_col > 0 {
             self.push_undo();
             let deleted = line[..self.cursor_col].to_string();
@@ -301,7 +290,6 @@ impl Editor {
     fn delete_to_line_end(&mut self) {
         self.exit_history();
         let line = self.lines[self.cursor_line].clone();
-
         if self.cursor_col < line.len() {
             self.push_undo();
             let deleted = line[self.cursor_col..].to_string();
@@ -442,15 +430,13 @@ impl Editor {
                 return;
             }
             self.cursor_line - 1
+        } else if self.cursor_line + 1 >= self.lines.len() {
+            return;
         } else {
-            if self.cursor_line + 1 >= self.lines.len() {
-                return;
-            }
             self.cursor_line + 1
         };
 
         let target_len = self.lines[target_line].len();
-        // Sticky column: maintain preferred column if set, else use current
         let pref = self.preferred_col.unwrap_or(self.cursor_col);
         self.preferred_col = Some(pref);
         self.cursor_line = target_line;
@@ -565,16 +551,20 @@ impl Component for Editor {
         let right_pad = " ".repeat(pad_x);
         let mut result: Vec<String> = Vec::new();
 
-        // ── Layout text into visual lines ──
-        let visual_lines = layout_text(&self.lines, layout_width);
+        // ── Layout text into visual lines, tracking cursor ──
+        let visual_lines =
+            layout_text(&self.lines, layout_width, self.cursor_line, self.cursor_col);
         let total_visual = visual_lines.len().max(1);
 
-        // Find cursor visual line
-        let cursor_vis = find_cursor_visual(&visual_lines, self.cursor_line, self.cursor_col);
-        let mut scroll = self.scroll_offset;
-        let max_vis = self.max_visible_lines.max(1);
+        // Find cursor visual line index
+        let cursor_vis = visual_lines
+            .iter()
+            .position(|vl| vl.has_cursor)
+            .unwrap_or(0);
 
         // Adjust scroll to keep cursor visible
+        let max_vis = self.max_visible_lines.max(1);
+        let mut scroll = self.scroll_offset;
         if cursor_vis < scroll {
             scroll = cursor_vis;
         } else if cursor_vis >= scroll + max_vis {
@@ -602,10 +592,7 @@ impl Component for Editor {
         // ── Content lines ──
         for vl in visual_lines.iter().skip(scroll).take(visible_end - scroll) {
             let text = &vl.text;
-            let display;
-            let line_width;
-
-            if vl.has_cursor {
+            let (display, line_width) = if vl.has_cursor {
                 let cursor_pos = vl.cursor_pos.unwrap_or(0);
                 let before = &text[..cursor_pos.min(text.len())];
                 let after = &text[cursor_pos.min(text.len())..];
@@ -617,31 +604,30 @@ impl Component for Editor {
                 };
 
                 if !after.is_empty() {
-                    // Cursor on a grapheme — highlight it
                     let after_graphemes: Vec<&str> = after.graphemes(true).collect();
                     let first_g = after_graphemes.first().copied().unwrap_or(" ");
                     let rest = &after[first_g.len()..];
                     let cursor = format!("\x1b[7m{}\x1b[0m", first_g);
-                    display = format!("{}{}{}{}", before, marker, cursor, rest);
-                    line_width = visible_width(text);
+                    (
+                        format!("{}{}{}{}", before, marker, cursor, rest),
+                        visible_width(text),
+                    )
                 } else {
-                    // Cursor at end — add highlighted space
                     let cursor = "\x1b[7m \x1b[0m";
-                    display = format!("{}{}{}", before, marker, cursor);
-                    line_width = visible_width(text) + 1;
+                    (
+                        format!("{}{}{}", before, marker, cursor),
+                        visible_width(text) + 1,
+                    )
                 }
             } else {
-                display = text.clone();
-                line_width = visible_width(text);
-            }
+                (text.clone(), visible_width(text))
+            };
 
-            // Pad to content width
             let padding = if line_width < content_width {
                 " ".repeat(content_width - line_width)
             } else {
                 String::new()
             };
-
             result.push(format!("{}{}{}{}", left_pad, display, padding, right_pad));
         }
 
@@ -670,7 +656,6 @@ impl Component for Editor {
                 self.add_newline();
                 return true;
             }
-            // Backslash + Enter = literal newline (pi behavior)
             let line = &self.lines[self.cursor_line];
             if self.cursor_col > 0 && line.as_bytes().get(self.cursor_col - 1) == Some(&b'\\') {
                 self.backspace();
@@ -750,23 +735,19 @@ impl Component for Editor {
             }
             return true;
         }
-        if matches_key(key, &Key::CtrlRight)
-            || matches_key(key, &Key::Alt('f'))
-            || matches_key(key, &Key::AltLeft)
-        {
-            // AltLeft actually acts as ctrl+left on some terminals
-            if matches_key(key, &Key::AltLeft) {
-                let line = &self.lines[self.cursor_line];
-                if self.cursor_col > 0 {
-                    let c = find_word_backward(line, self.cursor_col);
-                    self.set_cursor_col(c);
-                }
-            } else {
-                let line = &self.lines[self.cursor_line];
-                if self.cursor_col < line.len() {
-                    let c = find_word_forward(line, self.cursor_col);
-                    self.set_cursor_col(c);
-                }
+        if matches_key(key, &Key::CtrlRight) || matches_key(key, &Key::Alt('f')) {
+            let line = &self.lines[self.cursor_line];
+            if self.cursor_col < line.len() {
+                let c = find_word_forward(line, self.cursor_col);
+                self.set_cursor_col(c);
+            }
+            return true;
+        }
+        if matches_key(key, &Key::AltLeft) {
+            let line = &self.lines[self.cursor_line];
+            if self.cursor_col > 0 {
+                let c = find_word_backward(line, self.cursor_col);
+                self.set_cursor_col(c);
             }
             return true;
         }
@@ -834,7 +815,7 @@ impl Component for Editor {
 
         // ── Escape — let parent handle ──
         if matches_key(key, &Key::Escape) {
-            return false; // Let app handle escape
+            return false;
         }
 
         false
@@ -860,10 +841,16 @@ impl Focusable for Editor {
 struct VisualLine {
     text: String,
     has_cursor: bool,
-    cursor_pos: Option<usize>, // byte offset into text
+    cursor_pos: Option<usize>,
 }
 
-fn layout_text(lines: &[String], max_width: usize) -> Vec<VisualLine> {
+/// Layout text into visual lines, marking which line contains the cursor.
+fn layout_text(
+    lines: &[String],
+    max_width: usize,
+    cursor_line: usize,
+    cursor_col: usize,
+) -> Vec<VisualLine> {
     let mut result: Vec<VisualLine> = Vec::new();
 
     if lines.is_empty() || (lines.len() == 1 && lines[0].is_empty()) {
@@ -875,40 +862,49 @@ fn layout_text(lines: &[String], max_width: usize) -> Vec<VisualLine> {
         return result;
     }
 
-    // For now, each logical line maps to one visual line (simplified)
-    // Full pi behavior would do word-wrap via wordWrapLine
-    for line in lines.iter() {
+    let mut _col_offset = 0;
+
+    for (line_idx, line) in lines.iter().enumerate() {
+        let is_cursor_line = line_idx == cursor_line;
         let line_w = visible_width(line);
+        _col_offset = 0;
+
         if line_w <= max_width {
+            // Line fits entirely
             result.push(VisualLine {
                 text: line.clone(),
-                has_cursor: false, // filled in per-line
-                cursor_pos: None,
+                has_cursor: is_cursor_line,
+                cursor_pos: if is_cursor_line {
+                    Some(cursor_col.min(line.len()))
+                } else {
+                    None
+                },
             });
         } else {
-            // Word-wrap the line
+            // Word-wrap the line, tracking cursor position
             let wrapped = wrap_text_with_ansi(line, max_width);
-            for chunk in wrapped {
+            let mut byte_pos = 0;
+            for (chunk_idx, chunk) in wrapped.iter().enumerate() {
+                let chunk_end = byte_pos + chunk.len();
+                let cursor_in_chunk = is_cursor_line
+                    && cursor_col >= byte_pos
+                    && (cursor_col < chunk_end || chunk_idx == wrapped.len() - 1);
                 result.push(VisualLine {
-                    text: chunk,
-                    has_cursor: false,
-                    cursor_pos: None,
+                    text: chunk.clone(),
+                    has_cursor: cursor_in_chunk,
+                    cursor_pos: if cursor_in_chunk {
+                        Some((cursor_col - byte_pos).min(chunk.len()))
+                    } else {
+                        None
+                    },
                 });
+                byte_pos = chunk_end;
+                // Account for space between wrapped segments (the wrap function may trim)
             }
         }
     }
 
     result
-}
-
-fn find_cursor_visual(
-    visual_lines: &[VisualLine],
-    cursor_line: usize,
-    _cursor_col: usize,
-) -> usize {
-    // Simplified: assumes cursor_line maps directly to visual line index
-    // Full pi would track which visual lines belong to which logical lines
-    cursor_line.min(visual_lines.len().saturating_sub(1))
 }
 
 fn is_printable_plain(key: &KeyEvent) -> bool {
@@ -942,12 +938,13 @@ mod tests {
     #[test]
     fn test_insert_and_move() {
         let mut editor = Editor::new(EditorTheme::default(), EditorOptions::default());
-        editor.insert_text_internal("hello");
-        assert_eq!(editor.get_text(), "hello");
+        editor.insert_character("h");
+        editor.insert_character("i");
+        assert_eq!(editor.get_text(), "hi");
         editor.move_left();
-        assert_eq!(editor.cursor_col, 4);
+        assert_eq!(editor.cursor_col, 1);
         editor.move_right();
-        assert_eq!(editor.cursor_col, 5);
+        assert_eq!(editor.cursor_col, 2);
     }
 
     #[test]
@@ -983,7 +980,6 @@ mod tests {
     fn test_submit_clears() {
         let mut editor = Editor::new(EditorTheme::default(), EditorOptions::default());
         editor.set_text("hello");
-        // Check that text is cleared after submit-like reset
         let result = editor.lines.join("\n");
         editor.lines = vec![String::new()];
         editor.cursor_line = 0;
@@ -996,11 +992,8 @@ mod tests {
     fn test_render_borders() {
         let editor = Editor::new(EditorTheme::default(), EditorOptions::default());
         let lines = editor.render(80);
-        // Should have top border, at least one content line, bottom border
         assert!(lines.len() >= 3);
-        // Top border should be all dashes
         assert!(lines[0].contains('─'));
-        // Bottom border should be all dashes
         assert!(lines.last().unwrap().contains('─'));
     }
 
@@ -1016,7 +1009,6 @@ mod tests {
         editor.set_text("line1\nline2\nline3\nline4");
         editor.scroll_offset = 1;
         let lines = editor.render(80);
-        // Top border should show scroll indicator
         assert!(lines[0].contains("↑"));
     }
 
@@ -1026,7 +1018,26 @@ mod tests {
         editor.set_text("hello");
         editor.add_newline();
         assert_eq!(editor.get_text(), "hello\n");
-        editor.insert_text_internal("world");
-        assert_eq!(editor.get_text(), "hello\nworld");
+        editor.insert_character("w");
+        assert_eq!(editor.get_text(), "hello\nw");
+    }
+
+    #[test]
+    fn test_cursor_in_layout() {
+        let editor = Editor::new(EditorTheme::default(), EditorOptions::default());
+        // Empty editor — cursor should be in visual line 0
+        let vl = layout_text(&editor.lines, 80, editor.cursor_line, editor.cursor_col);
+        assert!(vl[0].has_cursor);
+        assert_eq!(vl[0].cursor_pos, Some(0));
+    }
+
+    #[test]
+    fn test_cursor_in_layout_with_text() {
+        let mut editor = Editor::new(EditorTheme::default(), EditorOptions::default());
+        editor.set_text("abc");
+        editor.cursor_col = 1;
+        let vl = layout_text(&editor.lines, 80, editor.cursor_line, editor.cursor_col);
+        assert!(vl[0].has_cursor);
+        assert_eq!(vl[0].cursor_pos, Some(1));
     }
 }
