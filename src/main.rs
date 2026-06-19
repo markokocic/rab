@@ -123,7 +123,7 @@ async fn main() -> anyhow::Result<()> {
 
     if message_parts.is_empty() {
         let git_branch = get_git_branch(&cwd);
-        let config = rab::tui::TuiConfig {
+        let config = rab::rattui::TuiConfig {
             model,
             system_prompt,
             tools,
@@ -137,7 +137,7 @@ async fn main() -> anyhow::Result<()> {
             hide_thinking: settings.hide_thinking.unwrap_or(false),
             collapse_tool_output: settings.collapse_tool_output.unwrap_or(false),
         };
-        rab::tui::run(config, session).await
+        rab::rattui::run(config, session).await
     } else {
         let message = message_parts.join(" ");
         run_print_mode(
