@@ -168,31 +168,39 @@ impl crate::tui::Component for Footer {
             _ => model_display.to_string(),
         };
 
-        let stats_w = visible_width(&stats_left);
-        let right_w = visible_width(&right_side);
-        let total_needed = stats_w + 2 + right_w;
-
-        let line2 = if total_needed <= w {
-            let padding = " ".repeat(w - stats_w - right_w);
-            format!("{}{}{}", stats_left, padding, right_side)
-        } else {
-            let available = w.saturating_sub(stats_w + 2);
-            if available > 0 {
-                let truncated = truncate_to_width(&right_side, available, "", false);
-                let truncated_w = visible_width(&truncated);
-                let padding = " ".repeat(w.saturating_sub(stats_w + truncated_w));
-                format!("{}{}{}", stats_left, padding, truncated)
-            } else {
-                stats_left
-            }
-        };
-
-        let status_dot = if self.is_streaming {
+        let dot_indicator = if self.is_streaming {
             accent("●")
         } else {
             dim("○")
         };
-        lines.push(dim(&format!("{} {}", status_dot, line2)));
+        let dot_prefix = format!("{} ", dot_indicator);
+        let dot_w = 2; // dot char (1) + space (1)
+
+        let stats_w = visible_width(&stats_left);
+        let right_w = visible_width(&right_side);
+        let total_needed = dot_w + stats_w + 2 + right_w;
+
+        let line2 = if total_needed <= w {
+            let padding = " ".repeat(w - stats_w - right_w - dot_w);
+            format!("{}{}{}{}", dot_prefix, stats_left, padding, right_side)
+        } else {
+            let available = w.saturating_sub(dot_w + stats_w + 2);
+            if available > 0 {
+                let truncated = truncate_to_width(&right_side, available, "", false);
+                let truncated_w = visible_width(&truncated);
+                let padding = " ".repeat(w.saturating_sub(dot_w + stats_w + truncated_w));
+                format!("{}{}{}{}", dot_prefix, stats_left, padding, truncated)
+            } else {
+                // Truncate stats_left to make room
+                let avail = w.saturating_sub(dot_w);
+                format!(
+                    "{}{}",
+                    dot_prefix,
+                    truncate_to_width(&stats_left, avail, "…", false)
+                )
+            }
+        };
+        lines.push(line2);
 
         // ── Line 3: extension statuses ──
         if !self.extension_statuses.is_empty() {
