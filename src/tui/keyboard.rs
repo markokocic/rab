@@ -64,8 +64,8 @@ pub(crate) fn scroll_down(app: &mut App, lines: usize) {
 
 pub(crate) fn handle_key(app: &mut App, key: KeyEvent) {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-    let shift = key.modifiers.contains(KeyModifiers::SHIFT);
-    let alt = key.modifiers.contains(KeyModifiers::ALT);
+    let _shift = key.modifiers.contains(KeyModifiers::SHIFT);
+    let _alt = key.modifiers.contains(KeyModifiers::ALT);
 
     // ── Model selector input mode ──
     if app.show_model_selector {
@@ -176,17 +176,14 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) {
             )));
             app.auto_scroll.set(true);
         }
-        // Ctrl+J: newline (terminal-independent)
+        // Ctrl+J: newline (terminal-independent, works on all terminals)
         KeyCode::Char('j') if ctrl => {
-            app.editor.handle_key(KeyCode::Enter, false);
+            app.editor
+                .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT));
         }
         // F1: show help
         KeyCode::F(1) => {
             app.show_help = !app.show_help;
-        }
-        // Shift+Enter / Alt+Enter / Ctrl+Enter: newline
-        KeyCode::Enter if shift || alt || ctrl => {
-            app.editor.handle_key(KeyCode::Enter, false);
         }
         // Enter (no modifiers): submit
         KeyCode::Enter => {

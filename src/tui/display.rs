@@ -44,7 +44,7 @@ pub(crate) fn welcome_messages(config: &TuiConfig) -> Vec<DisplayMsg> {
     }
     msgs.push(DisplayMsg::Info(
         "Enter  submit · Ctrl+C  interrupt/clear · Ctrl+D  quit · F1  help · Ctrl+L  model · Ctrl+T  thinking · Ctrl+O  tools\n\
-         Shift+Enter  newline · Esc  clear · ↑↓  history · !  bash"
+         Ctrl+J  newline · Esc  clear/abort · ↑↓  history · !  bash · Tab  complete"
             .to_string(),
     ));
     msgs
@@ -195,7 +195,7 @@ pub(crate) fn help_lines(app: &App) -> Vec<Line<'static>> {
         Line::from(Span::styled("Keyboard Shortcuts", accent)),
         Line::from(""),
         Line::from(Span::styled("  Enter              Submit message", dim)),
-        Line::from(Span::styled("  Shift+Enter        Newline", dim)),
+        Line::from(Span::styled("  Ctrl+J             Newline", dim)),
         Line::from(Span::styled(
             "  Ctrl+C             Interrupt / clear editor",
             dim,
