@@ -1,4 +1,4 @@
-use rab::settings::Settings;
+use rab::agent::settings::Settings;
 
 fn write_file(path: &std::path::Path, json: &str) {
     if let Some(parent) = path.parent() {

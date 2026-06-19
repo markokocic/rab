@@ -1,4 +1,4 @@
-use rab::types::{AgentMessage, Role};
+use rab::agent::types::{AgentMessage, Role};
 
 #[test]
 fn user_message_has_correct_role() {

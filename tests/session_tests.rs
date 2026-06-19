@@ -1,6 +1,6 @@
 use rab::agent::{self, AgentEvent, LoopConfig};
-use rab::extension::Extension;
-use rab::session::SessionManager;
+use rab::agent::extension::Extension;
+use rab::agent::session::SessionManager;
 use tempfile::TempDir;
 
 // ── Helpers ────────────────────────────────────────────────────────
@@ -8,25 +8,25 @@ use tempfile::TempDir;
 struct NoopProvider;
 
 #[async_trait::async_trait]
-impl rab::provider::Provider for NoopProvider {
+impl rab::agent::provider::Provider for NoopProvider {
     async fn stream(
         &self,
         _model: &str,
         _system_prompt: &str,
-        _messages: &[rab::types::AgentMessage],
-        _tools: &[rab::provider::ToolDef],
+        _messages: &[rab::agent::types::AgentMessage],
+        _tools: &[rab::agent::provider::ToolDef],
     ) -> anyhow::Result<
-        std::pin::Pin<Box<dyn futures::Stream<Item = rab::provider::StreamEvent> + Send>>,
+        std::pin::Pin<Box<dyn futures::Stream<Item = rab::agent::provider::StreamEvent> + Send>>,
     > {
         // Return a stream that immediately sends Done with a simple response
-        let events: Vec<rab::provider::StreamEvent> = vec![
-            rab::provider::StreamEvent::TextDelta {
+        let events: Vec<rab::agent::provider::StreamEvent> = vec![
+            rab::agent::provider::StreamEvent::TextDelta {
                 text: "test response".to_string(),
             },
-            rab::provider::StreamEvent::Done {
+            rab::agent::provider::StreamEvent::Done {
                 text: "test response".to_string(),
                 usage: Default::default(),
-                stop_reason: rab::provider::StopReason::EndTurn,
+                stop_reason: rab::agent::provider::StopReason::EndTurn,
                 tool_calls: vec![],
             },
         ];
@@ -38,7 +38,7 @@ fn empty_extensions() -> Vec<Box<dyn Extension>> {
     vec![]
 }
 
-fn empty_tools() -> Vec<Box<dyn rab::extension::AgentTool>> {
+fn empty_tools() -> Vec<Box<dyn rab::agent::extension::AgentTool>> {
     vec![]
 }
 
@@ -46,14 +46,14 @@ fn empty_tools() -> Vec<Box<dyn rab::extension::AgentTool>> {
 
 #[tokio::test]
 async fn test_agent_loop_with_history() {
-    let history = vec![rab::types::AgentMessage::user("previous question"), {
-        let mut m = rab::types::AgentMessage::user("dummy");
-        m.role = rab::types::Role::Assistant;
+    let history = vec![rab::agent::types::AgentMessage::user("previous question"), {
+        let mut m = rab::agent::types::AgentMessage::user("dummy");
+        m.role = rab::agent::types::Role::Assistant;
         m.content = "previous answer".to_string();
         m
     }];
 
-    let prompt = rab::types::AgentMessage::user("new question");
+    let prompt = rab::agent::types::AgentMessage::user("new question");
 
     let config = LoopConfig {
         model: "test".to_string(),
@@ -96,7 +96,7 @@ async fn test_agent_loop_with_history() {
 
 #[tokio::test]
 async fn test_agent_loop_no_history() {
-    let prompt = rab::types::AgentMessage::user("hello");
+    let prompt = rab::agent::types::AgentMessage::user("hello");
 
     let config = LoopConfig {
         model: "test".to_string(),
@@ -141,10 +141,10 @@ async fn test_session_create_append_continue() {
     // Create session and append messages
     let mut sm = SessionManager::create(&cwd, Some(&sessions_dir));
     let _session_id = sm.session_id().to_string();
-    sm.append_message(&rab::types::AgentMessage::user("hello"));
+    sm.append_message(&rab::agent::types::AgentMessage::user("hello"));
     sm.append_message(&{
-        let mut m = rab::types::AgentMessage::user("dummy");
-        m.role = rab::types::Role::Assistant;
+        let mut m = rab::agent::types::AgentMessage::user("dummy");
+        m.role = rab::agent::types::Role::Assistant;
         m.content = "hi there".to_string();
         m
     });
@@ -156,10 +156,10 @@ async fn test_session_create_append_continue() {
     // Create another session (more recent)
     let mut sm2 = SessionManager::create(&cwd, Some(&sessions_dir));
     let newer_id = sm2.session_id().to_string();
-    sm2.append_message(&rab::types::AgentMessage::user("newer"));
+    sm2.append_message(&rab::agent::types::AgentMessage::user("newer"));
     sm2.append_message(&{
-        let mut m = rab::types::AgentMessage::user("dummy");
-        m.role = rab::types::Role::Assistant;
+        let mut m = rab::agent::types::AgentMessage::user("dummy");
+        m.role = rab::agent::types::Role::Assistant;
         m.content = "newer response".to_string();
         m
     });
@@ -184,10 +184,10 @@ async fn test_session_open_append_more() {
 
     // Create session with initial messages
     let mut sm = SessionManager::create(&cwd, Some(&sessions_dir));
-    sm.append_message(&rab::types::AgentMessage::user("first"));
+    sm.append_message(&rab::agent::types::AgentMessage::user("first"));
     sm.append_message(&{
-        let mut m = rab::types::AgentMessage::user("dummy");
-        m.role = rab::types::Role::Assistant;
+        let mut m = rab::agent::types::AgentMessage::user("dummy");
+        m.role = rab::agent::types::Role::Assistant;
         m.content = "first response".to_string();
         m
     });
@@ -200,10 +200,10 @@ async fn test_session_open_append_more() {
     let mut sm2 = SessionManager::open(&file_path, Some(&sessions_dir), None);
     assert_eq!(sm2.session_id(), &session_id);
 
-    sm2.append_message(&rab::types::AgentMessage::user("second"));
+    sm2.append_message(&rab::agent::types::AgentMessage::user("second"));
     sm2.append_message(&{
-        let mut m = rab::types::AgentMessage::user("dummy");
-        m.role = rab::types::Role::Assistant;
+        let mut m = rab::agent::types::AgentMessage::user("dummy");
+        m.role = rab::agent::types::Role::Assistant;
         m.content = "second response".to_string();
         m
     });
@@ -226,10 +226,10 @@ async fn test_session_name_persistence() {
     assert!(sm.session_name().is_none());
 
     sm.append_session_info("Bug fix session");
-    sm.append_message(&rab::types::AgentMessage::user("hello"));
+    sm.append_message(&rab::agent::types::AgentMessage::user("hello"));
     sm.append_message(&{
-        let mut m = rab::types::AgentMessage::user("dummy");
-        m.role = rab::types::Role::Assistant;
+        let mut m = rab::agent::types::AgentMessage::user("dummy");
+        m.role = rab::agent::types::Role::Assistant;
         m.content = "ok".to_string();
         m
     });
@@ -262,10 +262,10 @@ async fn test_session_thinking_and_model_changes() {
 
     let mut sm = SessionManager::create(&cwd, Some(&sessions_dir));
     sm.append_thinking_level_change("high");
-    sm.append_message(&rab::types::AgentMessage::user("hello"));
+    sm.append_message(&rab::agent::types::AgentMessage::user("hello"));
     sm.append_message(&{
-        let mut m = rab::types::AgentMessage::user("dummy");
-        m.role = rab::types::Role::Assistant;
+        let mut m = rab::agent::types::AgentMessage::user("dummy");
+        m.role = rab::agent::types::Role::Assistant;
         m.content = "ok".to_string();
         m
     });
@@ -280,14 +280,14 @@ async fn test_session_thinking_and_model_changes() {
     assert_eq!(entries.len(), 4); // thinking + user + assistant + model
 
     match &entries[0] {
-        rab::session::SessionEntry::ThinkingLevelChange(e) => {
+        rab::agent::session::SessionEntry::ThinkingLevelChange(e) => {
             assert_eq!(e.thinking_level, "high");
         }
         other => panic!("Expected ThinkingLevelChange, got {:?}", other),
     }
 
     match &entries[3] {
-        rab::session::SessionEntry::ModelChange(e) => {
+        rab::agent::session::SessionEntry::ModelChange(e) => {
             assert_eq!(e.provider, "opencode_go");
             assert_eq!(e.model_id, "deepseek-v4-pro");
         }
@@ -306,19 +306,19 @@ async fn test_session_branching() {
     let mut sm = SessionManager::create(&cwd, Some(&sessions_dir));
 
     // First branch
-    let m1 = sm.append_message(&rab::types::AgentMessage::user("question 1"));
+    let m1 = sm.append_message(&rab::agent::types::AgentMessage::user("question 1"));
     sm.append_message(&{
-        let mut m = rab::types::AgentMessage::user("dummy");
-        m.role = rab::types::Role::Assistant;
+        let mut m = rab::agent::types::AgentMessage::user("dummy");
+        m.role = rab::agent::types::Role::Assistant;
         m.content = "answer 1".to_string();
         m
     });
 
     // Second turn
-    sm.append_message(&rab::types::AgentMessage::user("question 2"));
+    sm.append_message(&rab::agent::types::AgentMessage::user("question 2"));
     sm.append_message(&{
-        let mut m = rab::types::AgentMessage::user("dummy");
-        m.role = rab::types::Role::Assistant;
+        let mut m = rab::agent::types::AgentMessage::user("dummy");
+        m.role = rab::agent::types::Role::Assistant;
         m.content = "answer 2".to_string();
         m
     });
@@ -328,8 +328,8 @@ async fn test_session_branching() {
 
     // Append alternate path
     sm.append_message(&{
-        let mut m = rab::types::AgentMessage::user("dummy");
-        m.role = rab::types::Role::Assistant;
+        let mut m = rab::agent::types::AgentMessage::user("dummy");
+        m.role = rab::agent::types::Role::Assistant;
         m.content = "alternate answer 1".to_string();
         m
     });
@@ -350,19 +350,19 @@ async fn test_session_compaction_entry() {
     std::fs::create_dir_all(&cwd).unwrap();
 
     let mut sm = SessionManager::create(&cwd, Some(&sessions_dir));
-    sm.append_message(&rab::types::AgentMessage::user("old stuff"));
+    sm.append_message(&rab::agent::types::AgentMessage::user("old stuff"));
     sm.append_message(&{
-        let mut m = rab::types::AgentMessage::user("dummy");
-        m.role = rab::types::Role::Assistant;
+        let mut m = rab::agent::types::AgentMessage::user("dummy");
+        m.role = rab::agent::types::Role::Assistant;
         m.content = "old response".to_string();
         m
     });
 
     sm.append_compaction("Earlier conversation summarized", "entry_kept_id", 1000);
-    sm.append_message(&rab::types::AgentMessage::user("new stuff"));
+    sm.append_message(&rab::agent::types::AgentMessage::user("new stuff"));
     sm.append_message(&{
-        let mut m = rab::types::AgentMessage::user("dummy");
-        m.role = rab::types::Role::Assistant;
+        let mut m = rab::agent::types::AgentMessage::user("dummy");
+        m.role = rab::agent::types::Role::Assistant;
         m.content = "new response".to_string();
         m
     });
@@ -377,7 +377,7 @@ async fn test_session_compaction_entry() {
 
     let has_compaction = entries
         .iter()
-        .any(|e| matches!(e, rab::session::SessionEntry::Compaction(_)));
+        .any(|e| matches!(e, rab::agent::session::SessionEntry::Compaction(_)));
     assert!(has_compaction, "Expected compaction entry");
 }
 
@@ -389,7 +389,7 @@ async fn test_session_in_memory() {
     assert!(!sm.is_persisted());
     assert!(!sm.session_id().is_empty());
 
-    sm.append_message(&rab::types::AgentMessage::user("test"));
+    sm.append_message(&rab::agent::types::AgentMessage::user("test"));
 
     let ctx = sm.build_session_context();
     assert_eq!(ctx.messages.len(), 1);
@@ -410,7 +410,7 @@ async fn test_agent_loop_persists_messages_to_session() {
     let mut session = SessionManager::create(&cwd, Some(&sessions_dir));
 
     // Run agent loop — this simulates what the TUI does on submit
-    let prompt = rab::types::AgentMessage::user("run this");
+    let prompt = rab::agent::types::AgentMessage::user("run this");
     let history = session.build_session_context().messages;
 
     let config = LoopConfig {
@@ -442,14 +442,14 @@ async fn test_agent_loop_persists_messages_to_session() {
         "Expected at least 2 messages (user + assistant), got {}",
         ctx.messages.len()
     );
-    assert_eq!(ctx.messages[0].role, rab::types::Role::User);
+    assert_eq!(ctx.messages[0].role, rab::agent::types::Role::User);
     assert_eq!(ctx.messages[0].content, "run this");
 
     // Verify file was created and contains entries
     let file_path = session.session_file().unwrap();
     assert!(file_path.exists(), "Session file should exist");
 
-    let entries = rab::session::load_entries_from_file(file_path);
+    let entries = rab::agent::session::load_entries_from_file(file_path);
     assert!(!entries.is_empty(), "Session file should contain entries");
 }
 
@@ -463,10 +463,10 @@ async fn test_agent_loop_persists_with_history() {
 
     // Create session with prior messages
     let mut session = SessionManager::create(&cwd, Some(&sessions_dir));
-    session.append_message(&rab::types::AgentMessage::user("previous question"));
+    session.append_message(&rab::agent::types::AgentMessage::user("previous question"));
     session.append_message(&{
-        let mut m = rab::types::AgentMessage::user("dummy");
-        m.role = rab::types::Role::Assistant;
+        let mut m = rab::agent::types::AgentMessage::user("dummy");
+        m.role = rab::agent::types::Role::Assistant;
         m.content = "previous answer".to_string();
         m
     });
@@ -480,7 +480,7 @@ async fn test_agent_loop_persists_with_history() {
     let history = session.build_session_context().messages;
     assert_eq!(history.len(), 2, "History should have 2 messages");
 
-    let prompt = rab::types::AgentMessage::user("new question");
+    let prompt = rab::agent::types::AgentMessage::user("new question");
 
     let config = LoopConfig {
         model: "test".to_string(),
@@ -523,10 +523,10 @@ async fn test_session_label_and_custom() {
     std::fs::create_dir_all(&cwd).unwrap();
 
     let mut sm = SessionManager::create(&cwd, Some(&sessions_dir));
-    let msg_id = sm.append_message(&rab::types::AgentMessage::user("important"));
+    let msg_id = sm.append_message(&rab::agent::types::AgentMessage::user("important"));
     sm.append_message(&{
-        let mut m = rab::types::AgentMessage::user("dummy");
-        m.role = rab::types::Role::Assistant;
+        let mut m = rab::agent::types::AgentMessage::user("dummy");
+        m.role = rab::agent::types::Role::Assistant;
         m.content = "ack".to_string();
         m
     });
@@ -544,16 +544,16 @@ async fn test_session_label_and_custom() {
     let entries = sm.entries();
     let has_label = entries
         .iter()
-        .any(|e| matches!(e, rab::session::SessionEntry::Label(_)));
+        .any(|e| matches!(e, rab::agent::session::SessionEntry::Label(_)));
     assert!(has_label);
 
     let has_custom = entries
         .iter()
-        .any(|e| matches!(e, rab::session::SessionEntry::Custom(_)));
+        .any(|e| matches!(e, rab::agent::session::SessionEntry::Custom(_)));
     assert!(has_custom);
 
     let has_summary = entries
         .iter()
-        .any(|e| matches!(e, rab::session::SessionEntry::BranchSummary(_)));
+        .any(|e| matches!(e, rab::agent::session::SessionEntry::BranchSummary(_)));
     assert!(has_summary);
 }

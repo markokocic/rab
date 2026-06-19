@@ -1,5 +1,5 @@
-use rab::builtin::commands::CommandsExtension;
-use rab::extension::{CommandResult, Extension};
+use rab::builtin::commands::{CommandsExtension, SessionInfoInternal};
+use rab::agent::extension::{CommandResult, Extension};
 
 /// Simulate the prefix matching logic used by `submit_message`.
 /// Returns (command_name, args) when exactly one prefix match, or None.
@@ -300,7 +300,6 @@ fn session_command_no_info() {
 
 #[test]
 fn session_command_with_info() {
-    use rab::builtin::commands::SessionInfoInternal;
     let ext = CommandsExtension::new(vec![]);
     ext.set_session_info(SessionInfoInternal {
         session_id: "abc123".to_string(),
