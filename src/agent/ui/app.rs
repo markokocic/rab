@@ -742,3 +742,113 @@ fn parse_bang_command(input: &str) -> Option<(String, bool)> {
         None
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent::provider::StreamEvent;
+    use crate::agent::types::AgentMessage;
+    use async_trait::async_trait;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use futures::Stream;
+    use std::pin::Pin;
+    use tempfile::tempdir;
+
+    struct MockProvider;
+    #[async_trait]
+    impl Provider for MockProvider {
+        async fn stream(
+            &self,
+            _model: &str,
+            _system: &str,
+            _msgs: &[AgentMessage],
+            _tools: &[ToolDef],
+        ) -> anyhow::Result<Pin<Box<dyn Stream<Item = StreamEvent> + Send>>> {
+            unimplemented!()
+        }
+    }
+
+    #[test]
+    fn test_compose_ui_stable_line_count() {
+        let tmp = tempdir().unwrap();
+        let cwd = tmp.path().to_path_buf();
+        let session = SessionManager::in_memory(&cwd);
+
+        let config = AppConfig {
+            model: "deepseek-v4-flash".into(),
+            system_prompt: String::new(),
+            tools: vec![],
+            agent_tools: vec![],
+            extensions: vec![],
+            provider: Box::new(MockProvider),
+            cwd: cwd.clone(),
+            thinking_level: None,
+            git_branch: None,
+            available_models: vec![],
+            hide_thinking: true,
+            collapse_tool_output: true,
+            interactive: true,
+        };
+
+        let mut app = App::new(config, session);
+        let width = 80;
+
+        // First compose
+        let before = compose_ui_test(&mut app, width);
+        // Type "/"
+        let slash = KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE);
+        app.editor.editor.handle_input(&slash);
+        // Second compose
+        let after = compose_ui_test(&mut app, width);
+
+        assert_eq!(
+            before.len(),
+            after.len(),
+            "Line count changed from {} to {}",
+            before.len(),
+            after.len()
+        );
+
+        // Find the border lines and verify they exist in both
+        let before_has_top = before.iter().any(|l| l.contains('─'));
+        let before_has_bottom = before.iter().any(|l| l.contains('─'));
+        let after_has_top = after.iter().any(|l| l.contains('─'));
+        let after_has_bottom = after.iter().any(|l| l.contains('─'));
+
+        assert!(before_has_top, "Before: missing top border");
+        assert!(before_has_bottom, "Before: missing bottom border");
+        assert!(after_has_top, "After: missing top border");
+        assert!(after_has_bottom, "After: missing bottom border");
+
+        // The changed line should be the same index in both
+        for (i, (b, a)) in before.iter().zip(after.iter()).enumerate() {
+            if b != a {
+                eprintln!("Changed line {}: '{}' -> '{}'", i, b, a);
+            }
+        }
+    }
+
+    fn compose_ui_test(app: &mut App, width: usize) -> Vec<String> {
+        let theme = &app.theme;
+        let mut lines = Vec::new();
+        let rendered = render_messages(
+            &app.messages,
+            width,
+            app.hide_thinking,
+            app.collapse_tool_output,
+            theme,
+        );
+        lines.extend(rendered);
+        if !lines.is_empty() && !lines.last().is_none_or(|l| l.trim().is_empty()) {
+            lines.push(String::new());
+        }
+        if app.is_streaming {
+            lines.extend(app.working.render(width));
+        }
+        lines.extend(app.editor.editor.render(width));
+        let hint = theme.fg("dim", "hint");
+        lines.push(format!(" {}", hint));
+        lines.extend(app.footer.render(width));
+        lines
+    }
+}
