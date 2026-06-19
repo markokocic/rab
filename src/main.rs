@@ -122,7 +122,13 @@ async fn main() -> anyhow::Result<()> {
     let provider = adapter::GenaiProvider::new(&auth, thinking_level)?;
 
     if message_parts.is_empty() {
-        let git_branch = get_git_branch(&cwd);
+        let _git_branch = get_git_branch(&cwd);
+        // TODO: Port to src/ui/app.rs using src/tui/
+        eprintln!(
+            "Interactive mode not yet ported to new TUI library. Use print mode with a message."
+        );
+        Ok(())
+        /*
         let config = rab::rattui::TuiConfig {
             model,
             system_prompt,
@@ -138,6 +144,7 @@ async fn main() -> anyhow::Result<()> {
             collapse_tool_output: settings.collapse_tool_output.unwrap_or(false),
         };
         rab::rattui::run(config, session).await
+        */
     } else {
         let message = message_parts.join(" ");
         run_print_mode(
