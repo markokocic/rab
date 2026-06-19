@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::agent::extension::{AgentTool, Extension};
 use crate::agent::ui::chat_editor::ChatEditor;
 use crate::agent::ui::footer::Footer;
 use crate::agent::ui::help::HelpOverlay;
@@ -11,7 +12,6 @@ use crate::agent::ui::model_selector::ModelSelector;
 use crate::agent::ui::theme::RabTheme;
 use crate::agent::ui::working::WorkingIndicator;
 use crate::agent::{AgentEvent, LoopConfig, run_agent_loop};
-use crate::extension::{AgentTool, Extension};
 use crate::provider::{Provider, ToolDef};
 use crate::session::SessionManager;
 use crate::tui::Component;

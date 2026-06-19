@@ -1,11 +1,11 @@
 use rab::adapter;
+use rab::agent::extension::Extension;
 use rab::agent::ui;
 use rab::agent::{AgentEvent, LoopConfig};
 use rab::builtin::{
     bash::BashExtension, commands::CommandsExtension, edit::EditExtension, read::ReadExtension,
     write::WriteExtension,
 };
-use rab::extension::Extension;
 use rab::session::SessionManager;
 use rab::settings::Settings;
 use std::io::Write;
@@ -116,7 +116,7 @@ async fn main() -> anyhow::Result<()> {
 
     let system_prompt = build_system_prompt(&extensions);
     let tools = rab::agent::collect_tool_defs(&extensions);
-    let agent_tools: Vec<Box<dyn rab::extension::AgentTool>> =
+    let agent_tools: Vec<Box<dyn rab::agent::extension::AgentTool>> =
         extensions.iter().flat_map(|ext| ext.tools()).collect();
 
     let thinking_level = settings.default_thinking_level.as_deref();
@@ -163,7 +163,7 @@ async fn run_print_mode(
     model: String,
     system_prompt: String,
     tool_defs: Vec<rab::provider::ToolDef>,
-    agent_tools: Vec<Box<dyn rab::extension::AgentTool>>,
+    agent_tools: Vec<Box<dyn rab::agent::extension::AgentTool>>,
     extensions: Vec<Box<dyn Extension>>,
     provider: adapter::GenaiProvider,
     history: Vec<rab::types::AgentMessage>,

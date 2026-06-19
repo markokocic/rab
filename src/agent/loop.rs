@@ -1,4 +1,4 @@
-use crate::extension::Extension;
+use crate::agent::extension::Extension;
 use crate::provider::{Provider, StopReason, StreamEvent, ToolDef};
 use crate::types::{AgentMessage, Role, ToolCall};
 
@@ -53,15 +53,15 @@ pub struct LoopConfig<'a> {
     pub model: String,
     pub system_prompt: String,
     pub tools: Vec<ToolDef>,
-    pub agent_tools: &'a [Box<dyn crate::extension::AgentTool>],
+    pub agent_tools: &'a [Box<dyn crate::agent::extension::AgentTool>],
     pub extensions: &'a [Box<dyn Extension>],
 }
 
 /// Find a tool by name across all extensions.
 fn find_tool<'a>(
-    tools: &'a [Box<dyn crate::extension::AgentTool>],
+    tools: &'a [Box<dyn crate::agent::extension::AgentTool>],
     name: &str,
-) -> Option<&'a dyn crate::extension::AgentTool> {
+) -> Option<&'a dyn crate::agent::extension::AgentTool> {
     tools.iter().find(|t| t.name() == name).map(|t| t.as_ref())
 }
 

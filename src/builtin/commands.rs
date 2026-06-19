@@ -1,4 +1,6 @@
-use crate::extension::{AutocompleteItem, CommandHandler, CommandResult, Extension, SlashCommand};
+use crate::agent::extension::{
+    AutocompleteItem, CommandHandler, CommandResult, Extension, SlashCommand,
+};
 use std::borrow::Cow;
 use std::sync::{Arc, Mutex};
 
