@@ -465,6 +465,7 @@ impl Editor {
         }
         let text = self.history[idx as usize].clone();
         self.set_text(&text);
+        self.cursor_col = 0; // pi: cursor at start when going older
         self.history_index = idx;
     }
 
@@ -479,6 +480,7 @@ impl Editor {
         } else {
             let text = self.history[idx as usize].clone();
             self.set_text(&text);
+            // cursor stays at end (set_text default)
             self.history_index = idx;
         }
     }
@@ -1040,22 +1042,142 @@ mod tests {
         assert!(vl[0].has_cursor);
         assert_eq!(vl[0].cursor_pos, Some(1));
     }
-}
 
-#[test]
-fn debug_full_compose() {
-    use crate::tui::Component;
-    use crate::tui::components::editor::{Editor, EditorOptions, EditorTheme};
-    // Simulate the ChatEditor theme
-    let theme = EditorTheme {
-        border: Box::new(|s| format!("\x1b[38;2;138;190;183m{}\x1b[39m", s)),
-        ..EditorTheme::default()
-    };
-    let mut editor = Editor::new(
-        theme,
-        EditorOptions {
-            padding_x: 1,
-            max_visible_lines: 10,
-        },
-    );
+    // ── Ported from pi-tui editor.test.ts ──
+
+    fn up_key() -> KeyEvent {
+        KeyEvent::new(KeyCode::Up, KeyModifiers::NONE)
+    }
+    fn down_key() -> KeyEvent {
+        KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)
+    }
+    fn char_key(c: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
+    }
+    fn enter_key() -> KeyEvent {
+        KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn test_history_empty_up_does_nothing() {
+        let mut editor = Editor::new(EditorTheme::default(), EditorOptions::default());
+        editor.handle_input(&up_key());
+        assert_eq!(editor.get_text(), "");
+    }
+
+    #[test]
+    fn test_history_up_shows_most_recent() {
+        let mut editor = Editor::new(EditorTheme::default(), EditorOptions::default());
+        editor.add_to_history("first");
+        editor.add_to_history("second");
+        editor.handle_input(&up_key());
+        assert_eq!(editor.get_text(), "second");
+    }
+
+    #[test]
+    fn test_history_cycles() {
+        let mut editor = Editor::new(EditorTheme::default(), EditorOptions::default());
+        editor.add_to_history("first");
+        editor.add_to_history("second");
+        editor.add_to_history("third");
+        editor.handle_input(&up_key());
+        assert_eq!(editor.get_text(), "third");
+        editor.handle_input(&up_key());
+        assert_eq!(editor.get_text(), "second");
+        editor.handle_input(&up_key());
+        assert_eq!(editor.get_text(), "first");
+        editor.handle_input(&up_key()); // stays at oldest
+        assert_eq!(editor.get_text(), "first");
+    }
+
+    #[test]
+    fn test_history_exits_on_type() {
+        let mut editor = Editor::new(EditorTheme::default(), EditorOptions::default());
+        editor.add_to_history("old");
+        editor.handle_input(&up_key());
+        assert_eq!(editor.get_text(), "old");
+        editor.handle_input(&char_key('x'));
+        assert_eq!(editor.get_text(), "xold");
+    }
+
+    #[test]
+    fn test_backslash_enter_newline() {
+        let mut editor = Editor::new(EditorTheme::default(), EditorOptions::default());
+        editor.handle_input(&char_key('\\'));
+        assert_eq!(editor.get_text(), "\\");
+        editor.handle_input(&enter_key());
+        assert_eq!(editor.get_text(), "\n");
+    }
+
+    #[test]
+    fn test_move_cursor_over_emoji() {
+        let mut editor = Editor::new(EditorTheme::default(), EditorOptions::default());
+        editor.set_text("a😀b");
+        editor.cursor_col = 0;
+        editor.move_right();
+        assert_eq!(editor.cursor_col, 1);
+        editor.move_right();
+        assert_eq!(editor.cursor_col, 5);
+        editor.move_right();
+        assert_eq!(editor.cursor_col, 6);
+    }
+
+    #[test]
+    fn test_backspace_emoji() {
+        let mut editor = Editor::new(EditorTheme::default(), EditorOptions::default());
+        editor.set_text("a😀b");
+        editor.cursor_col = 6;
+        editor.backspace();
+        assert_eq!(editor.get_text(), "a😀");
+        editor.backspace();
+        assert_eq!(editor.get_text(), "a");
+    }
+
+    #[test]
+    fn test_render_cursor_visible() {
+        let mut editor = Editor::new(EditorTheme::default(), EditorOptions::default());
+        editor.focused = true;
+        editor.insert_character("x");
+        let lines = editor.render(40);
+        let content = &lines[1];
+        assert!(content.contains("\x1b[7m"), "Cursor inverse not found");
+    }
+
+    #[test]
+    fn test_render_borders_always_present() {
+        let mut editor = Editor::new(EditorTheme::default(), EditorOptions::default());
+        let lines = editor.render(80);
+        assert_eq!(lines.len(), 3, "Empty editor should have 3 lines");
+        assert!(lines[0].contains('─'), "Top border missing");
+        assert!(lines[2].contains('─'), "Bottom border missing");
+
+        editor.insert_character("/");
+        let lines = editor.render(80);
+        assert_eq!(lines.len(), 3, "After typing / should still have 3 lines");
+        assert!(lines[0].contains('─'), "Top border missing after /");
+        assert!(lines[2].contains('─'), "Bottom border missing after /");
+
+        editor.set_text("hello world this is text");
+        let lines = editor.render(40);
+        assert!(lines.len() >= 3, "Wrapped text: {}", lines.len());
+        assert!(lines[0].contains('─'), "Top border");
+        assert!(lines.last().unwrap().contains('─'), "Bottom border");
+    }
+
+    #[test]
+    fn test_content_width_respected() {
+        let mut editor = Editor::new(
+            EditorTheme::default(),
+            EditorOptions {
+                padding_x: 1,
+                max_visible_lines: 10,
+            },
+        );
+        editor.set_text("hello world this is a test");
+        let lines = editor.render(20);
+        for line in &lines {
+            let vw = crate::tui::util::visible_width(line);
+            assert!(vw <= 20, "Width {} > 20: {:?}", vw, line);
+        }
+    }
 }
