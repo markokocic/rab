@@ -813,10 +813,10 @@ API specifications, keybinding tables, render layout diagrams, and porting estim
 
 | Component | Purpose |
 |---|---|
-| `app.rs` | Main event loop, App state. |
+| `app.rs` | Main event loop, App state. Pi-style header, queued messages, streaming text, transient status, message queuing during streaming. |
 | `chat_editor.rs` | Thin wrapper around `tui::Editor` for slash commands, file autocomplete, submission hook. |
-| `messages.rs` | Conversation history → styled lines. |
-| `working.rs` | Streaming spinner. |
+| `messages.rs` | Conversation history → styled lines. User/ToolCall in TuiBox (paddingY=1), ToolResult in TuiBox (paddingY=0), Thinking italic+muted, OSC133 terminal markers on User/AssistantText. |
+| `working.rs` | Streaming spinner. Always rendered (empty line when inactive) for layout stability. |
 | `footer.rs` | Cwd + git branch + token stats + model. |
 | `model_selector.rs` | Model picker using `tui::SelectList`. |
 | `help.rs` | `/help` display. |
@@ -826,30 +826,42 @@ API specifications, keybinding tables, render layout diagrams, and porting estim
 
 ```
 Terminal (main screen, rows=40):
-┌───────────────────────────────────────┐
-│  [old messages in scrollback]         │  ← terminal's native scroll buffer
-│  rab · model deepseek-v4-flash        │  ← header (logo + model)
-│  Enter submit · Ctrl+J … F1 · Ctrl+L  │  ← keybinding hints
-│                                       │
-│  message 48                           │  ← still in buffer / viewport
-│  message 49                           │
-│  Assistant response text …            │
-│  ◷ queued-while-streaming             │  ← queued messages (pi-style)
-│  ↳ queued — will send when current…   │
-│                                       │  ← spacer
-│  ⠋                                    │  ← working indicator (always present)
-│┌──────────────────────────────────────┐│
-││ user types here…                     ││  ← editor (bordered)
-│└──────────────────────────────────────┘│
-│ ~/src/my/rab (master)                 │  ← footer line 1
-│ ○ 2↑ 5↓ 45%/100k (auto)   model-name │  ← footer line 2
-└──────────────────────────────────────┘
+┌──────────────────────────────────────────┐
+│  [old messages in scrollback]            │  ← terminal's native scroll buffer
+│  rab · model deepseek-v4-flash           │  ← header (logo + model)
+│  Enter submit · Ctrl+J … F1 · Ctrl+L     │  ← keybinding hints
+│                                          │
+│  ┌─────────────────────────────────────┐ │
+│  │  user message (userMessageBg)       │ │  ← TuiBox(paddingY=1)
+│  └─────────────────────────────────────┘ │
+│  Assistant response text …               │  ← plain text, no bg
+│  Thinking… (italic, muted)               │  ← thinking block
+│                                          │  ← spacer after thinking
+│  Assistant final answer …                │
+│  ┌─────────────────────────────────────┐ │
+│  │  ⚙️ tool_name  args (toolPendingBg) │ │  ← TuiBox(paddingY=1)
+│  │  tool result (toolSuccessBg)        │ │  ← TuiBox(paddingY=0)
+│  └─────────────────────────────────────┘ │
+│  ◷ queued-while-streaming                │  ← queued messages
+│  ↳ queued — will send when current…      │
+│  Thinking blocks: hidden                 │  ← transient status (1 frame)
+│                                          │  ← spacer
+│  ⠋                                       │  ← working indicator (always present)
+│ ┌─────────────────────────────────────┐  │
+│ │ user types here…      /quit         │  │  ← editor (bordered, autocomplete)
+│ │ → quit                              │  │  ← autocomplete dropdown (SelectList)
+│ └─────────────────────────────────────┘  │
+│ ~/src/my/rab (master)                    │  ← footer line 1
+│ ○ 2↑ 5↓ 45%/100k (auto)   model-name    │  ← footer line 2
+└──────────────────────────────────────────┘
 ```
 
 All content is one flat line buffer managed by the diff renderer. Layout (top
-to bottom): **header** → **messages** → **pending (streaming) text** →
-**queued messages** → **spacer** → **working indicator** (always 1 line) →
-**editor** (bordered) → **footer** (2 lines).
+to bottom): **header** → **messages** (User in TuiBox, AssistantText plain,
+Thinking italic, ToolCall/ToolResult in TuiBox) → **pending (streaming) text**
+→ **queued messages** → **transient status** → **spacer** → **working
+indicator** (always 1 line) → **editor** (bordered, with autocomplete
+dropdown via SelectList) → **footer** (2 lines).
 
 New messages are appended lines — the diff renderer writes `\r\n` at the right
 spot, which pushes content up through the terminal's native scroll.
@@ -861,6 +873,13 @@ a new concurrent agent loop). Queued messages appear between chat and editor
 (pi's `pendingMessagesContainer` style). On `AgentEnd`, the next queued
 message is automatically submitted. Ctrl+C during streaming restores queued
 messages to the editor for editing.
+
+### Transient status
+
+Toggle messages (Ctrl+T thinking, Ctrl+O tool output, model switch, interrupt)
+use a transient `status_text: Option<String>` that appears for one frame then
+clears, matching pi's `showStatus()` behavior. Status messages replace the
+previous status — they don't accumulate in the chat history.
 
 ---
 
