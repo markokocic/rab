@@ -40,12 +40,6 @@ pub fn render_messages(
     let msg_count = messages.len();
 
     for (idx, msg) in messages.iter().enumerate() {
-        // Pi: track whether visible content follows (for thinking block spacing)
-        let has_visible_after = |start: usize| -> bool {
-            messages[start..]
-                .iter()
-                .any(|m| matches!(m, DisplayMsg::AssistantText(t) if !t.is_empty()))
-        };
         match msg {
             DisplayMsg::Separator => {
                 lines.push(String::new());
@@ -90,6 +84,10 @@ pub fn render_messages(
                 if text.is_empty() {
                     continue;
                 }
+                // Pi: blank line before assistant text when following non-assistant content (tool result, etc.)
+                if !lines.is_empty() && !lines.last().is_none_or(|l| l.trim().is_empty()) {
+                    lines.push(String::new());
+                }
                 let asst_start = lines.len();
                 for line in text.lines() {
                     if line.is_empty() {
@@ -112,11 +110,14 @@ pub fn render_messages(
                 }
             }
             DisplayMsg::Thinking(text) => {
+                // Pi: blank line before thinking when preceded by other content
+                if !lines.is_empty() && !lines.last().is_none_or(|l| l.trim().is_empty()) {
+                    lines.push(String::new());
+                }
                 // Pi-style: italic + muted foreground, no background
                 if hide_thinking {
                     let content = theme.italic(&theme.fg("thinking_text", " Thinking…"));
-                    let padded = pad_to_width(&format!(" {}", content), width);
-                    lines.push(padded);
+                    lines.push(pad_to_width(&format!(" {}", content), width));
                 } else {
                     for line in text.lines() {
                         let content =
@@ -124,9 +125,16 @@ pub fn render_messages(
                         lines.push(pad_to_width(&content, width));
                     }
                 }
-                // Pi: Spacer after thinking if visible content follows
-                if idx + 1 < msg_count && has_visible_after(idx + 1) {
-                    lines.push(String::new());
+                // Pi: blank line after thinking when any visible content follows
+                if idx + 1 < msg_count {
+                    let has_content = messages[idx + 1..].iter().any(|m| match m {
+                        DisplayMsg::AssistantText(t) if !t.is_empty() => true,
+                        DisplayMsg::ToolResult { .. } => true,
+                        _ => false,
+                    });
+                    if has_content {
+                        lines.push(String::new());
+                    }
                 }
             }
             DisplayMsg::ToolCall { name, args } => {
@@ -158,12 +166,12 @@ pub fn render_messages(
                 lines.extend(msg_box.render(width));
             }
             DisplayMsg::ToolResult { content, is_error } => {
-                // Pi: tool result uses same Box pattern with success/error background
+                // Pi: tool result shares the same Box as tool call — TuiBox(paddingY=0)
                 let bg_code = if *is_error { "60;40;40" } else { "40;50;40" };
                 let fg = if *is_error { "error" } else { "muted" };
                 let mut msg_box = crate::tui::components::r#box::TuiBox::new(
                     1,
-                    1,
+                    0,
                     Some(std::boxed::Box::new(move |s: &str| -> String {
                         format!("\x1b[48;2;{}m{}\x1b[49m", bg_code, s)
                     })),

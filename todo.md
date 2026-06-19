@@ -1,4 +1,5 @@
 # Bugs
+- [] in pi, selector appears as soon as user types /, in rab you must type / + tab
 - [] selector for slash command has blue bakground. should match pi both visually and behaviour
 # Tasks
 - [] review usage of reusable tui components
