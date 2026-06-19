@@ -70,6 +70,12 @@ struct AutocompleteState {
     prefix: String,
 }
 
+impl Default for Editor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Editor {
     pub fn new() -> Self {
         Self {
@@ -149,14 +155,14 @@ impl Editor {
     }
 
     pub fn accept_autocomplete_if_active(&mut self) -> bool {
-        if let Some(ac) = &self.autocomplete {
-            if !ac.items.is_empty() {
-                let item = ac.items[ac.selected].clone();
-                let prefix = ac.prefix.clone();
-                self.autocomplete = None;
-                self.apply_autocomplete_item(&item, &prefix);
-                return true;
-            }
+        if let Some(ac) = &self.autocomplete
+            && !ac.items.is_empty()
+        {
+            let item = ac.items[ac.selected].clone();
+            let prefix = ac.prefix.clone();
+            self.autocomplete = None;
+            self.apply_autocomplete_item(&item, &prefix);
+            return true;
         }
         false
     }
@@ -735,8 +741,7 @@ impl Editor {
     fn update_autocomplete_after_typing(&mut self) {
         let text = self.lines.join("\n");
         let trimmed = text.trim();
-        if trimmed.starts_with('/') {
-            let rest = &trimmed[1..];
+        if let Some(rest) = trimmed.strip_prefix('/') {
             if !rest.contains(' ') {
                 self.update_slash_command_completions(rest);
             }
@@ -745,11 +750,11 @@ impl Editor {
         // @ file path
         let cursor_line = self.lines[self.cursor_row].clone();
         let before = &cursor_line[..self.cursor_col];
-        if let Some(at) = before.rfind('@') {
-            if at == 0 || before.as_bytes().get(at.wrapping_sub(1)) == Some(&b' ') {
-                let prefix = before[at..].to_string();
-                self.update_file_completions(&prefix[1..], true);
-            }
+        if let Some(at) = before.rfind('@')
+            && (at == 0 || before.as_bytes().get(at.wrapping_sub(1)) == Some(&b' '))
+        {
+            let prefix = before[at..].to_string();
+            self.update_file_completions(&prefix[1..], true);
         }
     }
 
@@ -834,20 +839,16 @@ impl Editor {
         }
     }
 
-    fn resolve_path_prefix(
-        prefix: &str,
-        cwd: &std::path::Path,
-    ) -> (String, std::path::PathBuf) {
+    fn resolve_path_prefix(prefix: &str, cwd: &std::path::Path) -> (String, std::path::PathBuf) {
         let clean = prefix.trim_start_matches('@');
         if clean.is_empty() {
             return (String::new(), cwd.to_path_buf());
         }
         if clean.starts_with('/') {
             let path = std::path::Path::new(clean);
-            let parent = path.parent().map_or_else(
-                || std::path::PathBuf::from("/"),
-                |p| p.to_path_buf(),
-            );
+            let parent = path
+                .parent()
+                .map_or_else(|| std::path::PathBuf::from("/"), |p| p.to_path_buf());
             let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
             return (name.to_string(), parent);
         }
@@ -855,7 +856,9 @@ impl Editor {
             (String::new(), cwd.join(clean))
         } else {
             let path = std::path::Path::new(clean);
-            let parent = path.parent().map_or_else(|| cwd.to_path_buf(), |p| cwd.join(p));
+            let parent = path
+                .parent()
+                .map_or_else(|| cwd.to_path_buf(), |p| cwd.join(p));
             let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
             (name.to_string(), parent)
         }
