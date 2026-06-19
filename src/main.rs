@@ -1,13 +1,13 @@
 use rab::adapter;
 use rab::agent::extension::Extension;
+use rab::agent::session::SessionManager;
+use rab::agent::settings::Settings;
 use rab::agent::ui;
 use rab::agent::{AgentEvent, LoopConfig};
 use rab::builtin::{
     bash::BashExtension, commands::CommandsExtension, edit::EditExtension, read::ReadExtension,
     write::WriteExtension,
 };
-use rab::session::SessionManager;
-use rab::settings::Settings;
 use std::io::Write;
 
 #[tokio::main]
@@ -162,11 +162,11 @@ async fn run_print_mode(
     message: String,
     model: String,
     system_prompt: String,
-    tool_defs: Vec<rab::provider::ToolDef>,
+    tool_defs: Vec<rab::agent::provider::ToolDef>,
     agent_tools: Vec<Box<dyn rab::agent::extension::AgentTool>>,
     extensions: Vec<Box<dyn Extension>>,
     provider: adapter::GenaiProvider,
-    history: Vec<rab::types::AgentMessage>,
+    history: Vec<rab::agent::types::AgentMessage>,
     session: &mut SessionManager,
 ) -> anyhow::Result<()> {
     let loop_config = LoopConfig {
@@ -177,7 +177,7 @@ async fn run_print_mode(
         extensions: &extensions,
     };
 
-    let prompt = rab::types::AgentMessage::user(&message);
+    let prompt = rab::agent::types::AgentMessage::user(&message);
 
     // Persist the user prompt
     session.append_message(&prompt);
@@ -242,7 +242,7 @@ async fn run_print_mode(
 
     // Persist all new assistant + tool result messages
     for msg in &new_messages {
-        if msg.role != rab::types::Role::User {
+        if msg.role != rab::agent::types::Role::User {
             session.append_message(msg);
         }
     }
@@ -250,7 +250,7 @@ async fn run_print_mode(
     if let Some(last_assistant) = new_messages
         .iter()
         .rev()
-        .find(|m| m.role == rab::types::Role::Assistant)
+        .find(|m| m.role == rab::agent::types::Role::Assistant)
         && !last_assistant.content.is_empty()
         && !last_assistant.content.ends_with('\n')
     {

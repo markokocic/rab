@@ -7,8 +7,8 @@ Study these files before implementing each Rust equivalent.
 
 | rab module | pi source (study before implementing) |
 |---|---|
-| `types.rs` | `packages/agent/src/types.ts`, `packages/coding-agent/src/core/extensions/types.ts` |
-| `provider.rs` | `packages/ai/src/types.ts`, `packages/ai/src/providers/openai-completions.ts` |
+| `agent/types.rs` ✅ | `packages/agent/src/types.ts`, `packages/coding-agent/src/core/extensions/types.ts` |
+| `agent/provider.rs` ✅ | `packages/ai/src/types.ts`, `packages/ai/src/providers/openai-completions.ts` |
 | `adapter/genai.rs` | pi has no genai; rab uses genai crate for HTTP+streaming. Study `openai-completions.ts` for the OpenAI chat completions protocol that OpenCode Go uses |
 | `agent/extension.rs` ✅ | `packages/agent/src/types.ts` (`AgentTool`, `AgentContext`, `AgentEvent`) |
 | `tui/components/editor.rs` ✅ | `packages/tui/src/components/editor.ts` (full port), `packages/tui/src/autocomplete.ts` |
@@ -24,13 +24,16 @@ Study these files before implementing each Rust equivalent.
 | `builtin/write.rs` | `packages/coding-agent/src/core/tools/write.ts` |
 | `builtin/edit.rs` | `packages/coding-agent/src/core/tools/edit.ts`, `edit-diff.ts` |
 | `builtin/bash.rs` | `packages/coding-agent/src/core/tools/bash.ts`, `packages/coding-agent/src/utils/shell.ts` |
+| `agent/types.rs` ✅ | `packages/agent/src/types.ts` (`AgentMessage`, `Role`, `ToolCall`, `Usage`) |
+| `agent/provider.rs` ✅ | `packages/ai/src/types.ts`, `packages/ai/src/providers/openai-completions.ts` |
 | `agent/loop.rs` ✅ | `packages/agent/src/agent-loop.ts` (the canonical loop) |
-| `session.rs` | `packages/agent/src/harness/session/`, `packages/coding-agent/src/core/session-manager.ts` |
+| `agent/session.rs` | `packages/agent/src/harness/session/`, `packages/coding-agent/src/core/session-manager.ts` |
 | `compaction.rs` | `packages/agent/src/harness/compaction/compaction.ts`, `packages/coding-agent/src/core/compaction/` |
-| `settings.rs` | `packages/coding-agent/src/core/settings-manager.ts` |
+| `agent/settings.rs` | `packages/coding-agent/src/core/settings-manager.ts` |
 | `system_prompt.rs` | `packages/coding-agent/src/core/system-prompt.ts` |
 | `commands.rs` | `packages/coding-agent/src/core/slash-commands.ts` |
 | `agent/ui/` ✅ | `packages/coding-agent/src/modes/interactive/` (app-specific UI components) |
+| `adapter.rs` | pi has no genai; rab uses genai crate for HTTP+streaming |
 | `skills.rs` (Phase 2) | `packages/coding-agent/src/core/skills.ts` |
 
 ---

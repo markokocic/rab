@@ -114,13 +114,15 @@ pub fn render_messages(
 }
 
 /// Convert session AgentMessages to display messages for the UI.
-pub fn session_messages_to_display(messages: &[crate::types::AgentMessage]) -> Vec<DisplayMsg> {
+pub fn session_messages_to_display(
+    messages: &[crate::agent::types::AgentMessage],
+) -> Vec<DisplayMsg> {
     messages
         .iter()
         .map(|m| match m.role {
-            crate::types::Role::User => DisplayMsg::User(m.content.clone()),
-            crate::types::Role::Assistant => DisplayMsg::AssistantText(m.content.clone()),
-            crate::types::Role::ToolResult => {
+            crate::agent::types::Role::User => DisplayMsg::User(m.content.clone()),
+            crate::agent::types::Role::Assistant => DisplayMsg::AssistantText(m.content.clone()),
+            crate::agent::types::Role::ToolResult => {
                 let prefix = if m.is_error { "✗" } else { "✓" };
                 DisplayMsg::ToolResult {
                     content: format!("{} {}", prefix, m.content),

@@ -1,4 +1,4 @@
-use crate::types::AgentMessage;
+use crate::agent::types::AgentMessage;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -527,7 +527,7 @@ impl SessionManager {
         let has_assistant = self
             .file_entries
             .iter()
-            .any(|e| matches!(e, SessionEntry::Message(m) if m.message.role == crate::types::Role::Assistant));
+            .any(|e| matches!(e, SessionEntry::Message(m) if m.message.role == crate::agent::types::Role::Assistant));
 
         if !has_assistant {
             // Don't create file until first assistant message
@@ -879,7 +879,7 @@ pub fn find_most_recent_session(session_dir: &Path, filter_cwd: Option<&Path>) -
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{AgentMessage, Role, Usage};
+    use crate::agent::types::{AgentMessage, Role, Usage};
     use tempfile::TempDir;
 
     fn make_message(role: Role, content: &str) -> AgentMessage {

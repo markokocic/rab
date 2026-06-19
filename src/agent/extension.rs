@@ -1,5 +1,5 @@
 /// Extension trait — all capability (built-in or user-provided) comes through this.
-use crate::types::ToolCall;
+use crate::agent::types::ToolCall;
 use async_trait::async_trait;
 use std::borrow::Cow;
 

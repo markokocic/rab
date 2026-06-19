@@ -1,6 +1,6 @@
 use crate::agent::extension::Extension;
-use crate::provider::{Provider, StopReason, StreamEvent, ToolDef};
-use crate::types::{AgentMessage, Role, ToolCall};
+use crate::agent::provider::{Provider, StopReason, StreamEvent, ToolDef};
+use crate::agent::types::{AgentMessage, Role, ToolCall};
 
 /// Collect tool definitions from all extensions.
 pub fn collect_tool_defs(extensions: &[Box<dyn Extension>]) -> Vec<ToolDef> {

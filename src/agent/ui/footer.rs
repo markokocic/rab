@@ -1,8 +1,8 @@
+use crate::agent::types::Usage;
 use crate::agent::ui::messages::fmt_tokens;
 use crate::agent::ui::theme::RabTheme;
 use crate::tui::Component;
 use crate::tui::util::visible_width;
-use crate::types::Usage;
 
 /// Footer component showing cwd, git branch, token stats, and model.
 pub struct Footer {

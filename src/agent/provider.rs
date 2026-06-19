@@ -1,4 +1,4 @@
-use crate::types::{AgentMessage, ToolCall, Usage};
+use crate::agent::types::{AgentMessage, ToolCall, Usage};
 use async_trait::async_trait;
 use futures::Stream;
 use std::pin::Pin;

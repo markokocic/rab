@@ -179,10 +179,14 @@ src/
 │       ├── input.rs                 # ✅ Input
 │       └── editor.rs                # ✅ Editor
 │
-├── agent/                           # ✅ Agent framework + interactive UI
+├── agent/                           # ✅ Agent framework
 │   ├── mod.rs                       # ✅ Re-exports
 │   ├── loop.rs                      # ✅ AgentEvent, LoopConfig, run_agent_loop()
 │   ├── extension.rs                 # ✅ AgentTool, Extension, CommandHandler traits
+│   ├── types.rs                     # ✅ AgentMessage, Role, ToolCall, Usage
+│   ├── provider.rs                  # ✅ Provider trait, StreamEvent, ToolDef
+│   ├── settings.rs                  # ✅ Settings load/save
+│   ├── session.rs                   # ✅ SessionManager (1985 lines — future split)
 │   └── ui/                          # ✅ Interactive mode
 │       ├── mod.rs
 │       ├── app.rs                   # ✅ Main event loop, App state, run()
@@ -194,19 +198,12 @@ src/
 │       ├── help.rs                  # ✅ HelpOverlay
 │       └── theme.rs                 # ✅ RabTheme
 │
-├── lib.rs                           # ✅ pub mod agent; pub mod tui;
-├── main.rs                          # ✅ CLI entry point (wired to agent::ui::run)
-├── adapter.rs                       # (unchanged)
+├── tui/                             # ✅ Generic TUI library
+├── builtin/                         # ✅ Tool implementations
+├── adapter.rs                       # ✅ GenaiProvider (top-level — external adapter)
 ├── auth.rs                          # (unchanged)
-├── builtin/                         # (unchanged)
-├── provider.rs                      # (unchanged)
-├── session.rs                       # (unchanged)
-├── settings.rs                      # (unchanged)
-└── types.rs                         # (unchanged)
-
-src/rattui/                          # ✅ DELETED — replaced by src/tui/ + src/agent/ui/
-src/theme.rs                         # ✅ DELETED — replaced by src/agent/ui/theme.rs
-```
+├── lib.rs                           # ✅ pub mod agent; pub mod adapter; pub mod tui;
+└── main.rs                          # ✅ CLI entry point
 
 ---
 

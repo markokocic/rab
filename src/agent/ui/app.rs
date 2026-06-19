@@ -4,6 +4,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::agent::extension::{AgentTool, Extension};
+use crate::agent::provider::{Provider, ToolDef};
+use crate::agent::session::SessionManager;
+use crate::agent::types::{AgentMessage, Usage};
 use crate::agent::ui::chat_editor::ChatEditor;
 use crate::agent::ui::footer::Footer;
 use crate::agent::ui::help::HelpOverlay;
@@ -12,13 +15,10 @@ use crate::agent::ui::model_selector::ModelSelector;
 use crate::agent::ui::theme::RabTheme;
 use crate::agent::ui::working::WorkingIndicator;
 use crate::agent::{AgentEvent, LoopConfig, run_agent_loop};
-use crate::provider::{Provider, ToolDef};
-use crate::session::SessionManager;
 use crate::tui::Component;
 use crate::tui::keys::{Key, matches_key};
 use crate::tui::screen::Screen;
 use crate::tui::terminal::{self, Terminal};
-use crate::types::{AgentMessage, Usage};
 use crossterm::event::{KeyCode, KeyEvent};
 use tokio::sync::mpsc;
 
@@ -673,7 +673,7 @@ fn recall_history(app: &mut App, direction: isize) {
         .conversation
         .iter()
         .filter_map(|m| {
-            if m.role == crate::types::Role::User && !m.content.is_empty() {
+            if m.role == crate::agent::types::Role::User && !m.content.is_empty() {
                 Some(m.content.clone())
             } else {
                 None

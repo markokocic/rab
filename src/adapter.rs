@@ -1,6 +1,6 @@
+use crate::agent::provider::{Provider, StreamEvent, ToolDef};
+use crate::agent::types::{AgentMessage, Role, ToolCall};
 use crate::auth::AuthStorage;
-use crate::provider::{Provider, StreamEvent, ToolDef};
-use crate::types::{AgentMessage, Role, ToolCall};
 use async_trait::async_trait;
 use futures::{Stream, StreamExt};
 use genai::chat::{ChatMessage, ChatOptions, ChatRequest, ReasoningEffort, Tool, ToolResponse};
@@ -164,7 +164,7 @@ impl Provider for GenaiProvider {
                                     })
                                     .collect();
 
-                                let usage = crate::types::Usage {
+                                let usage = crate::agent::types::Usage {
                                     input_tokens: end.captured_usage.as_ref()
                                         .and_then(|u| u.prompt_tokens),
                                     output_tokens: end.captured_usage.as_ref()
@@ -173,10 +173,10 @@ impl Provider for GenaiProvider {
                                 };
 
                                 let stop_reason = match &end.captured_stop_reason {
-                                    Some(genai::chat::StopReason::Completed(_)) => crate::provider::StopReason::EndTurn,
-                                    Some(genai::chat::StopReason::ToolCall(_)) => crate::provider::StopReason::ToolUse,
-                                    Some(genai::chat::StopReason::MaxTokens(_)) => crate::provider::StopReason::MaxTokens,
-                                    _ => crate::provider::StopReason::EndTurn,
+                                    Some(genai::chat::StopReason::Completed(_)) => crate::agent::provider::StopReason::EndTurn,
+                                    Some(genai::chat::StopReason::ToolCall(_)) => crate::agent::provider::StopReason::ToolUse,
+                                    Some(genai::chat::StopReason::MaxTokens(_)) => crate::agent::provider::StopReason::MaxTokens,
+                                    _ => crate::agent::provider::StopReason::EndTurn,
                                 };
 
                                 yield StreamEvent::Done {

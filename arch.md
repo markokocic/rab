@@ -9,9 +9,9 @@ lets it act on your codebase.
 | pi (`packages/`) | rab equivalent | Notes |
 |---|---|---|
 | `pi-ai` (providers, streaming, models) | `Provider` trait + `adapter/genai.rs` → [genai](https://github.com/jeremychone/rust-genai) crate | Isolated behind trait; swappable. PoC targets [OpenCode Go](https://opencode.ai/docs/go/) (DeepSeek V4 Flash/Pro) via genai's OpenAI adapter. Phase 1 adds Anthropic, OpenAI, Google, Ollama |
-| `pi-agent-core` (agent loop, session, compaction, skills) | `src/agent/`, `session.rs`, `compaction.rs`, `types.rs` | Loop ported directly from `agent-loop.ts` |
+| `pi-agent-core` (agent loop, session, compaction, skills) | `src/agent/`, `src/agent/session.rs`, `compaction.rs`, `src/agent/types.rs` | Loop ported directly from `agent-loop.ts` |
 | `pi-tui` (terminal UI, components, editor) | `src/tui/` + `src/agent/ui/` ✅ — direct Rust port of `@earendil-works/pi-tui` on top of [crossterm](https://github.com/crossterm-rs/crossterm) 0.28 | Full port: diff renderer, Component trait, Editor, Input, SelectList, SettingsList, etc. No ratatui. Main-screen mode (no alternate screen), native terminal scrolling. See [`tui.md`](tui.md) for full design. |
-| `coding-agent` (CLI, extensions, built-in tools, settings, commands) | `cli.rs`, `src/agent/extension.rs`, `builtin/`, `settings.rs` | Single `Extension` trait for built-in + user extensions; commands use same `CommandHandler` interface; built-in commands in `builtin/commands.rs` |
+| `coding-agent` (CLI, extensions, built-in tools, settings, commands) | `cli.rs`, `src/agent/extension.rs`, `builtin/`, `src/agent/settings.rs` | Single `Extension` trait for built-in + user extensions; commands use same `CommandHandler` interface; built-in commands in `builtin/commands.rs` |
 | `coding-agent/modes/interactive` | `src/agent/ui/` (app-specific UI components) | ChatEditor, MessageList, Footer, ModelSelector — built on `src/tui/` primitives |
 | MCP extensions (third-party) | `pi-mcp-adapter` built-in extension | Phase 2. Uses `rmcp` crate. Configured via `.rab/mcp.json` |
 | Config files (`~/.pi/agent/`) | `~/.rab/` | Same file names and JSON schema as pi |
@@ -78,7 +78,7 @@ isolated behind a trait — replaceable with no changes to core logic.
 │  └──────────────────────────────────────────────────────────────┘│
 │                                                          │
 │  ┌──────────────────────────────────────────────────┐   │
-│  │            provider.rs  (rab trait)                │   │
+│  │            agent/provider.rs  (Provider trait)        │   │
 │  │  pub trait Provider { ... }                        │   │
 │  │  pub struct StreamEvent { ... }                    │   │
 │  │  Agent loop depends ONLY on this, not on genai     │   │
@@ -102,7 +102,7 @@ isolated behind a trait — replaceable with no changes to core logic.
 
 ---
 
-## Core type system (`types.rs`)
+## Core type system (`src/agent/types.rs`)
 
 ### AgentMessage
 
@@ -283,7 +283,7 @@ A tool can override the global mode via `AgentTool::execution_mode`.
 
 ---
 
-## Session layer (`session.rs`)
+## Session layer (`src/agent/session.rs`)
 
 ### Format
 
@@ -537,7 +537,7 @@ Disable with `--no-context-files` / `-nc`.
 
 ---
 
-## Provider trait (`provider.rs`)
+## Provider trait (`src/agent/provider.rs`)
 
 rab defines its own provider abstraction. The agent loop depends on this
 trait, never on genai directly. To swap backends, write a new impl — no
@@ -623,7 +623,7 @@ AgentMessages (e.g. for compaction, later).
 
 ---
 
-## Settings (`settings.rs`)
+## Settings (`src/agent/settings.rs`)
 
 Same file names and format as pi, but under `~/.rab/agent/` instead of
 `~/.pi/agent/`. Auth lives in `~/.rab/agent/auth.json`, settings in
