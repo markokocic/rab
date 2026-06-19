@@ -16,6 +16,7 @@ use crate::agent::ui::theme::RabTheme;
 use crate::agent::ui::working::WorkingIndicator;
 use crate::agent::{AgentEvent, LoopConfig, run_agent_loop};
 use crate::tui::Component;
+use crate::tui::Theme;
 use crate::tui::keys::{Key, matches_key};
 use crate::tui::screen::Screen;
 use crate::tui::terminal::{self, Terminal};
@@ -253,8 +254,11 @@ pub async fn run(config: AppConfig, session: SessionManager) -> anyhow::Result<(
     Ok(())
 }
 
-/// Compose the full UI from app state.
-fn compose_ui(app: &mut App, width: usize, height: usize) -> Vec<String> {
+/// Compose the full UI from app state — matching pi's main screen layout.
+///
+/// Layout (top to bottom):
+///   messages → spacer → status line → editor → key hints → working → footer
+fn compose_ui(app: &mut App, width: usize, _height: usize) -> Vec<String> {
     let mut lines = Vec::new();
 
     if app.show_help {
@@ -269,11 +273,7 @@ fn compose_ui(app: &mut App, width: usize, height: usize) -> Vec<String> {
         return lines;
     }
 
-    // Messages area (takes most of the height)
-    let footer_height = 2;
-    let editor_height = 3; // editor + border
-    let _mesg_max = height.saturating_sub(footer_height + editor_height);
-
+    // ── Messages ──
     let rendered = render_messages(
         &app.messages,
         width,
@@ -281,19 +281,32 @@ fn compose_ui(app: &mut App, width: usize, height: usize) -> Vec<String> {
         app.collapse_tool_output,
         &app.theme,
     );
-
     lines.extend(rendered);
 
-    // Editor
+    // ── Spacer before editor ──
+    // Pi inserts a blank line between messages and editor
+    if !lines.is_empty() && !lines.last().is_none_or(|l| l.trim().is_empty()) {
+        lines.push(String::new());
+    }
+
+    // ── Status/working line ──
+    if app.is_streaming {
+        let spinner = app.working.render(width);
+        lines.extend(spinner);
+    }
+
+    // ── Editor ──
     let editor_lines = app.editor.editor.render(width);
     lines.extend(editor_lines);
 
-    // Working indicator (overlayed or appended)
-    if app.is_streaming {
-        lines.extend(app.working.render(width));
-    }
+    // ── Keybinding hints ──
+    let hint = app.theme.fg(
+        "dim",
+        "Enter submit · Ctrl+J newline · Esc clear · Ctrl+C interrupt · Ctrl+D quit · ↑↓ history · F1 help · Ctrl+L model",
+    );
+    lines.push(format!(" {}", hint));
 
-    // Footer
+    // ── Footer ──
     lines.extend(app.footer.render(width));
 
     lines
@@ -625,7 +638,7 @@ fn handle_agent_event(app: &mut App, event: AgentEvent) {
             }
             if let Some(last) = messages.iter().rev().find(|m| m.usage.is_some()) {
                 app.last_usage = last.usage.clone();
-                app.footer.set_usage(app.last_usage.clone());
+                app.footer.accumulate_usage(last.usage.as_ref().unwrap());
             }
         }
     }
