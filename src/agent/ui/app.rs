@@ -140,25 +140,8 @@ impl App {
         let history_messages = context.messages.clone();
         let history_display = session_messages_to_display(&history_messages);
 
-        // Welcome messages
-        let mut messages = history_display;
-        messages.push(DisplayMsg::Info(format!(
-            "rab · model {} · {}",
-            config.model.replace("opencode_go::", ""),
-            config.cwd.display()
-        )));
-        let tool_names: Vec<String> = config.tools.iter().map(|t| t.name.clone()).collect();
-        messages.push(DisplayMsg::Info(format!(
-            "Tools: {}",
-            tool_names.join(", ")
-        )));
-        if !commands.is_empty() {
-            let cmd_names: Vec<String> = commands.iter().map(|(n, _)| format!("/{}", n)).collect();
-            messages.push(DisplayMsg::Info(format!(
-                "Commands: {}",
-                cmd_names.join(", ")
-            )));
-        }
+        // Startup messages (pi-style: minimal, tools/commands shown in header hints)
+        let messages = history_display;
 
         Self {
             cwd: config.cwd,
@@ -257,7 +240,7 @@ pub async fn run(config: AppConfig, session: SessionManager) -> anyhow::Result<(
 /// Compose the full UI from app state — matching pi's main screen layout.
 ///
 /// Layout (top to bottom):
-///   messages → spacer → status → editor → key hints → footer
+///   header → messages → spacer → status → editor → footer
 fn compose_ui(app: &mut App, width: usize, _height: usize) -> Vec<String> {
     let mut lines = Vec::new();
 
@@ -272,6 +255,24 @@ fn compose_ui(app: &mut App, width: usize, _height: usize) -> Vec<String> {
         }
         return lines;
     }
+
+    // ── Header (pi-style: logo + keybinding hints at top) ──
+    let header = format!(
+        "{} {}",
+        app.theme.bold(&app.theme.fg("accent", "rab")),
+        app.theme.fg(
+            "dim",
+            &format!("· model {}", app.model.replace("opencode_go::", ""))
+        )
+    );
+    lines.push(header);
+
+    let hints = app.theme.fg(
+        "dim",
+        "Enter submit · Ctrl+J newline · Esc clear · Ctrl+C interrupt · Ctrl+D quit · ↑↓ history · F1 help · Ctrl+L model",
+    );
+    lines.push(format!(" {}", hints));
+    lines.push(String::new());
 
     // ── Messages ──
     let rendered = render_messages(
@@ -295,13 +296,6 @@ fn compose_ui(app: &mut App, width: usize, _height: usize) -> Vec<String> {
 
     // ── Editor ──
     lines.extend(app.editor.editor.render(width));
-
-    // ── Keybinding hints ──
-    let hint = app.theme.fg(
-        "dim",
-        "Enter submit · Ctrl+J newline · Esc clear · Ctrl+C interrupt · Ctrl+D quit · ↑↓ history · F1 help · Ctrl+L model",
-    );
-    lines.push(format!(" {}", hint));
 
     // ── Footer ──
     lines.extend(app.footer.render(width));
@@ -828,6 +822,21 @@ mod tests {
     fn compose_ui_test(app: &mut App, width: usize) -> Vec<String> {
         let theme = &app.theme;
         let mut lines = Vec::new();
+
+        // Header (matches compose_ui)
+        let header = format!(
+            "{} {}",
+            theme.bold(&theme.fg("accent", "rab")),
+            theme.fg(
+                "dim",
+                &format!("· model {}", app.model.replace("opencode_go::", ""))
+            )
+        );
+        lines.push(header);
+        let hints = theme.fg("dim", "hint");
+        lines.push(format!(" {}", hints));
+        lines.push(String::new());
+
         let rendered = render_messages(
             &app.messages,
             width,
@@ -843,8 +852,6 @@ mod tests {
             lines.extend(app.working.render(width));
         }
         lines.extend(app.editor.editor.render(width));
-        let hint = theme.fg("dim", "hint");
-        lines.push(format!(" {}", hint));
         lines.extend(app.footer.render(width));
         lines
     }
