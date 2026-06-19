@@ -154,6 +154,20 @@ impl Editor {
         self.autocomplete = None;
     }
 
+    /// Number of lines the autocomplete dropdown occupies when active.
+    pub fn autocomplete_line_count(&self) -> usize {
+        if let Some(ref ac) = self.autocomplete {
+            if ac.items.is_empty() {
+                return 0;
+            }
+            let max = 5.min(ac.items.len());
+            let has_scroll = ac.items.len() > max;
+            1 + max + if has_scroll { 1 } else { 0 } // sep + items + scroll info
+        } else {
+            0
+        }
+    }
+
     pub fn accept_autocomplete_if_active(&mut self) -> bool {
         if let Some(ac) = &self.autocomplete
             && !ac.items.is_empty()
@@ -837,8 +851,16 @@ impl Editor {
     fn try_autocomplete(&mut self) {
         let text = self.lines.join("\n");
         let trimmed = text.trim();
-        if trimmed.starts_with('/') {
-            self.update_slash_command_completions(&trimmed[1..]);
+        if let Some(rest) = trimmed.strip_prefix('/') {
+            self.update_slash_command_completions(rest);
+            // Auto-accept single match (pi: explicitTab + single item)
+            if self
+                .autocomplete
+                .as_ref()
+                .is_some_and(|ac| ac.items.len() == 1)
+            {
+                self.accept_autocomplete_if_active();
+            }
             return;
         }
         // File path completion
@@ -850,15 +872,42 @@ impl Editor {
         if !prefix.is_empty() || before.ends_with(' ') {
             let cleaned = prefix.trim_start_matches('@').to_string();
             self.update_file_completions(&cleaned, starts_with_at);
+            // Auto-accept single file match too
+            if self
+                .autocomplete
+                .as_ref()
+                .is_some_and(|ac| ac.items.len() == 1)
+            {
+                self.accept_autocomplete_if_active();
+            }
         }
     }
 
+    /// Fuzzy match: all query characters must appear in order (case-insensitive).
+    /// Matches pi's fuzzyFilter behavior for slash commands.
+    fn fuzzy_match(query: &str, text: &str) -> bool {
+        let query = query.to_lowercase();
+        let text = text.to_lowercase();
+        if query.is_empty() {
+            return true;
+        }
+        let mut qi = query.chars().peekable();
+        for c in text.chars() {
+            if qi.peek() == Some(&c) {
+                qi.next();
+                if qi.peek().is_none() {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
     fn update_slash_command_completions(&mut self, prefix: &str) {
-        let lower = prefix.to_lowercase();
         let matching: Vec<AutocompleteItem> = self
             .slash_commands
             .iter()
-            .filter(|c| c.name.to_lowercase().contains(&lower))
+            .filter(|c| Self::fuzzy_match(prefix, &c.name))
             .map(|c| AutocompleteItem {
                 value: format!("/{} ", c.name),
                 label: c.name.clone(),
@@ -1070,21 +1119,76 @@ impl Editor {
 
     fn render_autocomplete(&self, width: usize) -> (Vec<String>, usize, bool) {
         if let Some(ref ac) = self.autocomplete {
-            let max = 8.min(ac.items.len());
-            let mut lines = vec!["─".repeat(width.min(60))];
-            for i in 0..max {
+            if ac.items.is_empty() {
+                return (Vec::new(), 0, false);
+            }
+            let max_visible = 5.min(ac.items.len());
+            let total = ac.items.len();
+            let has_scroll = total > max_visible;
+
+            // Compute primary column width (clamped 12–32, like pi)
+            let widest_label = ac
+                .items
+                .iter()
+                .map(|item| item.label.len())
+                .max()
+                .unwrap_or(0)
+                .clamp(12, 32);
+            let primary_width = widest_label + 2; // gap after label
+
+            let mut lines = Vec::with_capacity(1 + max_visible + if has_scroll { 1 } else { 0 });
+
+            // Separator line
+            lines.push("─".repeat(width.min(60)));
+
+            // SelectList-style scrolling: center selection in visible window
+            let start = if total <= max_visible {
+                0
+            } else {
+                (ac.selected.saturating_sub(max_visible / 2)).min(total - max_visible)
+            };
+            let end = (start + max_visible).min(total);
+
+            for i in start..end {
                 let item = &ac.items[i];
-                let prefix = if i == ac.selected { "→ " } else { "  " };
-                let mut line = format!("{}{}", prefix, item.label);
-                if let Some(ref desc) = item.description {
-                    line.push_str(" — ");
-                    line.push_str(desc);
-                }
-                if line.len() > width {
-                    line.truncate(width.saturating_sub(1));
-                    line.push('…');
-                }
-                lines.push(line);
+                let selected = i == ac.selected;
+                let marker = if selected { "→ " } else { "  " };
+                let full = format!("{}{}", marker, item.label);
+
+                let line = if let Some(ref desc) = item.description {
+                    let label_w = full.len();
+                    // Pad label to primary column width, then append description
+                    let padding = primary_width.saturating_sub(label_w);
+                    let padded = format!("{}{}", full, " ".repeat(padding));
+                    let avail = width.saturating_sub(primary_width + 2);
+                    if avail > 10 {
+                        let desc_trunc = if desc.len() > avail {
+                            let mut d = desc[..avail.saturating_sub(1)].to_string();
+                            d.push('…');
+                            d
+                        } else {
+                            desc.clone()
+                        };
+                        format!("{}— {}", padded, desc_trunc)
+                    } else {
+                        padded
+                    }
+                } else {
+                    full
+                };
+
+                lines.push(if line.len() > width {
+                    let mut l = line[..width.saturating_sub(1)].to_string();
+                    l.push('…');
+                    l
+                } else {
+                    line
+                });
+            }
+
+            // Scroll indicator (pi: shows when start > 0 or end < total)
+            if has_scroll {
+                lines.push(format!("  ({}/{})", ac.selected + 1, total));
             }
             (lines, ac.selected, true)
         } else {

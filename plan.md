@@ -1,9 +1,5 @@
 # rab — Implementation Plan
 
-## Bugs
-
-- **Editor completions broken** — Slash command autocomplete dropdown doesn't work properly. Tab file/folder completion doesn't work. The `render_editor` function allocates autocomplete inside the editor area but the editor's render/viewport calculations cause autocomplete to be invisible or mispositioned. The `AutocompleteState` is populated (slash commands, argument completions, file paths) but the rendering pipeline doesn't display it correctly at the editor's fixed height.
-
 Reference implementation: `~/src/cvstree/pi/` (TypeScript, same architecture).
 Study these files before implementing each Rust equivalent.
 
@@ -139,16 +135,16 @@ Everything in arch.md that isn't explicitly Phase 2.
     smart space before file paths, large paste compression (`[paste #N +L lines]`) ✅
   - Prompt history with up/down arrow recall (oldest-first storage, draft restoration) ✅
   - `render_with_max()` for fixed-height viewport with internal scrolling ✅
-- [x] **Editor autocomplete system** — Autocomplete provider in editor.rss:
-  - Slash command completion (fuzzy substring matching on `/`) ✅
+- [x] **Editor autocomplete system** — Pi-style slash command and file path autocomplete ✅:
+  - Slash command completion with fuzzy matching (all chars in order, case-insensitive) ✅
+  - Auto-accept single match on Tab (pi: explicitTab + single item) ✅
   - Argument completions bridged from `CommandHandler::argument_completions()` ✅
   - `@` file path completion with directory listing ✅
   - Tab file path completion without `@` prefix ✅
-  - Arrow key navigation, Enter/Tab to accept, Esc to dismiss ✅
-  - ⚠️ **BUG: dropdown doesn't render** — `AutocompleteState` is populated correctly
-    but the rendering in `render_editor` doesn't display the dropdown within
-    the fixed editor area. Height calculation doesn't account for autocomplete
-    properly. File path completion works (tested) but is invisible to the user.
+  - Arrow key navigation with wrap-around, Enter/Tab to accept, Esc to dismiss ✅
+  - Dropdown renders below editor block border (pi-style), height auto-adjusts ✅
+  - SelectList-style centered scroll window, max visible 5, column layout ✅
+  - Theme styling: selected accent+bold `→`, normal muted, descriptions in column ✅
 - [x] **`tui.rs`** — Terminal UI with ratatui + crossterm:
   - Pi-style layout: messages → working indicator → editor → footer ✅
   - Messages widget: scrollable chat, pi dark theme colors, tool output collapsed by default ✅
@@ -223,7 +219,7 @@ context compaction, settings, slash commands, and custom compile-time extensions
 - [x] **`editor.rs`** (~2,500 lines) — Extracted from tui.rs, full-featured editor widget:
   - Grapheme-aware cursor, word wrapping, undo stack, kill ring
   - Word movement/deletion, bracketed paste with large paste markers
-  - Slash command + file path autocomplete (logic works, rendering buggy)
+  - Slash command + file path autocomplete (pi-style: dropdown below border, fuzzy match, auto-accept)
   - 114 unit tests
 - [x] **`tui.rs`** — Terminal UI with ratatui + crossterm:
   - Pi dark theme colors, tool output collapsed by default, thinking block folding
@@ -238,18 +234,11 @@ context compaction, settings, slash commands, and custom compile-time extensions
 - [x] **`auth.rs`** — Supports `api_key` and `oauth` credential types
 - [x] **`Cargo.toml`** — `native-tls` for Termux/Android, `unicode-segmentation` for editor
 
-### Tests: 292 total (268 unit + 24 integration)
+### Tests: 290 total (266 unit + 24 integration)
 
 ---
 
 ## Known Issues
-
-### Editor completions (BUG)
-- Slash command autocomplete dropdown doesn't render visibly
-- Tab file/folder completion doesn't render visibly
-- The `AutocompleteState` is populated correctly (slash commands, argument completions, file paths) but the rendering pipeline in `render_editor` doesn't display the dropdown within the editor's fixed-height area
-- Height calculation (`editor_height`) doesn't account for autocomplete lines
-- Autocomplete lines are rendered at `inner.y + inner.height.saturating_sub(ac_height)` but the editor area may not have room for both text and autocomplete
 
 ### Scrolling in chat messages area
 - No mouse wheel scrolling, no Page Up/Down, no arrow key scrolling for messages
@@ -265,13 +254,6 @@ context compaction, settings, slash commands, and custom compile-time extensions
 - Footer tokens not padded/right-aligned properly on narrow terminals
 
 ## TODO
-
-### Fix editor completions rendering
-- Make autocomplete dropdown actually visible in the editor area
-- Either: allocate additional height for editor when autocomplete is active
-- Or: render autocomplete as a floating overlay above the editor (like model selector)
-- Ensure Tab cycles through file/folder completions properly
-- Ensure `/` triggers slash command dropdown immediately
 
 ### Markdown rendering, diff display, code syntax highlighting
 - Render assistant messages as markdown (headings, links, code blocks, quotes, lists) with pi theme colors

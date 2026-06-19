@@ -51,7 +51,6 @@ pub(crate) fn welcome_messages(config: &TuiConfig) -> Vec<DisplayMsg> {
 }
 
 /// Convert session AgentMessages to display messages for the TUI.
-
 pub(crate) fn session_messages_to_display(messages: &[AgentMessage]) -> Vec<DisplayMsg> {
     messages
         .iter()

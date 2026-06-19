@@ -29,6 +29,13 @@ pub struct Theme {
     // ── Editor ──
     pub editor_border: Color,
 
+    // ── Autocomplete ──
+    pub ac_selected: Color,
+    pub ac_normal: Color,
+    pub ac_separator: Color,
+    pub ac_description: Color,
+    pub ac_scroll_info: Color,
+
     // ── Footer / status ──
     pub footer_text: Color,
     pub streaming_dot: Color,
@@ -58,6 +65,12 @@ pub const DARK: Theme = Theme {
     thinking_bg: Color::Rgb(0x2c, 0x2c, 0x36),
 
     editor_border: Color::Rgb(0x8a, 0xbe, 0xb7),
+
+    ac_selected: Color::Rgb(0x8a, 0xbe, 0xb7),
+    ac_normal: Color::Rgb(0x80, 0x80, 0x80),
+    ac_separator: Color::Rgb(0x50, 0x50, 0x50),
+    ac_description: Color::Rgb(0x66, 0x66, 0x66),
+    ac_scroll_info: Color::Rgb(0x50, 0x50, 0x50),
 
     footer_text: Color::Rgb(0x66, 0x66, 0x66),
     streaming_dot: Color::Rgb(0x8a, 0xbe, 0xb7),
@@ -132,5 +145,27 @@ impl Theme {
 
     pub fn working_style(&self) -> Style {
         Style::default().fg(self.working_text)
+    }
+
+    pub fn ac_selected_style(&self) -> Style {
+        Style::default()
+            .fg(self.ac_selected)
+            .add_modifier(Modifier::BOLD)
+    }
+
+    pub fn ac_normal_style(&self) -> Style {
+        Style::default().fg(self.ac_normal)
+    }
+
+    pub fn ac_separator_style(&self) -> Style {
+        Style::default().fg(self.ac_separator)
+    }
+
+    pub fn ac_description_style(&self) -> Style {
+        Style::default().fg(self.ac_description)
+    }
+
+    pub fn ac_scroll_info_style(&self) -> Style {
+        Style::default().fg(self.ac_scroll_info)
     }
 }

@@ -36,7 +36,9 @@ pub(crate) fn working_height(app: &App) -> u16 {
 
 pub(crate) fn editor_height(app: &App) -> u16 {
     let lines = app.editor.lines_raw().len().max(1);
-    (lines + 2).clamp(3, 10) as u16
+    let ac_lines = app.editor.autocomplete_line_count();
+    let total = lines + 2 + ac_lines;
+    total.clamp(3, 16) as u16
 }
 
 /// Resolve the scroll position from the current state.
@@ -78,11 +80,22 @@ pub(crate) fn render_messages(frame: &mut Frame, area: Rect, app: &App) {
 
 pub(crate) fn render_editor(frame: &mut Frame, area: Rect, app: &App) {
     let block = app.editor.block();
-    let inner = block.inner(area);
+    let ac_count = if app.editor.autocomplete_active() {
+        app.editor.autocomplete_line_count() as u16
+    } else {
+        0
+    };
+
+    // Pi-style: autocomplete renders BELOW the editor block's bottom border.
+    // Split area: editor block (with borders) at top, autocomplete lines below.
+    let block_height = area.height.saturating_sub(ac_count);
+    let block_area = Rect::new(area.x, area.y, area.width, block_height);
+    let inner = block.inner(block_area);
+
     let max_text = inner.height.max(1) as usize;
     let render = app.editor.render_with_max(inner.width, max_text);
 
-    // Render editor text
+    // Render editor text with block (borders drawn by ratatui)
     let text_lines: Vec<Line<'static>> = render
         .text_lines
         .iter()
@@ -90,9 +103,36 @@ pub(crate) fn render_editor(frame: &mut Frame, area: Rect, app: &App) {
         .collect();
     let text = Text::from(text_lines);
     let para = Paragraph::new(text).block(block.clone());
-    frame.render_widget(para, area);
+    frame.render_widget(para, block_area);
 
-    // Hardware cursor position (visual coordinates from render_with_max)
+    // Render autocomplete dropdown below the editor block (pi-style)
+    if render.autocomplete_active && !render.autocomplete_lines.is_empty() {
+        let ac_y = area.y + block_height;
+        let is_scroll_info =
+            |line: &str| line.len() > 3 && line.starts_with("  (") && line.ends_with(')');
+        for (i, ac_line) in render.autocomplete_lines.iter().enumerate() {
+            let line_y = ac_y + i as u16;
+            if line_y >= area.y + area.height {
+                break;
+            }
+            let style = if i == 0 {
+                // Separator line
+                app.theme.ac_separator_style()
+            } else if is_scroll_info(ac_line) {
+                app.theme.ac_scroll_info_style()
+            } else if i.saturating_sub(1) == render.autocomplete_selection {
+                app.theme.ac_selected_style()
+            } else {
+                app.theme.ac_normal_style()
+            };
+            frame.render_widget(
+                Paragraph::new(Line::from(Span::styled(ac_line.clone(), style))),
+                Rect::new(area.x, line_y, area.width, 1),
+            );
+        }
+    }
+
+    // Hardware cursor position (within the editor block, not autocomplete area)
     let cx = inner.x + render.cursor_col.min(inner.width.saturating_sub(1));
     let cy = inner.y + render.cursor_row.min(inner.height.saturating_sub(1));
     frame.set_cursor_position((cx, cy));

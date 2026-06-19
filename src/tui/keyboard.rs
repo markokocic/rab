@@ -1,7 +1,6 @@
-use super::app::{App, collect_commands, create_editor, submit_message};
+use super::app::{App, create_editor, submit_message};
 use super::display::DisplayMsg;
 use super::model_selector::filter_models;
-use crate::extension::SlashCommand;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 pub(crate) fn scroll_up(app: &mut App, lines: usize) {
@@ -74,15 +73,10 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) {
     }
 
     match key.code {
-        // Tab: slash command autocomplete (handle both Tab and Char('\t'))
+        // Tab: pass to editor for autocomplete (slash commands, file paths)
         KeyCode::Tab | KeyCode::Char('\t') => {
             if app.show_help {
                 app.show_help = false;
-                return;
-            }
-            let text = app.editor.text();
-            if text.trim().starts_with('/') {
-                handle_slash_completion(app, &text);
                 return;
             }
             app.editor
@@ -117,10 +111,12 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) {
                 app.should_quit = true;
             }
         }
-        // Escape: close help or abort streaming (pi: app.interrupt)
+        // Escape: close autocomplete, help, or abort streaming (pi: app.interrupt)
         // Also match Char('\x1b') — some terminals send Esc this way with mouse capture
         KeyCode::Esc | KeyCode::Char('\x1b') => {
-            if app.show_help {
+            if app.editor.autocomplete_active() {
+                app.editor.dismiss_autocomplete();
+            } else if app.show_help {
                 app.show_help = false;
             } else if app.is_streaming {
                 if let Some(handle) = app.agent_abort.take() {
@@ -284,8 +280,6 @@ pub(crate) fn handle_model_selector_key(app: &mut App, key: KeyEvent) {
     }
 }
 
-/// Handle Tab autocomplete for slash commands.
-
 pub(crate) fn parse_bang_command(input: &str) -> Option<(&str, bool)> {
     if let Some(rest) = input.strip_prefix("!!") {
         let cmd = rest.trim();
@@ -304,55 +298,4 @@ pub(crate) fn parse_bang_command(input: &str) -> Option<(&str, bool)> {
     } else {
         None
     }
-}
-
-fn handle_slash_completion(app: &mut App, text: &str) {
-    let trimmed = text.trim();
-    let commands = collect_commands(app);
-    let space_idx = trimmed.find(' ');
-    if space_idx.is_none() {
-        let prefix = trimmed.trim_start_matches('/');
-        let lower = prefix.to_lowercase();
-        let matches: Vec<&&SlashCommand> = commands
-            .iter()
-            .filter(|c| c.name.to_lowercase().starts_with(&lower))
-            .collect();
-        if matches.len() == 1 {
-            set_editor_text(app, &format!("/{} ", matches[0].name));
-        } else if matches.len() > 1 {
-            let common =
-                common_prefix(&matches.iter().map(|c| c.name.as_str()).collect::<Vec<_>>());
-            if common.len() > prefix.len() {
-                set_editor_text(app, &format!("/{}", common));
-            } else {
-                let names: Vec<String> = matches.iter().map(|c| format!("/{}", c.name)).collect();
-                app.messages.push(DisplayMsg::Info(names.join("  ")));
-            }
-        }
-    }
-}
-
-fn set_editor_text(app: &mut App, text: &str) {
-    let mut editor = create_editor(app);
-    editor.set_text(text);
-    app.editor = editor;
-}
-
-fn common_prefix(strings: &[&str]) -> String {
-    if strings.is_empty() {
-        return String::new();
-    }
-    let first = strings[0];
-    let mut end = first.len();
-    for s in &strings[1..] {
-        end = end.min(
-            first
-                .chars()
-                .zip(s.chars())
-                .take(end)
-                .take_while(|(a, b)| a == b)
-                .count(),
-        );
-    }
-    first[..end].to_string()
 }
