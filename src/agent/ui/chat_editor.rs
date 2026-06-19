@@ -29,27 +29,8 @@ impl ChatEditor {
                 })
             },
             cursor: Box::new(|s| format!("\x1b[7m{}\x1b[27m", s)),
-            border: {
-                let border_color = theme.fg("border", "");
-                Box::new(move |s| {
-                    if !border_color.is_empty() {
-                        // Use theme border color
-                        format!("\x1b[38;2;138;190;183m{}\x1b[39m", s)
-                    } else {
-                        s.to_string()
-                    }
-                })
-            },
-            scroll_indicator: {
-                let muted = theme.fg("muted", "");
-                Box::new(move |s| {
-                    if !muted.is_empty() {
-                        format!("\x1b[38;2;128;128;128m{}\x1b[39m", s)
-                    } else {
-                        s.to_string()
-                    }
-                })
-            },
+            border: Box::new(move |s| format!("\x1b[38;2;138;190;183m{}\x1b[39m", s)),
+            scroll_indicator: Box::new(move |s| format!("\x1b[38;2;128;128;128m{}\x1b[39m", s)),
             autocomplete_selected: Box::new(|s| {
                 format!("\x1b[7m\x1b[38;2;138;190;183m{}\x1b[27m\x1b[39m", s)
             }),

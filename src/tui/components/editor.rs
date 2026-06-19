@@ -546,7 +546,7 @@ impl Component for Editor {
         };
         let layout_width = content_width.max(1);
 
-        let horizontal = (self.theme.border)("─");
+        let horizontal = "─";
         let left_pad = " ".repeat(pad_x);
         let right_pad = " ".repeat(pad_x);
         let mut result: Vec<String> = Vec::new();
@@ -580,7 +580,7 @@ impl Component for Editor {
             let indicator = format!("─── ↑ {} more ", scroll);
             let indicator_w = visible_width(&indicator);
             let fill = if indicator_w < width {
-                "─".repeat(width - indicator_w)
+                horizontal.repeat(width - indicator_w)
             } else {
                 String::new()
             };
@@ -637,7 +637,7 @@ impl Component for Editor {
             let indicator = format!("─── ↓ {} more ", below);
             let indicator_w = visible_width(&indicator);
             let fill = if indicator_w < width {
-                "─".repeat(width - indicator_w)
+                horizontal.repeat(width - indicator_w)
             } else {
                 String::new()
             };
@@ -1040,4 +1040,22 @@ mod tests {
         assert!(vl[0].has_cursor);
         assert_eq!(vl[0].cursor_pos, Some(1));
     }
+}
+
+#[test]
+fn debug_full_compose() {
+    use crate::tui::Component;
+    use crate::tui::components::editor::{Editor, EditorOptions, EditorTheme};
+    // Simulate the ChatEditor theme
+    let theme = EditorTheme {
+        border: Box::new(|s| format!("\x1b[38;2;138;190;183m{}\x1b[39m", s)),
+        ..EditorTheme::default()
+    };
+    let mut editor = Editor::new(
+        theme,
+        EditorOptions {
+            padding_x: 1,
+            max_visible_lines: 10,
+        },
+    );
 }
