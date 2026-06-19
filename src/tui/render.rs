@@ -61,16 +61,24 @@ pub(crate) fn render_messages(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 pub(crate) fn render_editor(frame: &mut Frame, area: Rect, app: &App) {
-    let text = Text::from(app.editor.text());
     let block = app.editor.block();
+    let inner = block.inner(area);
+    let max_text = inner.height.max(1) as usize;
+    let render = app.editor.render_with_max(inner.width, max_text);
+
+    // Render editor text
+    let text_lines: Vec<Line<'static>> = render
+        .text_lines
+        .iter()
+        .map(|s| Line::from(s.to_string()))
+        .collect();
+    let text = Text::from(text_lines);
     let para = Paragraph::new(text).block(block.clone());
     frame.render_widget(para, area);
 
-    // Hardware cursor via Frame (no custom software cursor)
-    let inner = block.inner(area);
-    let (row, col) = app.editor.cursor();
-    let cx = inner.x + col.min(inner.width.saturating_sub(1) as usize) as u16;
-    let cy = inner.y + row.min(inner.height.saturating_sub(1) as usize) as u16;
+    // Hardware cursor position (visual coordinates from render_with_max)
+    let cx = inner.x + render.cursor_col.min(inner.width.saturating_sub(1));
+    let cy = inner.y + render.cursor_row.min(inner.height.saturating_sub(1));
     frame.set_cursor_position((cx, cy));
 }
 

@@ -249,10 +249,23 @@ impl Editor {
     // ── Paste ────────────────────────────────────────────────────
 
     pub fn handle_paste(&mut self, text: &str) {
-        let text = text
+        // Reset state that could interfere
+        self.autocomplete = None;
+        self.history_index = None;
+        self.history_draft = None;
+        // Defensive: clamp cursor to valid range before manipulating
+        self.clamp_cursor();
+
+        let mut text = text
             .replace("\r\n", "\n")
             .replace('\r', "\n")
             .replace('\t', "    ");
+
+        // Filter ANSI escape sequences (CSI, OSC, etc.) that can leak
+        // in when pasting terminal selection. These corrupt display width
+        // calculations and rendering.
+        text = Self::strip_ansi(&text);
+
         // Strip trailing newlines (prevents auto-submit on paste)
         let text = text.trim_end_matches('\n');
         if text.is_empty() {
@@ -288,6 +301,7 @@ impl Editor {
     // ── Key handling ─────────────────────────────────────────────
 
     pub fn handle_key_event(&mut self, key: KeyEvent) -> bool {
+        self.clamp_cursor();
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let alt = key.modifiers.contains(KeyModifiers::ALT);
 
@@ -698,7 +712,18 @@ impl Editor {
 
     // ── Text insertion ───────────────────────────────────────────
 
+    fn clamp_cursor(&mut self) {
+        if self.cursor_row >= self.lines.len() {
+            self.cursor_row = self.lines.len().saturating_sub(1);
+        }
+        let max = self.lines[self.cursor_row].len();
+        if self.cursor_col > max {
+            self.cursor_col = max;
+        }
+    }
+
     fn insert_char(&mut self, c: char) {
+        self.clamp_cursor();
         if self.history_index.is_some() {
             self.history_index = None;
             self.history_draft = None;
@@ -709,6 +734,7 @@ impl Editor {
     }
 
     fn newline(&mut self) {
+        self.clamp_cursor();
         if self.history_index.is_some() {
             self.history_index = None;
             self.history_draft = None;
@@ -718,6 +744,56 @@ impl Editor {
         self.lines.insert(self.cursor_row + 1, rest);
         self.cursor_row += 1;
         self.cursor_col = 0;
+    }
+
+    // ── ANSI escape filtering ────────────────────────────────────
+
+    /// Strip ANSI escape sequences (CSI, OSC, DCS, etc.) from text.
+    /// These leak in when pasting terminal selection and corrupt
+    /// display width calculations and rendering.
+    fn strip_ansi(input: &str) -> String {
+        let mut result = String::with_capacity(input.len());
+        let mut chars = input.chars().peekable();
+        while let Some(c) = chars.next() {
+            if c == '\x1b' {
+                match chars.next() {
+                    Some('[') => {
+                        // CSI: skip until final byte (0x40-0x7E)
+                        while let Some(&nc) = chars.peek() {
+                            if ('@'..='~').contains(&nc) {
+                                chars.next();
+                                break;
+                            }
+                            chars.next();
+                        }
+                    }
+                    Some(']') => {
+                        // OSC: skip until BEL (0x07) or ST (ESC \)
+                        while let Some(&nc) = chars.peek() {
+                            if nc == '\x07' {
+                                chars.next();
+                                break;
+                            }
+                            if nc == '\x1b' {
+                                chars.next();
+                                if chars.peek() == Some(&'\\') {
+                                    chars.next();
+                                }
+                                break;
+                            }
+                            chars.next();
+                        }
+                    }
+                    Some(_) => {
+                        // Other escape: skip the next char
+                    }
+                    None => break,
+                }
+            } else {
+                result.push(c);
+            }
+        }
+        result
     }
 
     // ── Grapheme helpers ─────────────────────────────────────────
@@ -1295,5 +1371,26 @@ mod tests {
         ed.handle_key_event(KeyEvent::new(KeyCode::Tab, KeyModifiers::empty()));
         assert_eq!(ed.text(), "/model ");
         assert!(!ed.autocomplete_active());
+    }
+
+    #[test]
+    fn test_paste_strips_ansi_escapes() {
+        let mut ed = Editor::new();
+        ed.handle_paste("\x1b[38;5;245mrab\x1b[0m · model");
+        assert_eq!(ed.text(), "rab · model");
+    }
+
+    #[test]
+    fn test_paste_strips_ansi_with_newlines() {
+        let mut ed = Editor::new();
+        ed.handle_paste("line1\x1b[0m\n\x1b[1mline2\x1b[0m");
+        assert_eq!(ed.text(), "line1\nline2");
+    }
+
+    #[test]
+    fn test_paste_preserves_emoji() {
+        let mut ed = Editor::new();
+        ed.handle_paste("hello 🚀 world");
+        assert_eq!(ed.text(), "hello 🚀 world");
     }
 }

@@ -190,6 +190,10 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) {
         }
         // Enter (no modifiers): submit
         KeyCode::Enter => {
+            if app.editor.autocomplete_active() {
+                app.editor.accept_autocomplete_if_active();
+                return;
+            }
             let text = app.editor.text();
             let trimmed = text.trim();
             if !trimmed.is_empty() && !app.is_streaming {

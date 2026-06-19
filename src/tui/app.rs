@@ -1,8 +1,8 @@
 use super::display::{DisplayMsg, session_messages_to_display, welcome_messages};
+use super::editor::{Editor, SlashCommandInfo};
 use super::keyboard::{handle_key, parse_bang_command};
 use super::render::ui;
 use crate::agent::{AgentEvent, LoopConfig, run_agent_loop};
-use crate::editor::{Editor, SlashCommandInfo};
 use crate::extension::{AgentTool, CommandResult, Extension, SlashCommand};
 use crate::provider::{Provider, ToolDef};
 use crate::session::SessionManager;
@@ -123,7 +123,8 @@ pub async fn run(config: TuiConfig, session: SessionManager) -> anyhow::Result<(
         stdout,
         ratatui::crossterm::terminal::EnterAlternateScreen,
         ratatui::crossterm::cursor::Show,
-        ratatui::crossterm::cursor::SetCursorStyle::BlinkingBlock
+        ratatui::crossterm::cursor::SetCursorStyle::BlinkingBlock,
+        ratatui::crossterm::event::EnableBracketedPaste,
     )?;
     let backend = ratatui::backend::CrosstermBackend::new(stdout);
     let mut terminal = ratatui::Terminal::new(backend)?;
@@ -133,7 +134,8 @@ pub async fn run(config: TuiConfig, session: SessionManager) -> anyhow::Result<(
     ratatui::crossterm::terminal::disable_raw_mode()?;
     ratatui::crossterm::execute!(
         terminal.backend_mut(),
-        ratatui::crossterm::terminal::LeaveAlternateScreen
+        ratatui::crossterm::terminal::LeaveAlternateScreen,
+        ratatui::crossterm::event::DisableBracketedPaste,
     )?;
     result
 }
@@ -220,7 +222,12 @@ fn run_app(
         // Poll for keyboard events
         if ratatui::crossterm::event::poll(Duration::from_millis(10))? {
             match ratatui::crossterm::event::read()? {
-                Event::Key(key) => handle_key(&mut app, key),
+                Event::Key(key) => {
+                    handle_key(&mut app, key);
+                }
+                Event::Paste(data) => {
+                    app.editor.handle_paste(&data);
+                }
                 Event::Resize(..) => {}
                 _ => {}
             }
