@@ -202,10 +202,9 @@ pub async fn run(config: AppConfig, session: SessionManager) -> anyhow::Result<(
     term.enter_raw_mode()?;
     let mut stdout = std::io::stdout();
 
-    // Main-screen mode (like pi) — no alternate screen, native scrolling.
-    // Clear and home to ensure predictable starting position.
-    write!(stdout, "\x1b[2J\x1b[H")?;
-    stdout.flush()?;
+    // Main-screen mode (like pi) — no alternate screen, no clear.
+    // Content writes from current cursor position (after shell prompt).
+    // Terminal scrolls naturally, editor/footer appear at the bottom.
     Terminal::hide_cursor(&mut stdout)?;
 
     let mut screen = Screen::new();
@@ -258,7 +257,7 @@ pub async fn run(config: AppConfig, session: SessionManager) -> anyhow::Result<(
 /// Compose the full UI from app state — matching pi's main screen layout.
 ///
 /// Layout (top to bottom):
-///   messages → spacer → status line → editor → key hints → working → footer
+///   messages → spacer → status → editor → key hints → footer
 fn compose_ui(app: &mut App, width: usize, _height: usize) -> Vec<String> {
     let mut lines = Vec::new();
 
@@ -284,21 +283,18 @@ fn compose_ui(app: &mut App, width: usize, _height: usize) -> Vec<String> {
     );
     lines.extend(rendered);
 
-    // ── Spacer before editor ──
-    // Pi inserts a blank line between messages and editor
+    // ── Spacer before editor (pi inserts blank line between messages and editor) ──
     if !lines.is_empty() && !lines.last().is_none_or(|l| l.trim().is_empty()) {
         lines.push(String::new());
     }
 
-    // ── Status/working line ──
+    // ── Working indicator (during streaming) ──
     if app.is_streaming {
-        let spinner = app.working.render(width);
-        lines.extend(spinner);
+        lines.extend(app.working.render(width));
     }
 
     // ── Editor ──
-    let editor_lines = app.editor.editor.render(width);
-    lines.extend(editor_lines);
+    lines.extend(app.editor.editor.render(width));
 
     // ── Keybinding hints ──
     let hint = app.theme.fg(
