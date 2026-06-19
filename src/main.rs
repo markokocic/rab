@@ -7,6 +7,7 @@ use rab::builtin::{
 use rab::extension::Extension;
 use rab::session::SessionManager;
 use rab::settings::Settings;
+use rab::ui;
 use std::io::Write;
 
 #[tokio::main]
@@ -122,14 +123,8 @@ async fn main() -> anyhow::Result<()> {
     let provider = adapter::GenaiProvider::new(&auth, thinking_level)?;
 
     if message_parts.is_empty() {
-        let _git_branch = get_git_branch(&cwd);
-        // TODO: Port to src/ui/app.rs using src/tui/
-        eprintln!(
-            "Interactive mode not yet ported to new TUI library. Use print mode with a message."
-        );
-        Ok(())
-        /*
-        let config = rab::rattui::TuiConfig {
+        let git_branch = get_git_branch(&cwd);
+        let config = ui::AppConfig {
             model,
             system_prompt,
             tools,
@@ -142,9 +137,9 @@ async fn main() -> anyhow::Result<()> {
             available_models,
             hide_thinking: settings.hide_thinking.unwrap_or(false),
             collapse_tool_output: settings.collapse_tool_output.unwrap_or(false),
+            interactive: true,
         };
-        rab::rattui::run(config, session).await
-        */
+        ui::run(config, session).await
     } else {
         let message = message_parts.join(" ");
         run_print_mode(
