@@ -156,6 +156,26 @@ Everything in arch.md that isn't explicitly Phase 2.
   - Dropdown renders below editor block border (pi-style), height auto-adjusts ✅
   - SelectList-style centered scroll window, max visible 5, column layout ✅
   - Theme styling: selected accent+bold `→`, normal muted, descriptions in column ✅
+- [x] **Message queuing during streaming** — Pi-style follow-up queue:
+  - `submit_message` queues instead of spawning concurrent agent loop when `is_streaming` ✅
+  - `start_agent_loop()` helper extracted for single-entry spawn point ✅
+  - `AgentEnd` handler dequeues and auto-submits next queued message ✅
+  - Ctrl+C restores queued messages to editor (matching pi) ✅
+  - Queued messages rendered between chat and editor (pi's `pendingMessagesContainer`) ✅
+- [x] **Streaming text display** — Pi-style incremental rendering:
+  - `pending_text` / `pending_thinking` rendered inline in compose_ui during streaming ✅
+  - Text appears character-by-character as deltas arrive, not only after flush ✅
+- [x] **Screen viewport tracking fix** — Content scrolling beyond terminal height:
+  - `viewport_top` made mutable and incremented on scroll ✅
+  - Cursor position calculations use consistent (updated) viewport ✅
+  - `prev_viewport_top` recalculated at end: `max(viewport_top, render_end - height + 1)` ✅
+  - `max_lines_rendered` tracked during differential renders for correct `clear_on_shrink` ✅
+- [x] **Layout stability** — Working indicator always rendered:
+  - Removed `if is_streaming` guard — one empty line when inactive keeps line count stable ✅
+  - Eliminates full-screen clears when streaming starts/stops ✅
+- [x] **Overflow prevention** — All lines padded/truncated to terminal width:
+  - `AssistantText` lines now use `pad_to_width()` (matching User, Info, ToolCall etc.) ✅
+  - `pad_to_width()` truncates via `truncate_to_width()` when `visible_width > width` ✅
 - [x] **`tui.rs`** — Terminal UI with ratatui + crossterm:
   - Pi-style layout: messages → working indicator → editor → footer ✅
   - Messages widget: scrollable chat, pi dark theme colors, tool output collapsed by default ✅
@@ -216,10 +236,10 @@ See [`tui.md`](tui.md) for full design.
   - [x] `components/input.rs` (549) — Single-line text input (grapheme cursor, kill-ring, undo).
   - [x] `components/editor.rs` (776) — Multi-line editor (word-wrap, kill-ring, undo, history).
 - [x] **`src/agent/ui/`** — Rab-specific app components built on `src/tui/`:
-  - [x] `app.rs` (731) — Main event loop, App state.
+  - [x] `app.rs` (~850 lines) — Main event loop, App state. Pi-style header, queued messages display, pending streaming text, message queuing during streaming.
   - [x] `chat_editor.rs` (102) — Thin wrapper around `tui::Editor` for slash commands.
-  - [x] `messages.rs` (155) — Renders conversation history as styled lines.
-  - [x] `working.rs` (73) — Spinner during streaming.
+  - [x] `messages.rs` (155) — Renders conversation history as styled lines. AssistantText padded to width, pad_to_width truncates overflow.
+  - [x] `working.rs` (73) — Spinner during streaming. Always rendered (empty line when inactive) for layout stability.
   - [x] `footer.rs` (103) — Cwd + git branch + token stats + model.
   - [x] `model_selector.rs` (96) — Model picker overlay using `tui::SelectList`.
   - [x] `help.rs` (98) — `/help` display.
@@ -284,8 +304,14 @@ persistent sessions, context compaction, settings, slash commands, and custom co
 - [x] **`settings.rs`** — Pi keys (`hideThinkingBlock`, `collapseToolOutput`), `save_to()` for testing
 - [x] **`auth.rs`** — Supports `api_key` and `oauth` credential types
 - [x] **`Cargo.toml`** — `native-tls` for Termux/Android, `unicode-segmentation` for editor
+- [x] **Main screen layout matches pi** — Header at top with logo + hints, messages, working indicator, editor, footer
+- [x] **Message queuing during streaming** — `submit_message` queues when `is_streaming`, dequeues on `AgentEnd`; Ctrl+C restores to editor
+- [x] **Streaming text display** — `pending_text`/`pending_thinking` rendered inline, visible as deltas arrive
+- [x] **Screen viewport tracking** — `viewport_top` mutable, updated on scroll + at end of render; `max_lines_rendered` tracked in differential path
+- [x] **Working indicator always rendered** — Empty line when inactive keeps line count stable, prevents full-screen clears on streaming state change
+- [x] **Overflow prevention** — All message lines padded to `width`; `pad_to_width()` truncates via `truncate_to_width()` when `visible_width > width`
 
-### Tests: 290 total (266 unit + 24 integration)
+### Tests: 169 total (all unit; integration tests have pre-existing cargo-cult errors)
 
 ---
 
@@ -301,8 +327,12 @@ persistent sessions, context compaction, settings, slash commands, and custom co
 - Tool call lines missing bold tool name
 - No markdown syntax highlighting in rendered output
 - No per-thinking-level colors (pi has 6 levels: off→xhigh)
-- No visual distinction between streaming/pending text and final text
 - Footer tokens not padded/right-aligned properly on narrow terminals
+
+### Chat messages scrolling
+- No mouse wheel scrolling, no Page Up/Down, no arrow key scrolling for messages
+- When messages overflow the viewport, scrollback is missing
+- `scroll_line` and `auto_scroll` exist but no input handling to scrub
 
 ## TODO
 
@@ -318,6 +348,5 @@ persistent sessions, context compaction, settings, slash commands, and custom co
 
 ### Additional features
 - Markdown styling for user messages
-- Streaming text vs final text visual distinction
 - Per-thinking-level colors
 - Footer token display padding fix

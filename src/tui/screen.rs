@@ -34,6 +34,32 @@ impl Screen {
         self.full_redraw_count
     }
 
+    /// Total number of lines in the last rendered frame.
+    pub fn total_lines(&self) -> usize {
+        self.prev_lines.len()
+    }
+
+    /// Move cursor to one line past all rendered content (for clean program exit).
+    /// Writes the ANSI cursor-positioning sequences and `\r\n` so that subsequent
+    /// shell output appears on a fresh line after all TUI content.
+    pub fn finalize(&mut self, writer: &mut dyn Write) -> io::Result<()> {
+        if self.prev_lines.is_empty() {
+            return Ok(());
+        }
+        let target_row = self.prev_lines.len(); // one past the last content line
+        let line_diff = target_row as i64 - self.hardware_cursor_row as i64;
+        let mut buf = String::new();
+        if line_diff > 0 {
+            buf.push_str(&format!("\x1b[{}B", line_diff));
+        } else if line_diff < 0 {
+            buf.push_str(&format!("\x1b[{}A", -line_diff));
+        }
+        buf.push_str("\r\n");
+        write!(writer, "{}", buf)?;
+        writer.flush()?;
+        Ok(())
+    }
+
     pub fn set_clear_on_shrink(&mut self, enabled: bool) {
         self.clear_on_shrink = enabled;
     }
@@ -121,7 +147,7 @@ impl Screen {
         } else {
             self.prev_viewport_top
         };
-        let viewport_top = prev_viewport_top;
+        let mut viewport_top = prev_viewport_top;
 
         // First render — output everything without clearing (assumes clean screen)
         if self.prev_lines.is_empty() && !width_changed && !height_changed {
@@ -261,10 +287,14 @@ impl Screen {
                 buf.push_str("\r\n");
             }
             self.hardware_cursor_row = move_target;
+            // Advance viewport_top to reflect the scroll (lines scrolled off top)
+            viewport_top += scroll;
         }
 
         // Move to first changed line
-        let current_screen_row = self.hardware_cursor_row.saturating_sub(prev_viewport_top);
+        // Use viewport_top (potentially updated by scroll) for both calculations
+        // so they stay consistent even after content scrolled below viewport.
+        let current_screen_row = self.hardware_cursor_row.saturating_sub(viewport_top);
         let target_screen_row = move_target.saturating_sub(viewport_top);
         let line_diff = target_screen_row as i32 - current_screen_row as i32;
 
@@ -309,8 +339,11 @@ impl Screen {
 
         self.cursor_row = new_lines.len().saturating_sub(1);
         self.hardware_cursor_row = render_end;
+        self.max_lines_rendered = self.max_lines_rendered.max(new_lines.len());
         self.prev_lines = new_lines;
-        self.prev_viewport_top = viewport_top;
+        // Advance viewport_top if cursor ended up below the viewport
+        // (matching pi's Math.max(prevViewportTop, finalCursorRow - height + 1)).
+        self.prev_viewport_top = viewport_top.max(render_end.saturating_sub(height_usize - 1));
         self.prev_height = height_usize as u16;
         self.prev_width = width_usize as u16;
 

@@ -12,7 +12,7 @@ lets it act on your codebase.
 | `pi-agent-core` (agent loop, session, compaction, skills) | `src/agent/`, `src/agent/session.rs`, `compaction.rs`, `src/agent/types.rs` | Loop ported directly from `agent-loop.ts` |
 | `pi-tui` (terminal UI, components, editor) | `src/tui/` + `src/agent/ui/` ✅ — direct Rust port of `@earendil-works/pi-tui` on top of [crossterm](https://github.com/crossterm-rs/crossterm) 0.28 | Full port: diff renderer, Component trait, Editor, Input, SelectList, SettingsList, etc. No ratatui. Main-screen mode (no alternate screen), native terminal scrolling. See [`tui.md`](tui.md) for full design. |
 | `coding-agent` (CLI, extensions, built-in tools, settings, commands) | `cli.rs`, `src/agent/extension.rs`, `builtin/`, `src/agent/settings.rs` | Single `Extension` trait for built-in + user extensions; commands use same `CommandHandler` interface; built-in commands in `builtin/commands.rs` |
-| `coding-agent/modes/interactive` | `src/agent/ui/` (app-specific UI components) | ChatEditor, MessageList, Footer, ModelSelector — built on `src/tui/` primitives |
+| `coding-agent/modes/interactive` | `src/agent/ui/` (app-specific UI components) | ChatEditor, MessageList, Footer, ModelSelector, queued messages, streaming text display — built on `src/tui/` primitives |
 | MCP extensions (third-party) | `pi-mcp-adapter` built-in extension | Phase 2. Uses `rmcp` crate. Configured via `.rab/mcp.json` |
 | Config files (`~/.pi/agent/`) | `~/.rab/` | Same file names and JSON schema as pi |
 
@@ -267,9 +267,14 @@ Every hook receives the agent's `CancellationToken` and must honour it.
 ### Queue modes
 
 - **Steering queue**: injected after the current assistant turn finishes
-  executing tool calls. Used for mid-run user input.
+  executing tool calls. Used for mid-run user input. (Not yet implemented.)
 - **Follow-up queue**: injected only after the agent would otherwise stop
   (no tool calls, no steering). Used for post-run follow-up questions.
+  (Not yet implemented.)
+- **TUI-level queuing** (implemented): When `is_streaming`, `submit_message`
+  queues to `App.queued_messages` instead of spawning concurrent loops.
+  Queued messages display between chat and editor. On `AgentEnd`, next
+  queued message auto-submits. Ctrl+C restores queue to editor.
 - Both support `one-at-a-time` and `all` drain modes.
 
 ### Tool execution modes
@@ -821,24 +826,41 @@ API specifications, keybinding tables, render layout diagrams, and porting estim
 
 ```
 Terminal (main screen, rows=40):
-┌──────────────────────────────┐
-│  [old messages in scrollback]│  ← terminal's native scroll buffer
-│  message 10                  │  ← still in buffer, scroll up to see
-│  message 11                  │
-│  ...                         │  ← viewport (last ~40 lines)
-│  message 47                  │
-│  ⠋ Working…                 │  ← working indicator
-│┌─────────────────────────────┐│
-││ > user types here...        ││  ← editor (rendered by pi-tui)
-│└─────────────────────────────┘│
-│ ~/projects/my-app (main)     │  ← footer
-└──────────────────────────────┘
+┌───────────────────────────────────────┐
+│  [old messages in scrollback]         │  ← terminal's native scroll buffer
+│  rab · model deepseek-v4-flash        │  ← header (logo + model)
+│  Enter submit · Ctrl+J … F1 · Ctrl+L  │  ← keybinding hints
+│                                       │
+│  message 48                           │  ← still in buffer / viewport
+│  message 49                           │
+│  Assistant response text …            │
+│  ◷ queued-while-streaming             │  ← queued messages (pi-style)
+│  ↳ queued — will send when current…   │
+│                                       │  ← spacer
+│  ⠋                                    │  ← working indicator (always present)
+│┌──────────────────────────────────────┐│
+││ user types here…                     ││  ← editor (bordered)
+│└──────────────────────────────────────┘│
+│ ~/src/my/rab (master)                 │  ← footer line 1
+│ ○ 2↑ 5↓ 45%/100k (auto)   model-name │  ← footer line 2
+└──────────────────────────────────────┘
 ```
 
-All content (messages + working indicator + editor + footer) is one flat line
-buffer managed by the diff renderer. New messages are appended lines — the
-diff renderer writes `\r\n` at the right spot, which pushes content up through
-the terminal's native scroll.
+All content is one flat line buffer managed by the diff renderer. Layout (top
+to bottom): **header** → **messages** → **pending (streaming) text** →
+**queued messages** → **spacer** → **working indicator** (always 1 line) →
+**editor** (bordered) → **footer** (2 lines).
+
+New messages are appended lines — the diff renderer writes `\r\n` at the right
+spot, which pushes content up through the terminal's native scroll.
+
+### Message queuing
+
+When the user submits a message while streaming, it is **queued** (not sent to
+a new concurrent agent loop). Queued messages appear between chat and editor
+(pi's `pendingMessagesContainer` style). On `AgentEnd`, the next queued
+message is automatically submitted. Ctrl+C during streaming restores queued
+messages to the editor for editing.
 
 ---
 

@@ -71,7 +71,7 @@ All Tier 1 components are implemented and tested. 83 tests pass with zero warnin
 
 | Module | pi-tui src | Rust module | Purpose |
 |---|---|---|---|
-| **Screen** | `tui.ts:doRender()` (~500 lines) | `src/tui/screen.rs` (✅ 379 lines) | The diff renderer. Maintains `prev_lines: Vec<String>`, computes changed ranges, emits minimal ANSI (cursor moves + line clears + new text). Handles resize, append, shrink. Wraps output in synchronized output. |
+| **Screen** | `tui.ts:doRender()` (~500 lines) | `src/tui/screen.rs` (✅ ~390 lines) | The diff renderer. Maintains `prev_lines: Vec<String>`, computes changed ranges, emits minimal ANSI (cursor moves + line clears + new text). Handles resize, append, shrink. **Viewport tracking**: `viewport_top` updated on scroll and at end of render (`max(viewport_top, render_end - height + 1)`). `max_lines_rendered` tracked during differential renders for correct `clear_on_shrink`. Wraps output in synchronized output. |
 | **Terminal** | `terminal.ts` (531 lines) | `src/tui/terminal.rs` (✅ 125 lines) | Wraps crossterm: raw mode, event polling, resize, cursor hide/show, cursor positioning, line clear, synchronized output. |
 | **Key** | `keys.ts` (1,400 lines) | `src/tui/keys.rs` (✅ 267 lines) | Key identifiers (`Key::Enter`, `Key::Up`, `Key::Ctrl('c')`, `Key::CtrlShift('p')`). `matches_key(event, key) -> bool`. Wraps crossterm's `KeyEvent` — no Kitty protocol parsing needed. |
 | **Util** | `utils.ts` (1,188 lines) | `src/tui/util.rs` (✅ 817 lines) | `visible_width(s) -> usize` (strip ANSI, measure Unicode). `truncate_to_width(s, w) -> String`. `wrap_text_with_ansi(s, w) -> Vec<String>`. `slice_by_column(s, start, end) -> String`. |
@@ -99,13 +99,13 @@ These are rab's application components, built on `src/tui/` primitives. They are
 | Component | Rust module | Purpose |
 |---|---|---|
 | **ChatEditor** | `src/agent/ui/chat_editor.rs` (✅ 102 lines) | Thin wrapper around `tui::Editor`. Provides rab-specific behaviors: slash command list, theme integration. |
-| **MessageList** | `src/agent/ui/messages.rs` (✅ 155 lines) | Renders conversation history as styled text lines. Handles: user messages, assistant text, thinking blocks, tool calls, tool results. Respects `hide_thinking`, `collapse_tool_output`. |
-| **WorkingIndicator** | `src/agent/ui/working.rs` (✅ 73 lines) | Spinner shown during streaming. |
+| **MessageList** | `src/agent/ui/messages.rs` (✅ 155 lines) | Renders conversation history as styled text lines. Handles: user messages, assistant text, thinking blocks, tool calls, tool results. Respects `hide_thinking`, `collapse_tool_output`. **All lines padded to `width`** via `pad_to_width()`; `pad_to_width()` truncates via `truncate_to_width()` when `visible_width > width` to prevent terminal overflow. |
+| **WorkingIndicator** | `src/agent/ui/working.rs` (✅ 73 lines) | Spinner shown during streaming. **Always rendered** (returns 1 empty line when inactive) to keep the composition line count stable and avoid full-screen clears on streaming state changes. |
 | **Footer** | `src/agent/ui/footer.rs` (✅ 103 lines) | Two-line footer: cwd + git branch on line 1, token stats + model on line 2. |
 | **ModelSelector** | `src/agent/ui/model_selector.rs` (✅ 96 lines) | Full-screen overlay for picking a model. Uses `tui::SelectList`. Searchable. |
 | **HelpOverlay** | `src/agent/ui/help.rs` (✅ 98 lines) | `/help` display showing available commands and keybindings. |
 | **Theme** | `src/agent/ui/theme.rs` (✅ 105 lines) | rab's concrete color theme. Implements the `tui::Theme` trait with direct ANSI emission matching pi's dark theme. |
-| **App** | `src/agent/ui/app.rs` (✅ 731 lines) | Main event loop and state. Owns the `tui::Screen`, composes the component tree each tick, dispatches input, handles agent events (streaming deltas → message list). |
+| **App** | `src/agent/ui/app.rs` (✅ ~930 lines) | Main event loop and state. Owns the `tui::Screen`, composes the component tree each tick, dispatches input, handles agent events (streaming deltas → message list). **Pi-style header**, **queued messages** (submitted while streaming, displayed between chat and editor), **streaming text** (`pending_text`/`pending_thinking` rendered inline), **message queuing** (no concurrent loops), **working indicator always rendered** (empty line when inactive). |
 
 ### Pi Reference: Where App Components Live in pi
 

@@ -63,7 +63,8 @@ pub fn render_messages(
                     } else {
                         let wrapped = wrap_text_with_ansi(line, inner);
                         for w in wrapped {
-                            lines.push(format!(" {}", w));
+                            let line = format!(" {}", w);
+                            lines.push(pad_to_width(&line, width));
                         }
                     }
                 }
@@ -165,10 +166,13 @@ pub fn session_messages_to_display(
 
 pub fn pad_to_width(s: &str, width: usize) -> String {
     let vw = visible_width(s);
-    if vw >= width {
-        s.to_string()
-    } else {
+    if vw > width {
+        // Truncate if wider than target — prevents terminal overflow.
+        crate::tui::util::truncate_to_width(s, width, "", false)
+    } else if vw < width {
         format!("{}{}", s, " ".repeat(width - vw))
+    } else {
+        s.to_string()
     }
 }
 

@@ -110,6 +110,9 @@ pub struct App {
     agent_tools: Arc<Vec<Box<dyn AgentTool>>>,
     /// Extensions.
     extensions: Arc<Vec<Box<dyn Extension>>>,
+
+    /// Messages queued while streaming — submitted when current response finishes.
+    queued_messages: Vec<String>,
 }
 
 impl App {
@@ -175,6 +178,7 @@ impl App {
             working: WorkingIndicator::new(),
             agent_tools: Arc::new(config.agent_tools),
             extensions: Arc::new(config.extensions),
+            queued_messages: Vec::new(),
         }
     }
 }
@@ -227,10 +231,10 @@ pub async fn run(config: AppConfig, session: SessionManager) -> anyhow::Result<(
         }
     }
 
-    // Cleanup
+    // Cleanup — move cursor past all rendered content so the shell prompt
+    // appears on a fresh line after the footer (matching pi's stop() behavior).
+    screen.finalize(&mut stdout)?;
     Terminal::show_cursor(&mut stdout)?;
-    // Move cursor to end of content area
-    write!(stdout, "\r\n")?;
     stdout.flush()?;
     term.leave_raw_mode()?;
 
@@ -284,15 +288,62 @@ fn compose_ui(app: &mut App, width: usize, _height: usize) -> Vec<String> {
     );
     lines.extend(rendered);
 
+    // ── Pending (streaming) text ──
+    if let Some(ref text) = app.pending_text
+        && !text.is_empty()
+    {
+        let inner = width.saturating_sub(2);
+        for line in text.lines() {
+            if line.is_empty() {
+                lines.push(String::new());
+            } else {
+                let wrapped = crate::tui::util::wrap_text_with_ansi(line, inner);
+                for w in wrapped {
+                    let line = format!(" {}", w);
+                    lines.push(crate::agent::ui::messages::pad_to_width(&line, width));
+                }
+            }
+        }
+    }
+    if let Some(ref text) = app.pending_thinking
+        && !text.is_empty()
+    {
+        if app.hide_thinking {
+            lines.push(format!(
+                " {}",
+                app.theme
+                    .bg("thinking_bg", &app.theme.fg("thinking_text", " Thinking…"))
+            ));
+        } else {
+            for line in text.lines() {
+                let styled = app.theme.bg(
+                    "thinking_bg",
+                    &format!(" {}", app.theme.fg("thinking_text", line)),
+                );
+                lines.push(crate::agent::ui::messages::pad_to_width(&styled, width));
+            }
+        }
+    }
+
+    // ── Queued messages (pi-style: shown between chat and editor) ──
+    if !app.queued_messages.is_empty() {
+        for msg in &app.queued_messages {
+            let line = app.theme.fg("dim", &format!(" ◷ {}", msg));
+            lines.push(crate::agent::ui::messages::pad_to_width(&line, width));
+        }
+        let hint = app
+            .theme
+            .fg("dim", " ↳ queued — will send when current finishes");
+        lines.push(crate::agent::ui::messages::pad_to_width(&hint, width));
+    }
+
     // ── Spacer before editor (pi inserts blank line between messages and editor) ──
     if !lines.is_empty() && !lines.last().is_none_or(|l| l.trim().is_empty()) {
         lines.push(String::new());
     }
 
-    // ── Working indicator (during streaming) ──
-    if app.is_streaming {
-        lines.extend(app.working.render(width));
-    }
+    // ── Working indicator (always rendered — empty line when inactive, keeps line count stable) ──
+    lines.extend(app.working.render(width));
 
     // ── Editor ──
     lines.extend(app.editor.editor.render(width));
@@ -343,6 +394,15 @@ fn handle_input(app: &mut App, key: &KeyEvent) {
             }
             app.is_streaming = false;
             app.working.stop();
+            app.footer.set_streaming(false);
+
+            // Restore queued messages to editor (pi-style)
+            if !app.queued_messages.is_empty() {
+                let queued = app.queued_messages.join("\n\n");
+                app.editor.editor.set_text(&queued);
+                app.queued_messages.clear();
+            }
+
             app.messages.push(DisplayMsg::Info("Interrupted".into()));
         } else {
             // Clear editor
@@ -422,7 +482,8 @@ fn handle_input(app: &mut App, key: &KeyEvent) {
     app.editor.editor.handle_input(key);
 }
 
-/// Submit a user message to the agent loop.
+/// Submit or queue a user message. When streaming, queues instead of spawning
+/// a concurrent agent loop (matching pi's behavior).
 fn submit_message(app: &mut App, message: String) {
     app.history_index = None;
     let trimmed = message.trim().to_string();
@@ -440,6 +501,20 @@ fn submit_message(app: &mut App, message: String) {
     }
 
     // Normal message submission to LLM
+    app.messages.push(DisplayMsg::User(trimmed.clone()));
+    app.conversation.push(AgentMessage::user(&trimmed));
+
+    if app.is_streaming {
+        // Queue — will be submitted when current response finishes (pi-style)
+        app.queued_messages.push(trimmed);
+        return;
+    }
+
+    start_agent_loop(app, trimmed);
+}
+
+/// Actually start an agent loop (not queued).
+fn start_agent_loop(app: &mut App, message: String) {
     let provider = Arc::clone(&app.provider);
     let model = app.model.clone();
     let system_prompt = app.system_prompt.clone();
@@ -448,9 +523,6 @@ fn submit_message(app: &mut App, message: String) {
     let history = app.conversation.clone();
     let agent_tools = Arc::clone(&app.agent_tools);
     let extensions = Arc::clone(&app.extensions);
-
-    app.messages.push(DisplayMsg::User(trimmed.clone()));
-    app.conversation.push(AgentMessage::user(&trimmed));
 
     app.is_streaming = true;
     app.working.start();
@@ -471,7 +543,7 @@ fn submit_message(app: &mut App, message: String) {
             let _ = tx.send(event);
         };
 
-        let prompt = AgentMessage::user(trimmed);
+        let prompt = AgentMessage::user(message);
         let _ = run_agent_loop(vec![prompt], history, &config, &*provider, &mut emit).await;
     });
     app.agent_abort = Some(handle.abort_handle());
@@ -630,6 +702,12 @@ fn handle_agent_event(app: &mut App, event: AgentEvent) {
             if let Some(last) = messages.iter().rev().find(|m| m.usage.is_some()) {
                 app.last_usage = last.usage.clone();
                 app.footer.accumulate_usage(last.usage.as_ref().unwrap());
+            }
+
+            // Process next queued message (pi-style: batch-submit after current finishes)
+            if !app.queued_messages.is_empty() {
+                let next = app.queued_messages.remove(0);
+                start_agent_loop(app, next);
             }
         }
     }
@@ -845,14 +923,437 @@ mod tests {
             theme,
         );
         lines.extend(rendered);
+
+        // Pending (streaming) text — matches compose_ui
+        if let Some(ref text) = app.pending_text
+            && !text.is_empty()
+        {
+            let inner = width.saturating_sub(2);
+            for line in text.lines() {
+                if line.is_empty() {
+                    lines.push(String::new());
+                } else {
+                    let wrapped = crate::tui::util::wrap_text_with_ansi(line, inner);
+                    for w in wrapped {
+                        let line = format!(" {}", w);
+                        lines.push(crate::agent::ui::messages::pad_to_width(&line, width));
+                    }
+                }
+            }
+        }
+        if let Some(ref text) = app.pending_thinking
+            && !text.is_empty()
+            && !app.hide_thinking
+        {
+            for line in text.lines() {
+                let styled = theme.bg(
+                    "thinking_bg",
+                    &format!(" {}", theme.fg("thinking_text", line)),
+                );
+                lines.push(crate::agent::ui::messages::pad_to_width(&styled, width));
+            }
+        }
+
+        // Queued messages — matches compose_ui
+        if !app.queued_messages.is_empty() {
+            for msg in &app.queued_messages {
+                let line = theme.fg("dim", &format!(" ◷ {}", msg));
+                lines.push(crate::agent::ui::messages::pad_to_width(&line, width));
+            }
+            let hint = theme.fg("dim", " ↳ queued — will send when current finishes");
+            lines.push(crate::agent::ui::messages::pad_to_width(&hint, width));
+        }
+
         if !lines.is_empty() && !lines.last().is_none_or(|l| l.trim().is_empty()) {
             lines.push(String::new());
         }
-        if app.is_streaming {
-            lines.extend(app.working.render(width));
-        }
+        lines.extend(app.working.render(width));
         lines.extend(app.editor.editor.render(width));
         lines.extend(app.footer.render(width));
         lines
+    }
+
+    // ── New tests ──
+
+    #[test]
+    fn test_submit_queues_when_streaming() {
+        let tmp = tempdir().unwrap();
+        let cwd = tmp.path().to_path_buf();
+        let session = SessionManager::in_memory(&cwd);
+
+        let config = AppConfig {
+            model: "deepseek-v4-flash".into(),
+            system_prompt: String::new(),
+            tools: vec![],
+            agent_tools: vec![],
+            extensions: vec![],
+            provider: Box::new(MockProvider),
+            cwd: cwd.clone(),
+            thinking_level: None,
+            git_branch: None,
+            available_models: vec![],
+            hide_thinking: true,
+            collapse_tool_output: true,
+            interactive: true,
+        };
+
+        let mut app = App::new(config, session);
+
+        // Simulate streaming in progress
+        app.is_streaming = true;
+        app.queued_messages.clear();
+
+        // Submit a message while streaming
+        submit_message(&mut app, "hello".into());
+
+        assert!(
+            app.queued_messages.contains(&"hello".to_string()),
+            "Message should be queued when streaming"
+        );
+        assert!(
+            app.is_streaming,
+            "is_streaming should remain true after queuing"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_submit_starts_loop_when_not_streaming() {
+        let tmp = tempdir().unwrap();
+        let cwd = tmp.path().to_path_buf();
+        let session = SessionManager::in_memory(&cwd);
+
+        let config = AppConfig {
+            model: "deepseek-v4-flash".into(),
+            system_prompt: String::new(),
+            tools: vec![],
+            agent_tools: vec![],
+            extensions: vec![],
+            provider: Box::new(MockProvider),
+            cwd: cwd.clone(),
+            thinking_level: None,
+            git_branch: None,
+            available_models: vec![],
+            hide_thinking: true,
+            collapse_tool_output: true,
+            interactive: true,
+        };
+
+        let mut app = App::new(config, session);
+        app.queued_messages.clear();
+
+        // Submit a message while NOT streaming
+        submit_message(&mut app, "hello".into());
+
+        // Should have one user message (no startup info messages)
+        assert_eq!(app.messages.len(), 1, "Should have just the user message");
+        assert!(
+            matches!(app.messages.last(), Some(DisplayMsg::User(_))),
+            "Last message should be User"
+        );
+    }
+    #[test]
+    fn test_compose_ui_shows_queued_messages() {
+        let tmp = tempdir().unwrap();
+        let cwd = tmp.path().to_path_buf();
+        let session = SessionManager::in_memory(&cwd);
+
+        let config = AppConfig {
+            model: "deepseek-v4-flash".into(),
+            system_prompt: String::new(),
+            tools: vec![],
+            agent_tools: vec![],
+            extensions: vec![],
+            provider: Box::new(MockProvider),
+            cwd: cwd.clone(),
+            thinking_level: None,
+            git_branch: None,
+            available_models: vec![],
+            hide_thinking: true,
+            collapse_tool_output: true,
+            interactive: true,
+        };
+
+        let mut app = App::new(config, session);
+        app.queued_messages.push("queued-msg-1".into());
+        app.queued_messages.push("queued-msg-2".into());
+
+        let lines = compose_ui_test(&mut app, 80);
+
+        let all = lines.join("\n");
+        assert!(
+            all.contains("queued-msg-1"),
+            "Compose UI should contain queued message 1"
+        );
+        assert!(
+            all.contains("queued-msg-2"),
+            "Compose UI should contain queued message 2"
+        );
+        assert!(
+            all.contains("queued"),
+            "Compose UI should contain 'queued' hint"
+        );
+    }
+
+    #[test]
+    fn test_compose_ui_shows_pending_text() {
+        let tmp = tempdir().unwrap();
+        let cwd = tmp.path().to_path_buf();
+        let session = SessionManager::in_memory(&cwd);
+
+        let config = AppConfig {
+            model: "deepseek-v4-flash".into(),
+            system_prompt: String::new(),
+            tools: vec![],
+            agent_tools: vec![],
+            extensions: vec![],
+            provider: Box::new(MockProvider),
+            cwd: cwd.clone(),
+            thinking_level: None,
+            git_branch: None,
+            available_models: vec![],
+            hide_thinking: true,
+            collapse_tool_output: true,
+            interactive: true,
+        };
+
+        let mut app = App::new(config, session);
+        app.pending_text = Some("streaming text content".into());
+
+        let lines = compose_ui_test(&mut app, 80);
+        let all = lines.join("\n");
+        assert!(
+            all.contains("streaming text"),
+            "Compose UI should contain pending streaming text"
+        );
+    }
+
+    #[test]
+    fn test_compose_ui_shows_pending_thinking() {
+        let tmp = tempdir().unwrap();
+        let cwd = tmp.path().to_path_buf();
+        let session = SessionManager::in_memory(&cwd);
+
+        let config = AppConfig {
+            model: "deepseek-v4-flash".into(),
+            system_prompt: String::new(),
+            tools: vec![],
+            agent_tools: vec![],
+            extensions: vec![],
+            provider: Box::new(MockProvider),
+            cwd: cwd.clone(),
+            thinking_level: None,
+            git_branch: None,
+            available_models: vec![],
+            hide_thinking: false,
+            collapse_tool_output: true,
+            interactive: true,
+        };
+
+        let mut app = App::new(config, session);
+        app.pending_thinking = Some("thinking content".into());
+
+        let lines = compose_ui_test(&mut app, 80);
+        let all = lines.join("\n");
+        assert!(
+            all.contains("thinking content"),
+            "Compose UI should contain pending thinking text when not hidden"
+        );
+    }
+
+    #[test]
+    fn test_pending_thinking_hidden_when_hide_thinking() {
+        let tmp = tempdir().unwrap();
+        let cwd = tmp.path().to_path_buf();
+        let session = SessionManager::in_memory(&cwd);
+
+        let config = AppConfig {
+            model: "deepseek-v4-flash".into(),
+            system_prompt: String::new(),
+            tools: vec![],
+            agent_tools: vec![],
+            extensions: vec![],
+            provider: Box::new(MockProvider),
+            cwd: cwd.clone(),
+            thinking_level: None,
+            git_branch: None,
+            available_models: vec![],
+            hide_thinking: true,
+            collapse_tool_output: true,
+            interactive: true,
+        };
+
+        let mut app = App::new(config, session);
+        app.pending_thinking = Some("hidden thinking".into());
+
+        let lines = compose_ui_test(&mut app, 80);
+        let all = lines.join("\n");
+        assert!(
+            !all.contains("hidden thinking"),
+            "Compose UI should NOT contain thinking content when hide_thinking is true"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_agent_end_processes_queued_messages() {
+        let tmp = tempdir().unwrap();
+        let cwd = tmp.path().to_path_buf();
+        let session = SessionManager::in_memory(&cwd);
+
+        let config = AppConfig {
+            model: "deepseek-v4-flash".into(),
+            system_prompt: String::new(),
+            tools: vec![],
+            agent_tools: vec![],
+            extensions: vec![],
+            provider: Box::new(MockProvider),
+            cwd: cwd.clone(),
+            thinking_level: None,
+            git_branch: None,
+            available_models: vec![],
+            hide_thinking: true,
+            collapse_tool_output: true,
+            interactive: true,
+        };
+
+        let mut app = App::new(config, session);
+        app.queued_messages.push("next-msg".into());
+        app.is_streaming = true;
+        app.working.start();
+
+        // Simulate AgentEnd — this will dequeue and start a new loop
+        handle_agent_event(&mut app, AgentEvent::AgentEnd { messages: vec![] });
+
+        // The queued message should have been dequeued
+        assert!(
+            app.queued_messages.is_empty(),
+            "Queued messages should be dequeued after AgentEnd"
+        );
+    }
+
+    #[test]
+    fn test_ctrl_c_interrupt_restores_queued_messages() {
+        let tmp = tempdir().unwrap();
+        let cwd = tmp.path().to_path_buf();
+        let session = SessionManager::in_memory(&cwd);
+
+        let config = AppConfig {
+            model: "deepseek-v4-flash".into(),
+            system_prompt: String::new(),
+            tools: vec![],
+            agent_tools: vec![],
+            extensions: vec![],
+            provider: Box::new(MockProvider),
+            cwd: cwd.clone(),
+            thinking_level: None,
+            git_branch: None,
+            available_models: vec![],
+            hide_thinking: true,
+            collapse_tool_output: true,
+            interactive: true,
+        };
+
+        let mut app = App::new(config, session);
+        app.queued_messages.push("q1".into());
+        app.queued_messages.push("q2".into());
+        app.is_streaming = true;
+
+        // Simulate Ctrl+C
+        handle_input(
+            &mut app,
+            &KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+        );
+
+        assert!(
+            app.queued_messages.is_empty(),
+            "Queued messages should be cleared after interrupt"
+        );
+        assert!(
+            app.editor.editor.get_text().contains("q1"),
+            "Editor should contain restored queued messages"
+        );
+        assert!(
+            app.editor.editor.get_text().contains("q2"),
+            "Editor should contain both restored queued messages"
+        );
+    }
+
+    #[test]
+    fn test_render_messages_pads_assistant_text() {
+        use crate::agent::ui::theme::RabTheme;
+
+        let theme = RabTheme;
+        let msgs = vec![DisplayMsg::AssistantText("short line".into())];
+
+        let width = 60;
+        let lines = render_messages(&msgs, width, false, false, &theme);
+
+        for (i, line) in lines.iter().enumerate() {
+            let vw = crate::tui::util::visible_width(line);
+            assert!(
+                vw <= width,
+                "Line {} has visible_width {} > width {}: {:?}",
+                i,
+                vw,
+                width,
+                line
+            );
+            // The line should be padded to exactly width (no undershoot)
+            if !line.is_empty() {
+                assert!(
+                    vw >= width.saturating_sub(2),
+                    "Line {} has visible_width {} < width-2 {}: {:?}",
+                    i,
+                    vw,
+                    width.saturating_sub(2),
+                    line
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_queued_messages_rendered_in_compose_ui_line_count_is_stable() {
+        let tmp = tempdir().unwrap();
+        let cwd = tmp.path().to_path_buf();
+        let session = SessionManager::in_memory(&cwd);
+
+        let config = AppConfig {
+            model: "deepseek-v4-flash".into(),
+            system_prompt: String::new(),
+            tools: vec![],
+            agent_tools: vec![],
+            extensions: vec![],
+            provider: Box::new(MockProvider),
+            cwd: cwd.clone(),
+            thinking_level: None,
+            git_branch: None,
+            available_models: vec![],
+            hide_thinking: true,
+            collapse_tool_output: true,
+            interactive: true,
+        };
+
+        let mut app = App::new(config, session);
+
+        // No queued messages — compose
+        let before = compose_ui_test(&mut app, 80);
+
+        // Add queued messages
+        app.queued_messages.push("msg1".into());
+        let after = compose_ui_test(&mut app, 80);
+
+        // Should have more lines with queued messages
+        assert!(
+            after.len() > before.len(),
+            "Line count should increase when queued messages are present"
+        );
+
+        // Queued messages appear between messages and editor, not at the end.
+        // Search the entire output for the queued message text.
+        let after_text = after.join("\n");
+        assert!(
+            after_text.contains("msg1"),
+            "Output should contain queued message text"
+        );
     }
 }
