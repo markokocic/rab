@@ -202,10 +202,10 @@ pub async fn run(config: AppConfig, session: SessionManager) -> anyhow::Result<(
     term.enter_raw_mode()?;
     let mut stdout = std::io::stdout();
 
-    // Enter alternate screen
-    write!(stdout, "\x1b[?1049h")?;
+    // Main-screen mode (like pi) — no alternate screen, native scrolling.
+    // Clear and home to ensure predictable starting position.
+    write!(stdout, "\x1b[2J\x1b[H")?;
     stdout.flush()?;
-
     Terminal::hide_cursor(&mut stdout)?;
 
     let mut screen = Screen::new();
@@ -247,7 +247,8 @@ pub async fn run(config: AppConfig, session: SessionManager) -> anyhow::Result<(
 
     // Cleanup
     Terminal::show_cursor(&mut stdout)?;
-    write!(stdout, "\x1b[?1049l")?; // Leave alternate screen
+    // Move cursor to end of content area
+    write!(stdout, "\r\n")?;
     stdout.flush()?;
     term.leave_raw_mode()?;
 
