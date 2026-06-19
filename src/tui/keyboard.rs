@@ -118,7 +118,8 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) {
             }
         }
         // Escape: close help or abort streaming (pi: app.interrupt)
-        KeyCode::Esc => {
+        // Also match Char('\x1b') — some terminals send Esc this way with mouse capture
+        KeyCode::Esc | KeyCode::Char('\x1b') => {
             if app.show_help {
                 app.show_help = false;
             } else if app.is_streaming {
@@ -216,7 +217,7 @@ pub(crate) fn handle_model_selector_key(app: &mut App, key: KeyEvent) {
     let max_index = filtered.len().saturating_sub(1);
 
     match key.code {
-        KeyCode::Esc => {
+        KeyCode::Esc | KeyCode::Char('\x1b') => {
             app.show_model_selector = false;
             app.model_search.clear();
         }
