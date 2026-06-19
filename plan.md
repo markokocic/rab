@@ -11,7 +11,15 @@ Study these files before implementing each Rust equivalent.
 | `provider.rs` | `packages/ai/src/types.ts`, `packages/ai/src/providers/openai-completions.ts` |
 | `adapter/genai.rs` | pi has no genai; rab uses genai crate for HTTP+streaming. Study `openai-completions.ts` for the OpenAI chat completions protocol that OpenCode Go uses |
 | `extension.rs` | `packages/agent/src/types.ts` (`AgentTool`, `AgentContext`, `AgentEvent`) |
-| `editor.rs` (new) | `packages/tui/src/components/editor.ts`, `packages/tui/src/autocomplete.ts` |
+| `tui/components/editor.rs` (new) | `packages/tui/src/components/editor.ts` (full port), `packages/tui/src/autocomplete.ts` |
+| `tui/components/input.rs` (new) | `packages/tui/src/components/input.ts` |
+| `tui/components/settings_list.rs` (new) | `packages/tui/src/components/settings-list.ts` |
+| `tui/components/select_list.rs` (new) | `packages/tui/src/components/select-list.ts` |
+| `tui/screen.rs` (new) | `packages/tui/src/tui.ts` (doRender diff engine) |
+| `tui/terminal.rs` (new) | `packages/tui/src/terminal.ts` |
+| `tui/keys.rs` (new) | `packages/tui/src/keys.ts` |
+| `tui/util.rs` (new) | `packages/tui/src/utils.ts` |
+| `tui/fuzzy.rs` (new) | `packages/tui/src/fuzzy.ts` |
 | `builtin/read.rs` | `packages/coding-agent/src/core/tools/read.ts` |
 | `builtin/write.rs` | `packages/coding-agent/src/core/tools/write.ts` |
 | `builtin/edit.rs` | `packages/coding-agent/src/core/tools/edit.ts`, `edit-diff.ts` |
@@ -22,7 +30,7 @@ Study these files before implementing each Rust equivalent.
 | `settings.rs` | `packages/coding-agent/src/core/settings-manager.ts` |
 | `system_prompt.rs` | `packages/coding-agent/src/core/system-prompt.ts` |
 | `commands.rs` | `packages/coding-agent/src/core/slash-commands.ts` |
-| `tui.rs` | `packages/coding-agent/src/modes/interactive/` (ink-based TUI, not ratatui — different rendering model) |
+| `ui/` (new) | `packages/coding-agent/src/modes/interactive/` (app-specific UI components) |
 | `skills.rs` (Phase 2) | `packages/coding-agent/src/core/skills.ts` |
 
 ---
@@ -155,6 +163,7 @@ Everything in arch.md that isn't explicitly Phase 2.
   - Tool output toggle Ctrl+O persisted to settings.json ✅
   - `!`/`!!` bash inline execution with abort support ✅
   - Pi-style paste detection: 20ms timing heuristic avoids auto-submit ✅
+  - **↓ BEING REPLACED BY `src/tui/` + `src/ui/` (see New TUI section)**
 - [ ] **Hook pipeline** — Extend PoC hooks with `AgentContext` parameter and `CancellationToken`:
   - `before_tool_call` — all extensions consulted, first block wins
   - `after_tool_call` — result patching
@@ -176,13 +185,50 @@ Everything in arch.md that isn't explicitly Phase 2.
 ### Dependencies
 
 ```
-(all PoC deps) + directories, tracing, ratatui 0.30, crossterm 0.29, unicode-segmentation 1
+(all PoC deps) + directories, tracing, crossterm 0.29, unicode-segmentation 1
 ```
+
+**ratatui is dropped.** The TUI is rebuilt as a native main-screen library
+(`src/tui/` + `src/ui/`) porting pi's `@earendil-works/pi-tui` package directly.
+See [`tui.md`](tui.md) for full design.
+
+### New TUI (replaces ratatui-based TUI)
+
+- [ ] **`src/tui/`** — Core TUI library (generic, reusable). Port of `@earendil-works/pi-tui`:
+  - [ ] `screen.rs` — Diff renderer (~400 lines). Line-level comparison, ANSI cursor moves, synchronized output. Port of `tui.ts:doRender()`.
+  - [ ] `terminal.rs` — Crossterm wrapper: raw mode, events, cursor, resize.
+  - [ ] `keys.rs` — Key identifiers, `matches_key()`. Wrap crossterm `KeyEvent`.
+  - [ ] `util.rs` — ANSI-aware width, wrap, truncate, slice.
+  - [ ] `component.rs` — `Component` trait, `Focusable` trait, `CURSOR_MARKER`.
+  - [ ] `container.rs` — `Container` struct.
+  - [ ] `fuzzy.rs` — `fuzzy_match()`, `fuzzy_filter()`.
+  - [ ] `theme.rs` — `Theme` trait (fg/bg color functions).
+  - [ ] `kill_ring.rs` — Emacs kill/yank ring buffer.
+  - [ ] `undo_stack.rs` — Generic undo stack.
+  - [ ] `word_nav.rs` — `find_word_backward()`, `find_word_forward()`.
+  - [ ] `components/text.rs`, `truncated_text.rs`, `spacer.rs`, `box.rs` — Structural primitives.
+  - [ ] `components/loader.rs`, `cancellable_loader.rs` — Spinners.
+  - [ ] `components/select_list.rs` — Scrollable selection list with fuzzy search.
+  - [ ] `components/settings_list.rs` — Toggleable settings picker (cycle values, submenus).
+  - [ ] `components/input.rs` — Single-line text input (grapheme cursor, kill-ring, undo).
+  - [ ] `components/editor.rs` — **Full pi-tui editor port** (~1,450 lines). Multi-line, word-wrap, kill-ring, undo, paste markers, bracketed paste, autocomplete, history recall, character jump. Port of `editor.ts` (2,307 lines).
+- [ ] **`src/ui/`** — Rab-specific app components built on `src/tui/`:
+  - [ ] `app.rs` — Main event loop, App state.
+  - [ ] `chat_editor.rs` — Thin wrapper around `tui::Editor` for slash commands, file autocomplete, submission hook.
+  - [ ] `messages.rs` — Renders conversation history as styled lines.
+  - [ ] `working.rs` — Spinner during streaming.
+  - [ ] `footer.rs` — Cwd + git branch + token stats + model.
+  - [ ] `model_selector.rs` — Model picker overlay using `tui::SelectList`.
+  - [ ] `help.rs` — `/help` display.
+  - [ ] `theme.rs` — Concrete color theme, direct ANSI emission (replaces ratatui `Style`).
+- [ ] **Remove** `src/rattui/` (old ratatui-based TUI, ~3,200 lines)
+- [ ] **Remove** `src/theme.rs` (ratatui `Style`-based, 171 lines — colors move to `src/ui/theme.rs`)
+- [ ] **Remove** `ratatui` from Cargo.toml dependencies
 
 ### Deliverable
 
-Full `rab` binary with print mode + interactive TUI mode, persistent sessions,
-context compaction, settings, slash commands, and custom compile-time extensions.
+Full `rab` binary with print mode + interactive TUI mode (native main-screen, no alternate screen),
+persistent sessions, context compaction, settings, slash commands, and custom compile-time extensions.
 
 ---
 
@@ -228,6 +274,7 @@ context compaction, settings, slash commands, and custom compile-time extensions
   - Pi-style paste detection (20ms timing heuristic)
   - Session history loading, message persistence on AgentEnd
   - 6 unit tests (session message conversion)
+  - **↓ BEING REPLACED BY `src/tui/` + `src/ui/` (see New TUI section)**
 - [x] **`theme.rs`** — Theme struct with pi-style color fields, style helpers
 - [x] **`session.rs`** — SessionManager with JSONL tree storage, 66 unit tests
 - [x] **`settings.rs`** — Pi keys (`hideThinkingBlock`, `collapseToolOutput`), `save_to()` for testing

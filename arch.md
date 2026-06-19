@@ -10,9 +10,9 @@ lets it act on your codebase.
 |---|---|---|
 | `pi-ai` (providers, streaming, models) | `Provider` trait + `adapter/genai.rs` → [genai](https://github.com/jeremychone/rust-genai) crate | Isolated behind trait; swappable. PoC targets [OpenCode Go](https://opencode.ai/docs/go/) (DeepSeek V4 Flash/Pro) via genai's OpenAI adapter. Phase 1 adds Anthropic, OpenAI, Google, Ollama |
 | `pi-agent-core` (agent loop, session, compaction, skills) | `agent.rs`, `session.rs`, `compaction.rs`, `types.rs` | Loop ported directly from `agent-loop.ts` |
-| `pi-tui` (terminal UI, components, editor) | `editor.rs` + [ratatui](https://ratatui.rs) 0.30 + [crossterm](https://github.com/crossterm-rs/crossterm) 0.29 | Custom `Editor` widget replaces tui-textarea. ratatui does layout, diff, widgets |
+| `pi-tui` (terminal UI, components, editor) | `src/tui/` + `src/ui/` — direct Rust port of `@earendil-works/pi-tui` on top of [crossterm](https://github.com/crossterm-rs/crossterm) 0.29 | Full port: diff renderer, Component trait, Editor, Input, SelectList, SettingsList, etc. No ratatui. Main-screen mode (no alternate screen), native terminal scrolling. See [`tui.md`](tui.md) for full design. |
 | `coding-agent` (CLI, extensions, built-in tools, settings, commands) | `cli.rs`, `extension.rs`, `builtin/`, `settings.rs` | Single `Extension` trait for built-in + user extensions; commands use same `CommandHandler` interface; built-in commands in `builtin/commands.rs` |
-| `coding-agent/modes/interactive` | `tui.rs` module | Same crate, different event sink |
+| `coding-agent/modes/interactive` | `src/ui/` (app-specific UI components) | ChatEditor, MessageList, Footer, ModelSelector — built on `src/tui/` primitives |
 | MCP extensions (third-party) | `pi-mcp-adapter` built-in extension | Phase 2. Uses `rmcp` crate. Configured via `.rab/mcp.json` |
 | Config files (`~/.pi/agent/`) | `~/.rab/` | Same file names and JSON schema as pi |
 
@@ -729,108 +729,113 @@ results shown prefixed.
 ### Interactive mode
 
 Same agent loop, different sink: `tui.rs` subscribes to the agent event
-stream and renders to a ratatui TUI instead of stdout. Same crate — no
-separate abstraction layer needed.
+stream and renders to a pi-tui-style main-screen TUI instead of stdout.
+Same crate — no separate abstraction layer needed.
 
 ---
 
-## TUI (`tui.rs` + `editor.rs`)
+## TUI (`src/tui/` + `src/ui/`)
 
-~700 lines. Thin glue between `AgentEvent` stream and ratatui rendering.
-No abstraction layer on top of ratatui — ratatui **is** the abstraction.
+Direct Rust port of pi's `@earendil-works/pi-tui` package. The TUI runs in the
+**main terminal screen** (no alternate screen), using native terminal scrolling
+for message history. Only changed lines are redrawn each frame (line-level diffing).
 
-Custom `Editor` widget (`editor.rs`) handles multiline input, cursor
-positioning, and block borders — replacing tui-textarea.
+See [`tui.md`](tui.md) for the full design: component catalog, Editor/Input/SettingsList
+API specifications, keybinding tables, render layout diagrams, and porting estimates.
 
-| pi-tui (3,000+ lines) | ratatui + crossterm (library code) |
+### Architecture
+
+```
+┌──────────────────────────────────────────────────┐
+│  src/ui/           rab-specific UI               │
+│  ChatEditor, Messages, Footer, ModelSelector, …  │
+│                                                  │
+│  src/tui/          core TUI library              │
+│  Component trait, diff renderer, text primitives │
+│  Editor, SelectList, Input, SettingsList, …      │
+│                                                  │
+│  crossterm         terminal I/O                  │
+│  unicode-segmentation  grapheme clusters         │
+│  unicode-width     character width               │
+└──────────────────────────────────────────────────┘
+```
+
+`src/tui/` is generic and reusable — ports pi's `@earendil-works/pi-tui` core.
+`src/ui/` is rab's app layer — ports pi's `coding-agent` interactive mode components.
+
+### Key differences from the old ratatui approach
+
+| Aspect | Old (ratatui) | New (pi-tui port) |
+|---|---|---|
+| Screen mode | Alternate screen (full takeover) | Main screen (native terminal scrolling) |
+| Rendering | Full-screen redraw each frame (`Terminal::draw`) | Line-level diffing (only changed lines redrawn) |
+| Scrollback | Manual scroll state in `App` | Native terminal scrollback (Shift+PgUp just works) |
+| Component model | `Widget` trait (immediate mode) | `Component` trait (retained mode with `render(width) → Vec<String>`) |
+| Layout | ratatui `Layout` constraint solver | Vertical `Container` stacking |
+| Editor | Custom widget (~1,500 lines) | Full pi-tui editor port (~1,450 lines) |
+| Focus/Ime | `Frame::set_cursor_position()` | `Focusable` trait + `CURSOR_MARKER` APC sequence |
+| Flicker | Built into ratatui's cell-level diffing | Synchronized output (`\x1b[?2026h/l`) + line-level diffing |
+
+### Core modules (`src/tui/`)
+
+| Module | Purpose |
 |---|---|
-| `Component.render(width) → lines` + diff engine | `Widget::render(area, buf)` + `Frame` diff — built-in |
-| `TUI` class: component tree, focus, overlays | 30 lines of `Layout::vertical` in `tui.rs` |
-| `EditorComponent` (1,200+ lines) | `editor.rs` (~230 lines) — custom `Editor` widget |
-| Keyboard handling, keybindings | `crossterm::event::read()` — raw event loop |
-| `Overlay` / `FocusManager` / `ComponentTree` | Not needed — ratatui renders widgets directly to layout areas |
-| Kitty image protocol | `crossterm` raw escape sequences |
+| `screen.rs` | Diff renderer — port of `tui.ts:doRender()`. Line-level comparison, ANSI cursor moves, synchronized output. |
+| `terminal.rs` | Crossterm wrapper: raw mode, events, cursor, resize. |
+| `component.rs` | `Component` trait, `Focusable` trait, `CURSOR_MARKER`. |
+| `container.rs` | `Container` struct — vertical child stacking. |
+| `keys.rs` | Key identifiers, `matches_key()`. |
+| `util.rs` | ANSI-aware width, wrap, truncate, slice. |
+| `fuzzy.rs` | Fuzzy matching/filtering. |
+| `theme.rs` | `Theme` trait (fg/bg color functions). |
+| `kill_ring.rs`, `undo_stack.rs`, `word_nav.rs` | Editor support utilities. |
 
-```rust
-// tui.rs — the entire structure
-pub struct Tui {
-    terminal: Terminal<CrosstermBackend<Stdout>>,
-    messages: Vec<AgentMessage>,
-    streaming_text: String,
-    editor: Editor<'static>,       // tui-textarea
-    model: String,
-    session_id: String,
-    usage: Usage,
-}
+### Components (`src/tui/components/`)
 
-impl Tui {
-    pub async fn run(&mut self, events: Receiver<AgentEvent>) -> Result<()> {
-        loop {
-            self.terminal.draw(|f| self.render(f))?;
+| Component | Purpose |
+|---|---|
+| `editor.rs` | Full pi-tui editor port (~1,450 lines). Multi-line, word-wrap, kill-ring, undo, paste markers, bracketed paste, autocomplete, history recall, character jump. |
+| `input.rs` | Single-line text input (~300 lines). Horizontal scrolling, grapheme cursor, kill-ring, undo. |
+| `select_list.rs` | Scrollable selection list with fuzzy search. |
+| `settings_list.rs` | Toggleable settings picker with value cycling and submenus. |
+| `text.rs`, `truncated_text.rs`, `spacer.rs`, `box.rs` | Structural primitives. |
+| `loader.rs`, `cancellable_loader.rs` | Spinners. |
 
-            tokio::select! {
-                key = crossterm::event::read() => self.handle_key(key?),
-                event = events.recv() => match event {
-                    Some(AgentEvent::TextDelta { delta }) =>
-                        self.streaming_text.push_str(&delta),
-                    Some(AgentEvent::ToolCall { name, args }) =>
-                        self.messages.push(...),
-                    Some(AgentEvent::AgentEnd { .. }) => break,
-                    None => break,
-                }
-            }
-        }
-        Ok(())
-    }
+### App components (`src/ui/`)
 
-    fn render(&self, f: &mut Frame) {
-        let [hdr, msgs, ed, ftr] = Layout::vertical([
-            Constraint::Length(1),
-            Constraint::Min(3),
-            Constraint::Length(3),
-            Constraint::Length(1),
-        ]).areas(f.area());
-        f.render_widget(Header, hdr);
-        f.render_widget(MessagesList(&self.messages), msgs);
-        f.render_widget(&self.editor, ed);
-        f.render_widget(Footer, ftr);
-    }
-}
-```
+| Component | Purpose |
+|---|---|
+| `app.rs` | Main event loop, App state. |
+| `chat_editor.rs` | Thin wrapper around `tui::Editor` for slash commands, file autocomplete, submission hook. |
+| `messages.rs` | Conversation history → styled lines. |
+| `working.rs` | Streaming spinner. |
+| `footer.rs` | Cwd + git branch + token stats + model. |
+| `model_selector.rs` | Model picker using `tui::SelectList`. |
+| `help.rs` | `/help` display. |
+| `theme.rs` | Concrete color theme (direct ANSI emission). |
 
-Everything pi-tui had to build from scratch (component tree, diff rendering,
-focus management, overlay stack) comes free with ratatui's `Frame` and
-`Layout` system. `tui.rs` only needs to wire input events and agent events
-to widget state.
+### Layout
 
 ```
-┌─────────────────────────────────────────────────┐
-│  rab  model: claude-sonnet-4  thinking:high │ ← Header
-├─────────────────────────────────────────────────┤
-│  User: list the .rs files                       │
-│                                                 │
-│  Assistant: Found 3 .rs files:                  │ ← Messages
-│  • src/main.rs                                  │   (scrollable)
-│  • src/lib.rs                                   │
-│  • tests/integration.rs                         │
-│                                                 │
-│  ── tool: list_files ──────────────────────     │
-│  src/main.rs                                    │   (collapsible)
-│  src/lib.rs                                     │
-│  tests/integration.rs                           │
-│  ──────────────────────────────────────────     │
-├─────────────────────────────────────────────────┤
-│  > fix the bug in main.rs            █          │ ← Editor
-├─────────────────────────────────────────────────┤
-│  /tmp/project  session:abc123   ↑500 ↓300  $0.02│ ← Footer
-└─────────────────────────────────────────────────┘
+Terminal (main screen, rows=40):
+┌──────────────────────────────┐
+│  [old messages in scrollback]│  ← terminal's native scroll buffer
+│  message 10                  │  ← still in buffer, scroll up to see
+│  message 11                  │
+│  ...                         │  ← viewport (last ~40 lines)
+│  message 47                  │
+│  ⠋ Working…                 │  ← working indicator
+│┌─────────────────────────────┐│
+││ > user types here...        ││  ← editor (rendered by pi-tui)
+│└─────────────────────────────┘│
+│ ~/projects/my-app (main)     │  ← footer
+└──────────────────────────────┘
 ```
 
-Components:
-- **Messages widget** — scrollable chat history, pi dark theme colors, collapsible tool output (Ctrl+O), thinking block folding (Ctrl+T)
-- **Editor widget** — custom multiline input via `editor.rs`, reverse-video block cursor, accent-colored top/bottom borders, arrow-key history
-- **Working indicator** — animated braille spinner above editor during LLM streaming
-- **Footer** — 2-line: cwd + git branch, token usage left-aligned + model/thinking right-aligned
+All content (messages + working indicator + editor + footer) is one flat line
+buffer managed by the diff renderer. New messages are appended lines — the
+diff renderer writes `\r\n` at the right spot, which pushes content up through
+the terminal's native scroll.
 
 ---
 
@@ -1095,8 +1100,9 @@ rab (EPL-2.0)
 ├── async-trait 0.1        (MIT)        — trait async fn
 ├── colored 2              (MPL-2.0)    — terminal colors
 ├── tracing 0.1            (MIT)        — structured logging
-├── ratatui 0.30           (MIT)        — TUI framework
-├── crossterm 0.29         (MIT)        — terminal backend
+├── crossterm 0.29         (MIT)        — terminal I/O (raw mode, events, cursor)
+├── unicode-segmentation 1 (MIT)        — grapheme-aware cursor movement
+├── unicode-width 0.2      (MIT)        — character display width
 ├── wasmtime 26+           (Apache 2.0) — WASM runtime for dynamic plugins (phase 2)
 ├── notify 7               (CC0-1.0)    — file watcher for plugin hot reload (phase 2)
 └── rmcp 1                 (MIT)        — MCP client for pi-mcp-adapter (phase 2)
