@@ -1,4 +1,5 @@
 use crate::agent::{AgentEvent, LoopConfig, run_agent_loop};
+use crate::editor::{Editor, SlashCommandInfo};
 use crate::extension::{AgentTool, CommandResult, Extension, SlashCommand};
 use crate::provider::{Provider, ToolDef};
 use crate::session::SessionManager;
@@ -48,201 +49,22 @@ pub(crate) enum DisplayMsg {
     Info(String),
 }
 
-// ── Editor state ────────────────────────────────────────────────────
+// ── Editor creation ────────────────────────────────────────────────
 
-/// Minimal multi-line editor state.
-struct Editor {
-    lines: Vec<String>,
-    cursor_row: usize,
-    cursor_col: usize,
-    block: Block<'static>,
+fn create_editor_with(commands: &[SlashCommandInfo], cwd: &std::path::Path) -> Editor {
+    let mut editor = Editor::new();
+    editor.set_slash_commands(commands.to_vec());
+    editor.set_cwd(cwd.to_path_buf());
+    editor.set_block(
+        Block::default()
+            .borders(Borders::TOP | Borders::BOTTOM)
+            .border_style(Style::default().fg(Color::Rgb(0x8a, 0xbe, 0xb7))),
+    );
+    editor
 }
 
-impl Editor {
-    fn new() -> Self {
-        Self {
-            lines: vec![String::new()],
-            cursor_row: 0,
-            cursor_col: 0,
-            block: Block::default(),
-        }
-    }
-
-    fn set_block(&mut self, block: Block<'static>) {
-        self.block = block;
-    }
-
-    fn block(&self) -> &Block<'static> {
-        &self.block
-    }
-
-    fn is_empty(&self) -> bool {
-        self.lines.len() == 1 && self.lines[0].is_empty()
-    }
-
-    fn text(&self) -> String {
-        self.lines.join("\n")
-    }
-
-    fn lines(&self) -> &[String] {
-        &self.lines
-    }
-
-    fn set_text(&mut self, text: &str) {
-        self.lines = if text.is_empty() {
-            vec![String::new()]
-        } else {
-            text.split('\n').map(|s| s.to_string()).collect()
-        };
-        self.cursor_row = self.lines.len() - 1;
-        self.cursor_col = self.lines[self.cursor_row].len();
-    }
-
-    fn cursor(&self) -> (usize, usize) {
-        (self.cursor_row, self.cursor_col)
-    }
-
-    fn insert_at_cursor(&mut self, s: &str) {
-        let line = &mut self.lines[self.cursor_row];
-        line.insert_str(self.cursor_col, s);
-        self.cursor_col += s.len();
-    }
-
-    fn handle_key(&mut self, code: ratatui::crossterm::event::KeyCode, ctrl: bool) {
-        match code {
-            // ── Emacs navigation (ctrl) ──
-            ratatui::crossterm::event::KeyCode::Char('a') if ctrl => {
-                self.cursor_col = 0;
-            }
-            ratatui::crossterm::event::KeyCode::Char('e') if ctrl => {
-                self.cursor_col = self.lines[self.cursor_row].len();
-            }
-            ratatui::crossterm::event::KeyCode::Char('b') if ctrl => {
-                if self.cursor_col > 0 {
-                    self.cursor_col -= 1;
-                } else if self.cursor_row > 0 {
-                    self.cursor_row -= 1;
-                    self.cursor_col = self.lines[self.cursor_row].len();
-                }
-            }
-            ratatui::crossterm::event::KeyCode::Char('f') if ctrl => {
-                if self.cursor_col < self.lines[self.cursor_row].len() {
-                    self.cursor_col += 1;
-                } else if self.cursor_row + 1 < self.lines.len() {
-                    self.cursor_row += 1;
-                    self.cursor_col = 0;
-                }
-            }
-            ratatui::crossterm::event::KeyCode::Char('p') if ctrl => {
-                if self.cursor_row > 0 {
-                    self.cursor_row -= 1;
-                    self.cursor_col = self.cursor_col.min(self.lines[self.cursor_row].len());
-                }
-            }
-            ratatui::crossterm::event::KeyCode::Char('n') if ctrl => {
-                if self.cursor_row + 1 < self.lines.len() {
-                    self.cursor_row += 1;
-                    self.cursor_col = self.cursor_col.min(self.lines[self.cursor_row].len());
-                }
-            }
-            // ── Emacs editing (ctrl) ──
-            ratatui::crossterm::event::KeyCode::Char('k') if ctrl => {
-                let line = &mut self.lines[self.cursor_row];
-                if self.cursor_col < line.len() {
-                    line.truncate(self.cursor_col);
-                } else if self.cursor_row + 1 < self.lines.len() {
-                    self.lines.remove(self.cursor_row + 1);
-                }
-            }
-            ratatui::crossterm::event::KeyCode::Char('u') if ctrl => {
-                let line = &mut self.lines[self.cursor_row];
-                line.drain(..self.cursor_col);
-                self.cursor_col = 0;
-            }
-            ratatui::crossterm::event::KeyCode::Char('w') if ctrl => {
-                let line = &mut self.lines[self.cursor_row];
-                let start = line[..self.cursor_col]
-                    .rfind(|c: char| c.is_ascii_punctuation() || c.is_ascii_whitespace())
-                    .map(|i| i + 1)
-                    .unwrap_or(0);
-                if start < self.cursor_col {
-                    line.drain(start..self.cursor_col);
-                    self.cursor_col = start;
-                }
-            }
-            // ── Regular character ──
-            ratatui::crossterm::event::KeyCode::Char(c) if !ctrl => {
-                self.insert_at_cursor(&c.to_string());
-            }
-            ratatui::crossterm::event::KeyCode::Backspace => {
-                if self.cursor_col > 0 {
-                    self.cursor_col -= 1;
-                    self.lines[self.cursor_row].remove(self.cursor_col);
-                } else if self.cursor_row > 0 {
-                    let rest = self.lines[self.cursor_row].clone();
-                    self.lines.remove(self.cursor_row);
-                    self.cursor_row -= 1;
-                    self.cursor_col = self.lines[self.cursor_row].len();
-                    self.lines[self.cursor_row].push_str(&rest);
-                }
-            }
-            ratatui::crossterm::event::KeyCode::Delete => {
-                let line = &mut self.lines[self.cursor_row];
-                if self.cursor_col < line.len() {
-                    line.remove(self.cursor_col);
-                } else if self.cursor_row + 1 < self.lines.len() {
-                    let next = self.lines.remove(self.cursor_row + 1);
-                    self.lines[self.cursor_row].push_str(&next);
-                }
-            }
-            ratatui::crossterm::event::KeyCode::Left => {
-                if self.cursor_col > 0 {
-                    self.cursor_col -= 1;
-                } else if self.cursor_row > 0 {
-                    self.cursor_row -= 1;
-                    self.cursor_col = self.lines[self.cursor_row].len();
-                }
-            }
-            ratatui::crossterm::event::KeyCode::Right => {
-                if self.cursor_col < self.lines[self.cursor_row].len() {
-                    self.cursor_col += 1;
-                } else if self.cursor_row + 1 < self.lines.len() {
-                    self.cursor_row += 1;
-                    self.cursor_col = 0;
-                }
-            }
-            ratatui::crossterm::event::KeyCode::Up => {
-                if self.cursor_row > 0 {
-                    self.cursor_row -= 1;
-                    self.cursor_col = self.cursor_col.min(self.lines[self.cursor_row].len());
-                }
-            }
-            ratatui::crossterm::event::KeyCode::Down => {
-                if self.cursor_row + 1 < self.lines.len() {
-                    self.cursor_row += 1;
-                    self.cursor_col = self.cursor_col.min(self.lines[self.cursor_row].len());
-                }
-            }
-            ratatui::crossterm::event::KeyCode::Enter => {
-                self.newline();
-            }
-            ratatui::crossterm::event::KeyCode::Home => {
-                self.cursor_col = 0;
-            }
-            ratatui::crossterm::event::KeyCode::End => {
-                self.cursor_col = self.lines[self.cursor_row].len();
-            }
-            _ => {}
-        }
-    }
-
-    fn newline(&mut self) {
-        let rest = self.lines[self.cursor_row][self.cursor_col..].to_string();
-        self.lines[self.cursor_row].truncate(self.cursor_col);
-        self.lines.insert(self.cursor_row + 1, rest);
-        self.cursor_row += 1;
-        self.cursor_col = 0;
-    }
+fn create_editor(app: &App) -> Editor {
+    create_editor_with(&app.shared.command_infos, &app.cwd)
 }
 
 fn welcome_messages(config: &TuiConfig) -> Vec<DisplayMsg> {
@@ -307,6 +129,8 @@ struct SharedState {
     extensions: Vec<Box<dyn Extension>>,
     /// Flattened slash commands from all extensions.
     commands: Vec<SlashCommand>,
+    /// Command info for the editor's autocomplete.
+    command_infos: Vec<SlashCommandInfo>,
 }
 
 struct App {
@@ -409,11 +233,19 @@ fn run_app(
         .iter()
         .flat_map(|e| e.commands())
         .collect();
+    let command_infos: Vec<SlashCommandInfo> = commands
+        .iter()
+        .map(|c| SlashCommandInfo {
+            name: c.name.clone(),
+            description: c.description.clone(),
+        })
+        .collect();
 
     let shared = Arc::new(SharedState {
         agent_tools: config.agent_tools,
         extensions: config.extensions,
         commands,
+        command_infos: command_infos.clone(),
     });
 
     let mut app = App {
@@ -433,7 +265,7 @@ fn run_app(
         },
         scroll_line: Cell::new(0),
         auto_scroll: Cell::new(true),
-        editor: create_editor(),
+        editor: create_editor_with(&command_infos, &config.cwd),
         event_tx: tx,
         event_rx: rx,
         is_streaming: false,
@@ -480,16 +312,6 @@ fn run_app(
     Ok(())
 }
 
-fn create_editor() -> Editor {
-    let mut editor = Editor::new();
-    editor.set_block(
-        Block::default()
-            .borders(Borders::TOP | Borders::BOTTOM)
-            .border_style(Style::default().fg(Color::Rgb(0x8a, 0xbe, 0xb7))),
-    );
-    editor
-}
-
 // ── Render ─────────────────────────────────────────────────────────
 
 fn ui(frame: &mut Frame, app: &App) {
@@ -521,7 +343,7 @@ fn working_height(app: &App) -> u16 {
 }
 
 fn editor_height(app: &App) -> u16 {
-    let lines = app.editor.lines().len().max(1);
+    let lines = app.editor.lines_raw().len().max(1);
     (lines + 2).clamp(3, 10) as u16
 }
 
@@ -1010,10 +832,10 @@ fn recall_history(app: &mut App, direction: isize) {
     };
 
     if new_index >= len {
-        app.editor = create_editor();
+        app.editor = create_editor(app);
         app.history_index = None;
     } else {
-        let mut editor = create_editor();
+        let mut editor = create_editor(app);
         editor.set_text(user_messages[new_index]);
         app.editor = editor;
         app.history_index = Some(new_index);
@@ -1076,7 +898,7 @@ fn handle_key(app: &mut App, key: KeyEvent) {
                 app.messages.push(DisplayMsg::Info("Aborted".to_string()));
                 app.auto_scroll.set(true);
             } else {
-                app.editor = create_editor();
+                app.editor = create_editor(app);
                 app.history_index = None;
             }
         }
@@ -1325,7 +1147,7 @@ fn handle_slash_completion(app: &mut App, text: &str) {
 }
 
 fn set_editor_text(app: &mut App, text: &str) {
-    let mut editor = create_editor();
+    let mut editor = create_editor(app);
     editor.set_text(text);
     app.editor = editor;
 }
@@ -1388,7 +1210,7 @@ fn submit_message(app: &mut App, message: String) {
         let label = if exclude_from_context { "!!" } else { "!" };
         app.messages
             .push(DisplayMsg::User(format!("{label} {command}")));
-        app.editor = create_editor();
+        app.editor = create_editor(app);
         app.auto_scroll.set(true);
 
         app.is_streaming = true;
@@ -1525,7 +1347,7 @@ fn submit_message(app: &mut App, message: String) {
                         "Did you mean: {}?",
                         names.join(", ")
                     )));
-                    app.editor = create_editor();
+                    app.editor = create_editor(app);
                     app.auto_scroll.set(true);
                     None
                 } else {
@@ -1533,7 +1355,7 @@ fn submit_message(app: &mut App, message: String) {
                         "Unknown command: /{}. Type / for available commands.",
                         cmd_name
                     )));
-                    app.editor = create_editor();
+                    app.editor = create_editor(app);
                     app.auto_scroll.set(true);
                     None
                 }
@@ -1550,7 +1372,7 @@ fn submit_message(app: &mut App, message: String) {
                     .iter()
                     .position(|m| m == &app.model || format!("opencode_go::{m}") == app.model)
                     .unwrap_or(0);
-                app.editor = create_editor();
+                app.editor = create_editor(app);
                 return;
             }
             // Execute the command via handler
@@ -1578,7 +1400,7 @@ fn submit_message(app: &mut App, message: String) {
     let prompt = AgentMessage::user(trimmed);
     app.conversation.push(prompt.clone());
 
-    app.editor = create_editor();
+    app.editor = create_editor(app);
     app.is_streaming = true;
     app.pending_text = None;
     app.pending_thinking = None;
@@ -1609,7 +1431,7 @@ fn apply_command_result(app: &mut App, result: anyhow::Result<CommandResult>) {
         Ok(CommandResult::Quit) => {
             app.messages
                 .push(DisplayMsg::Info("/quit — exiting".to_string()));
-            app.editor = create_editor();
+            app.editor = create_editor(app);
             app.should_quit = true;
             return;
         }
@@ -1626,7 +1448,7 @@ fn apply_command_result(app: &mut App, result: anyhow::Result<CommandResult>) {
         }
         Ok(CommandResult::ShowHelp) => {
             app.show_help = true;
-            app.editor = create_editor();
+            app.editor = create_editor(app);
             return;
         }
         Ok(CommandResult::Reloaded) => {
@@ -1704,7 +1526,7 @@ fn apply_command_result(app: &mut App, result: anyhow::Result<CommandResult>) {
                 .push(DisplayMsg::Info(format!("Command error: {:#}", e)));
         }
     }
-    app.editor = create_editor();
+    app.editor = create_editor(app);
     app.auto_scroll.set(true);
 }
 
