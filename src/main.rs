@@ -1,5 +1,6 @@
 use rab::adapter;
-use rab::agent::{self, AgentEvent, LoopConfig};
+use rab::agent::ui;
+use rab::agent::{AgentEvent, LoopConfig};
 use rab::builtin::{
     bash::BashExtension, commands::CommandsExtension, edit::EditExtension, read::ReadExtension,
     write::WriteExtension,
@@ -7,7 +8,6 @@ use rab::builtin::{
 use rab::extension::Extension;
 use rab::session::SessionManager;
 use rab::settings::Settings;
-use rab::ui;
 use std::io::Write;
 
 #[tokio::main]
@@ -237,7 +237,8 @@ async fn run_print_mode(
     };
 
     let new_messages =
-        agent::run_agent_loop(vec![prompt], history, &loop_config, &provider, &mut emitter).await?;
+        rab::agent::run_agent_loop(vec![prompt], history, &loop_config, &provider, &mut emitter)
+            .await?;
 
     // Persist all new assistant + tool result messages
     for msg in &new_messages {

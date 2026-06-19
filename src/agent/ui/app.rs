@@ -3,6 +3,13 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::agent::ui::chat_editor::ChatEditor;
+use crate::agent::ui::footer::Footer;
+use crate::agent::ui::help::HelpOverlay;
+use crate::agent::ui::messages::{DisplayMsg, render_messages, session_messages_to_display};
+use crate::agent::ui::model_selector::ModelSelector;
+use crate::agent::ui::theme::RabTheme;
+use crate::agent::ui::working::WorkingIndicator;
 use crate::agent::{AgentEvent, LoopConfig, run_agent_loop};
 use crate::extension::{AgentTool, Extension};
 use crate::provider::{Provider, ToolDef};
@@ -12,13 +19,6 @@ use crate::tui::keys::{Key, matches_key};
 use crate::tui::screen::Screen;
 use crate::tui::terminal::{self, Terminal};
 use crate::types::{AgentMessage, Usage};
-use crate::ui::chat_editor::ChatEditor;
-use crate::ui::footer::Footer;
-use crate::ui::help::HelpOverlay;
-use crate::ui::messages::{DisplayMsg, render_messages, session_messages_to_display};
-use crate::ui::model_selector::ModelSelector;
-use crate::ui::theme::RabTheme;
-use crate::ui::working::WorkingIndicator;
 use crossterm::event::{KeyCode, KeyEvent};
 use tokio::sync::mpsc;
 

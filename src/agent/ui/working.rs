@@ -1,5 +1,5 @@
+use crate::agent::ui::theme::RabTheme;
 use crate::tui::Component;
-use crate::ui::theme::RabTheme;
 
 /// Spinner shown during agent streaming.
 pub struct WorkingIndicator {

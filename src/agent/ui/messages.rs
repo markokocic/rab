@@ -1,6 +1,6 @@
+use crate::agent::ui::theme::RabTheme;
 use crate::tui::Theme;
 use crate::tui::util::{visible_width, wrap_text_with_ansi};
-use crate::ui::theme::RabTheme;
 
 /// A rendered display message ready for output.
 #[derive(Debug, Clone)]

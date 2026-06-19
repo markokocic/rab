@@ -1,7 +1,7 @@
+use crate::agent::ui::theme::RabTheme;
 use crate::tui::Component;
 use crate::tui::Theme;
 use crate::tui::components::select_list::{SelectItem, SelectList, SelectListTheme};
-use crate::ui::theme::RabTheme;
 
 /// Full-screen model selector using tui::SelectList.
 pub struct ModelSelector {

@@ -8,4 +8,3 @@ pub mod session;
 pub mod settings;
 pub mod tui;
 pub mod types;
-pub mod ui;
