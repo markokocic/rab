@@ -147,16 +147,10 @@ async fn main() -> anyhow::Result<()> {
     let append_system_md =
         append_system_prompt_override.or_else(|| load_append_system_md(&cwd, &agent_dir));
 
-    // Collect context file display names before context_files is moved
+    // Collect context file display names (pi-style: relative to cwd when possible, ~/ for home)
     let context_file_names: Vec<String> = context_files
         .iter()
-        .map(|cf| {
-            cf.path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("")
-                .to_string()
-        })
+        .map(|cf| format_context_path(&cf.path, &cwd))
         .collect();
 
     // Build tool snippets from extensions
@@ -384,4 +378,28 @@ fn load_append_system_md(cwd: &Path, agent_dir: &Path) -> Option<String> {
         return std::fs::read_to_string(&global_path).ok();
     }
     None
+}
+
+/// Format a context file path for display, pi-style:
+/// - Show path relative to cwd if under cwd
+/// - Otherwise replace home directory with `~/`
+fn format_context_path(path: &Path, cwd: &Path) -> String {
+    // Try relative to cwd first
+    if let Ok(rel) = path.strip_prefix(cwd) {
+        return rel.to_string_lossy().to_string();
+    }
+    // Try parent of cwd (for subdirectory cases)
+    if let Some(parent) = cwd.parent()
+        && let Ok(rel) = path.strip_prefix(parent)
+    {
+        return "..".to_string() + std::path::MAIN_SEPARATOR_STR + &rel.to_string_lossy();
+    }
+    // Replace home dir with ~/
+    if let Some(home) = directories::BaseDirs::new().map(|d| d.home_dir().to_path_buf())
+        && let Ok(rel) = path.strip_prefix(&home)
+    {
+        return "~/".to_string() + &rel.to_string_lossy();
+    }
+    // Fallback: absolute path
+    path.to_string_lossy().to_string()
 }
