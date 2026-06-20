@@ -7,6 +7,21 @@ use genai::chat::{ChatMessage, ChatOptions, ChatRequest, ReasoningEffort, Tool, 
 use genai::resolver::{AuthData, AuthResolver};
 use std::pin::Pin;
 
+/// Build a reqwest::Client that uses webpki-roots (embedded Mozilla CA list)
+/// instead of rustls-platform-verifier, which panics on Android/Termux
+/// because it requires JNI initialization.
+fn build_reqwest_client() -> reqwest::Client {
+    let mut root_store = rustls::RootCertStore::empty();
+    root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    let tls_config = rustls::ClientConfig::builder()
+        .with_root_certificates(root_store)
+        .with_no_client_auth();
+    reqwest::Client::builder()
+        .tls_backend_preconfigured(tls_config)
+        .build()
+        .expect("Failed to build reqwest client")
+}
+
 pub struct GenaiProvider {
     client: genai::Client,
     model_prefix: String,
@@ -23,7 +38,9 @@ impl GenaiProvider {
             Ok(Some(AuthData::from_single(api_key.clone())))
         });
 
+        let reqwest_client = build_reqwest_client();
         let client = genai::Client::builder()
+            .with_reqwest(reqwest_client)
             .with_auth_resolver(auth_resolver)
             .build();
 
