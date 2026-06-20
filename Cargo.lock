@@ -1340,6 +1340,7 @@ dependencies = [
  "directories",
  "futures",
  "genai",
+ "libc",
  "reqwest",
  "rustls",
  "serde",
