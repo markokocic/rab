@@ -17,7 +17,7 @@
   - [ ] bash
   - [x] read — line accumulation truncation, firstLineExceedsLimit, trimTrailingEmptyLines, formatSize, compact labels, cancel, prompt guidelines
   - [ ] write
-  - [x] edit — BOM, line ending (CRLF/LF), fuzzy matching, input normalization, diff output, better errors, prompt guidelines
+  - [x] edit — BOM, line ending (CRLF/LF), fuzzy matching, input normalization, diff output, better errors, prompt guidelines, file mutation queue
 
 ## Messages
 - [ ] review rendering for thinking messages.

@@ -162,7 +162,11 @@ pub fn render_messages(
                 msg_box.add_child(std::boxed::Box::new(TuiText::new(text_content, 0, 0, None)));
                 lines.extend(msg_box.render(width));
             }
-            DisplayMsg::ToolResult { content, compact, is_error } => {
+            DisplayMsg::ToolResult {
+                content,
+                compact,
+                is_error,
+            } => {
                 if let Some(label) = compact {
                     // Pi-style compact mode: show as a tool-call-like line with pending bg
                     // (no expand/collapse yet — that requires per-message state)

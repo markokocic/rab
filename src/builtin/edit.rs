@@ -96,21 +96,12 @@ fn normalize_for_fuzzy_match(text: &str) -> String {
         match ch {
             '\u{2018}' | '\u{2019}' | '\u{201A}' | '\u{201B}' => result.push('\''),
             '\u{201C}' | '\u{201D}' | '\u{201E}' | '\u{201F}' => result.push('"'),
-            '\u{2010}' | '\u{2011}' | '\u{2012}' | '\u{2013}' | '\u{2014}' | '\u{2015}' | '\u{2212}' => {
+            '\u{2010}' | '\u{2011}' | '\u{2012}' | '\u{2013}' | '\u{2014}' | '\u{2015}'
+            | '\u{2212}' => {
                 result.push('-');
             }
-            '\u{00A0}'
-            | '\u{2002}'
-            | '\u{2003}'
-            | '\u{2004}'
-            | '\u{2005}'
-            | '\u{2006}'
-            | '\u{2007}'
-            | '\u{2008}'
-            | '\u{2009}'
-            | '\u{200A}'
-            | '\u{202F}'
-            | '\u{205F}'
+            '\u{00A0}' | '\u{2002}' | '\u{2003}' | '\u{2004}' | '\u{2005}' | '\u{2006}'
+            | '\u{2007}' | '\u{2008}' | '\u{2009}' | '\u{200A}' | '\u{202F}' | '\u{205F}'
             | '\u{3000}' => {
                 result.push(' ');
             }
@@ -151,9 +142,7 @@ fn prepare_edit_arguments(args: &serde_json::Value) -> Result<(String, Vec<Edit>
             new_text: new_text.to_string(),
         }]
     } else {
-        return Err(
-            "Missing 'edits' array (or 'oldText'/'newText' for legacy format)".to_string(),
-        );
+        return Err("Missing 'edits' array (or 'oldText'/'newText' for legacy format)".to_string());
     };
 
     if edits.is_empty() {
@@ -224,7 +213,12 @@ fn compute_diff(original: &str, modified: &str, path: &str) -> String {
     diff
 }
 
-fn flush_hunk(diff: &mut String, hunk: &mut Vec<(char, &str)>, orig_start: usize, mod_start: usize) {
+fn flush_hunk(
+    diff: &mut String,
+    hunk: &mut Vec<(char, &str)>,
+    orig_start: usize,
+    mod_start: usize,
+) {
     let orig_count = hunk.iter().filter(|(c, _)| *c == '-' || *c == ' ').count();
     let mod_count = hunk.iter().filter(|(c, _)| *c == '+' || *c == ' ').count();
     use std::fmt::Write;
@@ -304,141 +298,159 @@ impl AgentTool for EditTool {
         &self,
         tool_call_id: String,
         args: serde_json::Value,
-        _cancel: Cancel,
+        cancel: Cancel,
     ) -> anyhow::Result<ToolOutput> {
         let _ = tool_call_id;
         let (path_str, edits) =
             prepare_edit_arguments(&args).map_err(|e| anyhow::anyhow!("{}", e))?;
 
-        let abs_path = {
-            let p = std::path::Path::new(&path_str);
-            if p.is_absolute() {
-                p.to_path_buf()
-            } else {
-                self.cwd.join(p)
-            }
-        };
+        cancel.check()?;
 
-        // Read file
-        let raw_content = std::fs::read_to_string(&abs_path)
-            .with_context(|| format!("Failed to read {}", abs_path.display()))?;
+        let cwd = self.cwd.clone();
+        let path_for_queue = path_str.clone();
+        let cwd_for_closure = cwd.clone();
 
-        // ── 1. BOM handling ──
-        let (bom, content) = strip_bom(&raw_content);
-
-        // ── 2. Line ending handling ──
-        let original_ending = detect_line_ending(content);
-        let normalized = normalize_to_lf(content);
-
-        // ── 3. Work in fuzzy-normalized space ──
-        // This strips trailing whitespace and normalizes Unicode quotes/dashes,
-        // so we work in a space where fuzzy matching doesn't cause coordinate issues.
-        let work_content = normalize_for_fuzzy_match(&normalized);
-
-        // ── 4. Validate and find each edit ──
-        let mut matched_edits: Vec<(usize, usize, &Edit)> = Vec::new();
-
-        for (i, edit) in edits.iter().enumerate() {
-            if edit.old_text.is_empty() {
-                return if edits.len() == 1 {
-                    Err(anyhow::anyhow!("oldText must not be empty in {}.", path_str))
-                } else {
-                    Err(anyhow::anyhow!(
-                        "edits[{}].oldText must not be empty in {}.",
-                        i,
-                        path_str
-                    ))
+        // Wrap the entire read-edit-write in a per-file mutation queue so
+        // concurrent edits to the same file are serialized (pi-style).
+        let output = crate::builtin::file_mutation_queue::with_file_mutation_queue(
+            &path_for_queue,
+            &cwd,
+            || async move {
+                let abs_path = {
+                    let p = std::path::Path::new(&path_str);
+                    if p.is_absolute() {
+                        p.to_path_buf()
+                    } else {
+                        cwd_for_closure.join(p)
+                    }
                 };
-            }
 
-            // Normalize oldText to the same fuzzy space for counting
-            let fuzzy_old = normalize_for_fuzzy_match(&edit.old_text);
-            let count = work_content.matches(&fuzzy_old).count();
+                // Read file
+                let raw_content = std::fs::read_to_string(&abs_path)
+                    .with_context(|| format!("Failed to read {}", abs_path.display()))?;
 
-            if count == 0 {
-                return if edits.len() == 1 {
-                    Err(anyhow::anyhow!(
-                        "Could not find the exact text in {}. \
-                         The old text must match exactly including all whitespace and newlines.",
-                        path_str
-                    ))
-                } else {
-                    Err(anyhow::anyhow!(
-                        "Could not find edits[{}] in {}. \
-                         The oldText must match exactly including all whitespace and newlines.",
-                        i,
-                        path_str
-                    ))
-                };
-            }
+                // ── 1. BOM handling ──
+                let (bom, content) = strip_bom(&raw_content);
 
-            if count > 1 {
-                return if edits.len() == 1 {
-                    Err(anyhow::anyhow!(
-                        "Found {} occurrences of the text in {}. \
-                         The text must be unique. Please provide more context to make it unique.",
-                        count,
-                        path_str
-                    ))
-                } else {
-                    Err(anyhow::anyhow!(
-                        "Found {} occurrences of edits[{}] in {}. \
-                         Each oldText must be unique. Please provide more context to make it unique.",
-                        count,
-                        i,
-                        path_str
-                    ))
-                };
-            }
+                // ── 2. Line ending handling ──
+                let original_ending = detect_line_ending(content);
+                let normalized = normalize_to_lf(content);
 
-            // Unique match found — locate it
-            let pos = work_content.find(&fuzzy_old).unwrap();
-            matched_edits.push((pos, pos + fuzzy_old.len(), edit));
-        }
+                // ── 3. Work in fuzzy-normalized space ──
+                let work_content = normalize_for_fuzzy_match(&normalized);
 
-        // ── 5. Check for overlapping edits ──
-        for (idx_i, &(pos_i, end_i, _)) in matched_edits.iter().enumerate() {
-            for (idx_j, &(pos_j, end_j, _)) in matched_edits.iter().enumerate().skip(idx_i + 1) {
-                if pos_i < end_j && pos_j < end_i {
-                    return Err(anyhow::anyhow!(
-                        "edits[{}] and edits[{}] overlap. Merge them into one edit.",
-                        idx_i,
-                        idx_j
-                    ));
+                // ── 4. Validate and find each edit ──
+                let mut matched_indices: Vec<(usize, usize)> = Vec::new();
+
+                for (i, edit) in edits.iter().enumerate() {
+                    if edit.old_text.is_empty() {
+                        return if edits.len() == 1 {
+                            Err(anyhow::anyhow!("oldText must not be empty in {}.", path_str))
+                        } else {
+                            Err(anyhow::anyhow!(
+                                "edits[{}].oldText must not be empty in {}.",
+                                i,
+                                path_str
+                            ))
+                        };
+                    }
+
+                    let fuzzy_old = normalize_for_fuzzy_match(&edit.old_text);
+                    let count = work_content.matches(&fuzzy_old).count();
+
+                    if count == 0 {
+                        return if edits.len() == 1 {
+                            Err(anyhow::anyhow!(
+                                "Could not find the exact text in {}. \
+                                 The old text must match exactly including all whitespace and newlines.",
+                                path_str
+                            ))
+                        } else {
+                            Err(anyhow::anyhow!(
+                                "Could not find edits[{}] in {}. \
+                                 The oldText must match exactly including all whitespace and newlines.",
+                                i,
+                                path_str
+                            ))
+                        };
+                    }
+
+                    if count > 1 {
+                        return if edits.len() == 1 {
+                            Err(anyhow::anyhow!(
+                                "Found {} occurrences of the text in {}. \
+                                 The text must be unique. Please provide more context to make it unique.",
+                                count,
+                                path_str
+                            ))
+                        } else {
+                            Err(anyhow::anyhow!(
+                                "Found {} occurrences of edits[{}] in {}. \
+                                 Each oldText must be unique. Please provide more context to make it unique.",
+                                count,
+                                i,
+                                path_str
+                            ))
+                        };
+                    }
+
+                    let pos = work_content.find(&fuzzy_old).unwrap();
+                    matched_indices.push((pos, pos + fuzzy_old.len()));
                 }
-            }
-        }
 
-        // ── 6. Apply edits (sorted left-to-right) ──
-        matched_edits.sort_by_key(|(pos, _, _)| *pos);
+                // ── 5. Check for overlapping edits ──
+                for (idx_i, &(pos_i, end_i)) in matched_indices.iter().enumerate() {
+                    for (idx_j, &(pos_j, end_j)) in matched_indices.iter().enumerate().skip(idx_i + 1) {
+                        if pos_i < end_j && pos_j < end_i {
+                            return Err(anyhow::anyhow!(
+                                "edits[{}] and edits[{}] overlap. Merge them into one edit.",
+                                idx_i,
+                                idx_j
+                            ));
+                        }
+                    }
+                }
 
-        let mut result = String::new();
-        let mut cursor = 0;
-        for (start, end, edit) in &matched_edits {
-            result.push_str(&work_content[cursor..*start]);
-            result.push_str(&edit.new_text);
-            cursor = *end;
-        }
-        result.push_str(&work_content[cursor..]);
+                // ── 6. Apply edits (sorted left-to-right) ──
+                let mut sorted: Vec<(usize, usize, &Edit)> = matched_indices
+                    .into_iter()
+                    .zip(edits.iter())
+                    .map(|((start, end), edit)| (start, end, edit))
+                    .collect();
+                sorted.sort_by_key(|(pos, _, _)| *pos);
 
-        // ── 7. Compute diff ──
-        let diff = compute_diff(&normalized, &result, &path_str);
+                let mut modified = String::new();
+                let mut cursor = 0;
+                for (start, end, edit) in &sorted {
+                    modified.push_str(&work_content[cursor..*start]);
+                    modified.push_str(&edit.new_text);
+                    cursor = *end;
+                }
+                modified.push_str(&work_content[cursor..]);
 
-        // ── 8. Write back with original line endings and BOM ──
-        let final_content =
-            bom.to_string() + &restore_line_endings(&result, original_ending);
-        std::fs::write(&abs_path, &final_content)
-            .with_context(|| format!("Failed to write {}", abs_path.display()))?;
+                // ── 7. Compute diff ──
+                let diff = compute_diff(&normalized, &modified, &path_str);
 
-        // ── 9. Return result ──
-        let noun = if edits.len() == 1 { "block" } else { "blocks" };
-        Ok(ToolOutput::ok(format!(
-            "Successfully replaced {} {} in {}.\n```diff\n{}```",
-            edits.len(),
-            noun,
-            path_str,
-            diff.trim_end()
-        )))
+                // ── 8. Write back with original line endings and BOM ──
+                let final_content =
+                    bom.to_string() + &restore_line_endings(&modified, original_ending);
+                std::fs::write(&abs_path, &final_content)
+                    .with_context(|| format!("Failed to write {}", abs_path.display()))?;
+
+                // ── 9. Return result ──
+                let noun = if edits.len() == 1 { "block" } else { "blocks" };
+                Ok(format!(
+                    "Successfully replaced {} {} in {}.\n```diff\n{}```",
+                    edits.len(),
+                    noun,
+                    path_str,
+                    diff.trim_end()
+                ))
+            },
+        )
+        .await?;
+
+        Ok(ToolOutput::ok(output))
     }
 }
 
@@ -527,14 +539,16 @@ mod tests {
         let path = tmp.join("file.txt");
         std::fs::write(&path, "dup\ndup\n").unwrap();
 
-        assert!(is_err(
-            &tool,
-            serde_json::json!({
-                "path": path.to_str().unwrap(),
-                "edits": [{"oldText": "dup", "newText": "x"}]
-            }),
-        )
-        .await);
+        assert!(
+            is_err(
+                &tool,
+                serde_json::json!({
+                    "path": path.to_str().unwrap(),
+                    "edits": [{"oldText": "dup", "newText": "x"}]
+                }),
+            )
+            .await
+        );
     }
 
     #[tokio::test]
@@ -560,17 +574,19 @@ mod tests {
         let path = tmp.join("file.txt");
         std::fs::write(&path, "abcdef\n").unwrap();
 
-        assert!(is_err(
-            &tool,
-            serde_json::json!({
-                "path": path.to_str().unwrap(),
-                "edits": [
-                    {"oldText": "abc", "newText": "1"},
-                    {"oldText": "bcd", "newText": "2"}
-                ]
-            }),
-        )
-        .await);
+        assert!(
+            is_err(
+                &tool,
+                serde_json::json!({
+                    "path": path.to_str().unwrap(),
+                    "edits": [
+                        {"oldText": "abc", "newText": "1"},
+                        {"oldText": "bcd", "newText": "2"}
+                    ]
+                }),
+            )
+            .await
+        );
     }
 
     #[tokio::test]
@@ -579,11 +595,13 @@ mod tests {
         let path = tmp.join("file.txt");
         std::fs::write(&path, "content\n").unwrap();
 
-        assert!(is_err(
-            &tool,
-            serde_json::json!({"path": path.to_str().unwrap(), "edits": []}),
-        )
-        .await);
+        assert!(
+            is_err(
+                &tool,
+                serde_json::json!({"path": path.to_str().unwrap(), "edits": []}),
+            )
+            .await
+        );
     }
 
     // ── BOM handling ─────────────────────────────────────────
@@ -854,7 +872,10 @@ mod fuzzy_tests {
 
     #[test]
     fn test_strip_trailing_whitespace() {
-        assert_eq!(normalize_for_fuzzy_match("hello   \nworld  "), "hello\nworld");
+        assert_eq!(
+            normalize_for_fuzzy_match("hello   \nworld  "),
+            "hello\nworld"
+        );
     }
 
     #[test]
@@ -879,7 +900,10 @@ mod fuzzy_tests {
     #[test]
     fn test_preserves_trailing_newline() {
         assert_eq!(normalize_for_fuzzy_match("hello\n"), "hello\n");
-        assert_eq!(normalize_for_fuzzy_match("hello\nworld\n"), "hello\nworld\n");
+        assert_eq!(
+            normalize_for_fuzzy_match("hello\nworld\n"),
+            "hello\nworld\n"
+        );
     }
 }
 

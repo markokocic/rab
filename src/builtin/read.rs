@@ -220,9 +220,7 @@ impl AgentTool for ReadTool {
     }
 
     fn prompt_guidelines(&self) -> Vec<String> {
-        vec![
-            "Use read to examine files instead of cat or sed.".into(),
-        ]
+        vec!["Use read to examine files instead of cat or sed.".into()]
     }
 
     fn label(&self) -> &str {
@@ -522,11 +520,7 @@ mod tests {
         let path = tmp.join("test.txt");
         std::fs::write(&path, "hello world\nline two\n").unwrap();
 
-        let result = exec_ok(
-            &tool,
-            serde_json::json!({"path": path.to_str().unwrap()}),
-        )
-        .await;
+        let result = exec_ok(&tool, serde_json::json!({"path": path.to_str().unwrap()})).await;
 
         assert!(result.contains("hello world"));
         assert!(result.contains("line two"));
@@ -575,7 +569,11 @@ mod tests {
         let (tool, _tmp) = make_tool();
 
         let result = tool
-            .execute("id".into(), serde_json::json!({"path": "nonexistent.txt"}), Cancel::new())
+            .execute(
+                "id".into(),
+                serde_json::json!({"path": "nonexistent.txt"}),
+                Cancel::new(),
+            )
             .await;
         assert!(result.is_err());
     }
@@ -605,11 +603,7 @@ mod tests {
         let content: String = (1..=5000).map(|i| format!("line {}\n", i)).collect();
         std::fs::write(&path, &content).unwrap();
 
-        let result = exec_ok(
-            &tool,
-            serde_json::json!({"path": path.to_str().unwrap()}),
-        )
-        .await;
+        let result = exec_ok(&tool, serde_json::json!({"path": path.to_str().unwrap()})).await;
 
         assert!(result.contains("Showing lines 1-"));
         assert!(result.contains("offset="));
@@ -625,11 +619,7 @@ mod tests {
             .collect();
         std::fs::write(&path, &content).unwrap();
 
-        let result = exec_ok(
-            &tool,
-            serde_json::json!({"path": path.to_str().unwrap()}),
-        )
-        .await;
+        let result = exec_ok(&tool, serde_json::json!({"path": path.to_str().unwrap()})).await;
 
         assert!(result.contains("KB limit"));
         assert!(result.contains("offset="));
@@ -642,11 +632,7 @@ mod tests {
         let content = format!("{}\nshort line\n", "x".repeat(60000));
         std::fs::write(&path, &content).unwrap();
 
-        let result = exec_ok(
-            &tool,
-            serde_json::json!({"path": path.to_str().unwrap()}),
-        )
-        .await;
+        let result = exec_ok(&tool, serde_json::json!({"path": path.to_str().unwrap()})).await;
 
         assert!(result.contains("bash"));
         assert!(result.contains("sed"));
@@ -697,11 +683,7 @@ mod tests {
         let path = tmp.join("trailing_empties.txt");
         std::fs::write(&path, "hello\nworld\n\n\n").unwrap();
 
-        let result = exec_ok(
-            &tool,
-            serde_json::json!({"path": path.to_str().unwrap()}),
-        )
-        .await;
+        let result = exec_ok(&tool, serde_json::json!({"path": path.to_str().unwrap()})).await;
 
         assert!(result.contains("hello"));
         assert!(result.contains("world"));
@@ -714,11 +696,7 @@ mod tests {
         let path = tmp.join("relative.txt");
         std::fs::write(&path, "hello\n").unwrap();
 
-        let result = exec_ok(
-            &tool,
-            serde_json::json!({"path": "relative.txt"}),
-        )
-        .await;
+        let result = exec_ok(&tool, serde_json::json!({"path": "relative.txt"})).await;
 
         assert!(result.contains("hello"));
     }
@@ -729,11 +707,7 @@ mod tests {
         let path = tmp.join("AGENTS.md");
         std::fs::write(&path, "some instructions\n").unwrap();
 
-        let output = exec_full(
-            &tool,
-            serde_json::json!({"path": path.to_str().unwrap()}),
-        )
-        .await;
+        let output = exec_full(&tool, serde_json::json!({"path": path.to_str().unwrap()})).await;
 
         assert!(output.compact.is_some());
         let label = output.compact.unwrap();
@@ -747,11 +721,7 @@ mod tests {
         let path = tmp.join("main.rs");
         std::fs::write(&path, "fn main() {}\n").unwrap();
 
-        let output = exec_full(
-            &tool,
-            serde_json::json!({"path": path.to_str().unwrap()}),
-        )
-        .await;
+        let output = exec_full(&tool, serde_json::json!({"path": path.to_str().unwrap()})).await;
 
         assert!(output.compact.is_none());
     }

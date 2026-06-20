@@ -804,10 +804,16 @@ fn handle_agent_event(app: &mut App, event: AgentEvent) {
             });
         }
         AgentEvent::ToolResult {
-            content, compact, is_error, ..
+            content,
+            compact,
+            is_error,
+            ..
         } => {
-            app.messages
-                .push(DisplayMsg::ToolResult { content, compact, is_error });
+            app.messages.push(DisplayMsg::ToolResult {
+                content,
+                compact,
+                is_error,
+            });
         }
         AgentEvent::TurnEnd => {
             flush_all(app);
