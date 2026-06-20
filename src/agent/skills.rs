@@ -544,4 +544,282 @@ disable-model-invocation: true
         });
         assert_eq!(skills.len(), 1);
     }
+
+    // ── strip_frontmatter ─────────────────────────────────────────
+
+    #[test]
+    fn test_strip_frontmatter_basic() {
+        let result = strip_frontmatter(
+            r"---
+name: my-skill
+description: A test
+---
+
+This is the body.
+",
+        );
+        assert_eq!(result, "This is the body.");
+    }
+
+    #[test]
+    fn test_strip_frontmatter_no_frontmatter() {
+        let result = strip_frontmatter("Just body text");
+        assert_eq!(result, "Just body text");
+    }
+
+    #[test]
+    fn test_strip_frontmatter_partial_delimiters() {
+        // Opening --- but no closing --- returns original
+        let result = strip_frontmatter("---\nname: broken\n");
+        assert_eq!(result, "---\nname: broken\n");
+    }
+
+    #[test]
+    fn test_strip_frontmatter_empty_body() {
+        let result = strip_frontmatter(
+            r"---
+name: empty
+---
+
+",
+        );
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn test_strip_frontmatter_leading_whitespace() {
+        // Content with leading whitespace before --- should still be stripped
+        let result = strip_frontmatter("  \n---\nname: test\n---\n\nBody content");
+        assert_eq!(result, "Body content");
+    }
+
+    #[test]
+    fn test_strip_frontmatter_crlf_newlines() {
+        let result = strip_frontmatter("---\r\nname: test\r\n---\r\n\r\nBody text");
+        assert_eq!(result, "Body text");
+    }
+
+    // ── read_skill_body ───────────────────────────────────────────
+
+    #[test]
+    fn test_read_skill_body_from_file() {
+        use std::fs;
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("SKILL.md");
+        fs::write(
+            &path,
+            r"---
+name: test-skill
+---
+
+# Actual content
+",
+        )
+        .unwrap();
+
+        let body = read_skill_body(&path);
+        assert_eq!(body, Some("# Actual content".to_string()));
+    }
+
+    #[test]
+    fn test_read_skill_body_no_frontmatter() {
+        use std::fs;
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("SKILL.md");
+        fs::write(&path, "Just content\n").unwrap();
+
+        let body = read_skill_body(&path);
+        assert_eq!(body, Some("Just content\n".to_string()));
+    }
+
+    #[test]
+    fn test_read_skill_body_missing_file() {
+        let body = read_skill_body(Path::new("/nonexistent/SKILL.md"));
+        assert_eq!(body, None);
+    }
+
+    // ── format_skill_invocation ───────────────────────────────────
+
+    #[test]
+    fn test_format_skill_invocation_basic() {
+        use std::fs;
+        let tmp = TempDir::new().unwrap();
+        let skill_dir = tmp.path().join("test-skill");
+        fs::create_dir_all(&skill_dir).unwrap();
+        let skill_path = skill_dir.join("SKILL.md");
+        fs::write(
+            &skill_path,
+            r"---
+name: test-skill
+description: A test skill
+---
+
+Do the thing.
+",
+        )
+        .unwrap();
+
+        let skill = Skill {
+            name: "test-skill".to_string(),
+            description: "A test skill".to_string(),
+            file_path: fs::canonicalize(&skill_path).unwrap_or(skill_path.clone()),
+            base_dir: skill_dir.clone(),
+            disable_model_invocation: false,
+        };
+
+        let result = format_skill_invocation(&skill, None);
+        assert!(result.starts_with("<skill name=\"test-skill\""));
+        assert!(result.contains("References are relative to"));
+        assert!(result.contains("Do the thing."));
+        assert!(result.ends_with("</skill>"));
+    }
+
+    #[test]
+    fn test_format_skill_invocation_with_args() {
+        use std::fs;
+        let tmp = TempDir::new().unwrap();
+        let skill_dir = tmp.path().join("review-skill");
+        fs::create_dir_all(&skill_dir).unwrap();
+        let skill_path = skill_dir.join("SKILL.md");
+        fs::write(
+            &skill_path,
+            r"---
+name: review
+---
+
+Check the code.
+",
+        )
+        .unwrap();
+
+        let skill = Skill {
+            name: "review".to_string(),
+            description: "".to_string(),
+            file_path: fs::canonicalize(&skill_path).unwrap_or(skill_path.clone()),
+            base_dir: skill_dir,
+            disable_model_invocation: false,
+        };
+
+        let result = format_skill_invocation(&skill, Some("Focus on security."));
+        assert!(result.contains("Check the code."));
+        assert!(result.contains("Focus on security."));
+    }
+
+    #[test]
+    fn test_format_skill_invocation_missing_file() {
+        let skill = Skill {
+            name: "missing".to_string(),
+            description: "Missing skill".to_string(),
+            file_path: PathBuf::from("/nonexistent/SKILL.md"),
+            base_dir: PathBuf::from("/nonexistent"),
+            disable_model_invocation: false,
+        };
+
+        let result = format_skill_invocation(&skill, None);
+        // Should still produce the wrapper, body will be empty
+        assert!(result.starts_with("<skill"));
+        assert!(result.ends_with("</skill>"));
+    }
+
+    // ── expand_skill_command ──────────────────────────────────────
+
+    #[test]
+    fn test_expand_skill_command_basic() {
+        use std::fs;
+        let tmp = TempDir::new().unwrap();
+        let skill_dir = tmp.path().join("code-review");
+        fs::create_dir_all(&skill_dir).unwrap();
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            r"---
+name: code-review
+---
+
+Review the code for bugs.
+",
+        )
+        .unwrap();
+
+        let skill_path = fs::canonicalize(skill_dir.join("SKILL.md")).unwrap_or_default();
+        let skills = vec![Skill {
+            name: "code-review".to_string(),
+            description: "".to_string(),
+            file_path: skill_path,
+            base_dir: skill_dir,
+            disable_model_invocation: false,
+        }];
+
+        let result = expand_skill_command("/skill:code-review", &skills);
+        assert!(result.contains("Review the code for bugs."));
+        assert!(result.starts_with("<skill"));
+    }
+
+    #[test]
+    fn test_expand_skill_command_with_args() {
+        use std::fs;
+        let tmp = TempDir::new().unwrap();
+        let skill_dir = tmp.path().join("test");
+        fs::create_dir_all(&skill_dir).unwrap();
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            r"---
+name: test
+---
+
+Run tests.
+",
+        )
+        .unwrap();
+
+        let skill_path = fs::canonicalize(skill_dir.join("SKILL.md")).unwrap_or_default();
+        let skills = vec![Skill {
+            name: "test".to_string(),
+            description: "".to_string(),
+            file_path: skill_path,
+            base_dir: skill_dir,
+            disable_model_invocation: false,
+        }];
+
+        let result = expand_skill_command("/skill:test focus on unit tests", &skills);
+        assert!(result.contains("Run tests."));
+        assert!(result.contains("focus on unit tests"));
+    }
+
+    #[test]
+    fn test_expand_skill_command_unknown_skill() {
+        let skills: Vec<Skill> = vec![];
+        let result = expand_skill_command("/skill:nonexistent", &skills);
+        // Unknown skill passes through unchanged
+        assert_eq!(result, "/skill:nonexistent");
+    }
+
+    #[test]
+    fn test_expand_skill_command_not_a_skill_command() {
+        let skills: Vec<Skill> = vec![];
+        let result = expand_skill_command("regular message", &skills);
+        assert_eq!(result, "regular message");
+    }
+
+    #[test]
+    fn test_expand_skill_command_no_frontmatter_file() {
+        use std::fs;
+        let tmp = TempDir::new().unwrap();
+        // The skill has name matching the dir, but no frontmatter
+        let skill_dir = tmp.path().join("simple");
+        fs::create_dir_all(&skill_dir).unwrap();
+        fs::write(skill_dir.join("SKILL.md"), "# Simple\nJust instructions.\n").unwrap();
+
+        let skill_path = fs::canonicalize(skill_dir.join("SKILL.md")).unwrap_or_default();
+        let skills = vec![Skill {
+            name: "simple".to_string(),
+            description: "".to_string(),
+            file_path: skill_path,
+            base_dir: skill_dir,
+            disable_model_invocation: false,
+        }];
+
+        let result = expand_skill_command("/skill:simple", &skills);
+        // No frontmatter to strip, body should contain the raw content
+        assert!(result.contains("Just instructions."));
+    }
 }
