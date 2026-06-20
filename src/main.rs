@@ -163,9 +163,17 @@ async fn main() -> anyhow::Result<()> {
         })
         .collect();
 
+    // Collect prompt guidelines from all tools (pi-style promptSnippet/promptGuidelines)
+    let tool_guidelines: Vec<String> = extensions
+        .iter()
+        .flat_map(|ext| ext.tools())
+        .flat_map(|tool| tool.prompt_guidelines())
+        .collect();
+
     // Build system prompt using the new builder
     let system_prompt = rab::agent::SystemPromptBuilder::new()
         .tool_snippets(tool_snippets)
+        .guidelines(tool_guidelines)
         .context_files(context_files)
         .custom_prompt(custom_system_md)
         .append_prompt(append_system_md)

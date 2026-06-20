@@ -2,6 +2,10 @@
 use crate::agent::types::ToolCall;
 use async_trait::async_trait;
 use std::borrow::Cow;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 
 /// Reason a tool call was blocked.
 #[derive(Debug, Clone)]
@@ -74,6 +78,85 @@ pub struct SlashCommand {
     pub handler: Box<dyn CommandHandler>,
 }
 
+/// Simple cancellation token for tool execution.
+/// Shared between the agent loop and tool execution to signal cancellation.
+#[derive(Debug, Clone)]
+pub struct Cancel {
+    flag: Arc<AtomicBool>,
+}
+
+impl Cancel {
+    pub fn new() -> Self {
+        Self {
+            flag: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    /// Check whether cancellation has been requested.
+    pub fn is_cancelled(&self) -> bool {
+        self.flag.load(Ordering::Relaxed)
+    }
+
+    /// Request cancellation.
+    pub fn cancel(&self) {
+        self.flag.store(true, Ordering::Relaxed);
+    }
+
+    /// Check if cancelled, returning an error if so.
+    pub fn check(&self) -> anyhow::Result<()> {
+        if self.is_cancelled() {
+            Err(anyhow::anyhow!("Operation cancelled"))
+        } else {
+            Ok(())
+        }
+    }
+}
+
+impl Default for Cancel {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Output from a tool execution, carrying both the full content (shown in expanded
+/// mode / sent to the LLM) and an optional compact label for collapsed UI display.
+#[derive(Debug, Clone)]
+pub struct ToolOutput {
+    /// Full content sent to the LLM and shown when expanded.
+    pub content: String,
+    /// Compact label shown in collapsed mode (e.g. `read docs docs/README.md`).
+    /// When `None`, the full content is always shown.
+    pub compact: Option<String>,
+    /// Whether the result is an error.
+    pub is_error: bool,
+}
+
+impl ToolOutput {
+    pub fn ok(content: impl Into<String>) -> Self {
+        Self {
+            content: content.into(),
+            compact: None,
+            is_error: false,
+        }
+    }
+
+    pub fn ok_with_compact(content: impl Into<String>, compact: impl Into<String>) -> Self {
+        Self {
+            content: content.into(),
+            compact: Some(compact.into()),
+            is_error: false,
+        }
+    }
+
+    pub fn err(message: impl Into<String>) -> Self {
+        Self {
+            content: message.into(),
+            compact: None,
+            is_error: true,
+        }
+    }
+}
+
 /// An LLM-callable tool.
 #[async_trait]
 pub trait AgentTool: Send + Sync {
@@ -83,12 +166,19 @@ pub trait AgentTool: Send + Sync {
     #[allow(dead_code)]
     fn label(&self) -> &str;
 
-    /// Execute the tool. Return Ok(content) or Err(message).
+    /// Guidelines for the system prompt specific to this tool.
+    fn prompt_guidelines(&self) -> Vec<String> {
+        vec![]
+    }
+
+    /// Execute the tool. Returns output carrying both the full content (sent to LLM)
+    /// and an optional compact label for collapsed UI display.
     async fn execute(
         &self,
         tool_call_id: String,
         args: serde_json::Value,
-    ) -> anyhow::Result<String>;
+        cancel: Cancel,
+    ) -> anyhow::Result<ToolOutput>;
 }
 
 #[async_trait]

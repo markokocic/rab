@@ -1,4 +1,4 @@
-use rab::agent::extension::Extension;
+use rab::agent::extension::{Cancel, Extension};
 use rab::builtin::read::ReadExtension;
 
 fn tmp_dir() -> std::path::PathBuf {
@@ -21,12 +21,12 @@ async fn reads_file_content() {
         .execute(
             "id".into(),
             serde_json::json!({"path": path.to_str().unwrap()}),
+            Cancel::new(),
         )
         .await
         .unwrap();
-
-    assert!(result.contains("hello world"));
-    assert!(result.contains("line two"));
+    assert!(result.content.contains("hello world"));
+    assert!(result.content.contains("line two"));
 }
 
 #[tokio::test]
@@ -44,15 +44,20 @@ async fn read_respects_offset() {
         .execute(
             "id".into(),
             serde_json::json!({"path": path.to_str().unwrap(), "offset": 5}),
+            Cancel::new(),
         )
         .await
         .unwrap();
 
-    // Line 5-10 should appear, line 1-4 should not
-    assert!(result.contains("line 5"), "should contain line 5: {result}");
     assert!(
-        !result.contains("line 1\n"),
-        "should not contain line 1: {result}"
+        result.content.contains("line 5"),
+        "should contain line 5: {}",
+        result.content
+    );
+    assert!(
+        !result.content.lines().any(|l| l == "line 1"),
+        "should not contain line 1: {}",
+        result.content
     );
 }
 
@@ -71,13 +76,14 @@ async fn read_respects_limit() {
         .execute(
             "id".into(),
             serde_json::json!({"path": path.to_str().unwrap(), "offset": 1, "limit": 3}),
+            Cancel::new(),
         )
         .await
         .unwrap();
 
-    assert!(result.contains("line 1"));
-    assert!(result.contains("line 3"));
-    assert!(!result.contains("line 4\n"));
+    assert!(result.content.contains("line 1"));
+    assert!(result.content.contains("line 3"));
+    assert!(!result.content.contains("line 4"));
 }
 
 #[tokio::test]
@@ -88,7 +94,11 @@ async fn read_nonexistent_file_errors() {
     let tool = &tools[0];
 
     let result = tool
-        .execute("id".into(), serde_json::json!({"path": "nonexistent.txt"}))
+        .execute(
+            "id".into(),
+            serde_json::json!({"path": "nonexistent.txt"}),
+            Cancel::new(),
+        )
         .await;
     assert!(result.is_err());
 }

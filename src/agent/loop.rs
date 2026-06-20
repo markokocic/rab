@@ -1,4 +1,4 @@
-use crate::agent::extension::Extension;
+use crate::agent::extension::{Cancel, Extension};
 use crate::agent::provider::{Provider, StopReason, StreamEvent, ToolDef};
 use crate::agent::types::{AgentMessage, Role, ToolCall};
 
@@ -40,6 +40,7 @@ pub enum AgentEvent {
         id: String,
         name: String,
         content: String,
+        compact: Option<String>,
         is_error: bool,
     },
     TurnEnd,
@@ -201,6 +202,7 @@ pub async fn run_agent_loop(
                             id: tc.id.clone(),
                             name: tc.name.clone(),
                             content: msg.content.clone(),
+                            compact: None,
                             is_error: true,
                         });
                         messages.push(msg.clone());
@@ -214,11 +216,12 @@ pub async fn run_agent_loop(
                 }
 
                 // Execute the tool
+                let cancel = Cancel::new();
                 if let Some(tool) = find_tool(config.agent_tools, &tc.name) {
-                    match tool.execute(tc.id.clone(), tc.arguments.clone()).await {
-                        Ok(result) => {
+                    match tool.execute(tc.id.clone(), tc.arguments.clone(), cancel).await {
+                        Ok(output) => {
                             // Check after_tool_call hooks
-                            let mut final_result = result;
+                            let mut final_result = output.content.clone();
                             for ext in config.extensions {
                                 if let Some(overridden) =
                                     ext.after_tool_call(tc, &final_result).await
@@ -228,10 +231,12 @@ pub async fn run_agent_loop(
                             }
 
                             let msg = AgentMessage::tool_result(&tc.id, &final_result, false);
+                            let compact = output.compact.clone();
                             emit(AgentEvent::ToolResult {
                                 id: tc.id.clone(),
                                 name: tc.name.clone(),
                                 content: final_result.clone(),
+                                compact,
                                 is_error: false,
                             });
                             messages.push(msg.clone());
@@ -244,6 +249,7 @@ pub async fn run_agent_loop(
                                 id: tc.id.clone(),
                                 name: tc.name.clone(),
                                 content: err_str,
+                                compact: None,
                                 is_error: true,
                             });
                             messages.push(msg.clone());
@@ -260,6 +266,7 @@ pub async fn run_agent_loop(
                         id: tc.id.clone(),
                         name: tc.name.clone(),
                         content: msg.content.clone(),
+                        compact: None,
                         is_error: true,
                     });
                     messages.push(msg.clone());

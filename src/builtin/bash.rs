@@ -1,4 +1,4 @@
-use crate::agent::extension::{AgentTool, Extension};
+use crate::agent::extension::{AgentTool, Cancel, Extension, ToolOutput};
 use async_trait::async_trait;
 use std::borrow::Cow;
 
@@ -65,7 +65,8 @@ impl AgentTool for BashTool {
         &self,
         tool_call_id: String,
         args: serde_json::Value,
-    ) -> anyhow::Result<String> {
+        _cancel: Cancel,
+    ) -> anyhow::Result<ToolOutput> {
         let _ = tool_call_id;
         let command = args["command"]
             .as_str()
@@ -128,14 +129,17 @@ impl AgentTool for BashTool {
         if !output.status.success() {
             let code = output.status.code().unwrap_or(-1);
             if result.is_empty() {
-                Ok(format!("Command exited with code {}", code))
+                Ok(ToolOutput::ok(format!("Command exited with code {}", code)))
             } else {
-                Ok(format!("{}\n\n[Command exited with code {}]", result, code))
+                Ok(ToolOutput::ok(format!(
+                    "{}\n\n[Command exited with code {}]",
+                    result, code
+                )))
             }
         } else if result.is_empty() {
-            Ok("(no output)".into())
+            Ok(ToolOutput::ok("(no output)"))
         } else {
-            Ok(result)
+            Ok(ToolOutput::ok(result))
         }
     }
 }

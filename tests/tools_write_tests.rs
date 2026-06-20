@@ -1,4 +1,4 @@
-use rab::agent::extension::Extension;
+use rab::agent::extension::{Cancel, Extension};
 use rab::builtin::write::WriteExtension;
 
 fn tmp_dir() -> std::path::PathBuf {
@@ -10,7 +10,7 @@ fn tmp_dir() -> std::path::PathBuf {
 #[tokio::test]
 async fn writes_file() {
     let tmp = tmp_dir();
-    let path = tmp.join("output.txt");
+    let path = tmp.join("test.txt");
 
     let ext = WriteExtension::new(tmp.clone());
     let tools = ext.tools();
@@ -19,38 +19,19 @@ async fn writes_file() {
     let result = tool
         .execute(
             "id".into(),
-            serde_json::json!({"path": path.to_str().unwrap(), "content": "written content"}),
+            serde_json::json!({"path": path.to_str().unwrap(), "content": "hello world"}),
+            Cancel::new(),
         )
         .await
         .unwrap();
-
-    assert!(result.contains("Successfully wrote"));
-    assert_eq!(std::fs::read_to_string(&path).unwrap(), "written content");
-}
-
-#[tokio::test]
-async fn creates_parent_directories() {
-    let tmp = tmp_dir();
-    let path = tmp.join("a").join("b").join("output.txt");
-
-    let ext = WriteExtension::new(tmp.clone());
-    let tools = ext.tools();
-    let tool = &tools[0];
-
-    tool.execute(
-        "id".into(),
-        serde_json::json!({"path": path.to_str().unwrap(), "content": "nested"}),
-    )
-    .await
-    .unwrap();
-
-    assert_eq!(std::fs::read_to_string(&path).unwrap(), "nested");
+    assert!(result.content.contains("Successfully wrote"));
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "hello world");
 }
 
 #[tokio::test]
 async fn overwrites_existing_file() {
     let tmp = tmp_dir();
-    let path = tmp.join("output.txt");
+    let path = tmp.join("overwrite.txt");
     std::fs::write(&path, "old content").unwrap();
 
     let ext = WriteExtension::new(tmp.clone());
@@ -60,9 +41,31 @@ async fn overwrites_existing_file() {
     tool.execute(
         "id".into(),
         serde_json::json!({"path": path.to_str().unwrap(), "content": "new content"}),
+        Cancel::new(),
     )
     .await
     .unwrap();
 
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "new content");
+}
+
+#[tokio::test]
+async fn creates_parent_directories() {
+    let tmp = tmp_dir();
+    let path = tmp.join("subdir").join("nested.txt");
+
+    let ext = WriteExtension::new(tmp.clone());
+    let tools = ext.tools();
+    let tool = &tools[0];
+
+    tool.execute(
+        "id".into(),
+        serde_json::json!({"path": path.to_str().unwrap(), "content": "nested file"}),
+        Cancel::new(),
+    )
+    .await
+    .unwrap();
+
+    assert!(path.exists());
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "nested file");
 }

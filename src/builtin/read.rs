@@ -1,7 +1,8 @@
-use crate::agent::extension::{AgentTool, Extension};
+use crate::agent::extension::{AgentTool, Cancel, Extension, ToolOutput};
 use anyhow::Context;
 use async_trait::async_trait;
 use std::borrow::Cow;
+use std::path::Path;
 
 pub struct ReadExtension {
     cwd: std::path::PathBuf,
@@ -55,6 +56,51 @@ fn trim_trailing_empty_lines<'a>(lines: &'a [&'a str]) -> &'a [&'a str] {
     }
     &lines[..end]
 }
+
+/// Build a compact label for the read tool output, matching pi's compact mode.
+/// Returns `None` for regular files.
+fn compact_read_label(path: &str, cwd: &Path, start_line: usize) -> Option<String> {
+    let abs_path = if Path::new(path).is_absolute() {
+        Path::new(path).to_path_buf()
+    } else {
+        cwd.join(path)
+    };
+
+    let file_name = abs_path.file_name()?.to_str()?;
+
+    // AGENTS.md / CLAUDE.md → "read resource <path>"
+    if file_name.eq_ignore_ascii_case("AGENTS.md") || file_name.eq_ignore_ascii_case("CLAUDE.md") {
+        let display = abs_path
+            .strip_prefix(cwd)
+            .unwrap_or(&abs_path)
+            .to_string_lossy()
+            .to_string();
+        let range = if start_line > 0 {
+            format!(":{}", start_line + 1)
+        } else {
+            String::new()
+        };
+        return Some(format!("read resource {}{}", display, range));
+    }
+
+    // SKILL.md → "read skill <dirname>"
+    if file_name == "SKILL.md"
+        && let Some(parent) = abs_path.parent()
+        && let Some(dir_name) = parent.file_name()
+    {
+        let dir_name = dir_name.to_str().unwrap_or("unknown");
+        let range = if start_line > 0 {
+            format!(":{}", start_line + 1)
+        } else {
+            String::new()
+        };
+        return Some(format!("read skill {}{}", dir_name, range));
+    }
+
+    None
+}
+
+// ── Truncation ──────────────────────────────────────────────────
 
 /// Truncation result, mirroring pi's `TruncationResult`.
 #[allow(dead_code)]
@@ -173,6 +219,12 @@ impl AgentTool for ReadTool {
         })
     }
 
+    fn prompt_guidelines(&self) -> Vec<String> {
+        vec![
+            "Use read to examine files instead of cat or sed.".into(),
+        ]
+    }
+
     fn label(&self) -> &str {
         "Read file contents"
     }
@@ -181,7 +233,8 @@ impl AgentTool for ReadTool {
         &self,
         tool_call_id: String,
         args: serde_json::Value,
-    ) -> anyhow::Result<String> {
+        cancel: Cancel,
+    ) -> anyhow::Result<ToolOutput> {
         let _ = tool_call_id;
         let path = args["path"]
             .as_str()
@@ -198,16 +251,13 @@ impl AgentTool for ReadTool {
             }
         };
 
+        cancel.check()?;
+
         let content = std::fs::read_to_string(&abs_path)
             .with_context(|| format!("Failed to read {}", abs_path.display()))?;
 
-        // Split into lines. content.split('\n') gives:
-        // "a\nb\n" → ["a", "b", ""] — trailing newline creates empty last element.
-        // We keep the trailing newline behavior from pi: after splitting, the file
-        // has `total_lines` logical lines (the trailing `""` is included).
         let all_lines: Vec<&str> = content.split('\n').collect();
         let total_file_lines = if content.ends_with('\n') {
-            // Don't count the empty string after trailing newline as a real line
             all_lines.len() - 1
         } else {
             all_lines.len()
@@ -222,6 +272,8 @@ impl AgentTool for ReadTool {
                 total_file_lines
             ));
         }
+
+        cancel.check()?;
 
         // Build the selected content based on offset/limit
         let selected_content: String;
@@ -238,15 +290,15 @@ impl AgentTool for ReadTool {
             user_limited_lines = None;
         }
 
+        // Compute compact label before truncation (for UI rendering)
+        let compact = compact_read_label(path, &self.cwd, start_line);
+
         // Apply truncation
         let trunc = truncate_head(&selected_content, DEFAULT_MAX_LINES, DEFAULT_MAX_BYTES);
 
-        let output: String;
-
         if trunc.first_line_exceeds_limit {
-            // The first line alone exceeds the byte limit — suggest bash fallback
             let first_line_bytes = format_size(all_lines[start_line].len());
-            output = format!(
+            let msg = format!(
                 "[Line {} is {}, exceeds {} limit. Use bash: sed -n '{}p' {} | head -c {}]",
                 start_line + 1,
                 first_line_bytes,
@@ -255,8 +307,10 @@ impl AgentTool for ReadTool {
                 path,
                 DEFAULT_MAX_BYTES,
             );
-            return Ok(output);
+            return Ok(ToolOutput::ok(msg));
         }
+
+        let output: String;
 
         if trunc.truncated {
             let start_display = start_line + 1;
@@ -288,21 +342,21 @@ impl AgentTool for ReadTool {
                     trunc.content, remaining, next_offset,
                 );
             } else {
-                // User-specified limit exactly covers the file — no continuation needed.
-                // Also trim trailing empty lines for a cleaner display.
                 let lines: Vec<&str> = trunc.content.lines().collect();
                 let trimmed = trim_trailing_empty_lines(&lines);
                 output = trimmed.join("\n");
             }
         } else {
-            // No truncation, no user limit — full content.
-            // Trim trailing empty lines for a cleaner display.
             let lines: Vec<&str> = trunc.content.lines().collect();
             let trimmed = trim_trailing_empty_lines(&lines);
             output = trimmed.join("\n");
         }
 
-        Ok(output)
+        if let Some(label) = compact {
+            Ok(ToolOutput::ok_with_compact(output, label))
+        } else {
+            Ok(ToolOutput::ok(output))
+        }
     }
 }
 
@@ -323,6 +377,19 @@ mod tests {
         (ReadTool { cwd: tmp.clone() }, tmp)
     }
 
+    async fn exec_ok(tool: &ReadTool, args: serde_json::Value) -> String {
+        tool.execute("id".into(), args, Cancel::new())
+            .await
+            .unwrap()
+            .content
+    }
+
+    async fn exec_full(tool: &ReadTool, args: serde_json::Value) -> ToolOutput {
+        tool.execute("id".into(), args, Cancel::new())
+            .await
+            .unwrap()
+    }
+
     // ── Truncation unit tests ─────────────────────────────────
 
     #[test]
@@ -340,20 +407,17 @@ mod tests {
         assert!(result.truncated);
         assert_eq!(result.truncated_by, "lines");
         assert_eq!(result.output_lines, 2000);
-        // Last line should be "line 2000"
         assert!(result.content.ends_with("line 2000"));
     }
 
     #[test]
     fn test_truncates_by_bytes() {
-        // Create lines where each line is large enough that byte limit is hit first
         let content: String = (1..=100)
             .map(|i| format!("line {} {}\n", i, "x".repeat(1000)))
             .collect();
         let result = truncate_head(&content, 2000, 50000);
         assert!(result.truncated);
         assert_eq!(result.truncated_by, "bytes");
-        // Should have stopped well before 2000 lines
         assert!(result.output_lines < 100);
     }
 
@@ -375,7 +439,6 @@ mod tests {
 
     #[test]
     fn test_exact_fit() {
-        // Content exactly at the byte limit
         let line = "a".repeat(50000);
         let result = truncate_head(&line, 2000, 50000);
         assert!(!result.truncated);
@@ -417,6 +480,40 @@ mod tests {
         assert!(trimmed.is_empty());
     }
 
+    // ── Compact label tests ──────────────────────────────────
+
+    #[test]
+    fn test_compact_label_agents_md() {
+        let label = compact_read_label("path/to/AGENTS.md", Path::new("path"), 0);
+        assert!(label.is_some());
+        let l = label.unwrap();
+        assert!(l.contains("read resource"));
+        assert!(l.contains("to/AGENTS.md"));
+    }
+
+    #[test]
+    fn test_compact_label_claude_md() {
+        let label = compact_read_label("path/CLAUDE.md", Path::new("path"), 0);
+        assert!(label.is_some());
+        let l = label.unwrap();
+        assert!(l.contains("read resource"));
+    }
+
+    #[test]
+    fn test_compact_label_skill() {
+        let label = compact_read_label("skills/my-skill/SKILL.md", Path::new("."), 0);
+        assert!(label.is_some());
+        let l = label.unwrap();
+        assert!(l.contains("read skill"));
+        assert!(l.contains("my-skill"));
+    }
+
+    #[test]
+    fn test_compact_label_regular_file() {
+        let label = compact_read_label("src/main.rs", Path::new("."), 0);
+        assert!(label.is_none());
+    }
+
     // ── Integration tests ────────────────────────────────────
 
     #[tokio::test]
@@ -425,13 +522,11 @@ mod tests {
         let path = tmp.join("test.txt");
         std::fs::write(&path, "hello world\nline two\n").unwrap();
 
-        let result = tool
-            .execute(
-                "id".into(),
-                serde_json::json!({"path": path.to_str().unwrap()}),
-            )
-            .await
-            .unwrap();
+        let result = exec_ok(
+            &tool,
+            serde_json::json!({"path": path.to_str().unwrap()}),
+        )
+        .await;
 
         assert!(result.contains("hello world"));
         assert!(result.contains("line two"));
@@ -444,16 +539,13 @@ mod tests {
         let content: Vec<String> = (1..=10).map(|i| format!("line {}", i)).collect();
         std::fs::write(&path, content.join("\n")).unwrap();
 
-        let result = tool
-            .execute(
-                "id".into(),
-                serde_json::json!({"path": path.to_str().unwrap(), "offset": 5}),
-            )
-            .await
-            .unwrap();
+        let result = exec_ok(
+            &tool,
+            serde_json::json!({"path": path.to_str().unwrap(), "offset": 5}),
+        )
+        .await;
 
         assert!(result.contains("line 5"), "should contain line 5: {result}");
-        // "line 10" contains "line 1" as substring, so check with more precision
         assert!(
             !result.lines().any(|l| l == "line 1"),
             "should not contain line 1: {result}"
@@ -467,13 +559,11 @@ mod tests {
         let content: Vec<String> = (1..=10).map(|i| format!("line {}", i)).collect();
         std::fs::write(&path, content.join("\n")).unwrap();
 
-        let result = tool
-            .execute(
-                "id".into(),
-                serde_json::json!({"path": path.to_str().unwrap(), "offset": 1, "limit": 3}),
-            )
-            .await
-            .unwrap();
+        let result = exec_ok(
+            &tool,
+            serde_json::json!({"path": path.to_str().unwrap(), "offset": 1, "limit": 3}),
+        )
+        .await;
 
         assert!(result.contains("line 1"));
         assert!(result.contains("line 3"));
@@ -485,7 +575,7 @@ mod tests {
         let (tool, _tmp) = make_tool();
 
         let result = tool
-            .execute("id".into(), serde_json::json!({"path": "nonexistent.txt"}))
+            .execute("id".into(), serde_json::json!({"path": "nonexistent.txt"}), Cancel::new())
             .await;
         assert!(result.is_err());
     }
@@ -500,6 +590,7 @@ mod tests {
             .execute(
                 "id".into(),
                 serde_json::json!({"path": path.to_str().unwrap(), "offset": 100}),
+                Cancel::new(),
             )
             .await;
         assert!(result.is_err());
@@ -514,19 +605,14 @@ mod tests {
         let content: String = (1..=5000).map(|i| format!("line {}\n", i)).collect();
         std::fs::write(&path, &content).unwrap();
 
-        let result = tool
-            .execute(
-                "id".into(),
-                serde_json::json!({"path": path.to_str().unwrap()}),
-            )
-            .await
-            .unwrap();
+        let result = exec_ok(
+            &tool,
+            serde_json::json!({"path": path.to_str().unwrap()}),
+        )
+        .await;
 
-        // Should mention continuation (line-based truncation)
         assert!(result.contains("Showing lines 1-"));
         assert!(result.contains("offset="));
-        // Line truncation message: "Showing lines 1-2000 of 5000."
-        // (no explicit "line limit" text — that's only in byte-limit messages)
         assert!(result.contains("of 5000."));
     }
 
@@ -534,21 +620,17 @@ mod tests {
     async fn large_file_truncation_by_bytes() {
         let (tool, tmp) = make_tool();
         let path = tmp.join("wide.txt");
-        // Each line is ~1200 bytes, 100 lines = ~120KB
         let content: String = (1..=100)
             .map(|i| format!("line {} {}\n", i, "x".repeat(1190)))
             .collect();
         std::fs::write(&path, &content).unwrap();
 
-        let result = tool
-            .execute(
-                "id".into(),
-                serde_json::json!({"path": path.to_str().unwrap()}),
-            )
-            .await
-            .unwrap();
+        let result = exec_ok(
+            &tool,
+            serde_json::json!({"path": path.to_str().unwrap()}),
+        )
+        .await;
 
-        // Should mention byte limit
         assert!(result.contains("KB limit"));
         assert!(result.contains("offset="));
     }
@@ -557,17 +639,14 @@ mod tests {
     async fn first_line_exceeds_limit_shows_bash_hint() {
         let (tool, tmp) = make_tool();
         let path = tmp.join("huge_first_line.txt");
-        // First line is 60KB
         let content = format!("{}\nshort line\n", "x".repeat(60000));
         std::fs::write(&path, &content).unwrap();
 
-        let result = tool
-            .execute(
-                "id".into(),
-                serde_json::json!({"path": path.to_str().unwrap()}),
-            )
-            .await
-            .unwrap();
+        let result = exec_ok(
+            &tool,
+            serde_json::json!({"path": path.to_str().unwrap()}),
+        )
+        .await;
 
         assert!(result.contains("bash"));
         assert!(result.contains("sed"));
@@ -581,18 +660,15 @@ mod tests {
         let content: String = (1..=100).map(|i| format!("line {}\n", i)).collect();
         std::fs::write(&path, &content).unwrap();
 
-        let result = tool
-            .execute(
-                "id".into(),
-                serde_json::json!({"path": path.to_str().unwrap(), "limit": 5}),
-            )
-            .await
-            .unwrap();
+        let result = exec_ok(
+            &tool,
+            serde_json::json!({"path": path.to_str().unwrap(), "limit": 5}),
+        )
+        .await;
 
         assert!(result.contains("line 1"));
         assert!(result.contains("line 5"));
         assert!(!result.contains("line 6"));
-        // Should show continuation notice for remaining lines
         assert!(result.contains("more lines"));
     }
 
@@ -603,18 +679,15 @@ mod tests {
         let content: String = (1..=3).map(|i| format!("line {}\n", i)).collect();
         std::fs::write(&path, &content).unwrap();
 
-        let result = tool
-            .execute(
-                "id".into(),
-                serde_json::json!({"path": path.to_str().unwrap(), "limit": 3}),
-            )
-            .await
-            .unwrap();
+        let result = exec_ok(
+            &tool,
+            serde_json::json!({"path": path.to_str().unwrap(), "limit": 3}),
+        )
+        .await;
 
         assert!(result.contains("line 1"));
         assert!(result.contains("line 2"));
         assert!(result.contains("line 3"));
-        // No continuation notice
         assert!(!result.contains("more lines"));
     }
 
@@ -622,20 +695,16 @@ mod tests {
     async fn trims_trailing_empty_lines() {
         let (tool, tmp) = make_tool();
         let path = tmp.join("trailing_empties.txt");
-        // File ends with trailing empty lines
         std::fs::write(&path, "hello\nworld\n\n\n").unwrap();
 
-        let result = tool
-            .execute(
-                "id".into(),
-                serde_json::json!({"path": path.to_str().unwrap()}),
-            )
-            .await
-            .unwrap();
+        let result = exec_ok(
+            &tool,
+            serde_json::json!({"path": path.to_str().unwrap()}),
+        )
+        .await;
 
         assert!(result.contains("hello"));
         assert!(result.contains("world"));
-        // Should NOT have multiple trailing newlines
         assert!(!result.ends_with("\n\n\n"));
     }
 
@@ -645,11 +714,66 @@ mod tests {
         let path = tmp.join("relative.txt");
         std::fs::write(&path, "hello\n").unwrap();
 
-        let result = tool
-            .execute("id".into(), serde_json::json!({"path": "relative.txt"}))
-            .await
-            .unwrap();
+        let result = exec_ok(
+            &tool,
+            serde_json::json!({"path": "relative.txt"}),
+        )
+        .await;
 
         assert!(result.contains("hello"));
+    }
+
+    #[tokio::test]
+    async fn compact_label_for_agents_md() {
+        let (tool, tmp) = make_tool();
+        let path = tmp.join("AGENTS.md");
+        std::fs::write(&path, "some instructions\n").unwrap();
+
+        let output = exec_full(
+            &tool,
+            serde_json::json!({"path": path.to_str().unwrap()}),
+        )
+        .await;
+
+        assert!(output.compact.is_some());
+        let label = output.compact.unwrap();
+        assert!(label.contains("read resource"));
+        assert!(label.contains("AGENTS.md"));
+    }
+
+    #[tokio::test]
+    async fn no_compact_label_for_regular_file() {
+        let (tool, tmp) = make_tool();
+        let path = tmp.join("main.rs");
+        std::fs::write(&path, "fn main() {}\n").unwrap();
+
+        let output = exec_full(
+            &tool,
+            serde_json::json!({"path": path.to_str().unwrap()}),
+        )
+        .await;
+
+        assert!(output.compact.is_none());
+    }
+
+    #[tokio::test]
+    async fn cancel_aborts_read() {
+        let (tool, tmp) = make_tool();
+        let path = tmp.join("cancel_test.txt");
+        std::fs::write(&path, "hello\n").unwrap();
+
+        let cancel = Cancel::new();
+        cancel.cancel();
+
+        let result = tool
+            .execute(
+                "id".into(),
+                serde_json::json!({"path": path.to_str().unwrap()}),
+                cancel,
+            )
+            .await;
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("cancell") || err.contains("Cancel"));
     }
 }

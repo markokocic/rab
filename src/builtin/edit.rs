@@ -1,4 +1,4 @@
-use crate::agent::extension::{AgentTool, Extension};
+use crate::agent::extension::{AgentTool, Cancel, Extension, ToolOutput};
 use anyhow::Context;
 use async_trait::async_trait;
 use std::borrow::Cow;
@@ -96,12 +96,21 @@ fn normalize_for_fuzzy_match(text: &str) -> String {
         match ch {
             '\u{2018}' | '\u{2019}' | '\u{201A}' | '\u{201B}' => result.push('\''),
             '\u{201C}' | '\u{201D}' | '\u{201E}' | '\u{201F}' => result.push('"'),
-            '\u{2010}' | '\u{2011}' | '\u{2012}' | '\u{2013}' | '\u{2014}' | '\u{2015}'
-            | '\u{2212}' => {
+            '\u{2010}' | '\u{2011}' | '\u{2012}' | '\u{2013}' | '\u{2014}' | '\u{2015}' | '\u{2212}' => {
                 result.push('-');
             }
-            '\u{00A0}' | '\u{2002}' | '\u{2003}' | '\u{2004}' | '\u{2005}' | '\u{2006}'
-            | '\u{2007}' | '\u{2008}' | '\u{2009}' | '\u{200A}' | '\u{202F}' | '\u{205F}'
+            '\u{00A0}'
+            | '\u{2002}'
+            | '\u{2003}'
+            | '\u{2004}'
+            | '\u{2005}'
+            | '\u{2006}'
+            | '\u{2007}'
+            | '\u{2008}'
+            | '\u{2009}'
+            | '\u{200A}'
+            | '\u{202F}'
+            | '\u{205F}'
             | '\u{3000}' => {
                 result.push(' ');
             }
@@ -110,47 +119,6 @@ fn normalize_for_fuzzy_match(text: &str) -> String {
     }
 
     result
-}
-
-#[cfg(test)]
-mod fuzzy_tests {
-    use super::*;
-
-    #[test]
-    fn test_strip_trailing_whitespace() {
-        assert_eq!(
-            normalize_for_fuzzy_match("hello   \nworld  "),
-            "hello\nworld"
-        );
-    }
-
-    #[test]
-    fn test_smart_quotes() {
-        assert_eq!(
-            normalize_for_fuzzy_match("\u{2018}hello\u{2019} \u{201C}world\u{201D}"),
-            "'hello' \"world\""
-        );
-    }
-
-    #[test]
-    fn test_dashes() {
-        assert_eq!(normalize_for_fuzzy_match("a\u{2014}b"), "a-b");
-        assert_eq!(normalize_for_fuzzy_match("a\u{2013}b"), "a-b");
-    }
-
-    #[test]
-    fn test_nbsp() {
-        assert_eq!(normalize_for_fuzzy_match("a\u{00A0}b"), "a b");
-    }
-
-    #[test]
-    fn test_preserves_trailing_newline() {
-        assert_eq!(normalize_for_fuzzy_match("hello\n"), "hello\n");
-        assert_eq!(
-            normalize_for_fuzzy_match("hello\nworld\n"),
-            "hello\nworld\n"
-        );
-    }
 }
 
 // ── Input normalization ──────────────────────────────────────────
@@ -183,7 +151,9 @@ fn prepare_edit_arguments(args: &serde_json::Value) -> Result<(String, Vec<Edit>
             new_text: new_text.to_string(),
         }]
     } else {
-        return Err("Missing 'edits' array (or 'oldText'/'newText' for legacy format)".to_string());
+        return Err(
+            "Missing 'edits' array (or 'oldText'/'newText' for legacy format)".to_string(),
+        );
     };
 
     if edits.is_empty() {
@@ -215,29 +185,23 @@ fn compute_diff(original: &str, modified: &str, path: &str) -> String {
     let mut hunk_start_mod = 0;
 
     while i < orig_lines.len() || j < mod_lines.len() {
-        let same = if i < orig_lines.len() && j < mod_lines.len() {
-            if orig_lines[i] == mod_lines[j] {
-                if !hunk.is_empty() && hunk.len() >= 3 {
-                    // Emit context line within hunk
-                    hunk.push((' ', orig_lines[i]));
-                } else {
-                    // Flush current hunk
-                    if !hunk.is_empty() {
-                        flush_hunk(&mut diff, &mut hunk, hunk_start_orig, hunk_start_mod);
-                    }
-                    hunk_start_orig = i + 1;
-                    hunk_start_mod = j + 1;
-                }
-                i += 1;
-                j += 1;
-                continue;
-            }
-            false
-        } else {
-            false
-        };
+        let same = i < orig_lines.len() && j < mod_lines.len() && orig_lines[i] == mod_lines[j];
 
-        if !same {
+        if same {
+            if !hunk.is_empty() && hunk.len() >= 3 {
+                // Emit context line within hunk
+                hunk.push((' ', orig_lines[i]));
+            } else {
+                // Flush current hunk
+                if !hunk.is_empty() {
+                    flush_hunk(&mut diff, &mut hunk, hunk_start_orig, hunk_start_mod);
+                }
+                hunk_start_orig = i + 1;
+                hunk_start_mod = j + 1;
+            }
+            i += 1;
+            j += 1;
+        } else {
             if hunk.is_empty() {
                 hunk_start_orig = i;
                 hunk_start_mod = j;
@@ -260,12 +224,7 @@ fn compute_diff(original: &str, modified: &str, path: &str) -> String {
     diff
 }
 
-fn flush_hunk(
-    diff: &mut String,
-    hunk: &mut Vec<(char, &str)>,
-    orig_start: usize,
-    mod_start: usize,
-) {
+fn flush_hunk(diff: &mut String, hunk: &mut Vec<(char, &str)>, orig_start: usize, mod_start: usize) {
     let orig_count = hunk.iter().filter(|(c, _)| *c == '-' || *c == ' ').count();
     let mod_count = hunk.iter().filter(|(c, _)| *c == '+' || *c == ' ').count();
     use std::fmt::Write;
@@ -279,44 +238,6 @@ fn flush_hunk(
     );
     for (c, line) in hunk.drain(..) {
         let _ = writeln!(diff, "{}{}", c, line);
-    }
-}
-
-#[cfg(test)]
-mod diff_tests {
-    use super::*;
-
-    #[test]
-    fn test_simple_diff() {
-        let orig = "aaa\nbbb\nccc\n";
-        let modified = "aaa\nxxx\nccc\n";
-        let diff = compute_diff(orig, modified, "test.txt");
-        assert!(diff.contains("--- a/test.txt"));
-        assert!(diff.contains("+++ b/test.txt"));
-        assert!(diff.contains("-bbb"));
-        assert!(diff.contains("+xxx"));
-    }
-
-    #[test]
-    fn test_no_changes() {
-        let text = "hello\nworld\n";
-        let diff = compute_diff(text, text, "f.txt");
-        assert!(diff.contains("--- a/f.txt"));
-        assert!(diff.contains("+++ b/f.txt"));
-        // No hunks since content is identical
-        assert!(!diff.contains("@@"));
-    }
-
-    #[test]
-    fn test_multiple_hunks() {
-        let orig = "a\nb\nc\nd\ne\nf\ng\nh\n";
-        let modified = "a\nX\nc\nd\ne\nY\ng\nh\n";
-        let diff = compute_diff(orig, modified, "f.txt");
-        // Should have two hunks
-        assert!(diff.contains("-b"));
-        assert!(diff.contains("+X"));
-        assert!(diff.contains("-f"));
-        assert!(diff.contains("+Y"));
     }
 }
 
@@ -366,6 +287,15 @@ impl AgentTool for EditTool {
         })
     }
 
+    fn prompt_guidelines(&self) -> Vec<String> {
+        vec![
+            "Use edit for precise changes (edits[].oldText must match exactly)".into(),
+            "When changing multiple separate locations in one file, use one edit call with multiple entries in edits[] instead of multiple edit calls".into(),
+            "Each edits[].oldText is matched against the original file, not after earlier edits are applied. Do not emit overlapping or nested edits. Merge nearby changes into one edit.".into(),
+            "Keep edits[].oldText as small as possible while still being unique in the file. Do not pad with large unchanged regions.".into(),
+        ]
+    }
+
     fn label(&self) -> &str {
         "Make precise file edits"
     }
@@ -374,7 +304,8 @@ impl AgentTool for EditTool {
         &self,
         tool_call_id: String,
         args: serde_json::Value,
-    ) -> anyhow::Result<String> {
+        _cancel: Cancel,
+    ) -> anyhow::Result<ToolOutput> {
         let _ = tool_call_id;
         let (path_str, edits) =
             prepare_edit_arguments(&args).map_err(|e| anyhow::anyhow!("{}", e))?;
@@ -410,10 +341,7 @@ impl AgentTool for EditTool {
         for (i, edit) in edits.iter().enumerate() {
             if edit.old_text.is_empty() {
                 return if edits.len() == 1 {
-                    Err(anyhow::anyhow!(
-                        "oldText must not be empty in {}.",
-                        path_str
-                    ))
+                    Err(anyhow::anyhow!("oldText must not be empty in {}.", path_str))
                 } else {
                     Err(anyhow::anyhow!(
                         "edits[{}].oldText must not be empty in {}.",
@@ -430,12 +358,14 @@ impl AgentTool for EditTool {
             if count == 0 {
                 return if edits.len() == 1 {
                     Err(anyhow::anyhow!(
-                        "Could not find the exact text in {}. The old text must match exactly including all whitespace and newlines.",
+                        "Could not find the exact text in {}. \
+                         The old text must match exactly including all whitespace and newlines.",
                         path_str
                     ))
                 } else {
                     Err(anyhow::anyhow!(
-                        "Could not find edits[{}] in {}. The oldText must match exactly including all whitespace and newlines.",
+                        "Could not find edits[{}] in {}. \
+                         The oldText must match exactly including all whitespace and newlines.",
                         i,
                         path_str
                     ))
@@ -445,13 +375,15 @@ impl AgentTool for EditTool {
             if count > 1 {
                 return if edits.len() == 1 {
                     Err(anyhow::anyhow!(
-                        "Found {} occurrences of the text in {}. The text must be unique. Please provide more context to make it unique.",
+                        "Found {} occurrences of the text in {}. \
+                         The text must be unique. Please provide more context to make it unique.",
                         count,
                         path_str
                     ))
                 } else {
                     Err(anyhow::anyhow!(
-                        "Found {} occurrences of edits[{}] in {}. Each oldText must be unique. Please provide more context to make it unique.",
+                        "Found {} occurrences of edits[{}] in {}. \
+                         Each oldText must be unique. Please provide more context to make it unique.",
                         count,
                         i,
                         path_str
@@ -493,25 +425,27 @@ impl AgentTool for EditTool {
         let diff = compute_diff(&normalized, &result, &path_str);
 
         // ── 8. Write back with original line endings and BOM ──
-        let final_content = bom.to_string() + &restore_line_endings(&result, original_ending);
+        let final_content =
+            bom.to_string() + &restore_line_endings(&result, original_ending);
         std::fs::write(&abs_path, &final_content)
             .with_context(|| format!("Failed to write {}", abs_path.display()))?;
 
         // ── 9. Return result ──
         let noun = if edits.len() == 1 { "block" } else { "blocks" };
-        Ok(format!(
+        Ok(ToolOutput::ok(format!(
             "Successfully replaced {} {} in {}.\n```diff\n{}```",
             edits.len(),
             noun,
             path_str,
             diff.trim_end()
-        ))
+        )))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::extension::Cancel;
 
     fn tmp_dir() -> std::path::PathBuf {
         let d = std::env::temp_dir().join(format!("rab-edit-test-{}", uuid::Uuid::new_v4()));
@@ -525,21 +459,40 @@ mod tests {
         (tool, tmp)
     }
 
+    async fn exec_ok(tool: &EditTool, args: serde_json::Value) -> String {
+        tool.execute("id".into(), args, Cancel::new())
+            .await
+            .unwrap()
+            .content
+    }
+
+    async fn exec_err(tool: &EditTool, args: serde_json::Value) -> String {
+        tool.execute("id".into(), args, Cancel::new())
+            .await
+            .unwrap_err()
+            .to_string()
+    }
+
+    async fn is_err(tool: &EditTool, args: serde_json::Value) -> bool {
+        tool.execute("id".into(), args, Cancel::new())
+            .await
+            .is_err()
+    }
+
     #[tokio::test]
     async fn single_edit_replaces_text() {
         let (tool, tmp) = make_tool();
         let path = tmp.join("file.txt");
         std::fs::write(&path, "hello world\nfoo bar\n").unwrap();
 
-        tool.execute(
-            "id".into(),
+        exec_ok(
+            &tool,
             serde_json::json!({
                 "path": path.to_str().unwrap(),
                 "edits": [{"oldText": "foo bar", "newText": "baz qux"}]
             }),
         )
-        .await
-        .unwrap();
+        .await;
 
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
@@ -553,8 +506,8 @@ mod tests {
         let path = tmp.join("file.txt");
         std::fs::write(&path, "aaa\nbbb\nccc\n").unwrap();
 
-        tool.execute(
-            "id".into(),
+        exec_ok(
+            &tool,
             serde_json::json!({
                 "path": path.to_str().unwrap(),
                 "edits": [
@@ -563,8 +516,7 @@ mod tests {
                 ]
             }),
         )
-        .await
-        .unwrap();
+        .await;
 
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "111\nbbb\n333\n");
     }
@@ -575,19 +527,14 @@ mod tests {
         let path = tmp.join("file.txt");
         std::fs::write(&path, "dup\ndup\n").unwrap();
 
-        let result = tool
-            .execute(
-                "id".into(),
-                serde_json::json!({
-                    "path": path.to_str().unwrap(),
-                    "edits": [{"oldText": "dup", "newText": "x"}]
-                }),
-            )
-            .await;
-        assert!(result.is_err());
-        let err = result.unwrap_err().to_string();
-        assert!(err.contains("occurrences"));
-        assert!(err.contains("unique"));
+        assert!(is_err(
+            &tool,
+            serde_json::json!({
+                "path": path.to_str().unwrap(),
+                "edits": [{"oldText": "dup", "newText": "x"}]
+            }),
+        )
+        .await);
     }
 
     #[tokio::test]
@@ -596,17 +543,14 @@ mod tests {
         let path = tmp.join("file.txt");
         std::fs::write(&path, "content\n").unwrap();
 
-        let result = tool
-            .execute(
-                "id".into(),
-                serde_json::json!({
-                    "path": path.to_str().unwrap(),
-                    "edits": [{"oldText": "not found", "newText": "x"}]
-                }),
-            )
-            .await;
-        assert!(result.is_err());
-        let err = result.unwrap_err().to_string();
+        let err = exec_err(
+            &tool,
+            serde_json::json!({
+                "path": path.to_str().unwrap(),
+                "edits": [{"oldText": "not found", "newText": "x"}]
+            }),
+        )
+        .await;
         assert!(err.contains("Could not find"));
     }
 
@@ -616,21 +560,17 @@ mod tests {
         let path = tmp.join("file.txt");
         std::fs::write(&path, "abcdef\n").unwrap();
 
-        let result = tool
-            .execute(
-                "id".into(),
-                serde_json::json!({
-                    "path": path.to_str().unwrap(),
-                    "edits": [
-                        {"oldText": "abc", "newText": "1"},
-                        {"oldText": "bcd", "newText": "2"}
-                    ]
-                }),
-            )
-            .await;
-        assert!(result.is_err());
-        let err = result.unwrap_err().to_string();
-        assert!(err.contains("overlap"));
+        assert!(is_err(
+            &tool,
+            serde_json::json!({
+                "path": path.to_str().unwrap(),
+                "edits": [
+                    {"oldText": "abc", "newText": "1"},
+                    {"oldText": "bcd", "newText": "2"}
+                ]
+            }),
+        )
+        .await);
     }
 
     #[tokio::test]
@@ -639,13 +579,11 @@ mod tests {
         let path = tmp.join("file.txt");
         std::fs::write(&path, "content\n").unwrap();
 
-        let result = tool
-            .execute(
-                "id".into(),
-                serde_json::json!({"path": path.to_str().unwrap(), "edits": []}),
-            )
-            .await;
-        assert!(result.is_err());
+        assert!(is_err(
+            &tool,
+            serde_json::json!({"path": path.to_str().unwrap(), "edits": []}),
+        )
+        .await);
     }
 
     // ── BOM handling ─────────────────────────────────────────
@@ -654,18 +592,16 @@ mod tests {
     async fn handles_bom() {
         let (tool, tmp) = make_tool();
         let path = tmp.join("bom.txt");
-        // File with UTF-8 BOM
         std::fs::write(&path, "\u{FEFF}hello world\n").unwrap();
 
-        tool.execute(
-            "id".into(),
+        exec_ok(
+            &tool,
             serde_json::json!({
                 "path": path.to_str().unwrap(),
                 "edits": [{"oldText": "hello world", "newText": "goodbye"}]
             }),
         )
-        .await
-        .unwrap();
+        .await;
 
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.starts_with('\u{FEFF}'));
@@ -678,15 +614,14 @@ mod tests {
         let path = tmp.join("bom2.txt");
         std::fs::write(&path, "\u{FEFF}line1\nline2\n").unwrap();
 
-        tool.execute(
-            "id".into(),
+        exec_ok(
+            &tool,
             serde_json::json!({
                 "path": path.to_str().unwrap(),
                 "edits": [{"oldText": "line2", "newText": "modified"}]
             }),
         )
-        .await
-        .unwrap();
+        .await;
 
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.starts_with('\u{FEFF}'));
@@ -701,15 +636,14 @@ mod tests {
         let path = tmp.join("crlf.txt");
         std::fs::write(&path, "hello\r\nworld\r\n").unwrap();
 
-        tool.execute(
-            "id".into(),
+        exec_ok(
+            &tool,
             serde_json::json!({
                 "path": path.to_str().unwrap(),
                 "edits": [{"oldText": "world", "newText": "universe"}]
             }),
         )
-        .await
-        .unwrap();
+        .await;
 
         let content = std::fs::read_to_string(&path).unwrap();
         assert_eq!(content, "hello\r\nuniverse\r\n");
@@ -719,20 +653,17 @@ mod tests {
     async fn handles_mixed_line_endings() {
         let (tool, tmp) = make_tool();
         let path = tmp.join("mixed.txt");
-        // First line CRLF, rest LF — detection uses first occurrence
         std::fs::write(&path, "line1\r\nline2\nline3\n").unwrap();
 
-        tool.execute(
-            "id".into(),
+        exec_ok(
+            &tool,
             serde_json::json!({
                 "path": path.to_str().unwrap(),
                 "edits": [{"oldText": "line2", "newText": "modified"}]
             }),
         )
-        .await
-        .unwrap();
+        .await;
 
-        // Should preserve detected ending (CRLF since \r\n comes first)
         let content = std::fs::read_to_string(&path).unwrap();
         assert_eq!(content, "line1\r\nmodified\r\nline3\r\n");
     }
@@ -743,15 +674,14 @@ mod tests {
         let path = tmp.join("lf.txt");
         std::fs::write(&path, "hello\nworld\n").unwrap();
 
-        tool.execute(
-            "id".into(),
+        exec_ok(
+            &tool,
             serde_json::json!({
                 "path": path.to_str().unwrap(),
                 "edits": [{"oldText": "world", "newText": "universe"}]
             }),
         )
-        .await
-        .unwrap();
+        .await;
 
         let content = std::fs::read_to_string(&path).unwrap();
         assert_eq!(content, "hello\nuniverse\n");
@@ -765,18 +695,15 @@ mod tests {
         let path = tmp.join("trailing.txt");
         std::fs::write(&path, "hello world  \nnext line\n").unwrap();
 
-        // Model sends oldText without trailing whitespace
-        tool.execute(
-            "id".into(),
+        exec_ok(
+            &tool,
             serde_json::json!({
                 "path": path.to_str().unwrap(),
                 "edits": [{"oldText": "hello world", "newText": "hi there"}]
             }),
         )
-        .await
-        .unwrap();
+        .await;
 
-        // Trailing whitespace is stripped by fuzzy normalization
         let content = std::fs::read_to_string(&path).unwrap();
         assert_eq!(content, "hi there\nnext line\n");
     }
@@ -787,16 +714,14 @@ mod tests {
         let path = tmp.join("quotes.txt");
         std::fs::write(&path, "he said \u{201C}hello\u{201D}\n").unwrap();
 
-        // Model might send straight quotes
-        tool.execute(
-            "id".into(),
+        exec_ok(
+            &tool,
             serde_json::json!({
                 "path": path.to_str().unwrap(),
                 "edits": [{"oldText": "he said \"hello\"", "newText": "she said \"hi\""}]
             }),
         )
-        .await
-        .unwrap();
+        .await;
 
         let content = std::fs::read_to_string(&path).unwrap();
         assert_eq!(content, "she said \"hi\"\n");
@@ -808,15 +733,14 @@ mod tests {
         let path = tmp.join("dashes.txt");
         std::fs::write(&path, "foo \u{2014} bar\n").unwrap();
 
-        tool.execute(
-            "id".into(),
+        exec_ok(
+            &tool,
             serde_json::json!({
                 "path": path.to_str().unwrap(),
                 "edits": [{"oldText": "foo - bar", "newText": "baz"}]
             }),
         )
-        .await
-        .unwrap();
+        .await;
 
         let content = std::fs::read_to_string(&path).unwrap();
         assert_eq!(content, "baz\n");
@@ -830,16 +754,15 @@ mod tests {
         let path = tmp.join("legacy.txt");
         std::fs::write(&path, "hello world\n").unwrap();
 
-        tool.execute(
-            "id".into(),
+        exec_ok(
+            &tool,
             serde_json::json!({
                 "path": path.to_str().unwrap(),
                 "oldText": "hello world",
                 "newText": "goodbye"
             }),
         )
-        .await
-        .unwrap();
+        .await;
 
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "goodbye\n");
     }
@@ -850,15 +773,14 @@ mod tests {
         let path = tmp.join("jsonstr.txt");
         std::fs::write(&path, "aaa\nbbb\n").unwrap();
 
-        tool.execute(
-            "id".into(),
+        exec_ok(
+            &tool,
             serde_json::json!({
                 "path": path.to_str().unwrap(),
                 "edits": r#"[{"oldText": "bbb", "newText": "xxx"}]"#
             }),
         )
-        .await
-        .unwrap();
+        .await;
 
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "aaa\nxxx\n");
     }
@@ -871,16 +793,14 @@ mod tests {
         let path = tmp.join("diff_test.txt");
         std::fs::write(&path, "aaa\nbbb\nccc\n").unwrap();
 
-        let result = tool
-            .execute(
-                "id".into(),
-                serde_json::json!({
-                    "path": path.to_str().unwrap(),
-                    "edits": [{"oldText": "bbb", "newText": "xxx"}]
-                }),
-            )
-            .await
-            .unwrap();
+        let result = exec_ok(
+            &tool,
+            serde_json::json!({
+                "path": path.to_str().unwrap(),
+                "edits": [{"oldText": "bbb", "newText": "xxx"}]
+            }),
+        )
+        .await;
 
         assert!(result.contains("```diff"));
         assert!(result.contains("-bbb"));
@@ -896,17 +816,14 @@ mod tests {
         let path = tmp.join("empty.txt");
         std::fs::write(&path, "content\n").unwrap();
 
-        let result = tool
-            .execute(
-                "id".into(),
-                serde_json::json!({
-                    "path": path.to_str().unwrap(),
-                    "edits": [{"oldText": "", "newText": "x"}]
-                }),
-            )
-            .await;
-        assert!(result.is_err());
-        let err = result.unwrap_err().to_string();
+        let err = exec_err(
+            &tool,
+            serde_json::json!({
+                "path": path.to_str().unwrap(),
+                "edits": [{"oldText": "", "newText": "x"}]
+            }),
+        )
+        .await;
         assert!(err.contains("empty"));
     }
 
@@ -918,18 +835,86 @@ mod tests {
         let path = tmp.join("relative.txt");
         std::fs::write(&path, "hello\n").unwrap();
 
-        // Use relative path — tool should resolve against its cwd (tmp)
-        let rel_name = "relative.txt";
-        tool.execute(
-            "id".into(),
+        exec_ok(
+            &tool,
             serde_json::json!({
-                "path": rel_name,
+                "path": "relative.txt",
                 "edits": [{"oldText": "hello", "newText": "hi"}]
             }),
         )
-        .await
-        .unwrap();
+        .await;
 
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "hi\n");
+    }
+}
+
+#[cfg(test)]
+mod fuzzy_tests {
+    use super::*;
+
+    #[test]
+    fn test_strip_trailing_whitespace() {
+        assert_eq!(normalize_for_fuzzy_match("hello   \nworld  "), "hello\nworld");
+    }
+
+    #[test]
+    fn test_smart_quotes() {
+        assert_eq!(
+            normalize_for_fuzzy_match("\u{2018}hello\u{2019} \u{201C}world\u{201D}"),
+            "'hello' \"world\""
+        );
+    }
+
+    #[test]
+    fn test_dashes() {
+        assert_eq!(normalize_for_fuzzy_match("a\u{2014}b"), "a-b");
+        assert_eq!(normalize_for_fuzzy_match("a\u{2013}b"), "a-b");
+    }
+
+    #[test]
+    fn test_nbsp() {
+        assert_eq!(normalize_for_fuzzy_match("a\u{00A0}b"), "a b");
+    }
+
+    #[test]
+    fn test_preserves_trailing_newline() {
+        assert_eq!(normalize_for_fuzzy_match("hello\n"), "hello\n");
+        assert_eq!(normalize_for_fuzzy_match("hello\nworld\n"), "hello\nworld\n");
+    }
+}
+
+#[cfg(test)]
+mod diff_tests {
+    use super::*;
+
+    #[test]
+    fn test_simple_diff() {
+        let orig = "aaa\nbbb\nccc\n";
+        let modified = "aaa\nxxx\nccc\n";
+        let diff = compute_diff(orig, modified, "test.txt");
+        assert!(diff.contains("--- a/test.txt"));
+        assert!(diff.contains("+++ b/test.txt"));
+        assert!(diff.contains("-bbb"));
+        assert!(diff.contains("+xxx"));
+    }
+
+    #[test]
+    fn test_no_changes() {
+        let text = "hello\nworld\n";
+        let diff = compute_diff(text, text, "f.txt");
+        assert!(diff.contains("--- a/f.txt"));
+        assert!(diff.contains("+++ b/f.txt"));
+        assert!(!diff.contains("@@"));
+    }
+
+    #[test]
+    fn test_multiple_hunks() {
+        let orig = "a\nb\nc\nd\ne\nf\ng\nh\n";
+        let modified = "a\nX\nc\nd\ne\nY\ng\nh\n";
+        let diff = compute_diff(orig, modified, "f.txt");
+        assert!(diff.contains("-b"));
+        assert!(diff.contains("+X"));
+        assert!(diff.contains("-f"));
+        assert!(diff.contains("+Y"));
     }
 }

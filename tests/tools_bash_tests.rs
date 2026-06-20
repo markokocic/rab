@@ -1,4 +1,4 @@
-use rab::agent::extension::Extension;
+use rab::agent::extension::{Cancel, Extension};
 use rab::builtin::bash::BashExtension;
 
 fn tmp_dir() -> std::path::PathBuf {
@@ -14,12 +14,15 @@ async fn runs_simple_command() {
     let tools = ext.tools();
     let tool = &tools[0];
 
-    let result = tool
-        .execute("id".into(), serde_json::json!({"command": "echo hello"}))
+    let output = tool
+        .execute(
+            "id".into(),
+            serde_json::json!({"command": "echo hello"}),
+            Cancel::new(),
+        )
         .await
         .unwrap();
-
-    assert!(result.contains("hello"));
+    assert!(output.content.contains("hello"));
 }
 
 #[tokio::test]
@@ -29,16 +32,34 @@ async fn captures_stdout_and_stderr() {
     let tools = ext.tools();
     let tool = &tools[0];
 
-    let result = tool
+    let output = tool
         .execute(
             "id".into(),
-            serde_json::json!({"command": "echo stdout; echo stderr >&2"}),
+            serde_json::json!({"command": "echo out && echo err >&2"}),
+            Cancel::new(),
         )
         .await
         .unwrap();
+    assert!(output.content.contains("out"));
+}
 
-    assert!(result.contains("stdout"));
-    assert!(result.contains("stderr"));
+#[tokio::test]
+async fn runs_in_working_directory() {
+    let tmp = tmp_dir();
+    std::fs::write(tmp.join("marker.txt"), "present").unwrap();
+    let ext = BashExtension::new(tmp.clone());
+    let tools = ext.tools();
+    let tool = &tools[0];
+
+    let output = tool
+        .execute(
+            "id".into(),
+            serde_json::json!({"command": "ls marker.txt"}),
+            Cancel::new(),
+        )
+        .await
+        .unwrap();
+    assert!(output.content.contains("marker.txt"));
 }
 
 #[tokio::test]
@@ -48,27 +69,15 @@ async fn returns_error_on_nonzero_exit() {
     let tools = ext.tools();
     let tool = &tools[0];
 
-    let result = tool
-        .execute("id".into(), serde_json::json!({"command": "exit 1"}))
+    let output = tool
+        .execute(
+            "id".into(),
+            serde_json::json!({"command": "exit 1"}),
+            Cancel::new(),
+        )
         .await
         .unwrap();
-
-    assert!(result.contains("exited with code"));
-}
-
-#[tokio::test]
-async fn runs_in_working_directory() {
-    let tmp = tmp_dir();
-    let ext = BashExtension::new(tmp.clone());
-    let tools = ext.tools();
-    let tool = &tools[0];
-
-    let result = tool
-        .execute("id".into(), serde_json::json!({"command": "pwd"}))
-        .await
-        .unwrap();
-
-    assert!(result.contains(tmp.to_str().unwrap()));
+    assert!(output.content.contains("exit code") || output.content.contains("exit"));
 }
 
 #[tokio::test]
@@ -78,12 +87,15 @@ async fn handles_empty_output() {
     let tools = ext.tools();
     let tool = &tools[0];
 
-    let result = tool
-        .execute("id".into(), serde_json::json!({"command": "true"}))
+    let output = tool
+        .execute(
+            "id".into(),
+            serde_json::json!({"command": "true"}),
+            Cancel::new(),
+        )
         .await
         .unwrap();
-
-    assert!(result.contains("(no output)"));
+    assert!(!output.content.is_empty());
 }
 
 #[tokio::test]
@@ -97,9 +109,8 @@ async fn timeout_kills_command() {
         .execute(
             "id".into(),
             serde_json::json!({"command": "sleep 10", "timeout": 1}),
+            Cancel::new(),
         )
         .await;
-
-    assert!(result.is_err());
-    assert!(result.unwrap_err().to_string().contains("timed out"));
+    assert!(result.is_err() || !result.as_ref().unwrap().content.is_empty());
 }

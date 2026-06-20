@@ -1,4 +1,4 @@
-use crate::agent::extension::{AgentTool, Extension};
+use crate::agent::extension::{AgentTool, Cancel, Extension, ToolOutput};
 use anyhow::Context;
 use async_trait::async_trait;
 use std::borrow::Cow;
@@ -65,7 +65,8 @@ impl AgentTool for WriteTool {
         &self,
         tool_call_id: String,
         args: serde_json::Value,
-    ) -> anyhow::Result<String> {
+        _cancel: Cancel,
+    ) -> anyhow::Result<ToolOutput> {
         let _ = tool_call_id;
         let path = args["path"]
             .as_str()
@@ -101,10 +102,10 @@ impl AgentTool for WriteTool {
             )
         })?;
 
-        Ok(format!(
+        Ok(ToolOutput::ok(format!(
             "Successfully wrote {} bytes to {}",
             content.len(),
             path
-        ))
+        )))
     }
 }

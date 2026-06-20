@@ -751,6 +751,7 @@ fn handle_bang_command(app: &mut App, command: String) {
                         result,
                         elapsed.as_secs_f64()
                     ),
+                    compact: None,
                     is_error: !output.status.success(),
                 });
                 let _ = tx.send(AgentEvent::AgentEnd { messages: vec![] });
@@ -760,6 +761,7 @@ fn handle_bang_command(app: &mut App, command: String) {
                     id: String::new(),
                     name: "bash".into(),
                     content: format!("Failed to execute: {:#}", e),
+                    compact: None,
                     is_error: true,
                 });
                 let _ = tx.send(AgentEvent::AgentEnd { messages: vec![] });
@@ -802,10 +804,10 @@ fn handle_agent_event(app: &mut App, event: AgentEvent) {
             });
         }
         AgentEvent::ToolResult {
-            content, is_error, ..
+            content, compact, is_error, ..
         } => {
             app.messages
-                .push(DisplayMsg::ToolResult { content, is_error });
+                .push(DisplayMsg::ToolResult { content, compact, is_error });
         }
         AgentEvent::TurnEnd => {
             flush_all(app);

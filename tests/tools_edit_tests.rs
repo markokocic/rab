@@ -1,10 +1,24 @@
-use rab::agent::extension::Extension;
+use rab::agent::extension::{Cancel, Extension};
 use rab::builtin::edit::EditExtension;
 
 fn tmp_dir() -> std::path::PathBuf {
     let d = std::env::temp_dir().join(format!("rab-test-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&d).unwrap();
     d
+}
+
+async fn exec_ok(tool: &dyn rab::agent::extension::AgentTool, args: serde_json::Value) -> String {
+    tool.execute("id".into(), args, Cancel::new())
+        .await
+        .unwrap()
+        .content
+}
+
+async fn exec_err(tool: &dyn rab::agent::extension::AgentTool, args: serde_json::Value) -> String {
+    tool.execute("id".into(), args, Cancel::new())
+        .await
+        .unwrap_err()
+        .to_string()
 }
 
 #[tokio::test]
@@ -17,15 +31,14 @@ async fn single_edit_replaces_text() {
     let tools = ext.tools();
     let tool = &tools[0];
 
-    tool.execute(
-        "id".into(),
+    exec_ok(
+        tool.as_ref(),
         serde_json::json!({
             "path": path.to_str().unwrap(),
             "edits": [{"oldText": "foo bar", "newText": "baz qux"}]
         }),
     )
-    .await
-    .unwrap();
+    .await;
 
     assert_eq!(
         std::fs::read_to_string(&path).unwrap(),
@@ -43,8 +56,8 @@ async fn multiple_edits_replaces_all() {
     let tools = ext.tools();
     let tool = &tools[0];
 
-    tool.execute(
-        "id".into(),
+    exec_ok(
+        tool.as_ref(),
         serde_json::json!({
             "path": path.to_str().unwrap(),
             "edits": [
@@ -53,8 +66,7 @@ async fn multiple_edits_replaces_all() {
             ]
         }),
     )
-    .await
-    .unwrap();
+    .await;
 
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "111\nbbb\n333\n");
 }
@@ -69,16 +81,15 @@ async fn non_unique_oldtext_errors() {
     let tools = ext.tools();
     let tool = &tools[0];
 
-    let result = tool
-        .execute(
-            "id".into(),
-            serde_json::json!({
-                "path": path.to_str().unwrap(),
-                "edits": [{"oldText": "dup", "newText": "x"}]
-            }),
-        )
-        .await;
-    assert!(result.is_err());
+    let err = exec_err(
+        tool.as_ref(),
+        serde_json::json!({
+            "path": path.to_str().unwrap(),
+            "edits": [{"oldText": "dup", "newText": "x"}]
+        }),
+    )
+    .await;
+    assert!(err.contains("occurrences") || err.contains("unique"));
 }
 
 #[tokio::test]
@@ -98,6 +109,7 @@ async fn missing_oldtext_errors() {
                 "path": path.to_str().unwrap(),
                 "edits": [{"oldText": "not found", "newText": "x"}]
             }),
+            Cancel::new(),
         )
         .await;
     assert!(result.is_err());
@@ -123,6 +135,7 @@ async fn overlapping_edits_error() {
                     {"oldText": "bcd", "newText": "2"}
                 ]
             }),
+            Cancel::new(),
         )
         .await;
     assert!(result.is_err());
@@ -142,6 +155,7 @@ async fn empty_edits_errors() {
         .execute(
             "id".into(),
             serde_json::json!({"path": path.to_str().unwrap(), "edits": []}),
+            Cancel::new(),
         )
         .await;
     assert!(result.is_err());

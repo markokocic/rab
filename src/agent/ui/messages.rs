@@ -15,6 +15,7 @@ pub enum DisplayMsg {
     },
     ToolResult {
         content: String,
+        compact: Option<String>,
         is_error: bool,
     },
     Info(String),
@@ -161,35 +162,54 @@ pub fn render_messages(
                 msg_box.add_child(std::boxed::Box::new(TuiText::new(text_content, 0, 0, None)));
                 lines.extend(msg_box.render(width));
             }
-            DisplayMsg::ToolResult { content, is_error } => {
-                // Pi: tool result shares the same Box as tool call — TuiBox(paddingY=0)
-                let bg_code = if *is_error { "60;40;40" } else { "40;50;40" };
-                let fg = if *is_error { "error" } else { "muted" };
-                let mut msg_box = crate::tui::components::r#box::TuiBox::new(
-                    1,
-                    0,
-                    Some(std::boxed::Box::new(move |s: &str| -> String {
-                        format!("\x1b[48;2;{}m{}\x1b[49m", bg_code, s)
-                    })),
-                );
-                if collapse_tool_output {
-                    let first_line = content.lines().next().unwrap_or("");
-                    let truncated: String = first_line.chars().take(120).collect();
-                    let suffix = if first_line.len() > 120 { "…" } else { "" };
-                    let c = theme.fg(fg, &format!("{}{}", truncated, suffix));
-                    msg_box.add_child(std::boxed::Box::new(TuiText::new(c, 0, 0, None)));
+            DisplayMsg::ToolResult { content, compact, is_error } => {
+                if let Some(label) = compact {
+                    // Pi-style compact mode: show as a tool-call-like line with pending bg
+                    // (no expand/collapse yet — that requires per-message state)
+                    let mut msg_box = crate::tui::components::r#box::TuiBox::new(
+                        1,
+                        1,
+                        Some(std::boxed::Box::new(move |s: &str| -> String {
+                            format!("\x1b[48;2;40;40;50m{}\x1b[49m", s)
+                        })),
+                    );
+                    msg_box.add_child(std::boxed::Box::new(TuiText::new(
+                        theme.fg("toolTitle", label),
+                        0,
+                        0,
+                        None,
+                    )));
+                    lines.extend(msg_box.render(width));
                 } else {
-                    let joined = content
-                        .lines()
-                        .map(|l| {
-                            let truncated: String = l.chars().take(140).collect();
-                            theme.fg(fg, &truncated)
-                        })
-                        .collect::<Vec<_>>()
-                        .join("\n");
-                    msg_box.add_child(std::boxed::Box::new(TuiText::new(joined, 0, 0, None)));
+                    // Pi: tool result shares the same Box as tool call — TuiBox(paddingY=0)
+                    let bg_code = if *is_error { "60;40;40" } else { "40;50;40" };
+                    let fg = if *is_error { "error" } else { "muted" };
+                    let mut msg_box = crate::tui::components::r#box::TuiBox::new(
+                        1,
+                        0,
+                        Some(std::boxed::Box::new(move |s: &str| -> String {
+                            format!("\x1b[48;2;{}m{}\x1b[49m", bg_code, s)
+                        })),
+                    );
+                    if collapse_tool_output {
+                        let first_line = content.lines().next().unwrap_or("");
+                        let truncated: String = first_line.chars().take(120).collect();
+                        let suffix = if first_line.len() > 120 { "…" } else { "" };
+                        let c = theme.fg(fg, &format!("{}{}", truncated, suffix));
+                        msg_box.add_child(std::boxed::Box::new(TuiText::new(c, 0, 0, None)));
+                    } else {
+                        let joined = content
+                            .lines()
+                            .map(|l| {
+                                let truncated: String = l.chars().take(140).collect();
+                                theme.fg(fg, &truncated)
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        msg_box.add_child(std::boxed::Box::new(TuiText::new(joined, 0, 0, None)));
+                    }
+                    lines.extend(msg_box.render(width));
                 }
-                lines.extend(msg_box.render(width));
             }
             DisplayMsg::Info(text) => {
                 // Pi: info messages stack directly, visual separation comes from styling
@@ -221,6 +241,7 @@ pub fn session_messages_to_display(
                 let prefix = if m.is_error { "✗" } else { "✓" };
                 DisplayMsg::ToolResult {
                     content: format!("{} {}", prefix, m.content),
+                    compact: None,
                     is_error: m.is_error,
                 }
             }
