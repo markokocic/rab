@@ -15,7 +15,7 @@
 ## Built-in tools
 - [x] review each builtin tool: check if behaviour and rendering matches pi 1/1
   - [ ] bash
-  - [ ] read
+  - [x] read — line accumulation truncation, firstLineExceedsLimit, trimTrailingEmptyLines, formatSize
   - [ ] write
   - [x] edit — BOM, line ending (CRLF/LF), fuzzy matching, input normalization, diff output, better errors
 
