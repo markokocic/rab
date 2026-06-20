@@ -9,9 +9,12 @@ lets it act on your codebase.
 | pi (`packages/`) | rab equivalent | Notes |
 |---|---|---|
 | `pi-ai` (providers, streaming, models) | `Provider` trait + `adapter/genai.rs` → [genai](https://github.com/jeremychone/rust-genai) crate | Isolated behind trait; swappable. PoC targets [OpenCode Go](https://opencode.ai/docs/go/) (DeepSeek V4 Flash/Pro) via genai's OpenAI adapter. Phase 1 adds Anthropic, OpenAI, Google, Ollama |
-| `pi-agent-core` (agent loop, session, compaction, skills) | `src/agent/`, `src/agent/session.rs`, `compaction.rs`, `src/agent/types.rs` | Loop ported directly from `agent-loop.ts` |
+| `pi-agent-core` (agent loop, session, compaction, skills) | `src/agent/`, `src/agent/session.rs`, `compaction.rs`, `src/agent/types.rs`, `src/agent/skills.rs` | Loop ported directly from `agent-loop.ts` |
 | `pi-tui` (terminal UI, components, editor) | `src/tui/` + `src/agent/ui/` ✅ — direct Rust port of `@earendil-works/pi-tui` on top of [crossterm](https://github.com/crossterm-rs/crossterm) 0.28 | Full port: diff renderer, Component trait, Editor, Input, SelectList, SettingsList, etc. No ratatui. Main-screen mode (no alternate screen), native terminal scrolling. See [`tui.md`](tui.md) for full design. |
 | `coding-agent` (CLI, extensions, built-in tools, settings, commands) | `cli.rs`, `src/agent/extension.rs`, `builtin/`, `src/agent/settings.rs` | Single `Extension` trait for built-in + user extensions; commands use same `CommandHandler` interface; built-in commands in `builtin/commands.rs` |
+| `coding-agent/system-prompt.ts` | `src/agent/system_prompt.rs` | SystemPromptBuilder with layered prompt (custom, append, context XML, skills XML, date/cwd) |
+| `coding-agent/resource-loader.ts` (loadProjectContextFiles) | `src/agent/context_files.rs` | AGENTS.md/CLAUDE.md discovery: global → ancestors → cwd |
+| `coding-agent/skills.ts` + `agent/harness/skills.ts` | `src/agent/skills.rs` | Skill loading, `format_skills_for_prompt()`, `format_skill_invocation()`, `/skill:name` expansion |
 | `coding-agent/modes/interactive` | `src/agent/ui/` (app-specific UI components) | ChatEditor, MessageList, Footer, ModelSelector, queued messages, streaming text display — built on `src/tui/` primitives |
 | MCP extensions (third-party) | `pi-mcp-adapter` built-in extension | Phase 2. Uses `rmcp` crate. Configured via `.rab/mcp.json` |
 | Config files (`~/.pi/agent/`) | `~/.rab/` | Same file names and JSON schema as pi |
@@ -309,9 +312,11 @@ JSONL file, one object per line. Same format as pi's sessions.
 │   └── auth.json              # API keys and OAuth credentials
 ├── models.json                # custom provider/model definitions
 ├── keybindings.json           # custom keybinds (phase 2)
+├── SYSTEM.md                  # custom system prompt (full override)
+├── APPEND_SYSTEM.md           # appended to system prompt
 ├── AGENTS.md                  # global context file
 ├── extensions/                # user extensions (phase 2)
-├── skills/                    # agent skills (phase 2)
+├── skills/                    # agent skills
 ├── themes/                    # TUI themes (phase 2)
 └── sessions/
     └── <cwd-hash>/            # one directory per project
@@ -524,21 +529,21 @@ in load order). Commands are deduplicated by name when collected.
 
 ---
 
-## System prompt (`system_prompt.rs`)
+## System prompt (`system_prompt.rs`) ✅
 
-Built from the same sources as pi, concatenated:
+Built from the same sources as pi, concatenated via `SystemPromptBuilder`:
 
-1. **Base prompt** — hardcoded, describes available tools, response format,
-   edit tool semantics, `@` file references.
-2. **Global AGENTS.md** — `~/.rab/AGENTS.md` (user-wide instructions).
+1. **Default prompt** or **custom SYSTEM.md** — tool descriptions, response format.
+   Custom prompt from `~/.rab/SYSTEM.md` (global) or `.rab/SYSTEM.md` (project) replaces default.
+2. **Append prompt** — `APPEND_SYSTEM.md` appended after custom or default.
 3. **Project context files** — walked up from cwd, loads `AGENTS.md` and
    `CLAUDE.md` (alias) from every ancestor directory. Each file wrapped in
-   `<project_context>` tags.
+   `<project_instructions path="...">` tags inside `<project_context>`.
+4. **Skills** — available skills listed as `<available_skills><skill name="...">` XML.
+5. **Date and cwd** — `Current date: YYYY-MM-DD` and `Current working directory: /path`.
 
-Also respects `APPEND_SYSTEM.md` and `SYSTEM.md` (full override) with the
-same discovery rules as pi.
-
-Disable with `--no-context-files` / `-nc`.
+CLI flags: `--no-context-files` / `-nc`, `--system-prompt <text>`, `--append-system-prompt <text>`.
+See `src/agent/context_files.rs` for the discovery logic.
 
 ---
 
@@ -705,7 +710,9 @@ Tools:
   --no-tools       Disable all tools (chat-only mode)
 
 Context:
-  -nc, --no-context-files   Skip AGENTS.md loading
+  -nc, --no-context-files      Skip AGENTS.md loading
+  --system-prompt <text>       Replace default system prompt
+  --append-system-prompt <text> Append to system prompt
 
 Other:
   -h, --help
@@ -1065,12 +1072,17 @@ native path via `crate-type = ["cdylib"]` + `dlopen2`. Same `Plugin` trait,
 different compile target. Requires matching Rust compiler version between host
 and plugin — documented as a power-user feature, not the default path.
 
-### Skills
+### Skills ✅
 
 Skills are markdown files following the [Agent Skills standard](https://agentskills.io).
-Loaded from `~/.rab/skills/` and `.rab/skills/`. When the model's
-request matches a skill's trigger, the skill instructions are injected into the
-system prompt.
+Loaded from `~/.rab/skills/` and `.rab/skills/` via `src/agent/skills.rs`.
+
+**Implemented:**
+- `load_skills()` — discovers SKILL.md files, parses YAML-like frontmatter (`name:`, `description:`, `disable-model-invocation:`)
+- `format_skills_for_prompt()` — lists available skills as `<available_skills>` XML in the system prompt
+- `format_skill_invocation()` — creates `<skill name="..." location="...">` blocks for explicit invocation
+- `expand_skill_command()` — `/skill:name [args]` expansion in user input (pi-style)
+- Startup resource listing shows skill names in the welcome message
 
 ### pi-mcp-adapter
 

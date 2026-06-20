@@ -30,11 +30,12 @@ Study these files before implementing each Rust equivalent.
 | `agent/session.rs` | `packages/agent/src/harness/session/`, `packages/coding-agent/src/core/session-manager.ts` |
 | `compaction.rs` | `packages/agent/src/harness/compaction/compaction.ts`, `packages/coding-agent/src/core/compaction/` |
 | `agent/settings.rs` | `packages/coding-agent/src/core/settings-manager.ts` |
-| `system_prompt.rs` | `packages/coding-agent/src/core/system-prompt.ts` |
+| `system_prompt.rs` ✅ | `packages/coding-agent/src/core/system-prompt.ts` |
+| `context_files.rs` ✅ | `packages/coding-agent/src/core/resource-loader.ts` (`loadProjectContextFiles`) |
 | `commands.rs` | `packages/coding-agent/src/core/slash-commands.ts` |
 | `agent/ui/` ✅ | `packages/coding-agent/src/modes/interactive/` (app-specific UI components) |
 | `adapter.rs` | pi has no genai; rab uses genai crate for HTTP+streaming |
-| `skills.rs` (Phase 2) | `packages/coding-agent/src/core/skills.ts` |
+| `skills.rs` ✅ | `packages/coding-agent/src/core/skills.ts` + `packages/agent/src/harness/skills.ts` |
 
 ---
 
@@ -63,13 +64,15 @@ Everything in arch.md that isn't explicitly Phase 2.
   - Thinking level, tools allow/deny lists, theme ✅
   - `~/.rab/models.json` for custom provider/model definitions ❌
   - CLI flags override settings file values ✅ (partial — --model only)
-- [ ] **`system_prompt.rs`** — Build system prompt from:
-  - Base prompt (hardcoded tool descriptions, response format)
-  - `~/.rab/AGENTS.md` (global context)
-  - `AGENTS.md` / `CLAUDE.md` walked up from cwd (project context)
-  - Wrapped in `<project_context>` tags
-  - Respect `APPEND_SYSTEM.md` / `SYSTEM.md` (full override)
-  - `--no-context-files` flag
+- [x] **`system_prompt.rs`** — Build system prompt from:
+  - Base prompt (hardcoded tool descriptions, response format) ✅
+  - `~/.rab/AGENTS.md` (global context) ✅
+  - `AGENTS.md` / `CLAUDE.md` walked up from cwd (project context) ✅
+  - Wrapped in `<project_context>` tags ✅
+  - `<available_skills>` XML block with skill metadata ✅
+  - Respect `APPEND_SYSTEM.md` / `SYSTEM.md` (full override) ✅
+  - `--no-context-files` flag ✅
+  - `--system-prompt` / `--append-system-prompt` flags ✅
 - [x] **`session.rs`** — `SessionManager` with JSONL storage:
   - Create new session, continue recent, open by path ✅
   - Append `AgentMessage` entries ✅
@@ -203,6 +206,10 @@ persistent sessions, context compaction, settings, slash commands, and custom co
 ### Phase 1
 
 - [x] **`session.rs`** — SessionManager with JSONL tree storage, 66 unit tests
+- [x] **`context_files.rs`** — AGENTS.md/CLAUDE.md discovery (global → ancestors → cwd)
+- [x] **`system_prompt.rs`** — SystemPromptBuilder with layered prompt, context XML, skills XML, date/cwd
+- [x] **`skills.rs`** — Skill loading, frontmatter parsing, `format_skills_for_prompt()`, `format_skill_invocation()`, `/skill:name` expansion
+- [x] **Startup resource listing** — Context files and skills shown in welcome message (pi-style)
 - [x] **`settings.rs`** — Pi keys (`hideThinkingBlock`, `collapseToolOutput`), `save_to()` for testing
 - [x] **`auth.rs`** — Supports `api_key` and `oauth` credential types
 - [x] **`Cargo.toml`** — `native-tls` for Termux/Android, `unicode-segmentation` for editor
@@ -213,4 +220,4 @@ persistent sessions, context compaction, settings, slash commands, and custom co
 - [x] **Working indicator always rendered** — Empty line when inactive keeps line count stable, prevents full-screen clears on streaming state change
 - [x] **Overflow prevention** — All message lines padded to `width`; `pad_to_width()` truncates via `truncate_to_width()` when `visible_width > width`
 
-### Tests: 319 total (169 unit + 150 integration)
+### Tests: 323 total (173 unit + 150 integration)

@@ -25,9 +25,15 @@
 - [ ] footer token display padding fix on narrow terminals
 - [ ] tool call lines bold tool name (already done via theme.bold)
 
+## Done
+- [x] `system_prompt.rs` — AGENTS.md/CLAUDE.md loading, project context, SYSTEM.md, APPEND_SYSTEM.md
+- [x] `context_files.rs` — context file discovery (ancestor walk)
+- [x] `skills.rs` — load skills, format for prompt, `/skill:name` expansion
+- [x] `--no-context-files`, `--system-prompt`, `--append-system-prompt` CLI flags
+- [x] Startup resource listing (context files, skills) in welcome message
+
 ## Phase 1 remaining
 - [ ] `adapter/genai.rs` — multiple backends (Anthropic, OpenAI, Google, Ollama)
-- [ ] `system_prompt.rs` — AGENTS.md, CLAUDE.md loading, project context
 - [ ] `compaction.rs` — context window compaction
 - [ ] Hook pipeline — `before_tool_call`, `after_tool_call`, `CancellationToken`
 - [ ] Steering / follow-up queues — runtime message injection
