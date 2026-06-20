@@ -243,39 +243,54 @@ pub async fn run(config: AppConfig, session: SessionManager) -> anyhow::Result<(
     let mut screen = Screen::new();
     let mut app = App::new(config, session);
 
+    // Cache terminal dimensions to avoid expensive syscall on every frame.
+    // Only re-query when a resize event is detected or periodically.
+    let mut cols: u16 = 80;
+    let mut rows: u16 = 24;
+    let mut dirty = true; // force initial render
+
     loop {
-        // Poll for events first (pi-style: process input before rendering)
-        // Short timeout keeps typing responsive; 8ms ≈ 120fps polling rate.
-        let timeout = if app.is_streaming || app.working.active {
+        // Poll for events (pi-style: process input before rendering)
+        let timeout = if dirty || app.is_streaming || app.working.active {
+            // Shorter timeout when we have pending work or animation
             Duration::from_millis(8)
         } else {
-            Duration::from_millis(16)
+            // Longer timeout when idle — reduces CPU usage
+            Duration::from_millis(32)
         };
 
         if let Some(key) = terminal::poll_key_event(Some(timeout))? {
             handle_input(&mut app, &key);
+            dirty = true;
         }
 
         // Drain agent events
         while let Ok(event) = app.event_rx.try_recv() {
             handle_agent_event(&mut app, event);
+            dirty = true;
         }
 
-        // Get terminal size
-        let (cols, rows) = Terminal::size()?;
+        // Check terminal size only when we're about to render
+        // (avoids expensive ioctl syscall on idle frames)
+        if dirty && let Ok((w, h)) = Terminal::size() {
+            cols = w;
+            rows = h;
+        }
 
-        // Compose UI after all pending input/events processed
-        // (single render per state change, no wasted before-input frames)
-        let lines = compose_ui(&mut app, cols as usize, rows as usize);
+        // Tick the working indicator — sets dirty when spinner advances
+        if app.working.tick() {
+            dirty = true;
+        }
 
-        // Render to screen
-        screen.render(lines, cols, rows, &mut stdout)?;
+        // Compose and render only when state has changed
+        if dirty {
+            let lines = compose_ui(&mut app, cols as usize, rows as usize);
+            screen.render(lines, cols, rows, &mut stdout)?;
+            dirty = false;
+        }
 
         // Pi: clear transient status after rendering
         app.status_text = None;
-
-        // Tick the working indicator
-        app.working.tick();
 
         if app.should_quit {
             break;
@@ -399,13 +414,15 @@ fn compose_ui(app: &mut App, width: usize, _height: usize) -> Vec<String> {
         lines.push(crate::agent::ui::messages::pad_to_width(&hint, width));
     }
 
-    // ── Spacer before editor (pi inserts blank line between messages and editor) ──
-    if !lines.is_empty() && !lines.last().is_none_or(|l| l.trim().is_empty()) {
+    // ── Spacer/status line before editor ──
+    // Blank line when idle, spinner when working.
+    // Exactly one line of separation to keep editor position stable.
+    let working_lines = app.working.render(width);
+    if !working_lines.is_empty() {
+        lines.extend(working_lines);
+    } else if lines.last().is_none_or(|l| !l.trim().is_empty()) {
         lines.push(String::new());
     }
-
-    // ── Working indicator (always rendered - empty line when inactive, keeps line count stable) ──
-    lines.extend(app.working.render(width));
 
     // ── Editor ──
     lines.extend(app.editor.editor.render(width));

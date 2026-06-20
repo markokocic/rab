@@ -44,15 +44,18 @@ impl WorkingIndicator {
         self.active = false;
     }
 
-    pub fn tick(&mut self) {
+    /// Returns true if the frame changed (caller should re-render).
+    pub fn tick(&mut self) -> bool {
         if !self.active || self.frames.is_empty() {
-            return;
+            return false;
         }
         let elapsed = self.last_tick.elapsed();
         if elapsed.as_millis() >= self.interval_ms as u128 {
             self.frame = (self.frame + 1) % self.frames.len();
             self.last_tick = std::time::Instant::now();
+            return true;
         }
+        false
     }
 }
 
@@ -65,7 +68,7 @@ impl Default for WorkingIndicator {
 impl Component for WorkingIndicator {
     fn render(&self, _width: usize) -> Vec<String> {
         if !self.active || self.frames.is_empty() {
-            return vec![String::new()];
+            return vec![];
         }
         let frame = &self.frames[self.frame % self.frames.len()];
         let text = self.theme.accent(frame);

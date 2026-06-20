@@ -178,18 +178,19 @@ impl RabTheme {
 
         // Add thinking_bg as a derived background from thinkingText
         if let Some(text_color) = colors.get("thinkingText")
-            && !bg_ansi.contains_key("thinking_bg") {
-                // Darken thinkingText for background
-                let bg_color = if let Some((r, g, b)) = Self::hex_to_rgb(text_color) {
-                    let dr = (r as f64 * 0.7) as u8;
-                    let dg = (g as f64 * 0.7) as u8;
-                    let db = (b as f64 * 0.7) as u8;
-                    format!("#{:02x}{:02x}{:02x}", dr, dg, db)
-                } else {
-                    text_color.clone()
-                };
-                bg_ansi.insert("thinking_bg".to_string(), Self::bg_escape(&bg_color, mode));
-            }
+            && !bg_ansi.contains_key("thinking_bg")
+        {
+            // Darken thinkingText for background
+            let bg_color = if let Some((r, g, b)) = Self::hex_to_rgb(text_color) {
+                let dr = (r as f64 * 0.7) as u8;
+                let dg = (g as f64 * 0.7) as u8;
+                let db = (b as f64 * 0.7) as u8;
+                format!("#{:02x}{:02x}{:02x}", dr, dg, db)
+            } else {
+                text_color.clone()
+            };
+            bg_ansi.insert("thinking_bg".to_string(), Self::bg_escape(&bg_color, mode));
+        }
 
         Self {
             name: config.name.clone(),
@@ -360,12 +361,13 @@ pub fn init_theme(theme_name: Option<&str>, force_256: bool) {
         Err(_) => {
             // Fall back to dark
             if name != "dark"
-                && let Ok(config) = load_theme_config("dark") {
-                    let theme = RabTheme::from_config(&config, mode);
-                    if let Ok(mut t) = get_theme_lock().lock() {
-                        *t = theme;
-                    }
+                && let Ok(config) = load_theme_config("dark")
+            {
+                let theme = RabTheme::from_config(&config, mode);
+                if let Ok(mut t) = get_theme_lock().lock() {
+                    *t = theme;
                 }
+            }
         }
     }
 }
@@ -414,9 +416,11 @@ pub fn get_available_themes() -> Vec<String> {
             let path = entry.path();
             if path.extension().map(|e| e == "json").unwrap_or(false)
                 && let Some(name) = path.file_stem().and_then(|s| s.to_str())
-                    && name != "dark" && name != "light" {
-                        themes.push(name.to_string());
-                    }
+                && name != "dark"
+                && name != "light"
+            {
+                themes.push(name.to_string());
+            }
         }
     }
 
@@ -449,18 +453,19 @@ pub fn set_theme(name: &str) -> Result<(), String> {
 pub fn detect_terminal_theme() -> &'static str {
     if let Ok(colorfgbg) = std::env::var("COLORFGBG")
         && let Some(bg_str) = colorfgbg.split(';').next_back()
-            && let Ok(bg) = bg_str.trim().parse::<u8>() {
-                let luminance = match bg {
-                    0..=7 => 0.2,
-                    8..=15 => 0.8,
-                    _ => {
-                        // 256-color: approximate luminance
-                        
-                        (bg - 16) as f64 / 239.0
-                    }
-                };
-                return if luminance > 0.5 { "light" } else { "dark" };
+        && let Ok(bg) = bg_str.trim().parse::<u8>()
+    {
+        let luminance = match bg {
+            0..=7 => 0.2,
+            8..=15 => 0.8,
+            _ => {
+                // 256-color: approximate luminance
+
+                (bg - 16) as f64 / 239.0
             }
+        };
+        return if luminance > 0.5 { "light" } else { "dark" };
+    }
     "dark"
 }
 
