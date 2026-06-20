@@ -1513,4 +1513,184 @@ mod tests {
             "Output should contain queued message text"
         );
     }
+
+    // ── Conversation / send behavior (matches pi) ────────────────
+
+    #[test]
+    fn test_submit_message_does_not_add_to_conversation() {
+        let tmp = tempdir().unwrap();
+        let cwd = tmp.path().to_path_buf();
+        let session = SessionManager::in_memory(&cwd);
+
+        let config = AppConfig {
+            model: "deepseek-v4-flash".into(),
+            system_prompt: String::new(),
+            tools: vec![],
+            agent_tools: vec![],
+            extensions: vec![],
+            provider: Box::new(MockProvider),
+            cwd: cwd.clone(),
+            thinking_level: None,
+            git_branch: None,
+            available_models: vec![],
+            hide_thinking: true,
+            collapse_tool_output: true,
+            interactive: true,
+            settings: crate::agent::settings::Settings::default(),
+            context_files: vec![],
+            skills: vec![],
+        };
+
+        let mut app = App::new(config, session);
+
+        // Mark as streaming so submit_message queues instead of spawning a tokio task
+        app.is_streaming = true;
+        let initial_len = app.conversation.len();
+
+        // Submit a message while streaming (queues, no tokio::spawn)
+        submit_message(&mut app, "test message".into());
+
+        // Pi: submit_message sends to agent loop, which emits message_end for persistence.
+        // The message is NOT added to app.conversation directly — it flows through AgentEnd.
+        assert_eq!(
+            app.conversation.len(),
+            initial_len,
+            "submit_message must not add to app.conversation (avoids double-send)"
+        );
+
+        // But the display message IS added immediately (so the UI shows it)
+        assert!(
+            app.messages
+                .iter()
+                .any(|m| matches!(m, DisplayMsg::User(t) if t == "test message")),
+            "submit_message must add DisplayMsg::User for immediate display"
+        );
+    }
+
+    #[test]
+    fn test_agent_end_populates_conversation() {
+        let tmp = tempdir().unwrap();
+        let cwd = tmp.path().to_path_buf();
+        let session = SessionManager::in_memory(&cwd);
+
+        let config = AppConfig {
+            model: "deepseek-v4-flash".into(),
+            system_prompt: String::new(),
+            tools: vec![],
+            agent_tools: vec![],
+            extensions: vec![],
+            provider: Box::new(MockProvider),
+            cwd: cwd.clone(),
+            thinking_level: None,
+            git_branch: None,
+            available_models: vec![],
+            hide_thinking: true,
+            collapse_tool_output: true,
+            interactive: true,
+            settings: crate::agent::settings::Settings::default(),
+            context_files: vec![],
+            skills: vec![],
+        };
+
+        let mut app = App::new(config, session);
+
+        // Simulate the messages that AgentEnd receives from run_agent_loop
+        let user_msg = AgentMessage::user("hello");
+        let assistant_msg = AgentMessage {
+            id: uuid::Uuid::new_v4().to_string(),
+            parent_id: None,
+            role: crate::agent::types::Role::Assistant,
+            content: "Hello back".to_string(),
+            tool_calls: vec![],
+            tool_call_id: None,
+            usage: None,
+            is_error: false,
+            timestamp: chrono::Utc::now().timestamp_millis(),
+        };
+
+        let agent_messages = vec![user_msg.clone(), assistant_msg.clone()];
+
+        // Fire AgentEnd
+        handle_agent_event(
+            &mut app,
+            AgentEvent::AgentEnd {
+                messages: agent_messages,
+            },
+        );
+
+        // Pi: all messages from the turn are added to conversation on AgentEnd.
+        // The user message appears once (not duplicated), followed by assistant responses.
+        assert_eq!(
+            app.conversation.len(),
+            2,
+            "conversation should have user + assistant"
+        );
+        assert_eq!(app.conversation[0].content, "hello");
+        assert_eq!(app.conversation[0].role, crate::agent::types::Role::User);
+        assert_eq!(app.conversation[1].content, "Hello back");
+        assert_eq!(
+            app.conversation[1].role,
+            crate::agent::types::Role::Assistant
+        );
+    }
+
+    #[test]
+    fn test_agent_end_no_duplicate_messages() {
+        let tmp = tempdir().unwrap();
+        let cwd = tmp.path().to_path_buf();
+        let session = SessionManager::in_memory(&cwd);
+
+        let config = AppConfig {
+            model: "deepseek-v4-flash".into(),
+            system_prompt: String::new(),
+            tools: vec![],
+            agent_tools: vec![],
+            extensions: vec![],
+            provider: Box::new(MockProvider),
+            cwd: cwd.clone(),
+            thinking_level: None,
+            git_branch: None,
+            available_models: vec![],
+            hide_thinking: true,
+            collapse_tool_output: true,
+            interactive: true,
+            settings: crate::agent::settings::Settings::default(),
+            context_files: vec![],
+            skills: vec![],
+        };
+
+        let mut app = App::new(config, session);
+
+        // Simulate a message already in conversation (e.g. from a previous turn)
+        let existing = AgentMessage::user("existing");
+        let existing_id = existing.id.clone();
+        app.conversation.push(existing);
+
+        // AgentEnd fires with the SAME message id — should NOT duplicate
+        let dup_msg = AgentMessage {
+            id: existing_id,
+            parent_id: None,
+            role: crate::agent::types::Role::User,
+            content: "existing".to_string(),
+            tool_calls: vec![],
+            tool_call_id: None,
+            usage: None,
+            is_error: false,
+            timestamp: 0,
+        };
+
+        handle_agent_event(
+            &mut app,
+            AgentEvent::AgentEnd {
+                messages: vec![dup_msg],
+            },
+        );
+
+        // Should still have exactly 1 message (deduplicated by id)
+        assert_eq!(
+            app.conversation.len(),
+            1,
+            "AgentEnd must not duplicate messages already in conversation (pi-style)"
+        );
+    }
 }
