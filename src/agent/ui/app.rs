@@ -602,7 +602,6 @@ fn submit_message(app: &mut App, message: String) {
     if trimmed.starts_with("/skill:") {
         let expanded = crate::agent::skills::expand_skill_command(&trimmed, &app.skills);
         app.messages.push(DisplayMsg::User(expanded.clone()));
-        app.conversation.push(AgentMessage::user(&expanded));
         if app.is_streaming {
             app.queued_messages.push(expanded);
             return;
@@ -625,7 +624,6 @@ fn submit_message(app: &mut App, message: String) {
 
     // Normal message submission to LLM
     app.messages.push(DisplayMsg::User(trimmed.clone()));
-    app.conversation.push(AgentMessage::user(&trimmed));
 
     if app.is_streaming {
         // Queue — will be submitted when current response finishes (pi-style)
@@ -817,9 +815,17 @@ fn handle_agent_event(app: &mut App, event: AgentEvent) {
             app.footer.set_streaming(false);
             app.agent_abort = None;
 
+            // Persist new messages to session and update conversation state
+            // (user message is in prompts, not duplicated in app.conversation)
             if let Some(ref mut session) = app.session {
                 for msg in messages {
                     session.append_message(msg);
+                }
+            }
+            // Extend app.conversation so subsequent turns have full context
+            for msg in messages {
+                if !app.conversation.iter().any(|m| m.id == msg.id) {
+                    app.conversation.push(msg.clone());
                 }
             }
             if let Some(last) = messages.iter().rev().find(|m| m.usage.is_some()) {
