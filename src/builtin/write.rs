@@ -57,6 +57,10 @@ impl AgentTool for WriteTool {
         })
     }
 
+    fn prompt_guidelines(&self) -> Vec<String> {
+        vec!["Use write only for new files or complete rewrites.".into()]
+    }
+
     fn label(&self) -> &str {
         "Create or overwrite files"
     }
@@ -65,7 +69,7 @@ impl AgentTool for WriteTool {
         &self,
         tool_call_id: String,
         args: serde_json::Value,
-        _cancel: Cancel,
+        cancel: Cancel,
     ) -> anyhow::Result<ToolOutput> {
         let _ = tool_call_id;
         let path = args["path"]
@@ -75,37 +79,55 @@ impl AgentTool for WriteTool {
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("Missing 'content' argument"))?;
 
-        let abs_path = {
-            let p = std::path::Path::new(path);
-            if p.is_absolute() {
-                p.to_path_buf()
-            } else {
-                self.cwd.join(p)
-            }
-        };
+        cancel.check()?;
 
-        // Create parent directories
-        if let Some(parent) = abs_path.parent() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("Failed to create directory {}", parent.display()))?;
-        }
+        let cwd = self.cwd.clone();
+        let path_for_queue = path.to_owned();
+        let cwd_for_closure = cwd.clone();
+        let path_for_closure = path.to_owned();
+        let content_owned = content.to_owned();
 
-        // Write to temp file, then atomic rename
-        let tmp_path = abs_path.with_extension(format!("tmp{}", uuid::Uuid::new_v4()));
-        std::fs::write(&tmp_path, content)
-            .with_context(|| format!("Failed to write {}", tmp_path.display()))?;
-        std::fs::rename(&tmp_path, &abs_path).with_context(|| {
-            format!(
-                "Failed to rename {} → {}",
-                tmp_path.display(),
-                abs_path.display()
-            )
-        })?;
+        let result = crate::builtin::file_mutation_queue::with_file_mutation_queue(
+            &path_for_queue,
+            &cwd,
+            || async move {
+                let abs_path = {
+                    let p = std::path::Path::new(&path_for_closure);
+                    if p.is_absolute() {
+                        p.to_path_buf()
+                    } else {
+                        cwd_for_closure.join(p)
+                    }
+                };
 
-        Ok(ToolOutput::ok(format!(
-            "Successfully wrote {} bytes to {}",
-            content.len(),
-            path
-        )))
+                // Create parent directories
+                if let Some(parent) = abs_path.parent() {
+                    std::fs::create_dir_all(parent).with_context(|| {
+                        format!("Failed to create directory {}", parent.display())
+                    })?;
+                }
+
+                // Write to temp file, then atomic rename
+                let tmp_path = abs_path.with_extension(format!("tmp{}", uuid::Uuid::new_v4()));
+                std::fs::write(&tmp_path, &content_owned)
+                    .with_context(|| format!("Failed to write {}", tmp_path.display()))?;
+                std::fs::rename(&tmp_path, &abs_path).with_context(|| {
+                    format!(
+                        "Failed to rename {} → {}",
+                        tmp_path.display(),
+                        abs_path.display()
+                    )
+                })?;
+
+                Ok::<_, anyhow::Error>(format!(
+                    "Successfully wrote {} bytes to {}",
+                    content_owned.len(),
+                    path_for_closure
+                ))
+            },
+        )
+        .await?;
+
+        Ok(ToolOutput::ok(result))
     }
 }
