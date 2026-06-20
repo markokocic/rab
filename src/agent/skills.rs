@@ -17,6 +17,8 @@ pub struct Skill {
     pub description: String,
     /// Absolute path to the SKILL.md file.
     pub file_path: PathBuf,
+    /// Base directory for resolving relative paths in the skill.
+    pub base_dir: PathBuf,
     /// Whether the model should not auto-invoke this skill.
     pub disable_model_invocation: bool,
 }
@@ -92,11 +94,17 @@ fn load_skill_from_file(file_path: &Path) -> Option<Skill> {
     });
 
     let description = description.unwrap_or_default();
+    let canonical_path = fs::canonicalize(file_path).unwrap_or_else(|_| file_path.to_path_buf());
+    let base_dir = canonical_path
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("/"));
 
     Some(Skill {
         name,
         description,
-        file_path: fs::canonicalize(file_path).unwrap_or_else(|_| file_path.to_path_buf()),
+        file_path: canonical_path,
+        base_dir,
         disable_model_invocation: disable,
     })
 }
@@ -256,6 +264,80 @@ fn escape_xml(s: &str) -> String {
         .replace('\'', "&apos;")
 }
 
+/// Strip YAML frontmatter from a string, returning the body only.
+///
+/// Matches pi's `stripFrontmatter()` in frontmatter.ts.
+/// If no `---` delimiters are found, returns the original string.
+pub fn strip_frontmatter(content: &str) -> String {
+    let content = content.trim_start();
+    if !content.starts_with("---") {
+        return content.to_string();
+    }
+
+    let remaining = &content[3..];
+    let end = match remaining.find("---") {
+        Some(pos) => pos,
+        None => return content.to_string(),
+    };
+
+    // Skip to after the closing ---
+    let body_start = 3 + end + 3;
+    content[body_start..].trim().to_string()
+}
+
+/// Read a SKILL.md file, strip frontmatter, and return the body.
+pub fn read_skill_body(file_path: &Path) -> Option<String> {
+    let content = std::fs::read_to_string(file_path).ok()?;
+    Some(strip_frontmatter(&content))
+}
+
+/// Format a skill invocation block for the LLM.
+///
+/// Mirrors pi's `formatSkillInvocation()` in harness/skills.ts.
+/// Produces:
+/// ```xml
+/// <skill name="..." location="...">
+/// References are relative to <basedir>.
+///
+/// <body>
+/// </skill>
+/// ```
+pub fn format_skill_invocation(skill: &Skill, additional_instructions: Option<&str>) -> String {
+    let body = read_skill_body(&skill.file_path).unwrap_or_default();
+    let base_dir_str = skill.base_dir.to_string_lossy();
+    let skill_block = format!(
+        "<skill name=\"{}\" location=\"{}\">\nReferences are relative to {}.\n\n{}\n</skill>",
+        escape_xml(&skill.name),
+        escape_xml(&skill.file_path.to_string_lossy()),
+        base_dir_str,
+        body
+    );
+    match additional_instructions {
+        Some(instr) if !instr.is_empty() => format!("{}\n\n{}", skill_block, instr),
+        _ => skill_block,
+    }
+}
+
+/// Expand a `/skill:name [args]` command into a skill invocation block.
+/// If the skill is not found, returns the original text unchanged.
+pub fn expand_skill_command(text: &str, skills: &[Skill]) -> String {
+    if !text.starts_with("/skill:") {
+        return text.to_string();
+    }
+
+    let rest = &text[7..]; // after "/skill:"
+    let (skill_name, args) = match rest.find(' ') {
+        Some(pos) => (&rest[..pos], rest[pos + 1..].trim()),
+        None => (rest, ""),
+    };
+
+    let skill = skills.iter().find(|s| s.name == skill_name);
+    match skill {
+        Some(s) => format_skill_invocation(s, if args.is_empty() { None } else { Some(args) }),
+        None => text.to_string(), // unknown skill, pass through
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -356,12 +438,14 @@ disable-model-invocation: true
                 name: "code-review".to_string(),
                 description: "Reviews code for bugs".to_string(),
                 file_path: PathBuf::from("/home/user/.rab/agent/skills/code-review/SKILL.md"),
+                base_dir: PathBuf::from("/home/user/.rab/agent/skills/code-review"),
                 disable_model_invocation: false,
             },
             Skill {
                 name: "hidden".to_string(),
                 description: "Hidden skill".to_string(),
                 file_path: PathBuf::from("/home/user/.rab/agent/skills/hidden/SKILL.md"),
+                base_dir: PathBuf::from("/home/user/.rab/agent/skills/hidden"),
                 disable_model_invocation: true,
             },
         ];
@@ -388,6 +472,7 @@ disable-model-invocation: true
             name: "hidden".to_string(),
             description: "Hidden".to_string(),
             file_path: PathBuf::from("/tmp/SKILL.md"),
+            base_dir: PathBuf::from("/tmp"),
             disable_model_invocation: true,
         }];
         assert!(format_skills_for_prompt(&skills).is_empty());
@@ -399,6 +484,7 @@ disable-model-invocation: true
             name: "escape<test>".to_string(),
             description: "description with & special chars".to_string(),
             file_path: PathBuf::from("/tmp/skill's file\"name\".md"),
+            base_dir: PathBuf::from("/tmp"),
             disable_model_invocation: false,
         }];
 

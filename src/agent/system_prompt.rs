@@ -292,6 +292,7 @@ mod tests {
             name: "code-review".to_string(),
             description: "Reviews code for bugs".to_string(),
             file_path: "/home/user/.rab/agent/skills/code-review/SKILL.md".into(),
+            base_dir: "/home/user/.rab/agent/skills/code-review".into(),
             disable_model_invocation: false,
         }];
 
@@ -356,6 +357,7 @@ mod tests {
             name: "test-skill".to_string(),
             description: "Test".to_string(),
             file_path: "/tmp/SKILL.md".into(),
+            base_dir: "/tmp".into(),
             disable_model_invocation: false,
         }];
 
@@ -382,6 +384,7 @@ mod tests {
             name: "code-review".to_string(),
             description: "Review code".to_string(),
             file_path: "/home/user/.rab/agent/skills/code-review/SKILL.md".into(),
+            base_dir: "/home/user/.rab/agent/skills/code-review".into(),
             disable_model_invocation: false,
         }];
 

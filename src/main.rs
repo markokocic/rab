@@ -182,14 +182,13 @@ async fn main() -> anyhow::Result<()> {
     let agent_tools: Vec<Box<dyn rab::agent::extension::AgentTool>> =
         extensions.iter().flat_map(|ext| ext.tools()).collect();
 
-    // Load skills for startup display
+    // Load skills for startup display and /skill:name expansion
     let skills = rab::agent::load_skills(rab::agent::LoadSkillsOptions {
         cwd: &cwd,
         agent_dir: &agent_dir,
         extra_skill_paths: &[],
         include_defaults: true,
     });
-    let skill_names: Vec<String> = skills.iter().map(|s| s.name.clone()).collect();
 
     let thinking_level = settings.default_thinking_level.as_deref();
     let provider = adapter::GenaiProvider::new(&auth, thinking_level)?;
@@ -212,7 +211,7 @@ async fn main() -> anyhow::Result<()> {
             interactive: true,
             settings,
             context_files: context_file_names,
-            skill_names,
+            skills,
         };
         ui::run(config, session).await
     } else {

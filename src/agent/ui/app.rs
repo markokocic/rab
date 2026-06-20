@@ -41,8 +41,8 @@ pub struct AppConfig {
     pub settings: crate::agent::settings::Settings,
     /// Context files (AGENTS.md / CLAUDE.md) loaded for the session.
     pub context_files: Vec<String>,
-    /// Skill names loaded for the session.
-    pub skill_names: Vec<String>,
+    /// Skills loaded for the session (used for /skill:name expansion).
+    pub skills: Vec<crate::agent::Skill>,
 }
 
 /// Main application state.
@@ -122,6 +122,9 @@ pub struct App {
     /// Messages queued while streaming — submitted when current response finishes.
     queued_messages: Vec<String>,
 
+    /// Skills loaded for the session (/skill:name expansion).
+    skills: Vec<crate::agent::Skill>,
+
     /// Settings reference for persisting toggle changes.
     settings: crate::agent::settings::Settings,
 }
@@ -164,9 +167,9 @@ impl App {
             resource_parts.push(format!("Context: {}", ctx));
         }
 
-        if !config.skill_names.is_empty() {
-            let skills = config.skill_names.join(", ");
-            resource_parts.push(format!("Skills: {}", skills));
+        if !config.skills.is_empty() {
+            let skill_names: Vec<&str> = config.skills.iter().map(|s| s.name.as_str()).collect();
+            resource_parts.push(format!("Skills: {}", skill_names.join(", ")));
         }
 
         if !resource_parts.is_empty() {
@@ -216,6 +219,7 @@ impl App {
             agent_tools: Arc::new(config.agent_tools),
             extensions: Arc::new(config.extensions),
             queued_messages: Vec::new(),
+            skills: config.skills,
             settings: config.settings,
             status_text: None,
         }
@@ -594,6 +598,19 @@ fn submit_message(app: &mut App, message: String) {
     app.history_index = None;
     let trimmed = message.trim().to_string();
 
+    // Handle /skill:name [args] expansion (pi-style: before command dispatch)
+    if trimmed.starts_with("/skill:") {
+        let expanded = crate::agent::skills::expand_skill_command(&trimmed, &app.skills);
+        app.messages.push(DisplayMsg::User(expanded.clone()));
+        app.conversation.push(AgentMessage::user(&expanded));
+        if app.is_streaming {
+            app.queued_messages.push(expanded);
+            return;
+        }
+        start_agent_loop(app, expanded);
+        return;
+    }
+
     // Handle /commands
     if trimmed.starts_with('/') {
         handle_slash_command(app, &trimmed);
@@ -965,7 +982,7 @@ mod tests {
             interactive: true,
             settings: crate::agent::settings::Settings::default(),
             context_files: vec![],
-            skill_names: vec![],
+            skills: vec![],
         };
 
         let mut app = App::new(config, session);
@@ -1104,7 +1121,7 @@ mod tests {
             interactive: true,
             settings: crate::agent::settings::Settings::default(),
             context_files: vec![],
-            skill_names: vec![],
+            skills: vec![],
         };
 
         let mut app = App::new(config, session);
@@ -1148,7 +1165,7 @@ mod tests {
             interactive: true,
             settings: crate::agent::settings::Settings::default(),
             context_files: vec![],
-            skill_names: vec![],
+            skills: vec![],
         };
 
         let mut app = App::new(config, session);
@@ -1186,7 +1203,7 @@ mod tests {
             interactive: true,
             settings: crate::agent::settings::Settings::default(),
             context_files: vec![],
-            skill_names: vec![],
+            skills: vec![],
         };
 
         let mut app = App::new(config, session);
@@ -1232,7 +1249,7 @@ mod tests {
             interactive: true,
             settings: crate::agent::settings::Settings::default(),
             context_files: vec![],
-            skill_names: vec![],
+            skills: vec![],
         };
 
         let mut app = App::new(config, session);
@@ -1268,7 +1285,7 @@ mod tests {
             interactive: true,
             settings: crate::agent::settings::Settings::default(),
             context_files: vec![],
-            skill_names: vec![],
+            skills: vec![],
         };
 
         let mut app = App::new(config, session);
@@ -1304,7 +1321,7 @@ mod tests {
             interactive: true,
             settings: crate::agent::settings::Settings::default(),
             context_files: vec![],
-            skill_names: vec![],
+            skills: vec![],
         };
 
         let mut app = App::new(config, session);
@@ -1340,7 +1357,7 @@ mod tests {
             interactive: true,
             settings: crate::agent::settings::Settings::default(),
             context_files: vec![],
-            skill_names: vec![],
+            skills: vec![],
         };
 
         let mut app = App::new(config, session);
@@ -1380,7 +1397,7 @@ mod tests {
             interactive: true,
             settings: crate::agent::settings::Settings::default(),
             context_files: vec![],
-            skill_names: vec![],
+            skills: vec![],
         };
 
         let mut app = App::new(config, session);
@@ -1464,7 +1481,7 @@ mod tests {
             interactive: true,
             settings: crate::agent::settings::Settings::default(),
             context_files: vec![],
-            skill_names: vec![],
+            skills: vec![],
         };
 
         let mut app = App::new(config, session);
