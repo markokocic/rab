@@ -1,11 +1,11 @@
 use crate::agent::extension::{AgentTool, Cancel, Extension, ToolOutput};
-use tokio::sync::{mpsc::UnboundedSender, Mutex as TokioMutex};
 use anyhow::Context;
 use async_trait::async_trait;
 use std::borrow::Cow;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
-use std::sync::Arc;
+use tokio::sync::{Mutex as TokioMutex, mpsc::UnboundedSender};
 
 pub struct BashExtension {
     cwd: std::path::PathBuf,
@@ -57,7 +57,10 @@ fn kill_process_group(pid: u32) {
 }
 
 /// Spawn a bash command with process group setup for clean cancellation.
-fn spawn_bash_command(command: &str, cwd: &std::path::Path) -> std::io::Result<tokio::process::Child> {
+fn spawn_bash_command(
+    command: &str,
+    cwd: &std::path::Path,
+) -> std::io::Result<tokio::process::Child> {
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -120,9 +123,8 @@ fn finish_bash_execution(
 
         let footer = if let Some(ref path) = full_output_path {
             if trunc.last_line_partial {
-                let last_line_size = format_size(
-                    combined.lines().last().map(|l| l.len()).unwrap_or(0)
-                );
+                let last_line_size =
+                    format_size(combined.lines().last().map(|l| l.len()).unwrap_or(0));
                 format!(
                     "\n\n[Showing last {} of line {} (line is {}). Full output: {}]",
                     format_size(trunc.output_bytes),
@@ -133,20 +135,27 @@ fn finish_bash_execution(
             } else if trunc.truncated_by == "lines" {
                 format!(
                     "\n\n[Showing lines {}-{} of {}. Full output: {}]",
-                    start_line, end_line, trunc.total_lines, path.display()
+                    start_line,
+                    end_line,
+                    trunc.total_lines,
+                    path.display()
                 )
             } else {
                 format!(
                     "\n\n[Showing lines {}-{} of {} ({} limit). Full output: {}]",
-                    start_line, end_line, trunc.total_lines,
-                    format_size(DEFAULT_MAX_BYTES), path.display()
+                    start_line,
+                    end_line,
+                    trunc.total_lines,
+                    format_size(DEFAULT_MAX_BYTES),
+                    path.display()
                 )
             }
         } else {
             if trunc.last_line_partial {
                 format!(
                     "\n\n[Showing last {} of line {}.]",
-                    format_size(trunc.output_bytes), end_line,
+                    format_size(trunc.output_bytes),
+                    end_line,
                 )
             } else if trunc.truncated_by == "lines" {
                 format!(
@@ -156,7 +165,9 @@ fn finish_bash_execution(
             } else {
                 format!(
                     "\n\n[Showing lines {}-{} of {} ({} limit).]",
-                    start_line, end_line, trunc.total_lines,
+                    start_line,
+                    end_line,
+                    trunc.total_lines,
                     format_size(DEFAULT_MAX_BYTES),
                 )
             }
@@ -165,10 +176,7 @@ fn finish_bash_execution(
     }
 
     // Add exit code info and duration
-    let duration_note = format!(
-        "\n\n[Took {:.1}s]",
-        started_at.elapsed().as_secs_f64()
-    );
+    let duration_note = format!("\n\n[Took {:.1}s]", started_at.elapsed().as_secs_f64());
 
     if exit_code != 0 && exit_code != -1 {
         if result_text.is_empty() {
@@ -343,9 +351,13 @@ impl AgentTool for BashTool {
         let combined_clone = combined.clone();
 
         // Read stdout in a background task
-        let stdout_pipe = child.stdout.take()
+        let stdout_pipe = child
+            .stdout
+            .take()
             .ok_or_else(|| anyhow::anyhow!("Failed to capture stdout"))?;
-        let stderr_pipe = child.stderr.take()
+        let stderr_pipe = child
+            .stderr
+            .take()
             .ok_or_else(|| anyhow::anyhow!("Failed to capture stderr"))?;
 
         use tokio::io::AsyncReadExt;
@@ -441,12 +453,7 @@ impl AgentTool for BashTool {
                     let combined_str = combined.lock().await.clone();
                     let exit_code = status.code().unwrap_or(-1);
 
-                                return finish_bash_execution(
-                        &combined_str,
-                        exit_code,
-                        started_at,
-                        on_update,
-                    );
+                    return finish_bash_execution(&combined_str, exit_code, started_at, on_update);
                 }
                 Ok(None) => {
                     // Still running, poll again soon
@@ -456,12 +463,7 @@ impl AgentTool for BashTool {
                     read_task.await.ok();
                     let combined_str = combined.lock().await.clone();
                     let exit_code = -1;
-                    return finish_bash_execution(
-                        &combined_str,
-                        exit_code,
-                        started_at,
-                        on_update,
-                    );
+                    return finish_bash_execution(&combined_str, exit_code, started_at, on_update);
                 }
             }
         }
@@ -485,7 +487,8 @@ mod tests {
             .execute(
                 "id".into(),
                 serde_json::json!({"command": "echo hello"}),
-                Cancel::new(), None,
+                Cancel::new(),
+                None,
             )
             .await
             .unwrap();
@@ -499,7 +502,8 @@ mod tests {
             .execute(
                 "id".into(),
                 serde_json::json!({"command": "echo err >&2"}),
-                Cancel::new(), None,
+                Cancel::new(),
+                None,
             )
             .await
             .unwrap();
@@ -535,7 +539,8 @@ mod tests {
             .execute(
                 "id".into(),
                 serde_json::json!({"command": "sleep 10", "timeout": 1}),
-                Cancel::new(), None,
+                Cancel::new(),
+                None,
             )
             .await;
         assert!(result.is_err());
@@ -606,7 +611,8 @@ mod tests {
             .execute(
                 "id".into(),
                 serde_json::json!({"command": "exit 42"}),
-                Cancel::new(), None,
+                Cancel::new(),
+                None,
             )
             .await
             .unwrap();
@@ -624,7 +630,8 @@ mod tests {
             .execute(
                 "id".into(),
                 serde_json::json!({"command": "echo before && exit 1"}),
-                Cancel::new(), None,
+                Cancel::new(),
+                None,
             )
             .await
             .unwrap();
@@ -643,11 +650,16 @@ mod tests {
             .execute(
                 "id".into(),
                 serde_json::json!({"command": "true"}),
-                Cancel::new(), None,
+                Cancel::new(),
+                None,
             )
             .await
             .unwrap();
-        assert!(output.content.contains("(no output)"), "got: {}", output.content);
+        assert!(
+            output.content.contains("(no output)"),
+            "got: {}",
+            output.content
+        );
         assert!(output.content.contains("[Took"), "got: {}", output.content);
     }
 
@@ -658,7 +670,8 @@ mod tests {
             .execute(
                 "id".into(),
                 serde_json::json!({"command": "echo out; echo err >&2"}),
-                Cancel::new(), None,
+                Cancel::new(),
+                None,
             )
             .await
             .unwrap();
@@ -677,7 +690,8 @@ mod tests {
             .execute(
                 "id".into(),
                 serde_json::json!({"command": "cat marker.txt"}),
-                Cancel::new(), None,
+                Cancel::new(),
+                None,
             )
             .await
             .unwrap();
@@ -688,11 +702,7 @@ mod tests {
     async fn missing_command_errors() {
         let tool = make_tool();
         let result = tool
-            .execute(
-                "id".into(),
-                serde_json::json!({}),
-                Cancel::new(), None,
-            )
+            .execute("id".into(), serde_json::json!({}), Cancel::new(), None)
             .await;
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
@@ -707,7 +717,8 @@ mod tests {
             .execute(
                 "id".into(),
                 serde_json::json!({"command": "echo start && sleep 10 && echo end", "timeout": 1}),
-                Cancel::new(), None,
+                Cancel::new(),
+                None,
             )
             .await;
         // May timeout before process is killed, which is fine
@@ -754,7 +765,10 @@ mod tests {
         // Content exactly at the line limit — no truncation
         let lines: String = (1..=2000).map(|i| format!("line {}\n", i)).collect();
         let result = truncate_tail(&lines, 2000, 50000);
-        assert!(!result.truncated, "should not truncate when exactly at line limit");
+        assert!(
+            !result.truncated,
+            "should not truncate when exactly at line limit"
+        );
         assert_eq!(result.output_lines, 2000);
     }
 
@@ -847,12 +861,21 @@ mod tests {
             .execute(
                 "id".into(),
                 serde_json::json!({"command": cmd}),
-                Cancel::new(), None,
+                Cancel::new(),
+                None,
             )
             .await
             .unwrap();
-        assert!(output.content.contains("Showing lines"), "got: {}", output.content);
-        assert!(output.content.contains("Full output:"), "got: {}", output.content);
+        assert!(
+            output.content.contains("Showing lines"),
+            "got: {}",
+            output.content
+        );
+        assert!(
+            output.content.contains("Full output:"),
+            "got: {}",
+            output.content
+        );
     }
 
     #[tokio::test]
@@ -862,13 +885,22 @@ mod tests {
             .execute(
                 "id".into(),
                 serde_json::json!({"command": "echo hello"}),
-                Cancel::new(), None,
+                Cancel::new(),
+                None,
             )
             .await
             .unwrap();
         // Small output should not have footer markers
-        assert!(!output.content.contains("Showing lines"), "got: {}", output.content);
-        assert!(!output.content.contains("Full output:"), "got: {}", output.content);
+        assert!(
+            !output.content.contains("Showing lines"),
+            "got: {}",
+            output.content
+        );
+        assert!(
+            !output.content.contains("Full output:"),
+            "got: {}",
+            output.content
+        );
     }
 
     #[tokio::test]
@@ -880,7 +912,8 @@ mod tests {
             .execute(
                 "id".into(),
                 serde_json::json!({"command": cmd}),
-                Cancel::new(), None,
+                Cancel::new(),
+                None,
             )
             .await
             .unwrap();
@@ -903,7 +936,11 @@ mod tests {
         assert_eq!(result.truncated_by, "lines");
         assert_eq!(result.output_lines, 2000);
         // Should keep the last 2000 lines
-        assert!(result.content.starts_with("8001"), "starts with: {:?}", &result.content[..10]);
+        assert!(
+            result.content.starts_with("8001"),
+            "starts with: {:?}",
+            &result.content[..10]
+        );
     }
 
     #[test]

@@ -1,9 +1,9 @@
 use crate::agent::extension::{AgentTool, Cancel, Extension, ToolOutput};
-use tokio::sync::mpsc::UnboundedSender;
 use anyhow::Context;
 use async_trait::async_trait;
 use std::borrow::Cow;
 use std::path::Path;
+use tokio::sync::mpsc::UnboundedSender;
 
 pub struct ReadExtension {
     cwd: std::path::PathBuf,
@@ -574,7 +574,8 @@ mod tests {
             .execute(
                 "id".into(),
                 serde_json::json!({"path": "nonexistent.txt"}),
-                Cancel::new(), None,
+                Cancel::new(),
+                None,
             )
             .await;
         assert!(result.is_err());
@@ -590,7 +591,8 @@ mod tests {
             .execute(
                 "id".into(),
                 serde_json::json!({"path": path.to_str().unwrap(), "offset": 100}),
-                Cancel::new(), None,
+                Cancel::new(),
+                None,
             )
             .await;
         assert!(result.is_err());

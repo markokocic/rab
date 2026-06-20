@@ -3,8 +3,8 @@ use crate::agent::types::ToolCall;
 use async_trait::async_trait;
 use std::borrow::Cow;
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
     Arc,
+    atomic::{AtomicBool, Ordering},
 };
 use tokio::sync::mpsc::UnboundedSender;
 

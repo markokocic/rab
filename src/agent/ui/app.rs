@@ -119,7 +119,7 @@ pub struct App {
     /// Extensions.
     extensions: Arc<Vec<Box<dyn Extension>>>,
 
-    /// Messages queued while streaming — submitted when current response finishes.
+    /// Messages queued while streaming - submitted when current response finishes.
     queued_messages: Vec<String>,
 
     /// Skills loaded for the session (/skill:name expansion).
@@ -232,7 +232,7 @@ pub async fn run(config: AppConfig, session: SessionManager) -> anyhow::Result<(
     term.enter_raw_mode()?;
     let mut stdout = std::io::stdout();
 
-    // Main-screen mode (like pi) — no alternate screen, no clear.
+    // Main-screen mode (like pi) - no alternate screen, no clear.
     // Content writes from current cursor position (after shell prompt).
     // Terminal scrolls naturally, editor/footer appear at the bottom.
     Terminal::hide_cursor(&mut stdout)?;
@@ -279,7 +279,7 @@ pub async fn run(config: AppConfig, session: SessionManager) -> anyhow::Result<(
         }
     }
 
-    // Cleanup — move cursor past all rendered content so the shell prompt
+    // Cleanup - move cursor past all rendered content so the shell prompt
     // appears on a fresh line after the footer (matching pi's stop() behavior).
     screen.finalize(&mut stdout)?;
     Terminal::show_cursor(&mut stdout)?;
@@ -289,7 +289,7 @@ pub async fn run(config: AppConfig, session: SessionManager) -> anyhow::Result<(
     Ok(())
 }
 
-/// Compose the full UI from app state — matching pi's main screen layout.
+/// Compose the full UI from app state - matching pi's main screen layout.
 ///
 /// Layout (top to bottom):
 ///   header → messages → spacer → status → editor → footer
@@ -357,12 +357,21 @@ fn compose_ui(app: &mut App, width: usize, _height: usize) -> Vec<String> {
         && !text.is_empty()
     {
         if app.hide_thinking {
-            let content = format!(" {}", app.theme.fg("thinking_text", " Thinking…"));
+            let content = format!(
+                " {}",
+                app.theme
+                    .italic(&app.theme.fg("thinking_text", " Thinking…"))
+            );
             let padded = crate::agent::ui::messages::pad_to_width(&content, width);
             lines.push(app.theme.bg("thinking_bg", &padded));
         } else {
+            let level_color = app
+                .thinking_level
+                .as_deref()
+                .and_then(crate::agent::ui::messages::thinking_level_color)
+                .unwrap_or("thinking_text");
             for line in text.lines() {
-                let content = format!(" {}", app.theme.fg("thinking_text", line));
+                let content = format!(" {}", app.theme.italic(&app.theme.fg(level_color, line)));
                 let padded = crate::agent::ui::messages::pad_to_width(&content, width);
                 lines.push(app.theme.bg("thinking_bg", &padded));
             }
@@ -383,7 +392,7 @@ fn compose_ui(app: &mut App, width: usize, _height: usize) -> Vec<String> {
         }
         let hint = app
             .theme
-            .fg("dim", " ↳ queued — will send when current finishes");
+            .fg("dim", " ↳ queued - will send when current finishes");
         lines.push(crate::agent::ui::messages::pad_to_width(&hint, width));
     }
 
@@ -392,7 +401,7 @@ fn compose_ui(app: &mut App, width: usize, _height: usize) -> Vec<String> {
         lines.push(String::new());
     }
 
-    // ── Working indicator (always rendered — empty line when inactive, keeps line count stable) ──
+    // ── Working indicator (always rendered - empty line when inactive, keeps line count stable) ──
     lines.extend(app.working.render(width));
 
     // ── Editor ──
@@ -628,7 +637,7 @@ fn submit_message(app: &mut App, message: String) {
     app.messages.push(DisplayMsg::User(trimmed.clone()));
 
     if app.is_streaming {
-        // Queue — will be submitted when current response finishes (pi-style)
+        // Queue - will be submitted when current response finishes (pi-style)
         app.queued_messages.push(trimmed);
         return;
     }
@@ -864,7 +873,10 @@ fn flush_thinking(app: &mut App) {
     if let Some(text) = app.pending_thinking.take()
         && !text.is_empty()
     {
-        app.messages.push(DisplayMsg::Thinking(text));
+        app.messages.push(DisplayMsg::Thinking {
+            text,
+            level: app.thinking_level.clone(),
+        });
     }
 }
 
@@ -1066,7 +1078,7 @@ mod tests {
         );
         lines.extend(rendered);
 
-        // Pending (streaming) text — matches compose_ui
+        // Pending (streaming) text - matches compose_ui
         if let Some(ref text) = app.pending_text
             && !text.is_empty()
         {
@@ -1087,20 +1099,25 @@ mod tests {
             && !text.is_empty()
             && !app.hide_thinking
         {
+            let level_color = app
+                .thinking_level
+                .as_deref()
+                .and_then(crate::agent::ui::messages::thinking_level_color)
+                .unwrap_or("thinking_text");
             for line in text.lines() {
-                let content = format!(" {}", theme.fg("thinking_text", line));
+                let content = format!(" {}", theme.italic(&theme.fg(level_color, line)));
                 let padded = crate::agent::ui::messages::pad_to_width(&content, width);
                 lines.push(theme.bg("thinking_bg", &padded));
             }
         }
 
-        // Queued messages — matches compose_ui
+        // Queued messages - matches compose_ui
         if !app.queued_messages.is_empty() {
             for msg in &app.queued_messages {
                 let line = theme.fg("dim", &format!(" ◷ {}", msg));
                 lines.push(crate::agent::ui::messages::pad_to_width(&line, width));
             }
-            let hint = theme.fg("dim", " ↳ queued — will send when current finishes");
+            let hint = theme.fg("dim", " ↳ queued - will send when current finishes");
             lines.push(crate::agent::ui::messages::pad_to_width(&hint, width));
         }
 
@@ -1381,7 +1398,7 @@ mod tests {
         app.is_streaming = true;
         app.working.start();
 
-        // Simulate AgentEnd — this will dequeue and start a new loop
+        // Simulate AgentEnd - this will dequeue and start a new loop
         handle_agent_event(&mut app, AgentEvent::AgentEnd { messages: vec![] });
 
         // The queued message should have been dequeued
@@ -1502,7 +1519,7 @@ mod tests {
 
         let mut app = App::new(config, session);
 
-        // No queued messages — compose
+        // No queued messages - compose
         let before = compose_ui_test(&mut app, 80);
 
         // Add queued messages
@@ -1561,7 +1578,7 @@ mod tests {
         submit_message(&mut app, "test message".into());
 
         // Pi: submit_message sends to agent loop, which emits message_end for persistence.
-        // The message is NOT added to app.conversation directly — it flows through AgentEnd.
+        // The message is NOT added to app.conversation directly - it flows through AgentEnd.
         assert_eq!(
             app.conversation.len(),
             initial_len,
@@ -1676,7 +1693,7 @@ mod tests {
         let existing_id = existing.id.clone();
         app.conversation.push(existing);
 
-        // AgentEnd fires with the SAME message id — should NOT duplicate
+        // AgentEnd fires with the SAME message id - should NOT duplicate
         let dup_msg = AgentMessage {
             id: existing_id,
             parent_id: None,

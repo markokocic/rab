@@ -1,6 +1,6 @@
 use crate::tui::Theme;
 
-/// Rab's concrete color theme — emits ANSI escape codes directly.
+/// Rab's concrete color theme - emits ANSI escape codes directly.
 /// Color palette matches pi's dark theme exactly.
 pub struct RabTheme;
 
@@ -28,6 +28,11 @@ impl Theme for RabTheme {
             // Thinking
             "thinking_text" => "38;2;128;128;128",
             "thinking_bg" => "48;2;44;44;54",
+            // Thinking levels (progressively brighter for higher efforts)
+            "thinking_level_low" => "38;2;100;100;115",
+            "thinking_level_medium" => "38;2;130;130;150",
+            "thinking_level_high" => "38;2;160;160;180",
+            "thinking_level_xhigh" => "38;2;190;190;210",
             // Borders
             "border" => "38;2;138;190;183",
             "border_accent" => "38;2;138;190;183",

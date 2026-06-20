@@ -18,7 +18,8 @@ async fn runs_simple_command() {
         .execute(
             "id".into(),
             serde_json::json!({"command": "echo hello"}),
-            Cancel::new(), None,
+            Cancel::new(),
+            None,
         )
         .await
         .unwrap();
@@ -36,7 +37,8 @@ async fn captures_stdout_and_stderr() {
         .execute(
             "id".into(),
             serde_json::json!({"command": "echo out && echo err >&2"}),
-            Cancel::new(), None,
+            Cancel::new(),
+            None,
         )
         .await
         .unwrap();
@@ -55,7 +57,8 @@ async fn runs_in_working_directory() {
         .execute(
             "id".into(),
             serde_json::json!({"command": "ls marker.txt"}),
-            Cancel::new(), None,
+            Cancel::new(),
+            None,
         )
         .await
         .unwrap();
@@ -73,7 +76,8 @@ async fn returns_error_on_nonzero_exit() {
         .execute(
             "id".into(),
             serde_json::json!({"command": "exit 1"}),
-            Cancel::new(), None,
+            Cancel::new(),
+            None,
         )
         .await
         .unwrap();
@@ -91,7 +95,8 @@ async fn handles_empty_output() {
         .execute(
             "id".into(),
             serde_json::json!({"command": "true"}),
-            Cancel::new(), None,
+            Cancel::new(),
+            None,
         )
         .await
         .unwrap();
@@ -109,7 +114,8 @@ async fn timeout_kills_command() {
         .execute(
             "id".into(),
             serde_json::json!({"command": "sleep 10", "timeout": 1}),
-            Cancel::new(), None,
+            Cancel::new(),
+            None,
         )
         .await;
     assert!(result.is_err() || !result.as_ref().unwrap().content.is_empty());

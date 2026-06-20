@@ -1,8 +1,8 @@
 use crate::agent::extension::{AgentTool, Cancel, Extension, ToolOutput};
-use tokio::sync::mpsc::UnboundedSender;
 use anyhow::Context;
 use async_trait::async_trait;
 use std::borrow::Cow;
+use tokio::sync::mpsc::UnboundedSender;
 
 pub struct WriteExtension {
     cwd: std::path::PathBuf,

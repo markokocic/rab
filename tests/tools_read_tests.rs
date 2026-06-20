@@ -21,7 +21,8 @@ async fn reads_file_content() {
         .execute(
             "id".into(),
             serde_json::json!({"path": path.to_str().unwrap()}),
-            Cancel::new(), None,
+            Cancel::new(),
+            None,
         )
         .await
         .unwrap();
@@ -44,7 +45,8 @@ async fn read_respects_offset() {
         .execute(
             "id".into(),
             serde_json::json!({"path": path.to_str().unwrap(), "offset": 5}),
-            Cancel::new(), None,
+            Cancel::new(),
+            None,
         )
         .await
         .unwrap();
@@ -76,7 +78,8 @@ async fn read_respects_limit() {
         .execute(
             "id".into(),
             serde_json::json!({"path": path.to_str().unwrap(), "offset": 1, "limit": 3}),
-            Cancel::new(), None,
+            Cancel::new(),
+            None,
         )
         .await
         .unwrap();
@@ -97,7 +100,8 @@ async fn read_nonexistent_file_errors() {
         .execute(
             "id".into(),
             serde_json::json!({"path": "nonexistent.txt"}),
-            Cancel::new(), None,
+            Cancel::new(),
+            None,
         )
         .await;
     assert!(result.is_err());
