@@ -1,5 +1,9 @@
 # Remaining work
 
+## chat editor
+- [ ] check if pi have separate editor and chat editor components. Where are they defined Does rab do the same?
+- [ ] file autocomplete
+
 ## Slash command autocomplete
 - [ ] in pi, selector appears as soon as user types `/`, in rab you must type `/` + Tab
 - [ ] selector for slash command has plain styling, should match pi both visually and behaviourally
@@ -9,11 +13,15 @@
 - [ ] assistant text should render markdown (bold, code, headings, links, quotes) with pi theme colors
 
 ## Built-in tools
-- [ ] review each builtin tool: check if behaviour and rendering matches pi
+- [x] review each builtin tool: check if behaviour and rendering matches pi 1/1
   - [ ] bash
   - [ ] read
   - [ ] write
-  - [ ] edit
+  - [x] edit — BOM, line ending (CRLF/LF), fuzzy matching, input normalization, diff output, better errors
+
+## Messages
+- [ ] review rendering for thinking messages.
+- [ ] check other message types
 
 ## Scrolling
 - [ ] wire up mouse wheel events (crossterm MouseEvent) to scroll chat
