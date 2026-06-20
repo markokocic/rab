@@ -8,14 +8,14 @@ fn tmp_dir() -> std::path::PathBuf {
 }
 
 async fn exec_ok(tool: &dyn rab::agent::extension::AgentTool, args: serde_json::Value) -> String {
-    tool.execute("id".into(), args, Cancel::new())
+    tool.execute("id".into(), args, Cancel::new(), None)
         .await
         .unwrap()
         .content
 }
 
 async fn exec_err(tool: &dyn rab::agent::extension::AgentTool, args: serde_json::Value) -> String {
-    tool.execute("id".into(), args, Cancel::new())
+    tool.execute("id".into(), args, Cancel::new(), None)
         .await
         .unwrap_err()
         .to_string()
@@ -109,7 +109,7 @@ async fn missing_oldtext_errors() {
                 "path": path.to_str().unwrap(),
                 "edits": [{"oldText": "not found", "newText": "x"}]
             }),
-            Cancel::new(),
+            Cancel::new(), None,
         )
         .await;
     assert!(result.is_err());
@@ -135,7 +135,7 @@ async fn overlapping_edits_error() {
                     {"oldText": "bcd", "newText": "2"}
                 ]
             }),
-            Cancel::new(),
+            Cancel::new(), None,
         )
         .await;
     assert!(result.is_err());
@@ -155,7 +155,7 @@ async fn empty_edits_errors() {
         .execute(
             "id".into(),
             serde_json::json!({"path": path.to_str().unwrap(), "edits": []}),
-            Cancel::new(),
+            Cancel::new(), None,
         )
         .await;
     assert!(result.is_err());

@@ -20,7 +20,7 @@ async fn writes_file() {
         .execute(
             "id".into(),
             serde_json::json!({"path": path.to_str().unwrap(), "content": "hello world"}),
-            Cancel::new(),
+            Cancel::new(), None,
         )
         .await
         .unwrap();
@@ -41,7 +41,7 @@ async fn overwrites_existing_file() {
     tool.execute(
         "id".into(),
         serde_json::json!({"path": path.to_str().unwrap(), "content": "new content"}),
-        Cancel::new(),
+        Cancel::new(), None,
     )
     .await
     .unwrap();
@@ -61,7 +61,7 @@ async fn creates_parent_directories() {
     tool.execute(
         "id".into(),
         serde_json::json!({"path": path.to_str().unwrap(), "content": "nested file"}),
-        Cancel::new(),
+        Cancel::new(), None,
     )
     .await
     .unwrap();

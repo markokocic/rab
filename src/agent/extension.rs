@@ -3,9 +3,10 @@ use crate::agent::types::ToolCall;
 use async_trait::async_trait;
 use std::borrow::Cow;
 use std::sync::{
-    Arc,
     atomic::{AtomicBool, Ordering},
+    Arc,
 };
+use tokio::sync::mpsc::UnboundedSender;
 
 /// Reason a tool call was blocked.
 #[derive(Debug, Clone)]
@@ -173,11 +174,17 @@ pub trait AgentTool: Send + Sync {
 
     /// Execute the tool. Returns output carrying both the full content (sent to LLM)
     /// and an optional compact label for collapsed UI display.
+    /// Execute the tool. Returns output carrying both the full content (sent to LLM)
+    /// and an optional compact label for collapsed UI display.
+    ///
+    /// If `on_update` is provided, the tool may send intermediate `ToolOutput` updates
+    /// during long-running operations (e.g. bash streaming).
     async fn execute(
         &self,
         tool_call_id: String,
         args: serde_json::Value,
         cancel: Cancel,
+        on_update: Option<UnboundedSender<ToolOutput>>,
     ) -> anyhow::Result<ToolOutput>;
 }
 

@@ -1,4 +1,5 @@
 use crate::agent::extension::{AgentTool, Cancel, Extension, ToolOutput};
+use tokio::sync::mpsc::UnboundedSender;
 use anyhow::Context;
 use async_trait::async_trait;
 use std::borrow::Cow;
@@ -232,6 +233,7 @@ impl AgentTool for ReadTool {
         tool_call_id: String,
         args: serde_json::Value,
         cancel: Cancel,
+        _on_update: Option<UnboundedSender<ToolOutput>>,
     ) -> anyhow::Result<ToolOutput> {
         let _ = tool_call_id;
         let path = args["path"]
@@ -376,14 +378,14 @@ mod tests {
     }
 
     async fn exec_ok(tool: &ReadTool, args: serde_json::Value) -> String {
-        tool.execute("id".into(), args, Cancel::new())
+        tool.execute("id".into(), args, Cancel::new(), None)
             .await
             .unwrap()
             .content
     }
 
     async fn exec_full(tool: &ReadTool, args: serde_json::Value) -> ToolOutput {
-        tool.execute("id".into(), args, Cancel::new())
+        tool.execute("id".into(), args, Cancel::new(), None)
             .await
             .unwrap()
     }
@@ -572,7 +574,7 @@ mod tests {
             .execute(
                 "id".into(),
                 serde_json::json!({"path": "nonexistent.txt"}),
-                Cancel::new(),
+                Cancel::new(), None,
             )
             .await;
         assert!(result.is_err());
@@ -588,7 +590,7 @@ mod tests {
             .execute(
                 "id".into(),
                 serde_json::json!({"path": path.to_str().unwrap(), "offset": 100}),
-                Cancel::new(),
+                Cancel::new(), None,
             )
             .await;
         assert!(result.is_err());
@@ -740,6 +742,7 @@ mod tests {
                 "id".into(),
                 serde_json::json!({"path": path.to_str().unwrap()}),
                 cancel,
+                None,
             )
             .await;
         assert!(result.is_err());

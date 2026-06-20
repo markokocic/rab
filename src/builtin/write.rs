@@ -1,4 +1,5 @@
 use crate::agent::extension::{AgentTool, Cancel, Extension, ToolOutput};
+use tokio::sync::mpsc::UnboundedSender;
 use anyhow::Context;
 use async_trait::async_trait;
 use std::borrow::Cow;
@@ -70,6 +71,7 @@ impl AgentTool for WriteTool {
         tool_call_id: String,
         args: serde_json::Value,
         cancel: Cancel,
+        _on_update: Option<UnboundedSender<ToolOutput>>,
     ) -> anyhow::Result<ToolOutput> {
         let _ = tool_call_id;
         let path = args["path"]

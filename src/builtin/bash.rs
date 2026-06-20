@@ -1,8 +1,10 @@
 use crate::agent::extension::{AgentTool, Cancel, Extension, ToolOutput};
+use tokio::sync::{mpsc::UnboundedSender, Mutex as TokioMutex};
 use anyhow::Context;
 use async_trait::async_trait;
 use std::borrow::Cow;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Instant;
 use std::sync::Arc;
 
 pub struct BashExtension {
@@ -38,6 +40,22 @@ const DEFAULT_MAX_BYTES: usize = 50 * 1024; // 50KB
 
 // ── Helpers ──────────────────────────────────────────────────────
 
+/// Kill a process group by its leader PID.
+#[cfg(unix)]
+fn kill_process_group(pid: u32) {
+    if pid > 0 {
+        let _ = std::process::Command::new("kill")
+            .arg("--")
+            .arg(format!("-{}", pid))
+            .spawn();
+    }
+}
+
+#[cfg(not(unix))]
+fn kill_process_group(pid: u32) {
+    let _ = pid;
+}
+
 /// Spawn a bash command with process group setup for clean cancellation.
 fn spawn_bash_command(command: &str, cwd: &std::path::Path) -> std::io::Result<tokio::process::Child> {
     #[cfg(unix)]
@@ -67,6 +85,109 @@ fn spawn_bash_command(command: &str, cwd: &std::path::Path) -> std::io::Result<t
             .stderr(std::process::Stdio::piped())
             .spawn()
     }
+}
+
+/// Format the final bash execution result (truncation, temp file, exit code, duration).
+fn finish_bash_execution(
+    combined: &str,
+    exit_code: i32,
+    started_at: Instant,
+    on_update: Option<UnboundedSender<ToolOutput>>,
+) -> Result<ToolOutput, anyhow::Error> {
+    // Apply tail truncation (pi-style: keep last N lines/bytes)
+    let trunc = truncate_tail(combined, DEFAULT_MAX_LINES, DEFAULT_MAX_BYTES);
+
+    let mut result_text = trunc.content;
+
+    // Save full output to temp file if truncated
+    let full_output_path = if trunc.truncated {
+        let tmp_dir = std::env::temp_dir().join("rab-bash");
+        let _ = std::fs::create_dir_all(&tmp_dir);
+        let tmp_path = tmp_dir.join(format!("{}.txt", uuid::Uuid::new_v4()));
+        if std::fs::write(&tmp_path, combined).is_ok() {
+            Some(tmp_path)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    // Build continuation/footer messages
+    if trunc.truncated {
+        let start_line = trunc.total_lines - trunc.output_lines + 1;
+        let end_line = trunc.total_lines;
+
+        let footer = if let Some(ref path) = full_output_path {
+            if trunc.last_line_partial {
+                let last_line_size = format_size(
+                    combined.lines().last().map(|l| l.len()).unwrap_or(0)
+                );
+                format!(
+                    "\n\n[Showing last {} of line {} (line is {}). Full output: {}]",
+                    format_size(trunc.output_bytes),
+                    end_line,
+                    last_line_size,
+                    path.display()
+                )
+            } else if trunc.truncated_by == "lines" {
+                format!(
+                    "\n\n[Showing lines {}-{} of {}. Full output: {}]",
+                    start_line, end_line, trunc.total_lines, path.display()
+                )
+            } else {
+                format!(
+                    "\n\n[Showing lines {}-{} of {} ({} limit). Full output: {}]",
+                    start_line, end_line, trunc.total_lines,
+                    format_size(DEFAULT_MAX_BYTES), path.display()
+                )
+            }
+        } else {
+            if trunc.last_line_partial {
+                format!(
+                    "\n\n[Showing last {} of line {}.]",
+                    format_size(trunc.output_bytes), end_line,
+                )
+            } else if trunc.truncated_by == "lines" {
+                format!(
+                    "\n\n[Showing lines {}-{} of {}.]",
+                    start_line, end_line, trunc.total_lines,
+                )
+            } else {
+                format!(
+                    "\n\n[Showing lines {}-{} of {} ({} limit).]",
+                    start_line, end_line, trunc.total_lines,
+                    format_size(DEFAULT_MAX_BYTES),
+                )
+            }
+        };
+        result_text.push_str(&footer);
+    }
+
+    // Add exit code info and duration
+    let duration_note = format!(
+        "\n\n[Took {:.1}s]",
+        started_at.elapsed().as_secs_f64()
+    );
+
+    if exit_code != 0 && exit_code != -1 {
+        if result_text.is_empty() {
+            result_text = format!("Command exited with code {}", exit_code);
+        } else {
+            result_text.push_str(&format!("\n\n[Command exited with code {}]", exit_code));
+        }
+    } else if result_text.is_empty() {
+        result_text = "(no output)".to_string();
+    }
+
+    result_text.push_str(&duration_note);
+
+    // Send final update with duration
+    if let Some(ref tx) = on_update {
+        let _ = tx.send(ToolOutput::ok(result_text.clone()));
+    }
+
+    Ok(ToolOutput::ok(result_text))
 }
 
 /// Format bytes as a human-readable size string.
@@ -200,194 +321,150 @@ impl AgentTool for BashTool {
         tool_call_id: String,
         args: serde_json::Value,
         cancel: Cancel,
+        on_update: Option<UnboundedSender<ToolOutput>>,
     ) -> anyhow::Result<ToolOutput> {
         let _ = tool_call_id;
         let command = args["command"]
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("Missing 'command' argument"))?;
         let timeout = args["timeout"].as_u64();
+        let started_at = Instant::now();
 
         cancel.check()?;
 
         // Build the command with process group setup for process-tree killing
-        let child = spawn_bash_command(command, &self.cwd)
+        let mut child = spawn_bash_command(command, &self.cwd)
             .with_context(|| format!("Failed to spawn command: {}", command))?;
 
         let pid = child.id().unwrap_or(0);
 
+        // Shared output buffer for streaming reads
+        let combined = Arc::new(TokioMutex::new(String::new()));
+        let combined_clone = combined.clone();
+
+        // Read stdout in a background task
+        let stdout_pipe = child.stdout.take()
+            .ok_or_else(|| anyhow::anyhow!("Failed to capture stdout"))?;
+        let stderr_pipe = child.stderr.take()
+            .ok_or_else(|| anyhow::anyhow!("Failed to capture stderr"))?;
+
+        use tokio::io::AsyncReadExt;
+        let read_task = tokio::spawn(async move {
+            let mut stdout_buf = vec![0u8; 4096];
+            let mut stderr_buf = vec![0u8; 4096];
+            let mut stdout_reader = stdout_pipe;
+            let mut stderr_reader = stderr_pipe;
+            loop {
+                tokio::select! {
+                    result = stdout_reader.read(&mut stdout_buf) => {
+                        match result {
+                            Ok(0) => break, // EOF on stdout
+                            Ok(n) => {
+                                let mut out = combined_clone.lock().await;
+                                out.push_str(&String::from_utf8_lossy(&stdout_buf[..n]));
+                            }
+                            Err(_) => break,
+                        }
+                    }
+                    result = stderr_reader.read(&mut stderr_buf) => {
+                        match result {
+                            Ok(0) => {}
+                            Ok(n) => {
+                                let mut out = combined_clone.lock().await;
+                                out.push_str(&String::from_utf8_lossy(&stderr_buf[..n]));
+                            }
+                            Err(_) => {}
+                        }
+                    }
+                }
+            }
+            // Drain remaining stderr
+            let mut remaining = Vec::new();
+            let _ = stderr_reader.read_to_end(&mut remaining).await;
+            if !remaining.is_empty() {
+                let mut out = combined_clone.lock().await;
+                out.push_str(&String::from_utf8_lossy(&remaining));
+            }
+        });
+
         // Set up cancellation monitor: kill the process group if cancelled
         let cancelled = Arc::new(AtomicBool::new(false));
         let cancel_clone = cancelled.clone();
-        let cancel_monitor: tokio::task::JoinHandle<()> = tokio::spawn(async move {
+        let _cancel_monitor: tokio::task::JoinHandle<()> = tokio::spawn(async move {
             while !cancel.is_cancelled() {
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             }
             cancel_clone.store(true, Ordering::SeqCst);
-            // Kill the process group
-            #[cfg(unix)]
-            {
-                if pid > 0 {
-                    let _ = std::process::Command::new("kill")
-                        .arg("--")
-                        .arg(format!("-{}", pid))
-                        .spawn();
-                }
-            }
-            #[cfg(not(unix))]
-            {
-                let _ = pid;
-                let _ = child.start_kill();
-            }
+            kill_process_group(pid);
         });
 
-        // Read output with optional timeout
-        let output_result = if let Some(secs) = timeout {
-            tokio::time::timeout(
-                std::time::Duration::from_secs(secs),
-                child.wait_with_output(),
-            )
-            .await
-        } else {
-            // No timeout, but still need to race against cancellation
-            tokio::time::timeout(
-                std::time::Duration::from_secs(86400), // 24h effective no-timeout
-                child.wait_with_output(),
-            )
-            .await
-        };
-
-        cancel_monitor.abort();
-
-        // If cancelled, also try to kill the process
-        if cancelled.load(Ordering::SeqCst) {
-            #[cfg(unix)]
-            {
-                if pid > 0 {
-                    let _ = std::process::Command::new("kill")
-                        .arg("--")
-                        .arg(format!("-{}", pid))
-                        .spawn();
-                }
+        // Wait for the process to exit, with optional timeout and streaming updates
+        let timeout_dur = timeout.map(std::time::Duration::from_secs);
+        loop {
+            // Check cancellation
+            if cancelled.load(Ordering::SeqCst) {
+                kill_process_group(pid);
+                read_task.abort();
+                return Err(anyhow::anyhow!("Command aborted"));
             }
-            return Err(anyhow::anyhow!("Command aborted"));
-        }
 
-        let output = match output_result {
-            Ok(Ok(out)) => out,
-            Ok(Err(e)) => return Err(e.into()),
-            Err(_) => {
-                // Timeout — kill the process group
-                #[cfg(unix)]
-                {
-                    if pid > 0 {
-                        let _ = std::process::Command::new("kill")
-                            .arg("--")
-                            .arg(format!("-{}", pid))
-                            .spawn();
-                    }
-                }
+            // Check timeout
+            if let Some(dur) = timeout_dur
+                && started_at.elapsed() > dur
+            {
+                kill_process_group(pid);
+                read_task.abort();
                 return Err(anyhow::anyhow!(
                     "Command timed out after {} seconds",
                     timeout.unwrap_or(0)
                 ));
             }
-        };
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let combined = format!("{}{}", stdout, stderr);
-
-        // Apply tail truncation (pi-style: keep last N lines/bytes)
-        let trunc = truncate_tail(&combined, DEFAULT_MAX_LINES, DEFAULT_MAX_BYTES);
-
-        let mut result_text = trunc.content;
-
-        // Save full output to temp file if truncated (as advertised in the description)
-        let full_output_path = if trunc.truncated {
-            let tmp_dir = std::env::temp_dir().join("rab-bash");
-            std::fs::create_dir_all(&tmp_dir).ok();
-            let tmp_path = tmp_dir.join(format!("{}.txt", uuid::Uuid::new_v4()));
-            if std::fs::write(&tmp_path, &combined).is_ok() {
-                Some(tmp_path)
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-
-        // Build continuation/footer messages
-        if trunc.truncated {
-            let start_line = trunc.total_lines - trunc.output_lines + 1;
-            let end_line = trunc.total_lines;
-
-            let footer = if let Some(ref path) = full_output_path {
-                if trunc.last_line_partial {
-                    let last_line_size = format_size(
-                        combined.lines().last().map(|l| l.len()).unwrap_or(0)
+            // Send streaming update
+            if let Some(ref tx) = on_update {
+                let out = combined.lock().await;
+                if !out.is_empty() {
+                    let elapsed = started_at.elapsed();
+                    let display = format!(
+                        "{}\n\n[Elapsed {:.1}s]",
+                        out.trim_end(),
+                        elapsed.as_secs_f64()
                     );
-                    format!(
-                        "\n\n[Showing last {} of line {} (line is {}). Full output: {}]",
-                        format_size(trunc.output_bytes),
-                        end_line,
-                        last_line_size,
-                        path.display()
-                    )
-                } else if trunc.truncated_by == "lines" {
-                    format!(
-                        "\n\n[Showing lines {}-{} of {}. Full output: {}]",
-                        start_line,
-                        end_line,
-                        trunc.total_lines,
-                        path.display()
-                    )
-                } else {
-                    format!(
-                        "\n\n[Showing lines {}-{} of {} ({} limit). Full output: {}]",
-                        start_line,
-                        end_line,
-                        trunc.total_lines,
-                        format_size(DEFAULT_MAX_BYTES),
-                        path.display()
-                    )
+                    let _ = tx.send(ToolOutput::ok(display));
                 }
-            } else {
-                if trunc.last_line_partial {
-                    format!(
-                        "\n\n[Showing last {} of line {}.]",
-                        format_size(trunc.output_bytes),
-                        end_line,
-                    )
-                } else if trunc.truncated_by == "lines" {
-                    format!(
-                        "\n\n[Showing lines {}-{} of {}.]",
-                        start_line, end_line, trunc.total_lines,
-                    )
-                } else {
-                    format!(
-                        "\n\n[Showing lines {}-{} of {} ({} limit).]",
-                        start_line,
-                        end_line,
-                        trunc.total_lines,
-                        format_size(DEFAULT_MAX_BYTES),
-                    )
-                }
-            };
-            result_text.push_str(&footer);
-        }
-
-        // Add exit code info
-        if !output.status.success() {
-            let code = output.status.code().unwrap_or(-1);
-            if result_text.is_empty() {
-                return Ok(ToolOutput::ok(format!("Command exited with code {}", code)));
             }
-            result_text.push_str(&format!("\n\n[Command exited with code {}]", code));
-        } else if result_text.is_empty() {
-            result_text = "(no output)".to_string();
-        }
 
-        Ok(ToolOutput::ok(result_text))
+            // Check if process has exited
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    read_task.await.ok();
+                    let combined_str = combined.lock().await.clone();
+                    let exit_code = status.code().unwrap_or(-1);
+
+                                return finish_bash_execution(
+                        &combined_str,
+                        exit_code,
+                        started_at,
+                        on_update,
+                    );
+                }
+                Ok(None) => {
+                    // Still running, poll again soon
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                }
+                Err(_) => {
+                    read_task.await.ok();
+                    let combined_str = combined.lock().await.clone();
+                    let exit_code = -1;
+                    return finish_bash_execution(
+                        &combined_str,
+                        exit_code,
+                        started_at,
+                        on_update,
+                    );
+                }
+            }
+        }
     }
 }
 
@@ -408,7 +485,7 @@ mod tests {
             .execute(
                 "id".into(),
                 serde_json::json!({"command": "echo hello"}),
-                Cancel::new(),
+                Cancel::new(), None,
             )
             .await
             .unwrap();
@@ -422,7 +499,7 @@ mod tests {
             .execute(
                 "id".into(),
                 serde_json::json!({"command": "echo err >&2"}),
-                Cancel::new(),
+                Cancel::new(), None,
             )
             .await
             .unwrap();
@@ -439,6 +516,7 @@ mod tests {
                 "id".into(),
                 serde_json::json!({"command": "sleep 10"}),
                 cancel,
+                None,
             )
             .await;
         assert!(result.is_err());
@@ -457,7 +535,7 @@ mod tests {
             .execute(
                 "id".into(),
                 serde_json::json!({"command": "sleep 10", "timeout": 1}),
-                Cancel::new(),
+                Cancel::new(), None,
             )
             .await;
         assert!(result.is_err());
@@ -514,6 +592,331 @@ mod tests {
     #[test]
     fn test_format_size() {
         assert_eq!(format_size(500), "500B");
+        assert_eq!(format_size(1024), "1.0KB");
         assert_eq!(format_size(50 * 1024), "50.0KB");
+        assert_eq!(format_size(1024 * 1024), "1.0MB");
+    }
+
+    // ── Exit code integration tests ──────────────────────────────
+
+    #[tokio::test]
+    async fn exit_code_nonzero() {
+        let tool = make_tool();
+        let output = tool
+            .execute(
+                "id".into(),
+                serde_json::json!({"command": "exit 42"}),
+                Cancel::new(), None,
+            )
+            .await
+            .unwrap();
+        assert!(
+            output.content.contains("exited with code 42"),
+            "got: {}",
+            output.content
+        );
+    }
+
+    #[tokio::test]
+    async fn exit_code_with_output() {
+        let tool = make_tool();
+        let output = tool
+            .execute(
+                "id".into(),
+                serde_json::json!({"command": "echo before && exit 1"}),
+                Cancel::new(), None,
+            )
+            .await
+            .unwrap();
+        assert!(output.content.contains("before"), "got: {}", output.content);
+        assert!(
+            output.content.contains("exited with code 1"),
+            "got: {}",
+            output.content
+        );
+    }
+
+    #[tokio::test]
+    async fn no_output() {
+        let tool = make_tool();
+        let output = tool
+            .execute(
+                "id".into(),
+                serde_json::json!({"command": "true"}),
+                Cancel::new(), None,
+            )
+            .await
+            .unwrap();
+        assert!(output.content.contains("(no output)"), "got: {}", output.content);
+        assert!(output.content.contains("[Took"), "got: {}", output.content);
+    }
+
+    #[tokio::test]
+    async fn combined_stdout_stderr() {
+        let tool = make_tool();
+        let output = tool
+            .execute(
+                "id".into(),
+                serde_json::json!({"command": "echo out; echo err >&2"}),
+                Cancel::new(), None,
+            )
+            .await
+            .unwrap();
+        assert!(output.content.contains("out"), "got: {}", output.content);
+        assert!(output.content.contains("err"), "got: {}", output.content);
+    }
+
+    #[tokio::test]
+    async fn runs_in_cwd() {
+        let tmp = std::env::temp_dir().join(format!("rab-bash-cwd-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("marker.txt"), "hello").unwrap();
+
+        let tool = BashTool { cwd: tmp.clone() };
+        let output = tool
+            .execute(
+                "id".into(),
+                serde_json::json!({"command": "cat marker.txt"}),
+                Cancel::new(), None,
+            )
+            .await
+            .unwrap();
+        assert!(output.content.contains("hello"), "got: {}", output.content);
+    }
+
+    #[tokio::test]
+    async fn missing_command_errors() {
+        let tool = make_tool();
+        let result = tool
+            .execute(
+                "id".into(),
+                serde_json::json!({}),
+                Cancel::new(), None,
+            )
+            .await;
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("command"), "got: {}", err);
+    }
+
+    #[tokio::test]
+    async fn timeout_with_partial_output() {
+        let tool = make_tool();
+        // Command that produces some output then hangs
+        let result = tool
+            .execute(
+                "id".into(),
+                serde_json::json!({"command": "echo start && sleep 10 && echo end", "timeout": 1}),
+                Cancel::new(), None,
+            )
+            .await;
+        // May timeout before process is killed, which is fine
+        // The key is it doesn't hang forever
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("timed out"), "got: {}", err);
+    }
+
+    #[tokio::test]
+    async fn cancel_during_long_command() {
+        let tool = make_tool();
+        let cancel = Cancel::new();
+        let cancel_clone = cancel.clone();
+
+        let handle = tokio::spawn(async move {
+            tool.execute(
+                "id".into(),
+                serde_json::json!({"command": "sleep 30"}),
+                cancel_clone,
+                None,
+            )
+            .await
+        });
+
+        // Give it a moment to start
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        cancel.cancel();
+
+        let result = handle.await.unwrap();
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("aborted") || err.contains("cancelled"),
+            "expected cancellation error, got: {}",
+            err
+        );
+    }
+
+    // ── Truncation boundary tests ────────────────────────────────
+
+    #[test]
+    fn test_truncate_tail_exact_line_fit() {
+        // Content exactly at the line limit — no truncation
+        let lines: String = (1..=2000).map(|i| format!("line {}\n", i)).collect();
+        let result = truncate_tail(&lines, 2000, 50000);
+        assert!(!result.truncated, "should not truncate when exactly at line limit");
+        assert_eq!(result.output_lines, 2000);
+    }
+
+    #[test]
+    fn test_truncate_tail_one_over_line_limit() {
+        let lines: String = (1..=2001).map(|i| format!("line {}\n", i)).collect();
+        let result = truncate_tail(&lines, 2000, 50000);
+        assert!(result.truncated);
+        assert_eq!(result.truncated_by, "lines");
+        assert_eq!(result.output_lines, 2000);
+        // Should keep last 2000 lines
+        assert!(result.content.starts_with("line 2"));
+    }
+
+    #[test]
+    fn test_truncate_tail_exact_byte_fit() {
+        // Content exactly at byte limit — no truncation
+        let line = "a".repeat(50000);
+        let result = truncate_tail(&line, 2000, 50000);
+        assert!(!result.truncated);
+    }
+
+    #[test]
+    fn test_truncate_tail_one_byte_over() {
+        // Content one byte over the limit
+        let line = "a".repeat(50001);
+        let result = truncate_tail(&line, 2000, 50000);
+        assert!(result.truncated);
+        assert!(result.last_line_partial);
+        assert!(result.content.len() <= 50000);
+    }
+
+    #[test]
+    fn test_truncate_tail_single_line_under_limit() {
+        let result = truncate_tail("hello world", 2000, 50000);
+        assert!(!result.truncated);
+        assert_eq!(result.content, "hello world");
+    }
+
+    #[test]
+    fn test_truncate_tail_trailing_newline() {
+        let result = truncate_tail("a\nb\n", 2000, 50000);
+        assert!(!result.truncated);
+        assert_eq!(result.content, "a\nb\n");
+    }
+
+    #[test]
+    fn test_truncate_tail_no_trailing_newline() {
+        let result = truncate_tail("a\nb", 2000, 50000);
+        assert!(!result.truncated);
+        assert_eq!(result.content, "a\nb");
+    }
+
+    #[test]
+    fn test_truncate_tail_single_line_exceeds_limit() {
+        let content = "x".repeat(60000);
+        let result = truncate_tail(&content, 2000, 50000);
+        assert!(result.truncated);
+        assert!(result.last_line_partial);
+        // Should keep the last 50000 bytes of the line
+        assert_eq!(result.content.len(), 50000);
+        assert!(result.content.ends_with("x".repeat(50000).as_str()));
+    }
+
+    #[test]
+    fn test_truncate_tail_byte_count_respects_newlines() {
+        // Each line is 1000 bytes, 50 lines = 50KB, plus 49 newlines = ~49 bytes extra
+        // At 2000 line limit, byte limit should be hit first
+        let content: String = (1..=100)
+            .map(|i| format!("line {} {}\n", i, "x".repeat(1000)))
+            .collect();
+        let result = truncate_tail(&content, 2000, 50000);
+        assert!(result.truncated);
+        // Output bytes should be at most 50000 (byte limit)
+        assert!(
+            result.output_bytes <= 50000,
+            "output_bytes {} exceeds limit 50000",
+            result.output_bytes
+        );
+    }
+
+    // ── Truncation footer tests ─────────────────────────────────
+
+    #[tokio::test]
+    async fn truncated_by_lines_shows_footer() {
+        let tool = make_tool();
+        // Generate 3000 lines of output (exceeds 2000 line limit)
+        let cmd = "for i in $(seq 1 3000); do echo \"line $i\"; done";
+        let output = tool
+            .execute(
+                "id".into(),
+                serde_json::json!({"command": cmd}),
+                Cancel::new(), None,
+            )
+            .await
+            .unwrap();
+        assert!(output.content.contains("Showing lines"), "got: {}", output.content);
+        assert!(output.content.contains("Full output:"), "got: {}", output.content);
+    }
+
+    #[tokio::test]
+    async fn small_output_no_footer() {
+        let tool = make_tool();
+        let output = tool
+            .execute(
+                "id".into(),
+                serde_json::json!({"command": "echo hello"}),
+                Cancel::new(), None,
+            )
+            .await
+            .unwrap();
+        // Small output should not have footer markers
+        assert!(!output.content.contains("Showing lines"), "got: {}", output.content);
+        assert!(!output.content.contains("Full output:"), "got: {}", output.content);
+    }
+
+    #[tokio::test]
+    async fn truncated_saves_temp_file() {
+        let tool = make_tool();
+        // Generate enough output to exceed line limit
+        let cmd = "for i in $(seq 1 3000); do echo \"line $i\"; done";
+        let output = tool
+            .execute(
+                "id".into(),
+                serde_json::json!({"command": cmd}),
+                Cancel::new(), None,
+            )
+            .await
+            .unwrap();
+        // Should mention a temp file path
+        assert!(
+            output.content.contains("/rab-bash/"),
+            "expected temp file path, got: {}",
+            output.content
+        );
+    }
+
+    // ── Truncate tail: many short lines ──────────────────────────
+
+    #[test]
+    fn test_truncate_tail_many_short_lines() {
+        // 10000 very short lines, well under byte limit
+        let content: String = (1..=10000).map(|i| format!("{}\n", i)).collect();
+        let result = truncate_tail(&content, 2000, 50000);
+        assert!(result.truncated);
+        assert_eq!(result.truncated_by, "lines");
+        assert_eq!(result.output_lines, 2000);
+        // Should keep the last 2000 lines
+        assert!(result.content.starts_with("8001"), "starts with: {:?}", &result.content[..10]);
+    }
+
+    #[test]
+    fn test_truncate_tail_lines_and_bytes_both_exceeded() {
+        // Both limits exceeded — byte limit should win (more restrictive)
+        let content: String = (1..=5000)
+            .map(|i| format!("line {} {}\n", i, "x".repeat(100)))
+            .collect();
+        let result = truncate_tail(&content, 2000, 30000);
+        assert!(result.truncated);
+        // With 100-byte lines, 300 lines would be ~30KB + newlines
+        // So byte limit should be hit before line limit
+        assert_eq!(result.truncated_by, "bytes");
+        assert!(result.output_lines < 2000);
     }
 }

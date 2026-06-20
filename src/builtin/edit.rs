@@ -1,4 +1,5 @@
 use crate::agent::extension::{AgentTool, Cancel, Extension, ToolOutput};
+use tokio::sync::mpsc::UnboundedSender;
 use anyhow::Context;
 use async_trait::async_trait;
 use std::borrow::Cow;
@@ -299,6 +300,7 @@ impl AgentTool for EditTool {
         tool_call_id: String,
         args: serde_json::Value,
         cancel: Cancel,
+        _on_update: Option<UnboundedSender<ToolOutput>>,
     ) -> anyhow::Result<ToolOutput> {
         let _ = tool_call_id;
         let (path_str, edits) =
@@ -472,21 +474,21 @@ mod tests {
     }
 
     async fn exec_ok(tool: &EditTool, args: serde_json::Value) -> String {
-        tool.execute("id".into(), args, Cancel::new())
+        tool.execute("id".into(), args, Cancel::new(), None)
             .await
             .unwrap()
             .content
     }
 
     async fn exec_err(tool: &EditTool, args: serde_json::Value) -> String {
-        tool.execute("id".into(), args, Cancel::new())
+        tool.execute("id".into(), args, Cancel::new(), None)
             .await
             .unwrap_err()
             .to_string()
     }
 
     async fn is_err(tool: &EditTool, args: serde_json::Value) -> bool {
-        tool.execute("id".into(), args, Cancel::new())
+        tool.execute("id".into(), args, Cancel::new(), None)
             .await
             .is_err()
     }

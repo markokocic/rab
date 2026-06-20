@@ -219,7 +219,7 @@ pub async fn run_agent_loop(
                 let cancel = Cancel::new();
                 if let Some(tool) = find_tool(config.agent_tools, &tc.name) {
                     match tool
-                        .execute(tc.id.clone(), tc.arguments.clone(), cancel)
+                        .execute(tc.id.clone(), tc.arguments.clone(), cancel, None)
                         .await
                     {
                         Ok(output) => {
