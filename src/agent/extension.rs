@@ -1,4 +1,4 @@
-/// Extension trait — all capability (built-in or user-provided) comes through this.
+/// Extension trait - all capability (built-in or user-provided) comes through this.
 use crate::agent::types::ToolCall;
 use async_trait::async_trait;
 use std::borrow::Cow;
@@ -29,14 +29,14 @@ pub struct AutocompleteItem {
 }
 
 /// A slash command handler (built-in or extension-provided).
-/// Commands use the same Extension trait as tools — built-ins and
+/// Commands use the same Extension trait as tools - built-ins and
 /// user extensions register commands through a uniform interface.
 pub trait CommandHandler: Send + Sync {
     /// Execute the command with the given arguments string.
     fn execute(&self, args: &str) -> anyhow::Result<CommandResult>;
 
     /// Get argument completions for autocomplete.
-    /// Called when user types `/cmd ` — returns matching autocomplete items.
+    /// Called when user types `/cmd ` - returns matching autocomplete items.
     fn argument_completions(&self, _prefix: &str) -> Vec<AutocompleteItem> {
         vec![]
     }
@@ -167,13 +167,25 @@ pub trait AgentTool: Send + Sync {
     #[allow(dead_code)]
     fn label(&self) -> &str;
 
+    /// Custom rendering for the tool call display.
+    /// Returns ANSI-styled text for the tool call header (name + args).
+    /// When None, a default rendering is used.
+    fn render_call(&self) -> Option<fn(&serde_json::Value) -> String> {
+        None
+    }
+
+    /// Custom rendering for the tool result display.
+    /// Returns ANSI-styled text for the tool result body.
+    /// When None, a default rendering is used.
+    fn render_result(&self) -> Option<fn(&str, bool) -> String> {
+        None
+    }
+
     /// Guidelines for the system prompt specific to this tool.
     fn prompt_guidelines(&self) -> Vec<String> {
         vec![]
     }
 
-    /// Execute the tool. Returns output carrying both the full content (sent to LLM)
-    /// and an optional compact label for collapsed UI display.
     /// Execute the tool. Returns output carrying both the full content (sent to LLM)
     /// and an optional compact label for collapsed UI display.
     ///

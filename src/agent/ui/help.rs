@@ -1,6 +1,5 @@
 use crate::agent::ui::theme::RabTheme;
 use crate::tui::Component;
-use crate::tui::Theme;
 
 /// Help overlay showing available commands and keybindings.
 pub struct HelpOverlay {

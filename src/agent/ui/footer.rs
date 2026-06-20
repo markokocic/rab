@@ -1,9 +1,8 @@
 use crate::agent::types::Usage;
 use crate::agent::ui::theme::RabTheme;
-use crate::tui::Theme;
 use crate::tui::util::{truncate_to_width, visible_width};
 
-/// Pi-style footer: 2–3 lines with dim styling.
+/// Pi-style footer: 2-3 lines with dim styling.
 pub struct Footer {
     cwd: String,
     git_branch: Option<String>,
@@ -25,6 +24,7 @@ pub struct Footer {
 
 impl Footer {
     pub fn new(cwd: impl Into<String>) -> Self {
+        let theme = crate::agent::ui::theme::current_theme().clone();
         Self {
             cwd: cwd.into(),
             git_branch: None,
@@ -41,7 +41,7 @@ impl Footer {
             thinking_level: None,
             is_streaming: false,
             extension_statuses: Vec::new(),
-            theme: RabTheme,
+            theme,
         }
     }
 

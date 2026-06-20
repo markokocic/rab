@@ -13,6 +13,7 @@ pub struct WorkingIndicator {
 
 impl WorkingIndicator {
     pub fn new() -> Self {
+        let theme = crate::agent::ui::theme::current_theme().clone();
         Self {
             frames: vec![
                 "⠋".into(),
@@ -29,7 +30,7 @@ impl WorkingIndicator {
             interval_ms: 80,
             frame: 0,
             last_tick: std::time::Instant::now(),
-            theme: RabTheme,
+            theme,
             active: false,
         }
     }

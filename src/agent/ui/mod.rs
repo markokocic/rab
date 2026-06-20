@@ -1,5 +1,6 @@
 pub mod app;
 pub mod chat_editor;
+pub mod components;
 pub mod footer;
 pub mod help;
 pub mod messages;

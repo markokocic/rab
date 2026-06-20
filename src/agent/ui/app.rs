@@ -16,7 +16,6 @@ use crate::agent::ui::theme::RabTheme;
 use crate::agent::ui::working::WorkingIndicator;
 use crate::agent::{AgentEvent, LoopConfig, run_agent_loop};
 use crate::tui::Component;
-use crate::tui::Theme;
 use crate::tui::keys::{Key, matches_key};
 use crate::tui::screen::Screen;
 use crate::tui::terminal::{self, Terminal};
@@ -132,7 +131,8 @@ pub struct App {
 impl App {
     fn new(config: AppConfig, session: SessionManager) -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
-        let theme = RabTheme;
+        use crate::agent::ui::theme::current_theme;
+        let theme = current_theme().clone();
 
         let mut editor = ChatEditor::new(&theme, config.cwd.clone());
 
@@ -228,6 +228,9 @@ impl App {
 
 /// Run the interactive UI.
 pub async fn run(config: AppConfig, session: SessionManager) -> anyhow::Result<()> {
+    // Initialize theme system
+    crate::agent::ui::theme::init_theme(Some("dark"), false);
+
     let mut term = Terminal::new();
     term.enter_raw_mode()?;
     let mut stdout = std::io::stdout();
@@ -1460,9 +1463,8 @@ mod tests {
 
     #[test]
     fn test_render_messages_pads_assistant_text() {
-        use crate::agent::ui::theme::RabTheme;
-
-        let theme = RabTheme;
+        crate::agent::ui::theme::init_theme(Some("dark"), false);
+        let theme = crate::agent::ui::theme::current_theme().clone();
         let msgs = vec![DisplayMsg::AssistantText("short line".into())];
 
         let width = 60;

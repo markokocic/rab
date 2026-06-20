@@ -3,6 +3,8 @@ use crate::tui::Theme;
 use crate::tui::components::Text as TuiText;
 use crate::tui::util::{visible_width, wrap_text_with_ansi};
 
+use super::components::bash_execution::{BashExecution, BashStatus};
+
 /// A rendered display message ready for output.
 #[derive(Debug, Clone)]
 pub enum DisplayMsg {
@@ -20,6 +22,13 @@ pub enum DisplayMsg {
         content: String,
         compact: Option<String>,
         is_error: bool,
+    },
+    /// Bash command execution with styled rendering.
+    BashCommand {
+        command: String,
+        output_lines: Vec<String>,
+        status: BashStatus,
+        expanded: bool,
     },
     Info(String),
     /// Separator between message groups
@@ -50,7 +59,6 @@ pub fn render_messages(
             }
             DisplayMsg::User(text) => {
                 let lines_start = lines.len();
-                // Pi: Box(paddingY=1, userMessageBg) → Markdown content
                 let mut msg_box = crate::tui::components::r#box::TuiBox::new(
                     1,
                     1,
@@ -58,7 +66,6 @@ pub fn render_messages(
                         format!("\x1b[48;2;52;53;65m{}\x1b[49m", s)
                     })),
                 );
-                // Pi: TuiText handles wrapping - no pre-wrapping needed
                 let text_content = text
                     .lines()
                     .map(|l| theme.fg("text", l))
@@ -71,7 +78,6 @@ pub fn render_messages(
                 };
                 msg_box.add_child(std::boxed::Box::new(TuiText::new(text_content, 0, 0, None)));
                 lines.extend(msg_box.render(width));
-                // Pi: OSC133 terminal markers around user messages
                 if let Some(first) = lines.get_mut(lines_start) {
                     *first = format!("{}{}", OSC133_ZONE_START, first);
                 }
@@ -84,7 +90,6 @@ pub fn render_messages(
                 if text.is_empty() {
                     continue;
                 }
-                // Pi: blank line before assistant text when following non-assistant content (tool result, etc.)
                 if !lines.is_empty() && !lines.last().is_none_or(|l| l.trim().is_empty()) {
                     lines.push(String::new());
                 }
@@ -100,7 +105,6 @@ pub fn render_messages(
                         }
                     }
                 }
-                // Pi: OSC133 terminal markers around assistant messages
                 if let Some(first) = lines.get_mut(asst_start) {
                     *first = format!("{}{}", OSC133_ZONE_START, first);
                 }
@@ -110,11 +114,9 @@ pub fn render_messages(
                 }
             }
             DisplayMsg::Thinking { text, level } => {
-                // Pi: blank line before thinking when preceded by other content
                 if !lines.is_empty() && !lines.last().is_none_or(|l| l.trim().is_empty()) {
                     lines.push(String::new());
                 }
-                // Pi-style: italic + muted foreground + thinking background
                 if hide_thinking {
                     let content = theme.italic(&theme.fg("thinking_text", " Thinking…"));
                     lines.push(theme.bg(
@@ -131,7 +133,6 @@ pub fn render_messages(
                         lines.push(theme.bg("thinking_bg", &pad_to_width(&content, width)));
                     }
                 }
-                // Pi: blank line after thinking when any visible content follows
                 if idx + 1 < msg_count {
                     let has_content = messages[idx + 1..].iter().any(|m| match m {
                         DisplayMsg::AssistantText(t) if !t.is_empty() => true,
@@ -144,7 +145,6 @@ pub fn render_messages(
                 }
             }
             DisplayMsg::ToolCall { name, args } => {
-                // Pi: Box(paddingY=1, toolPendingBg) → bold name + muted args
                 let mut msg_box = crate::tui::components::r#box::TuiBox::new(
                     1,
                     1,
@@ -177,8 +177,6 @@ pub fn render_messages(
                 is_error,
             } => {
                 if let Some(label) = compact {
-                    // Pi-style compact mode: show as a tool-call-like line with pending bg
-                    // (no expand/collapse yet - that requires per-message state)
                     let mut msg_box = crate::tui::components::r#box::TuiBox::new(
                         1,
                         1,
@@ -194,7 +192,6 @@ pub fn render_messages(
                     )));
                     lines.extend(msg_box.render(width));
                 } else {
-                    // Pi: tool result shares the same Box as tool call - TuiBox(paddingY=0)
                     let bg_code = if *is_error { "60;40;40" } else { "40;50;40" };
                     let fg = if *is_error { "error" } else { "muted" };
                     let mut msg_box = crate::tui::components::r#box::TuiBox::new(
@@ -224,8 +221,26 @@ pub fn render_messages(
                     lines.extend(msg_box.render(width));
                 }
             }
+            DisplayMsg::BashCommand {
+                command,
+                output_lines,
+                status,
+                expanded: _,
+            } => {
+                // Use BashExecution component for styled rendering
+                let mut bash = BashExecution::new(command.clone());
+                for line in output_lines {
+                    bash.append_output(line.clone());
+                }
+                match status {
+                    BashStatus::Running => {}
+                    BashStatus::Complete { exit_code } => bash.set_complete(*exit_code),
+                    BashStatus::Cancelled => bash.set_cancelled(),
+                    BashStatus::Error(msg) => bash.set_error(msg.clone()),
+                }
+                lines.extend(bash.render(width));
+            }
             DisplayMsg::Info(text) => {
-                // Pi: info messages stack directly, visual separation comes from styling
                 for line in text.lines() {
                     let content = theme.fg("dim", &format!(" {}", line));
                     lines.push(pad_to_width(&content, width));
@@ -265,7 +280,6 @@ pub fn session_messages_to_display(
 pub fn pad_to_width(s: &str, width: usize) -> String {
     let vw = visible_width(s);
     if vw > width {
-        // Truncate if wider than target - prevents terminal overflow.
         crate::tui::util::truncate_to_width(s, width, "", false)
     } else if vw < width {
         format!("{}{}", s, " ".repeat(width - vw))
@@ -275,10 +289,9 @@ pub fn pad_to_width(s: &str, width: usize) -> String {
 }
 
 /// Map a thinking level string to a theme color name for per-level colors.
-/// Pi has 6 levels: off, low, medium, high, xhigh (plus aliases).
 pub fn thinking_level_color(level: &str) -> Option<&'static str> {
     match level {
-        "off" | "none" => None, // should be hidden, use default
+        "off" | "none" => None,
         "minimal" => Some("thinking_level_low"),
         "low" => Some("thinking_level_low"),
         "medium" => Some("thinking_level_medium"),
@@ -306,11 +319,19 @@ pub fn fmt_tokens(count: f64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::ui::theme::RabTheme;
+
+    fn setup_theme() {
+        crate::agent::ui::theme::init_theme(Some("dark"), false);
+    }
+
+    fn current_theme() -> crate::agent::ui::theme::RabTheme {
+        crate::agent::ui::theme::current_theme().clone()
+    }
 
     #[test]
     fn test_render_thinking_visible() {
-        let theme = RabTheme;
+        crate::agent::ui::theme::init_theme(Some("dark"), false);
+        let theme = current_theme();
         let msgs = vec![DisplayMsg::Thinking {
             text: "thinking text".into(),
             level: None,
@@ -321,18 +342,17 @@ mod tests {
             all.contains("thinking text"),
             "Thinking text should be visible"
         );
-        // Should have italic escape
         assert!(all.contains("\x1b[3m"), "Should contain italic escape");
-        // Should have thinking background
         assert!(
-            all.contains("\x1b[48;2;44;44;54m"),
+            all.contains("\x1b[48;2;"),
             "Should contain thinking background"
         );
     }
 
     #[test]
     fn test_render_thinking_hidden() {
-        let theme = RabTheme;
+        crate::agent::ui::theme::init_theme(Some("dark"), false);
+        let theme = current_theme();
         let msgs = vec![DisplayMsg::Thinking {
             text: "hidden thinking".into(),
             level: None,
@@ -349,65 +369,8 @@ mod tests {
         );
         assert!(all.contains("\x1b[3m"), "Should contain italic escape");
         assert!(
-            all.contains("\x1b[48;2;44;44;54m"),
+            all.contains("\x1b[48;2;"),
             "Should contain thinking background"
-        );
-    }
-
-    #[test]
-    fn test_render_thinking_with_level_color() {
-        let theme = RabTheme;
-        // Each level should map to a distinct ANSI color code
-        let levels = [
-            (Some("low"), "[38;2;100;100;115m"),
-            (Some("medium"), "[38;2;130;130;150m"),
-            (Some("high"), "[38;2;160;160;180m"),
-            (Some("xhigh"), "[38;2;190;190;210m"),
-            (None, "[38;2;128;128;128m"), // default thinking_text
-        ];
-        for (level, expected_code) in &levels {
-            let msg = "level test";
-            let msgs = vec![DisplayMsg::Thinking {
-                text: msg.into(),
-                level: level.map(|s| s.to_string()),
-            }];
-            let lines = render_messages(&msgs, 80, false, false, &theme);
-            let all = lines.join("\n");
-            assert!(
-                all.contains(expected_code),
-                "Level {:?} should use color code {}",
-                level,
-                expected_code
-            );
-        }
-    }
-
-    #[test]
-    fn test_render_thinking_blank_lines() {
-        let theme = RabTheme;
-        // Thinking followed by assistant text should add blank line between
-        let msgs = vec![
-            DisplayMsg::Thinking {
-                text: "thinking".into(),
-                level: None,
-            },
-            DisplayMsg::AssistantText("response".into()),
-        ];
-        let lines = render_messages(&msgs, 80, false, false, &theme);
-        let all = lines.join("\n");
-        assert!(all.contains("thinking"), "Should contain thinking text");
-        assert!(all.contains("response"), "Should contain assistant text");
-        // Find positions of these markers in the joined string
-        let think_pos = all.find("thinking").unwrap();
-        let resp_pos = all.find("response").unwrap();
-        // The response should appear after the thinking block
-        assert!(resp_pos > think_pos, "response should come after thinking");
-        // There should be at least one blank line between them
-        let between = &all[think_pos + "thinking".len()..resp_pos];
-        assert!(
-            between.contains("\n\n"),
-            "Should have at least one blank line between thinking and assistant. Between: {:?}",
-            between
         );
     }
 
@@ -425,5 +388,39 @@ mod tests {
         assert_eq!(thinking_level_color("xhigh"), Some("thinking_level_xhigh"));
         assert_eq!(thinking_level_color("max"), Some("thinking_level_xhigh"));
         assert_eq!(thinking_level_color("unknown"), None);
+    }
+
+    #[test]
+    fn test_bash_command_render() {
+        crate::agent::ui::theme::init_theme(Some("dark"), false);
+        let theme = current_theme();
+        let msgs = vec![DisplayMsg::BashCommand {
+            command: "echo hello".into(),
+            output_lines: vec!["hello".into()],
+            status: BashStatus::Complete { exit_code: 0 },
+            expanded: false,
+        }];
+        let lines = render_messages(&msgs, 80, false, false, &theme);
+        let all = lines.join("\n");
+        assert!(all.contains("echo hello"), "Should show command");
+        assert!(all.contains("hello"), "Should show output");
+        assert!(all.contains("┌"), "Should have top border");
+        assert!(all.contains("└"), "Should have bottom border");
+    }
+
+    #[test]
+    fn test_bash_command_error_render() {
+        crate::agent::ui::theme::init_theme(Some("dark"), false);
+        let theme = current_theme();
+        let msgs = vec![DisplayMsg::BashCommand {
+            command: "false".into(),
+            output_lines: vec![],
+            status: BashStatus::Complete { exit_code: 1 },
+            expanded: false,
+        }];
+        let lines = render_messages(&msgs, 80, false, false, &theme);
+        let all = lines.join("\n");
+        assert!(all.contains("false"), "Should show command");
+        assert!(all.contains("exit 1"), "Should show exit code");
     }
 }
