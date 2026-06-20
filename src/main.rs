@@ -9,6 +9,7 @@ use rab::builtin::{
     write::WriteExtension,
 };
 use std::io::Write;
+use std::path::{Path, PathBuf};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -23,6 +24,9 @@ async fn main() -> anyhow::Result<()> {
     let mut no_session: bool = false;
     let mut session_name: Option<String> = None;
     let mut session_dir_override: Option<String> = None;
+    let mut no_context_files: bool = false;
+    let mut system_prompt_override: Option<String> = None;
+    let mut append_system_prompt_override: Option<String> = None;
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
@@ -48,6 +52,21 @@ async fn main() -> anyhow::Result<()> {
                 i += 1;
                 if i < args.len() {
                     session_name = Some(args[i].clone());
+                }
+            }
+            "--no-context-files" | "-nc" => {
+                no_context_files = true;
+            }
+            "--system-prompt" => {
+                i += 1;
+                if i < args.len() {
+                    system_prompt_override = Some(args[i].clone());
+                }
+            }
+            "--append-system-prompt" => {
+                i += 1;
+                if i < args.len() {
+                    append_system_prompt_override = Some(args[i].clone());
                 }
             }
             "--session-dir" => {
@@ -114,10 +133,63 @@ async fn main() -> anyhow::Result<()> {
         Box::new(BashExtension::new(cwd.clone())),
     ];
 
-    let system_prompt = build_system_prompt(&extensions);
+    let agent_dir = get_agent_dir();
+
+    // Load context files (AGENTS.md / CLAUDE.md)
+    let context_files = if no_context_files {
+        Vec::new()
+    } else {
+        rab::agent::load_context_files(&cwd, &agent_dir)
+    };
+
+    // Load SYSTEM.md / APPEND_SYSTEM.md
+    let custom_system_md = system_prompt_override.or_else(|| load_system_md(&cwd, &agent_dir));
+    let append_system_md =
+        append_system_prompt_override.or_else(|| load_append_system_md(&cwd, &agent_dir));
+
+    // Collect context file display names before context_files is moved
+    let context_file_names: Vec<String> = context_files
+        .iter()
+        .map(|cf| {
+            cf.path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("")
+                .to_string()
+        })
+        .collect();
+
+    // Build tool snippets from extensions
+    let tool_snippets: Vec<rab::agent::ToolSnippet> = extensions
+        .iter()
+        .flat_map(|ext| ext.tools())
+        .map(|tool| rab::agent::ToolSnippet {
+            name: tool.name().to_string(),
+            description: tool.description().to_string(),
+        })
+        .collect();
+
+    // Build system prompt using the new builder
+    let system_prompt = rab::agent::SystemPromptBuilder::new()
+        .tool_snippets(tool_snippets)
+        .context_files(context_files)
+        .custom_prompt(custom_system_md)
+        .append_prompt(append_system_md)
+        .cwd(&cwd)
+        .build();
+
     let tools = rab::agent::collect_tool_defs(&extensions);
     let agent_tools: Vec<Box<dyn rab::agent::extension::AgentTool>> =
         extensions.iter().flat_map(|ext| ext.tools()).collect();
+
+    // Load skills for startup display
+    let skills = rab::agent::load_skills(rab::agent::LoadSkillsOptions {
+        cwd: &cwd,
+        agent_dir: &agent_dir,
+        extra_skill_paths: &[],
+        include_defaults: true,
+    });
+    let skill_names: Vec<String> = skills.iter().map(|s| s.name.clone()).collect();
 
     let thinking_level = settings.default_thinking_level.as_deref();
     let provider = adapter::GenaiProvider::new(&auth, thinking_level)?;
@@ -139,6 +211,8 @@ async fn main() -> anyhow::Result<()> {
             collapse_tool_output: settings.collapse_tool_output.unwrap_or(false),
             interactive: true,
             settings,
+            context_files: context_file_names,
+            skill_names,
         };
         ui::run(config, session).await
     } else {
@@ -276,31 +350,39 @@ fn get_git_branch(cwd: &std::path::Path) -> Option<String> {
     None
 }
 
-fn build_system_prompt(extensions: &[Box<dyn Extension>]) -> String {
-    let mut prompt = String::new();
+/// Get the agent config directory (~/.rab/agent).
+fn get_agent_dir() -> PathBuf {
+    directories::BaseDirs::new()
+        .map(|d| d.home_dir().join(".rab").join("agent"))
+        .unwrap_or_else(|| PathBuf::from("/tmp/.rab/agent"))
+}
 
-    prompt.push_str(
-        "You are an expert coding assistant operating inside a terminal coding harness.\n",
-    );
-    prompt.push_str(
-        "You help users by reading files, executing commands, editing code, and writing new files.\n\n",
-    );
-
-    prompt.push_str("Available tools:\n");
-    for ext in extensions {
-        for tool in ext.tools() {
-            prompt.push_str(&format!("- {}: {}\n", tool.name(), tool.description()));
-        }
+/// Load SYSTEM.md: project `.rab/SYSTEM.md` first, then global `~/.rab/agent/SYSTEM.md`.
+fn load_system_md(cwd: &Path, agent_dir: &Path) -> Option<String> {
+    // Project-local takes precedence
+    let project_path = cwd.join(".rab").join("SYSTEM.md");
+    if project_path.exists() {
+        return std::fs::read_to_string(&project_path).ok();
     }
+    // Global fallback
+    let global_path = agent_dir.join("SYSTEM.md");
+    if global_path.exists() {
+        return std::fs::read_to_string(&global_path).ok();
+    }
+    None
+}
 
-    prompt.push_str("\nGuidelines:\n");
-    prompt.push_str("- Be concise in your responses\n");
-    prompt.push_str("- Show file paths clearly when working with files\n");
-    prompt.push_str("- Use the edit tool for precise changes with exact text matching\n");
-    prompt.push_str("- When reading files, use offset/limit to handle large files\n");
-    prompt.push_str(
-        "- Always write complete files with the write tool, never use shell redirection\n",
-    );
-
-    prompt
+/// Load APPEND_SYSTEM.md: project `.rab/APPEND_SYSTEM.md` first, then global.
+fn load_append_system_md(cwd: &Path, agent_dir: &Path) -> Option<String> {
+    // Project-local takes precedence
+    let project_path = cwd.join(".rab").join("APPEND_SYSTEM.md");
+    if project_path.exists() {
+        return std::fs::read_to_string(&project_path).ok();
+    }
+    // Global fallback
+    let global_path = agent_dir.join("APPEND_SYSTEM.md");
+    if global_path.exists() {
+        return std::fs::read_to_string(&global_path).ok();
+    }
+    None
 }

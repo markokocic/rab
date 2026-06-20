@@ -39,6 +39,10 @@ pub struct AppConfig {
     pub collapse_tool_output: bool,
     pub interactive: bool,
     pub settings: crate::agent::settings::Settings,
+    /// Context files (AGENTS.md / CLAUDE.md) loaded for the session.
+    pub context_files: Vec<String>,
+    /// Skill names loaded for the session.
+    pub skill_names: Vec<String>,
 }
 
 /// Main application state.
@@ -150,8 +154,34 @@ impl App {
         let history_messages = context.messages.clone();
         let history_display = session_messages_to_display(&history_messages);
 
-        // Startup messages (pi-style: minimal, tools/commands shown in header hints)
-        let messages = history_display;
+        // Startup info: context files, skills, tools (pi-style loaded resources listing)
+        let mut startup_info: Vec<DisplayMsg> = Vec::new();
+
+        let mut resource_parts: Vec<String> = Vec::new();
+
+        if !config.context_files.is_empty() {
+            let ctx = config.context_files.join(", ");
+            resource_parts.push(format!("Context: {}", ctx));
+        }
+
+        if !config.skill_names.is_empty() {
+            let skills = config.skill_names.join(", ");
+            resource_parts.push(format!("Skills: {}", skills));
+        }
+
+        if !resource_parts.is_empty() {
+            startup_info.push(DisplayMsg::Info(resource_parts.join("  ·  ")));
+        }
+
+        // Combine startup info with history
+        let messages = if startup_info.is_empty() {
+            history_display
+        } else {
+            let mut combined = startup_info;
+            combined.push(DisplayMsg::Separator);
+            combined.extend(history_display);
+            combined
+        };
 
         Self {
             cwd: config.cwd,
@@ -934,6 +964,8 @@ mod tests {
             collapse_tool_output: true,
             interactive: true,
             settings: crate::agent::settings::Settings::default(),
+            context_files: vec![],
+            skill_names: vec![],
         };
 
         let mut app = App::new(config, session);
@@ -1071,6 +1103,8 @@ mod tests {
             collapse_tool_output: true,
             interactive: true,
             settings: crate::agent::settings::Settings::default(),
+            context_files: vec![],
+            skill_names: vec![],
         };
 
         let mut app = App::new(config, session);
@@ -1113,6 +1147,8 @@ mod tests {
             collapse_tool_output: true,
             interactive: true,
             settings: crate::agent::settings::Settings::default(),
+            context_files: vec![],
+            skill_names: vec![],
         };
 
         let mut app = App::new(config, session);
@@ -1149,6 +1185,8 @@ mod tests {
             collapse_tool_output: true,
             interactive: true,
             settings: crate::agent::settings::Settings::default(),
+            context_files: vec![],
+            skill_names: vec![],
         };
 
         let mut app = App::new(config, session);
@@ -1193,6 +1231,8 @@ mod tests {
             collapse_tool_output: true,
             interactive: true,
             settings: crate::agent::settings::Settings::default(),
+            context_files: vec![],
+            skill_names: vec![],
         };
 
         let mut app = App::new(config, session);
@@ -1227,6 +1267,8 @@ mod tests {
             collapse_tool_output: true,
             interactive: true,
             settings: crate::agent::settings::Settings::default(),
+            context_files: vec![],
+            skill_names: vec![],
         };
 
         let mut app = App::new(config, session);
@@ -1261,6 +1303,8 @@ mod tests {
             collapse_tool_output: true,
             interactive: true,
             settings: crate::agent::settings::Settings::default(),
+            context_files: vec![],
+            skill_names: vec![],
         };
 
         let mut app = App::new(config, session);
@@ -1295,6 +1339,8 @@ mod tests {
             collapse_tool_output: true,
             interactive: true,
             settings: crate::agent::settings::Settings::default(),
+            context_files: vec![],
+            skill_names: vec![],
         };
 
         let mut app = App::new(config, session);
@@ -1333,6 +1379,8 @@ mod tests {
             collapse_tool_output: true,
             interactive: true,
             settings: crate::agent::settings::Settings::default(),
+            context_files: vec![],
+            skill_names: vec![],
         };
 
         let mut app = App::new(config, session);
@@ -1415,6 +1463,8 @@ mod tests {
             collapse_tool_output: true,
             interactive: true,
             settings: crate::agent::settings::Settings::default(),
+            context_files: vec![],
+            skill_names: vec![],
         };
 
         let mut app = App::new(config, session);
