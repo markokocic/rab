@@ -605,6 +605,41 @@ pub fn slice_by_column(line: &str, start_col: usize, length: usize) -> String {
     result
 }
 
+/// Convert a visual column position to a byte offset in the given text.
+/// Handles ANSI escape codes and wide characters correctly.
+pub fn visual_col_to_byte_offset(text: &str, visual_col: usize) -> usize {
+    if text.is_empty() {
+        return 0;
+    }
+
+    let mut vis_so_far: usize = 0;
+    let mut i = 0;
+    let bytes = text.as_bytes();
+
+    while i < bytes.len() {
+        if bytes[i] == 0x1b
+            && let Some(ansi) = extract_ansi_code_at(text, i)
+        {
+            i += ansi.len();
+            continue;
+        }
+
+        let rest = &text[i..];
+        if let Some(g) = rest.graphemes(true).next() {
+            let gw = grapheme_width(g);
+            if vis_so_far + gw > visual_col {
+                return i;
+            }
+            vis_so_far += gw;
+            i += g.len();
+            continue;
+        }
+        break;
+    }
+
+    text.len()
+}
+
 /// Simple ANSI state tracker for wrap_text_with_ansi.
 struct AnsiState {
     bold: bool,

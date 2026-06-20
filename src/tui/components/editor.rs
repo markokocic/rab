@@ -6,7 +6,7 @@ use crate::tui::focusable::{CURSOR_MARKER, Focusable};
 use crate::tui::keys::{Key, key_event_to_string, matches_key};
 use crate::tui::kill_ring::KillRing;
 use crate::tui::undo_stack::UndoStack;
-use crate::tui::util::{visible_width, wrap_text_with_ansi};
+use crate::tui::util::{visible_width, visual_col_to_byte_offset, wrap_text_with_ansi};
 use crate::tui::word_nav::{find_word_backward, find_word_forward};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use unicode_segmentation::UnicodeSegmentation;
@@ -968,25 +968,43 @@ fn layout_text(
                 },
             });
         } else {
-            // Word-wrap the line, tracking cursor position
+            // Word-wrap the line, tracking cursor position by visual column.
+            // We cannot use byte-pos accumulation because wrap_text_with_ansi may
+            // trim trailing whitespace or add ANSI codes, making chunk byte lengths
+            // diverge from the original line's substrings.
             let wrapped = wrap_text_with_ansi(line, max_width);
-            let mut byte_pos = 0;
+
+            // Compute cursor's visual column position in the original line.
+            let cursor_vis = if is_cursor_line {
+                visible_width(&line[..cursor_col.min(line.len())])
+            } else {
+                0
+            };
+
+            let mut vis_offset: usize = 0;
             for (chunk_idx, chunk) in wrapped.iter().enumerate() {
-                let chunk_end = byte_pos + chunk.len();
+                let chunk_vis = visible_width(chunk);
+                let chunk_vis_end = vis_offset + chunk_vis;
+
                 let cursor_in_chunk = is_cursor_line
-                    && cursor_col >= byte_pos
-                    && (cursor_col < chunk_end || chunk_idx == wrapped.len() - 1);
+                    && cursor_vis >= vis_offset
+                    && (cursor_vis < chunk_vis_end || chunk_idx == wrapped.len() - 1);
+
+                let cursor_pos = if cursor_in_chunk {
+                    let local_vis = cursor_vis.saturating_sub(vis_offset);
+                    // Convert visual offset within chunk to byte offset
+                    Some(visual_col_to_byte_offset(chunk, local_vis))
+                } else {
+                    None
+                };
+
                 result.push(VisualLine {
                     text: chunk.clone(),
-                    has_cursor: cursor_in_chunk,
-                    cursor_pos: if cursor_in_chunk {
-                        Some((cursor_col - byte_pos).min(chunk.len()))
-                    } else {
-                        None
-                    },
+                    has_cursor: cursor_in_chunk && cursor_pos.is_some(),
+                    cursor_pos,
                 });
-                byte_pos = chunk_end;
-                // Account for space between wrapped segments (the wrap function may trim)
+
+                vis_offset = chunk_vis_end;
             }
         }
     }
@@ -1261,5 +1279,165 @@ mod tests {
             let vw = crate::tui::util::visible_width(line);
             assert!(vw <= 20, "Width {} > 20: {:?}", vw, line);
         }
+    }
+
+    // ── Wrap/duplication tests ───────────────────────────────────
+
+    #[test]
+    fn test_no_line_duplication_on_wrap() {
+        // When text wraps, no two consecutive rendered content lines should have the same content.
+        // The word-wrap must not produce duplicate chunks.
+        let mut editor = Editor::new(
+            EditorTheme::default(),
+            EditorOptions {
+                padding_x: 0,
+                max_visible_lines: 20,
+            },
+        );
+        editor.set_text("hello world this is a test of the wrapping system");
+        editor.focused = true;
+
+        let lines = editor.render(12);
+        // Filter out border lines and padding-only lines
+        let content_lines: Vec<&str> = lines
+            .iter()
+            .map(|l| l.trim_end_matches(' '))
+            .filter(|l| !l.is_empty() && !l.contains('─'))
+            .collect();
+
+        for i in 1..content_lines.len() {
+            assert_ne!(
+                content_lines[i],
+                content_lines[i - 1],
+                "Line {} duplicates line {}: '{}'",
+                i,
+                i - 1,
+                content_lines[i]
+            );
+        }
+    }
+
+    #[test]
+    fn test_cursor_in_wrapped_text_first_chunk() {
+        // Cursor at position within first wrapped chunk
+        let mut editor = Editor::new(EditorTheme::default(), EditorOptions::default());
+        let text = "hello world this is a test";
+        editor.set_text(text);
+        // cursor at position 3 ('l' in "hello")
+        editor.cursor_col = 3;
+        let vl = layout_text(&editor.lines, 10, editor.cursor_line, editor.cursor_col);
+        assert!(vl.len() > 1, "Text should wrap into multiple visual lines");
+        assert!(
+            vl[0].has_cursor,
+            "Cursor at col 3 should be in first visual line"
+        );
+        if let Some(pos) = vl[0].cursor_pos {
+            assert_eq!(pos, 3, "Cursor byte offset in first chunk should be 3");
+        }
+    }
+
+    #[test]
+    fn test_cursor_in_wrapped_text_middle_chunk() {
+        // Cursor at position within the middle chunk
+        let mut editor = Editor::new(EditorTheme::default(), EditorOptions::default());
+        let text = "hello world this is a test";
+        editor.set_text(text);
+        // "hello world this" = 16 chars, cursor at col 16 = end of "hello world this"
+        // which should be the last byte of chunk 0 ("hello worl" at width 10)
+        // Actually at width 10, chunk 0 might be "hello worl", chunk 1 "d this is", chunk 2 " a test"
+        editor.cursor_col = 16;
+        let vl = layout_text(&editor.lines, 10, editor.cursor_line, editor.cursor_col);
+        assert!(vl.len() > 1, "Text should wrap");
+        let cursor_vl = vl.iter().position(|v| v.has_cursor);
+        assert!(
+            cursor_vl.is_some(),
+            "Cursor should be found in some visual line"
+        );
+    }
+
+    #[test]
+    fn test_cursor_last_chunk_on_boundary() {
+        // Cursor at last byte of text — should be in the last visual line
+        let mut editor = Editor::new(EditorTheme::default(), EditorOptions::default());
+        let text = "hello world this is a test";
+        editor.set_text(text);
+        editor.cursor_col = text.len();
+        let vl = layout_text(&editor.lines, 10, editor.cursor_line, editor.cursor_col);
+        assert!(
+            vl.last().map_or(false, |v| v.has_cursor),
+            "Cursor at end should be in last visual line"
+        );
+    }
+
+    #[test]
+    fn test_layout_text_each_chunk_unique() {
+        // layout_text should never produce VisualLines with identical text
+        // from a single logical line's wrapping.
+        let text = "hello world this is a test of the wrapping system";
+        let vl = layout_text(&[text.to_string()], 12, 0, 0);
+        let chunk_texts: Vec<&str> = vl.iter().map(|v| v.text.as_str()).collect();
+        for i in 0..chunk_texts.len() {
+            for j in (i + 1)..chunk_texts.len() {
+                if chunk_texts[i] == chunk_texts[j] {
+                    // Same text is OK if the text is empty (edge case)
+                    if !chunk_texts[i].is_empty() {
+                        panic!(
+                            "Duplicate chunk text at positions {} and {}: '{}'",
+                            i, j, chunk_texts[i]
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    // ── visual_col_to_byte_offset tests ──────────────────────────
+
+    #[test]
+    fn test_visual_col_to_byte_offset_ascii() {
+        let text = "hello";
+        assert_eq!(crate::tui::util::visual_col_to_byte_offset(text, 0), 0);
+        assert_eq!(crate::tui::util::visual_col_to_byte_offset(text, 3), 3);
+        assert_eq!(crate::tui::util::visual_col_to_byte_offset(text, 5), 5);
+    }
+
+    #[test]
+    fn test_visual_col_to_byte_offset_cjk() {
+        let text = "世界hello";
+        assert_eq!(crate::tui::util::visual_col_to_byte_offset(text, 0), 0);
+        // "世" is width 2, 2 bytes
+        assert_eq!(crate::tui::util::visual_col_to_byte_offset(text, 2), 3);
+        // "世界" is width 4, 6 bytes
+        assert_eq!(crate::tui::util::visual_col_to_byte_offset(text, 4), 6);
+    }
+
+    #[test]
+    fn test_visual_col_to_byte_offset_ansi() {
+        // "\x1b[31m" = 5 bytes, "hello" = 5 bytes, "\x1b[0m" = 4 bytes = 14 total
+        let text = "\x1b[31mhello\x1b[0m";
+        // visible width is 5 ("hello"), ANSI codes are invisible
+        assert_eq!(crate::tui::util::visual_col_to_byte_offset(text, 0), 5); // "h" at byte 5
+        assert_eq!(crate::tui::util::visual_col_to_byte_offset(text, 1), 6); // "e" at byte 6
+        assert_eq!(crate::tui::util::visual_col_to_byte_offset(text, 2), 7); // first "l" at byte 7
+        assert_eq!(crate::tui::util::visual_col_to_byte_offset(text, 3), 8); // second "l" at byte 8
+        assert_eq!(crate::tui::util::visual_col_to_byte_offset(text, 4), 9); // "o" at byte 9
+        assert_eq!(crate::tui::util::visual_col_to_byte_offset(text, 5), 14); // end at byte 14
+    }
+
+    #[test]
+    fn test_visual_col_to_byte_offset_empty() {
+        assert_eq!(crate::tui::util::visual_col_to_byte_offset("", 0), 0);
+        assert_eq!(crate::tui::util::visual_col_to_byte_offset("", 5), 0);
+    }
+
+    #[test]
+    fn test_visual_col_to_byte_offset_zero_col() {
+        // Plain ASCII: first visible char is at byte 0
+        assert_eq!(crate::tui::util::visual_col_to_byte_offset("abc", 0), 0);
+        // ANSI-prefixed: first visible char is after the ANSI code
+        assert_eq!(
+            crate::tui::util::visual_col_to_byte_offset("\x1b[31mabc", 0),
+            5
+        );
     }
 }

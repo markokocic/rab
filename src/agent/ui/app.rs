@@ -241,23 +241,12 @@ pub async fn run(config: AppConfig, session: SessionManager) -> anyhow::Result<(
     let mut app = App::new(config, session);
 
     loop {
-        // Get terminal size
-        let (cols, rows) = Terminal::size()?;
-
-        // Compose UI
-        let lines = compose_ui(&mut app, cols as usize, rows as usize);
-
-        // Render to screen
-        screen.render(lines, cols, rows, &mut stdout)?;
-
-        // Pi: clear transient status after rendering
-        app.status_text = None;
-
-        // Poll for events
+        // Poll for events first (pi-style: process input before rendering)
+        // Short timeout keeps typing responsive; 8ms ≈ 120fps polling rate.
         let timeout = if app.is_streaming || app.working.active {
-            Duration::from_millis(10)
+            Duration::from_millis(8)
         } else {
-            Duration::from_millis(100)
+            Duration::from_millis(16)
         };
 
         if let Some(key) = terminal::poll_key_event(Some(timeout))? {
@@ -268,6 +257,19 @@ pub async fn run(config: AppConfig, session: SessionManager) -> anyhow::Result<(
         while let Ok(event) = app.event_rx.try_recv() {
             handle_agent_event(&mut app, event);
         }
+
+        // Get terminal size
+        let (cols, rows) = Terminal::size()?;
+
+        // Compose UI after all pending input/events processed
+        // (single render per state change, no wasted before-input frames)
+        let lines = compose_ui(&mut app, cols as usize, rows as usize);
+
+        // Render to screen
+        screen.render(lines, cols, rows, &mut stdout)?;
+
+        // Pi: clear transient status after rendering
+        app.status_text = None;
 
         // Tick the working indicator
         app.working.tick();

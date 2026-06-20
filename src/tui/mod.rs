@@ -21,4 +21,7 @@ pub use keys::{Key, matches_key};
 pub use screen::Screen;
 pub use terminal::Terminal;
 pub use theme::Theme;
-pub use util::{slice_by_column, truncate_to_width, visible_width, wrap_text_with_ansi};
+pub use util::{
+    slice_by_column, truncate_to_width, visible_width, visual_col_to_byte_offset,
+    wrap_text_with_ansi,
+};
