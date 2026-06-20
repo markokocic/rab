@@ -1,6 +1,6 @@
 # rab Architecture
 
-A minimal Rust reimplementation of [pi-coding-agent](https://pi.dev) — a
+A minimal Rust reimplementation of [pi-coding-agent](https://pi.dev) - a
 terminal coding harness that gives an LLM tools (read, write, edit, bash) and
 lets it act on your codebase.
 
@@ -10,33 +10,35 @@ lets it act on your codebase.
 |---|---|---|
 | `pi-ai` (providers, streaming, models) | `Provider` trait + `adapter/genai.rs` → [genai](https://github.com/jeremychone/rust-genai) crate | Isolated behind trait; swappable. PoC targets [OpenCode Go](https://opencode.ai/docs/go/) (DeepSeek V4 Flash/Pro) via genai's OpenAI adapter. Phase 1 adds Anthropic, OpenAI, Google, Ollama |
 | `pi-agent-core` (agent loop, session, compaction, skills) | `src/agent/`, `src/agent/session.rs`, `compaction.rs`, `src/agent/types.rs`, `src/agent/skills.rs` | Loop ported directly from `agent-loop.ts` |
-| `pi-tui` (terminal UI, components, editor) | `src/tui/` + `src/agent/ui/` ✅ — direct Rust port of `@earendil-works/pi-tui` on top of [crossterm](https://github.com/crossterm-rs/crossterm) 0.28 | Full port: diff renderer, Component trait, Editor, Input, SelectList, SettingsList, etc. No ratatui. Main-screen mode (no alternate screen), native terminal scrolling. See [`tui.md`](tui.md) for full design. |
+| `pi-tui` (terminal UI, components, editor) | `src/tui/` + `src/agent/ui/` ✅ - direct Rust port of `@earendil-works/pi-tui` on top of [crossterm](https://github.com/crossterm-rs/crossterm) 0.28 | Full port: diff renderer, Component trait, Editor, Input, SelectList, SettingsList, etc. No ratatui. Main-screen mode (no alternate screen), native terminal scrolling. See [`tui.md`](tui.md) for full design. |
 | `coding-agent` (CLI, extensions, built-in tools, settings, commands) | `cli.rs`, `src/agent/extension.rs`, `builtin/`, `src/agent/settings.rs` | Single `Extension` trait for built-in + user extensions; commands use same `CommandHandler` interface; built-in commands in `builtin/commands.rs` |
-| `coding-agent/system-prompt.ts` | `src/agent/system_prompt.rs` | SystemPromptBuilder with layered prompt (custom, append, context XML, skills XML, date/cwd) |
+| `coding-agent/modes/interactive/theme/theme.ts` | `src/agent/ui/theme.rs` ✅ - JSON-based theme system | Dark/light themes with variable resolution, truecolor + 256-color fallback, `COLORFGBG` detection, global singleton via `init_theme()`. See [`tui.md`](tui.md) for details. |
+| `coding-agent/modes/interactive/components/bash-execution.ts` | `src/agent/ui/components/bash_execution.rs` ✅ - styled bash execution | Borders in status-aware colors, command header with `$`, output in muted, preview truncation, expand/collapse support. |
+| `coding-agent/modes/interactive/components/assistant-message.ts` (`renderCall`/`renderResult` on tools) | `src/agent/extension.rs` ✅ - `AgentTool::render_call()` / `render_result()` | Custom ANSI-styled rendering per tool; falls back to default text when `None`. |
 | `coding-agent/resource-loader.ts` (loadProjectContextFiles) | `src/agent/context_files.rs` | AGENTS.md/CLAUDE.md discovery: global → ancestors → cwd |
 | `coding-agent/skills.ts` + `agent/harness/skills.ts` | `src/agent/skills.rs` | Skill loading, `format_skills_for_prompt()`, `format_skill_invocation()`, `/skill:name` expansion |
-| `coding-agent/modes/interactive` | `src/agent/ui/` (app-specific UI components) | ChatEditor, MessageList, Footer, ModelSelector, queued messages, streaming text display — built on `src/tui/` primitives |
+| `coding-agent/modes/interactive` | `src/agent/ui/` (app-specific UI components) | ChatEditor, MessageList, Footer, ModelSelector, queued messages, streaming text display - built on `src/tui/` primitives |
 | MCP extensions (third-party) | `pi-mcp-adapter` built-in extension | Phase 2. Uses `rmcp` crate. Configured via `.rab/mcp.json` |
 | Config files (`~/.pi/agent/`) | `~/.rab/` | Same file names and JSON schema as pi |
 
 ## Design constraints
 
-- **One extension mechanism** — built-in tools and user extensions use the same
+- **One extension mechanism** - built-in tools and user extensions use the same
   `Extension` trait. No separate tool registration path. `--no-builtin-tools`
   just skips loading builtins; user extensions still load.
-- **No live-reload of extensions** — extensions are compiled in, not hot-reloaded.
-- **Provider layer is isolated behind a trait** — rab defines its own `Provider`
+- **No live-reload of extensions** - extensions are compiled in, not hot-reloaded.
+- **Provider layer is isolated behind a trait** - rab defines its own `Provider`
   trait. The default implementation wraps [genai](https://github.com/jeremychone/rust-genai)
   (Apache 2.0, 711★, 50 contributors). The agent loop depends only on the trait,
   so genai can be swapped for another backend without touching loop logic.
-- **Agent loop mirrors pi** — steering queues, follow-up queues, hook-based
+- **Agent loop mirrors pi** - steering queues, follow-up queues, hook-based
   tool lifecycle, event stream. Ported from pi's `runAgentLoop` in
   `packages/agent/src/agent-loop.ts`.
 
 ## License
 
 rab is **EPL-2.0**. The `genai` dependency is Apache 2.0 (compatible) but
-isolated behind a trait — replaceable with no changes to core logic.
+isolated behind a trait - replaceable with no changes to core logic.
 
 ---
 
@@ -133,8 +135,21 @@ pub trait AgentTool: Send + Sync {
     fn description(&self) -> &str;
     fn parameters(&self) -> serde_json::Value;  // JSON Schema
     fn label(&self) -> &str;                    // human-readable for UI
-    async fn execute(&self, tool_call_id: String, args: Value)
-        -> Result<String>;                      // error → is_error ToolResult
+
+    /// Custom rendering for the tool call header (name + args).
+    /// Returns ANSI-styled text. When None, default rendering is used.
+    fn render_call(&self) -> Option<fn(&serde_json::Value) -> String> { None }
+
+    /// Custom rendering for the tool result body.
+    /// Returns ANSI-styled text. When None, default rendering is used.
+    fn render_result(&self) -> Option<fn(&str, bool) -> String> { None }
+
+    /// Guidelines for the system prompt specific to this tool.
+    fn prompt_guidelines(&self) -> Vec<String> { vec![] }
+
+    async fn execute(&self, tool_call_id: String, args: Value,
+        cancel: Cancel, on_update: Option<UnboundedSender<ToolOutput>>)
+        -> Result<ToolOutput>;
 }
 ```
 
@@ -160,7 +175,7 @@ AgentEvent
 ## Agent loop (`src/agent/`)
 
 Adapted directly from pi's `runAgentLoop` in `agent-loop.ts`. The loop is the
-heart of the system — everything else feeds into or reads from it.
+heart of the system - everything else feeds into or reads from it.
 
 ### Pseudocode
 
@@ -213,11 +228,11 @@ async fn run_agent_loop(
                     messages.push(msg);
                     new_messages.push(msg);
                 }
-                // Loop continues — tool results go back to LLM
+                // Loop continues - tool results go back to LLM
                 continue;
             }
 
-            // 4. No tool calls — turn complete
+            // 4. No tool calls - turn complete
             emit(TurnEnd);
 
             // 5. Check steering queue (inject mid-run)
@@ -349,7 +364,7 @@ impl SessionManager {
 
 Every entry has a `parentId`, so sessions are a tree from day one. Messages
 are resolved by walking from the root along the active branch. Branching
-happens when a new entry points to a non-tail parent — no format changes
+happens when a new entry points to a non-tail parent - no format changes
 needed.
 
 ## Compaction (`compaction.rs`)
@@ -363,12 +378,12 @@ Compacted: [sys] [summary_of_1_and_2] [user3]
 ```
 
 Algorithm:
-1. **Check threshold** — estimate total tokens. If under limit, skip.
-2. **Find cut point** — walk messages from oldest to newest, accumulating
+1. **Check threshold** - estimate total tokens. If under limit, skip.
+2. **Find cut point** - walk messages from oldest to newest, accumulating
 tokens. Cut where the tail (newest messages) fits in the remaining budget.
-3. **Generate summary** — prompt a fast model with the older messages to
+3. **Generate summary** - prompt a fast model with the older messages to
 produce a concise summary. The summary replaces the older entries.
-4. **Replace** — swap old messages with a single synthetic user message
+4. **Replace** - swap old messages with a single synthetic user message
 containing the summary. Tool results are included in what gets summarized.
 
 Manual trigger via `/compact` (TUI). Automatic trigger before context
@@ -378,9 +393,9 @@ overflow causes an error.
 
 ## Extension trait (`src/agent/extension.rs`)
 
-All capability — built-in or user-provided — comes through the same trait.
+All capability - built-in or user-provided - comes through the same trait.
 There is no separate tool registration path. **Slash commands use the same
-`Extension` trait as tools** — built-in commands (`/quit`, `/model`) and
+`Extension` trait as tools** - built-in commands (`/quit`, `/model`) and
 user-provided commands go through the same `commands()` method and the same
 `CommandHandler` interface.
 
@@ -405,7 +420,7 @@ pub trait Extension: Send + Sync {
 }
 
 pub trait CommandHandler: Send + Sync {
-    /// Execute the command. Returns CommandResult (sync — no I/O needed).
+    /// Execute the command. Returns CommandResult (sync - no I/O needed).
     fn execute(&self, args: &str) -> anyhow::Result<CommandResult>;
 
     /// Get argument completions for autocomplete.
@@ -449,14 +464,14 @@ as the reference implementation for user extensions.
 ### commands
 
 Provides core slash commands (`/quit`, `/model`) via the `CommandHandler` trait.
-Same interface as user-provided commands — no special path for built-ins.
+Same interface as user-provided commands - no special path for built-ins.
 
 | Command | Handler | Description |
 |---------|---------|-------------|
 | `/quit` | `QuitCommand` | Returns `CommandResult::Quit`, TUI breaks event loop |
 | `/model <name>` | `ModelCommand` | Switches active model; no args shows available models |
 
-`/model` provides argument completions via `argument_completions()` — when the
+`/model` provides argument completions via `argument_completions()` - when the
 user types `/model ` followed by a partial model name, matching models are
 suggested.
 
@@ -493,7 +508,7 @@ suggested.
 ## Slash commands
 
 **Slash commands use the same `Extension` trait as tools.** Built-in commands
-and extension commands go through the same `CommandHandler` interface — there
+and extension commands go through the same `CommandHandler` interface - there
 is no separate path for core vs. user commands.
 
 When the user types a slash command (e.g. `/quit`, `/model deepseek-v4-pro`),
@@ -533,14 +548,14 @@ in load order). Commands are deduplicated by name when collected.
 
 Built from the same sources as pi, concatenated via `SystemPromptBuilder`:
 
-1. **Default prompt** or **custom SYSTEM.md** — tool descriptions, response format.
+1. **Default prompt** or **custom SYSTEM.md** - tool descriptions, response format.
    Custom prompt from `~/.rab/SYSTEM.md` (global) or `.rab/SYSTEM.md` (project) replaces default.
-2. **Append prompt** — `APPEND_SYSTEM.md` appended after custom or default.
-3. **Project context files** — walked up from cwd, loads `AGENTS.md` and
+2. **Append prompt** - `APPEND_SYSTEM.md` appended after custom or default.
+3. **Project context files** - walked up from cwd, loads `AGENTS.md` and
    `CLAUDE.md` (alias) from every ancestor directory. Each file wrapped in
    `<project_instructions path="...">` tags inside `<project_context>`.
-4. **Skills** — available skills listed as `<available_skills><skill name="...">` XML.
-5. **Date and cwd** — `Current date: YYYY-MM-DD` and `Current working directory: /path`.
+4. **Skills** - available skills listed as `<available_skills><skill name="...">` XML.
+5. **Date and cwd** - `Current date: YYYY-MM-DD` and `Current working directory: /path`.
 
 CLI flags: `--no-context-files` / `-nc`, `--system-prompt <text>`, `--append-system-prompt <text>`.
 See `src/agent/context_files.rs` for the discovery logic.
@@ -550,7 +565,7 @@ See `src/agent/context_files.rs` for the discovery logic.
 ## Provider trait (`src/agent/provider.rs`)
 
 rab defines its own provider abstraction. The agent loop depends on this
-trait, never on genai directly. To swap backends, write a new impl — no
+trait, never on genai directly. To swap backends, write a new impl - no
 changes to `src/agent/`.
 
 ```rust
@@ -589,7 +604,7 @@ pub trait Provider: Send + Sync {
 }
 ```
 
-The trait takes `AgentMessage` directly — no intermediate conversion layer.
+The trait takes `AgentMessage` directly - no intermediate conversion layer.
 Each adapter translates rab types into its own backend format internally.
 
 ### Genai adapter (`adapter/genai.rs`)
@@ -600,7 +615,7 @@ target provider.
 **PoC:** Client configured for OpenCode Go (`https://opencode.ai/zen/go/v1`)
 using genai's OpenAI adapter. Models: `deepseek-v4-flash` (default), `deepseek-v4-pro`.
 
-**Phase 1:** Extended with provider auto-detection from model name prefix —
+**Phase 1:** Extended with provider auto-detection from model name prefix -
 `claude*` → Anthropic, `gpt*` → OpenAI, `gemini*` → Google, fallback → Ollama.
 OpenCode Go remains available as an explicit provider.
 
@@ -651,9 +666,9 @@ Same file names and format as pi, but under `~/.rab/agent/` instead of
 | `AGENTS.md` / `CLAUDE.md` | `AGENTS.md` / `CLAUDE.md` | Project context files (walked up from cwd) |
 | `~/.pi/agent/keybindings.json` | `~/.rab/keybindings.json` | Custom keybinds (phase 2) |
 | `~/.pi/agent/sessions/` | `~/.rab/sessions/` | Session files |
-| `~/.pi/agent/extensions/` | `~/.rab/extensions/` | User extensions (phase 2 — WASM) |
+| `~/.pi/agent/extensions/` | `~/.rab/extensions/` | User extensions (phase 2 - WASM) |
 | `~/.pi/agent/skills/` | `~/.rab/skills/` | Agent skills (phase 2) |
-| `~/.pi/agent/themes/` | `~/.rab/themes/` | TUI themes (phase 2) |
+| `~/.pi/agent/themes/` | `~/.rab/themes/` + embedded `src/agent/ui/themes/dark.json`, `light.json` | TUI themes ✅ - JSON-based dark/light with variable resolution, truecolor + 256 fallback, custom themes in `~/.rab/themes/` |
 
 ### `settings.json` format
 
@@ -745,7 +760,7 @@ results shown prefixed.
 
 Same agent loop, different sink: `tui.rs` subscribes to the agent event
 stream and renders to a pi-tui-style main-screen TUI instead of stdout.
-Same crate — no separate abstraction layer needed.
+Same crate - no separate abstraction layer needed.
 
 ---
 
@@ -775,8 +790,8 @@ API specifications, keybinding tables, render layout diagrams, and porting estim
 └──────────────────────────────────────────────────┘
 ```
 
-`src/tui/` is generic and reusable — ports pi's `@earendil-works/pi-tui` core.
-`src/agent/ui/` is rab's app layer — ports pi's `coding-agent` interactive mode components.
+`src/tui/` is generic and reusable - ports pi's `@earendil-works/pi-tui` core.
+`src/agent/ui/` is rab's app layer - ports pi's `coding-agent` interactive mode components.
 
 ### Key differences from the old ratatui approach
 
@@ -795,10 +810,10 @@ API specifications, keybinding tables, render layout diagrams, and porting estim
 
 | Module | Purpose |
 |---|---|
-| `screen.rs` | Diff renderer — port of `tui.ts:doRender()`. Line-level comparison, ANSI cursor moves, synchronized output. |
+| `screen.rs` | Diff renderer - port of `tui.ts:doRender()`. Line-level comparison, ANSI cursor moves, synchronized output. |
 | `terminal.rs` | Crossterm wrapper: raw mode, events, cursor, resize. |
 | `component.rs` | `Component` trait, `Focusable` trait, `CURSOR_MARKER`. |
-| `container.rs` | `Container` struct — vertical child stacking. |
+| `container.rs` | `Container` struct - vertical child stacking. |
 | `keys.rs` | Key identifiers, `matches_key()`. |
 | `util.rs` | ANSI-aware width, wrap, truncate, slice. |
 | `fuzzy.rs` | Fuzzy matching/filtering. |
@@ -850,7 +865,7 @@ Terminal (main screen, rows=40):
 │  │  tool result (toolSuccessBg)        │ │  ← TuiBox(paddingY=0)
 │  └─────────────────────────────────────┘ │
 │  ◷ queued-while-streaming                │  ← queued messages
-│  ↳ queued — will send when current…      │
+│  ↳ queued - will send when current…      │
 │  Thinking blocks: hidden                 │  ← transient status (1 frame)
 │                                          │  ← spacer
 │  ⠋                                       │  ← working indicator (always present)
@@ -870,7 +885,7 @@ Thinking italic, ToolCall/ToolResult in TuiBox) → **pending (streaming) text**
 indicator** (always 1 line) → **editor** (bordered, with autocomplete
 dropdown via SelectList) → **footer** (2 lines).
 
-New messages are appended lines — the diff renderer writes `\r\n` at the right
+New messages are appended lines - the diff renderer writes `\r\n` at the right
 spot, which pushes content up through the terminal's native scroll.
 
 ### Message queuing
@@ -886,7 +901,7 @@ messages to the editor for editing.
 Toggle messages (Ctrl+T thinking, Ctrl+O tool output, model switch, interrupt)
 use a transient `status_text: Option<String>` that appears for one frame then
 clears, matching pi's `showStatus()` behavior. Status messages replace the
-previous status — they don't accumulate in the chat history.
+previous status - they don't accumulate in the chat history.
 
 ---
 
@@ -904,7 +919,7 @@ impl Extension for MyTool {
     fn tools(&self) -> vec![ /* ... */ ]
 }
 
-// main.rs — alongside builtins
+// main.rs - alongside builtins
 if !args.no_extensions {
     exts.push(Box::new(MyTool));
 }
@@ -985,7 +1000,7 @@ world rab-plugin {
 #### Plugin author experience
 
 A `rab-plugin-sdk` crate provides a `Plugin` trait and an `export_plugin!` macro
-that hides WIT internals. Plugin authors write plain Rust — no `extern "C"`,
+that hides WIT internals. Plugin authors write plain Rust - no `extern "C"`,
 no `#[repr(C)]`, no unsafe:
 
 ```rust
@@ -1070,7 +1085,7 @@ WIT file automatically.
 For plugins that need C libraries (e.g. `libgit2`, `tree-sitter`), a parallel
 native path via `crate-type = ["cdylib"]` + `dlopen2`. Same `Plugin` trait,
 different compile target. Requires matching Rust compiler version between host
-and plugin — documented as a power-user feature, not the default path.
+and plugin - documented as a power-user feature, not the default path.
 
 ### Skills ✅
 
@@ -1078,10 +1093,10 @@ Skills are markdown files following the [Agent Skills standard](https://agentski
 Loaded from `~/.rab/skills/` and `.rab/skills/` via `src/agent/skills.rs`.
 
 **Implemented:**
-- `load_skills()` — discovers SKILL.md files, parses YAML-like frontmatter (`name:`, `description:`, `disable-model-invocation:`)
-- `format_skills_for_prompt()` — lists available skills as `<available_skills>` XML in the system prompt
-- `format_skill_invocation()` — creates `<skill name="..." location="...">` blocks for explicit invocation
-- `expand_skill_command()` — `/skill:name [args]` expansion in user input (pi-style)
+- `load_skills()` - discovers SKILL.md files, parses YAML-like frontmatter (`name:`, `description:`, `disable-model-invocation:`)
+- `format_skills_for_prompt()` - lists available skills as `<available_skills>` XML in the system prompt
+- `format_skill_invocation()` - creates `<skill name="..." location="...">` blocks for explicit invocation
+- `expand_skill_command()` - `/skill:name [args]` expansion in user input (pi-style)
 - Startup resource listing shows skill names in the welcome message
 
 ### pi-mcp-adapter
@@ -1123,19 +1138,19 @@ built-in Phase 2 extension.
 
 ## Open questions
 
-- **Dynamic extension loading** — Resolved: WASM via wasmtime + WIT
+- **Dynamic extension loading** - Resolved: WASM via wasmtime + WIT
   Component Model. See §Dynamic plugin system.
-- **OAuth** — genai's `AuthResolver` supports dynamic tokens, but browser
+- **OAuth** - genai's `AuthResolver` supports dynamic tokens, but browser
   login flow, token refresh, and credential storage need a separate crate
   (e.g. `oauth2`). MVP uses env API keys only.
-- **Image paste in TUI** — clipboard integration differs per platform (wl-paste,
+- **Image paste in TUI** - clipboard integration differs per platform (wl-paste,
   pbpaste, PowerShell). Kitty protocol covers display; input is TBD.
-- **Command deny-list** — bash tool currently runs anything. A deny-list or
+- **Command deny-list** - bash tool currently runs anything. A deny-list or
   sandbox (bubblewrap, landlock) should be configurable per project.
-- **Multi-model cycling** — Ctrl+P model switching like pi requires a model
+- **Multi-model cycling** - Ctrl+P model switching like pi requires a model
   registry. genai auto-detects from name prefix; a full registry with metadata
   (context window, costs) is future work.
-- **Provider fallback** — if the primary provider fails, should rab retry
+- **Provider fallback** - if the primary provider fails, should rab retry
   with another? pi doesn't do this; worth considering.
 
 ---
@@ -1144,29 +1159,29 @@ built-in Phase 2 extension.
 
 ```
 rab (EPL-2.0)
-├── genai 0.6              (Apache 2.0) — isolated: only adapter/genai.rs imports this
-├── clap 4                 (MIT)        — CLI parsing
-├── tokio 1                (MIT)        — async runtime
-├── serde + serde_json 1   (MIT)        — JSON serialization
-├── uuid 1                 (MIT)        — message/session IDs
-├── chrono 0.4             (MIT)        — timestamps
-├── directories 5          (MIT)        — XDG paths
-├── anyhow 1               (MIT)        — error handling
-├── futures 0.3            (MIT)        — StreamExt
-├── async-trait 0.1        (MIT)        — trait async fn
-├── colored 2              (MPL-2.0)    — terminal colors
-├── tracing 0.1            (MIT)        — structured logging
-├── crossterm 0.29         (MIT)        — terminal I/O (raw mode, events, cursor)
-├── unicode-segmentation 1 (MIT)        — grapheme-aware cursor movement
-├── unicode-width 0.2      (MIT)        — character display width
-├── wasmtime 26+           (Apache 2.0) — WASM runtime for dynamic plugins (phase 2)
-├── notify 7               (CC0-1.0)    — file watcher for plugin hot reload (phase 2)
-└── rmcp 1                 (MIT)        — MCP client for pi-mcp-adapter (phase 2)
+├── genai 0.6              (Apache 2.0) - isolated: only adapter/genai.rs imports this
+├── clap 4                 (MIT)        - CLI parsing
+├── tokio 1                (MIT)        - async runtime
+├── serde + serde_json 1   (MIT)        - JSON serialization
+├── uuid 1                 (MIT)        - message/session IDs
+├── chrono 0.4             (MIT)        - timestamps
+├── directories 5          (MIT)        - XDG paths
+├── anyhow 1               (MIT)        - error handling
+├── futures 0.3            (MIT)        - StreamExt
+├── async-trait 0.1        (MIT)        - trait async fn
+├── colored 2              (MPL-2.0)    - terminal colors
+├── tracing 0.1            (MIT)        - structured logging
+├── crossterm 0.29         (MIT)        - terminal I/O (raw mode, events, cursor)
+├── unicode-segmentation 1 (MIT)        - grapheme-aware cursor movement
+├── unicode-width 0.2      (MIT)        - character display width
+├── wasmtime 26+           (Apache 2.0) - WASM runtime for dynamic plugins (phase 2)
+├── notify 7               (CC0-1.0)    - file watcher for plugin hot reload (phase 2)
+└── rmcp 1                 (MIT)        - MCP client for pi-mcp-adapter (phase 2)
 ```
 
 No GPL dependencies. All are permissive (MIT / Apache 2.0 / MPL-2.0 / CC0-1.0), fully
 compatible with EPL-2.0. genai is the only external provider dependency and
-is swappable via the `Provider` trait — replace or remove it without touching
+is swappable via the `Provider` trait - replace or remove it without touching
 core logic.
 
 Phase 2 dependencies (wasmtime, notify, rmcp)

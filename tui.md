@@ -1,6 +1,6 @@
 # rab TUI Library Design
 
-This document plans the Rust port of pi-tui — a main-screen, diff-rendering terminal UI library built on crossterm. It separates the **core TUI library** (`src/tui/`) from **rab-specific UI** (`src/agent/ui/`), mirroring how pi splits `@earendil-works/pi-tui` from the coding-agent's app components.
+This document plans the Rust port of pi-tui - a main-screen, diff-rendering terminal UI library built on crossterm. It separates the **core TUI library** (`src/tui/`) from **rab-specific UI** (`src/agent/ui/`), mirroring how pi splits `@earendil-works/pi-tui` from the coding-agent's app components.
 
 ---
 
@@ -36,7 +36,7 @@ All Tier 1 components are implemented and tested. 83 tests pass with zero warnin
 | Component | pi-tui src | Rust module | Purpose |
 |---|---|---|---|
 | **Component** (trait) | `tui.ts:64` | `src/tui/component.rs` (✅ 21 lines) | Core trait: `render(width) -> Vec<String>`, `handle_input(key) -> bool`, `invalidate()` |
-| **Focusable** (trait) | `tui.ts:104` | `src/tui/focusable.rs` (✅ 12 lines) | `focused: bool` — enables IME cursor marker emission |
+| **Focusable** (trait) | `tui.ts:104` | `src/tui/focusable.rs` (✅ 12 lines) | `focused: bool` - enables IME cursor marker emission |
 | **Container** | `tui.ts:256` | `src/tui/container.rs` (✅ 72 lines) | Extends Component. `children: Vec<Box<dyn Component>>`, `add_child()`, `clear()`. Renders children vertically. |
 | **Text** | `components/text.ts` (106 lines) | `src/tui/components/text.rs` (✅ 142 lines) | Multi-line text. Word wrapping at width, configurable padding. Optional background color function. |
 | **TruncatedText** | `components/truncated-text.ts` (65 lines) | `src/tui/components/truncated_text.rs` (✅ 72 lines) | Text truncated to width with configurable ellipsis. |
@@ -73,10 +73,10 @@ All Tier 1 components are implemented and tested. 83 tests pass with zero warnin
 |---|---|---|---|
 | **Screen** | `tui.ts:doRender()` (~500 lines) | `src/tui/screen.rs` (✅ ~390 lines) | The diff renderer. Maintains `prev_lines: Vec<String>`, computes changed ranges, emits minimal ANSI (cursor moves + line clears + new text). Handles resize, append, shrink. **Viewport tracking**: `viewport_top` updated on scroll and at end of render (`max(viewport_top, render_end - height + 1)`). `max_lines_rendered` tracked during differential renders for correct `clear_on_shrink`. Wraps output in synchronized output. |
 | **Terminal** | `terminal.ts` (531 lines) | `src/tui/terminal.rs` (✅ 125 lines) | Wraps crossterm: raw mode, event polling, resize, cursor hide/show, cursor positioning, line clear, synchronized output. |
-| **Key** | `keys.ts` (1,400 lines) | `src/tui/keys.rs` (✅ 267 lines) | Key identifiers (`Key::Enter`, `Key::Up`, `Key::Ctrl('c')`, `Key::CtrlShift('p')`). `matches_key(event, key) -> bool`. Wraps crossterm's `KeyEvent` — no Kitty protocol parsing needed. |
+| **Key** | `keys.ts` (1,400 lines) | `src/tui/keys.rs` (✅ 267 lines) | Key identifiers (`Key::Enter`, `Key::Up`, `Key::Ctrl('c')`, `Key::CtrlShift('p')`). `matches_key(event, key) -> bool`. Wraps crossterm's `KeyEvent` - no Kitty protocol parsing needed. |
 | **Util** | `utils.ts` (1,188 lines) | `src/tui/util.rs` (✅ 817 lines) | `visible_width(s) -> usize` (strip ANSI, measure Unicode). `truncate_to_width(s, w) -> String`. `wrap_text_with_ansi(s, w) -> Vec<String>`. `slice_by_column(s, start, end) -> String`. |
 | **Fuzzy** | `fuzzy.ts` (137 lines) | `src/tui/fuzzy.rs` (✅ 263 lines) | `fuzzy_match(query, text) -> FuzzyMatch` with score and match positions. `fuzzy_filter(query, items) -> Vec<usize>`. Supports swapped alphanumeric tokens. |
-| **Theme** | N/A (pi's theme is in coding-agent) | `src/tui/theme.rs` (✅ 34 lines) | Trait for colors. `fg(color: &str, text: &str) -> String`, `bg(color: &str, text: &str) -> String`, `bold(text: &str) -> String`. Concrete implementation in `src/agent/ui/`. |
+| **Theme** | `src/tui/theme.rs` (✅ 34 lines) | Trait for colors. `fg(color: &str, text: &str) -> String`, `bg(color: &str, text: &str) -> String`, `bold(text: &str) -> String`. Concrete implementation in `src/agent/ui/` with JSON configs, variable resolution, truecolor+256 fallback. |
 
 #### Deliberately Skipped (not needed for rab)
 
@@ -104,7 +104,8 @@ These are rab's application components, built on `src/tui/` primitives. They are
 | **Footer** | `src/agent/ui/footer.rs` (✅ 103 lines) | Two-line footer: cwd + git branch on line 1, token stats + model on line 2. |
 | **ModelSelector** | `src/agent/ui/model_selector.rs` (✅ 96 lines) | Full-screen overlay for picking a model. Uses `tui::SelectList`. Searchable. |
 | **HelpOverlay** | `src/agent/ui/help.rs` (✅ 98 lines) | `/help` display showing available commands and keybindings. |
-| **Theme** | `src/agent/ui/theme.rs` (✅ 105 lines) | rab's concrete color theme. Implements the `tui::Theme` trait with direct ANSI emission matching pi's dark theme. |
+| **Theme** | `src/agent/ui/theme.rs` + `themes/dark.json`, `themes/light.json` (✅ 380+ lines) | Full JSON-based theme system. Loads `dark.json`/`light.json` embedded + custom `~/.rab/themes/*.json`. Variable resolution, truecolor + 256 fallback via cube mapping, `COLORFGBG` terminal detection, global singleton (`init_theme()`/`current_theme()`/`set_theme()`), convenience helpers (`accent()`, `dim()`, `muted()`, `bold_accent()`, etc.). |
+| **BashExecution** | `src/agent/ui/components/bash_execution.rs` (✅ 130 lines) | Styled bash command rendering. Top/bottom borders in status-aware color, command header with `$`, output in `toolOutput` color, preview truncation, expand/collapse. `BashStatus` (Running/Complete/Cancelled/Error). |
 | **App** | `src/agent/ui/app.rs` (✅ ~930 lines) | Main event loop and state. Owns the `tui::Screen`, composes the component tree each tick, dispatches input, handles agent events (streaming deltas → message list). **Pi-style header**, **queued messages** (submitted while streaming, displayed between chat and editor), **streaming text** (`pending_text`/`pending_thinking` rendered inline), **message queuing** (no concurrent loops), **working indicator always rendered** (empty line when inactive). |
 
 ### Pi Reference: Where App Components Live in pi
@@ -121,8 +122,8 @@ packages/tui/src/                    ← @earendil-works/pi-tui (core library)
 │   ├── settings-list.ts             → settings_list.rs ✅
 │   ├── editor.ts                    → editor.rs ✅
 │   ├── input.ts                     → input.rs ✅
-│   ├── markdown.ts                  (skipped — rab doesn't need Markdown rendering)
-│   ├── image.ts                     (skipped — no terminal image support)
+│   ├── markdown.ts                  (skipped - rab doesn't need Markdown rendering)
+│   ├── image.ts                     (skipped - no terminal image support)
 │   └── truncated-text.ts           → truncated_text.rs ✅
 ├── tui.ts                           → screen.rs + component.rs + focusable.rs + container.rs ✅
 ├── terminal.ts                      → terminal.rs ✅
@@ -135,13 +136,13 @@ packages/tui/src/                    ← @earendil-works/pi-tui (core library)
 └── ...
 
 packages/coding-agent/src/modes/interactive/components/
-├── bordered-loader.ts               (skipped — not needed in rab)
-├── dynamic-border.ts                (skipped — theme handles borders)
+├── bordered-loader.ts               (skipped - not needed in rab)
+├── dynamic-border.ts                (skipped - theme handles borders)
 ├── assistant-message.ts             → messages.rs ✅
 ├── model-selector.ts                → model_selector.rs ✅
-├── session-selector.ts              (skipped — not needed)
-├── settings-selector.ts             (skipped — not needed)
-├── tree-selector.ts                 (skipped — not needed)
+├── session-selector.ts              (skipped - not needed)
+├── settings-selector.ts             (skipped - not needed)
+├── tree-selector.ts                 (skipped - not needed)
 └── ...
 ```
 
@@ -186,7 +187,7 @@ src/
 │   ├── types.rs                     # ✅ AgentMessage, Role, ToolCall, Usage
 │   ├── provider.rs                  # ✅ Provider trait, StreamEvent, ToolDef
 │   ├── settings.rs                  # ✅ Settings load/save
-│   ├── session.rs                   # ✅ SessionManager (1985 lines — future split)
+│   ├── session.rs                   # ✅ SessionManager (1985 lines - future split)
 │   └── ui/                          # ✅ Interactive mode
 │       ├── mod.rs
 │       ├── app.rs                   # ✅ Main event loop, App state, run()
@@ -200,7 +201,7 @@ src/
 │
 ├── tui/                             # ✅ Generic TUI library
 ├── builtin/                         # ✅ Tool implementations
-├── adapter.rs                       # ✅ GenaiProvider (top-level — external adapter)
+├── adapter.rs                       # ✅ GenaiProvider (top-level - external adapter)
 ├── auth.rs                          # (unchanged)
 ├── lib.rs                           # ✅ pub mod agent; pub mod adapter; pub mod tui;
 └── main.rs                          # ✅ CLI entry point
@@ -212,10 +213,10 @@ src/
 ```diff
 - ratatui = "0.30"
 + crossterm = "0.28"
-  unicode-segmentation = "1"   # keep — needed for grapheme-aware editor cursor
+  unicode-segmentation = "1"   # keep - needed for grapheme-aware editor cursor
 ```
 
-Keep `unicode-segmentation` — the editor needs `UnicodeSegmentation::graphemes()` for correct cursor movement through emoji, combining characters, and CJK characters. `unicode-width` alone only measures display width, it doesn't iterate grapheme clusters.
+Keep `unicode-segmentation` - the editor needs `UnicodeSegmentation::graphemes()` for correct cursor movement through emoji, combining characters, and CJK characters. `unicode-width` alone only measures display width, it doesn't iterate grapheme clusters.
 
 Add `unicode-width` for the Util module's `visible_width()`:
 
@@ -511,7 +512,7 @@ impl SettingsList {
   Enter/Space to change · Esc to cancel  ← hint line
 ```
 
-When a submenu is active, the submenu `Component` takes over completely — `render()` and `handleInput()` both delegate to it. The submenu receives `done(selectedValue?)` to close itself.
+When a submenu is active, the submenu `Component` takes over completely - `render()` and `handleInput()` both delegate to it. The submenu receives `done(selectedValue?)` to close itself.
 
 ### Keybindings
 
@@ -537,7 +538,7 @@ This allows a SettingsList item to open an arbitrary Component (e.g., a SelectLi
 - 250 TS lines → ~200 Rust lines. Straightforward port.
 - The `Input` component is used for the search box when `enableSearch` is true.
 - `fuzzy_filter()` from `fuzzy.rs` handles search matching against item labels.
-- Submenu uses trait objects (`Box<dyn Component>`) — the factory pattern maps naturally to Rust closures.
+- Submenu uses trait objects (`Box<dyn Component>`) - the factory pattern maps naturally to Rust closures.
 
 ---
 
@@ -584,7 +585,7 @@ The algorithm is a direct port of `TUI.doRender()` from `tui.ts` (lines ~1050-15
 
 4. **Theme is a trait, not a global.** Components accept theme via constructor or setter. The app layer provides the concrete theme.
 
-5. **No overlay stack in core library.** pi-tui's overlay compositing adds ~600 lines of complexity to the diff renderer. For rab, overlays (model selector, help) are implemented as full-screen component swaps in the app event loop — much simpler.
+5. **No overlay stack in core library.** pi-tui's overlay compositing adds ~600 lines of complexity to the diff renderer. For rab, overlays (model selector, help) are implemented as full-screen component swaps in the app event loop - much simpler.
 
 6. **Line-level diffing, not cell-level.** pi-tui compares strings. ratatui compares `Cell` structs (char + style). Line-level is simpler and sufficient for a chat UI where most changes are full-line replacements or appends.
 
