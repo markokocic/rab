@@ -54,20 +54,16 @@ pub fn render_messages(
                         format!("\x1b[48;2;52;53;65m{}\x1b[49m", s)
                     })),
                 );
-                let joined = text
+                // Pi: TuiText handles wrapping — no pre-wrapping needed
+                let text_content = text
                     .lines()
-                    .flat_map(|l| wrap_text_with_ansi(l, inner.saturating_sub(2)))
-                    .fold(String::new(), |mut acc, line| {
-                        if !acc.is_empty() {
-                            acc.push('\n');
-                        }
-                        acc.push_str(&theme.fg("text", &line));
-                        acc
-                    });
-                let text_content = if joined.is_empty() {
+                    .map(|l| theme.fg("text", l))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let text_content = if text_content.is_empty() {
                     " ".into()
                 } else {
-                    joined
+                    text_content
                 };
                 msg_box.add_child(std::boxed::Box::new(TuiText::new(text_content, 0, 0, None)));
                 lines.extend(msg_box.render(width));

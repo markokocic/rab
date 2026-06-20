@@ -1284,36 +1284,54 @@ mod tests {
     // ── Wrap/duplication tests ───────────────────────────────────
 
     #[test]
-    fn test_no_line_duplication_on_wrap() {
-        // When text wraps, no two consecutive rendered content lines should have the same content.
-        // The word-wrap must not produce duplicate chunks.
-        let mut editor = Editor::new(
-            EditorTheme::default(),
-            EditorOptions {
-                padding_x: 0,
-                max_visible_lines: 20,
-            },
-        );
-        editor.set_text("hello world this is a test of the wrapping system");
-        editor.focused = true;
+    fn test_no_duplicate_chunks_from_wrapping() {
+        // wrap_text_with_ansi must not produce duplicate chunks from a single input.
+        // The same content may appear in multiple chunks if the source has it
+        // multiple times, but it must not appear MORE times than in the original.
+        let texts = [
+            "hello world this is a test of the wrapping system",
+            "a b c d e f g h i j k l m n o p q r s t u v w x y z",
+            "short",
+            "",
+            "abc abc abc abc abc abc abc abc",
+            "  leading and trailing spaces  ",
+            "hello   world   extra   spaces",
+        ];
+        for text in &texts {
+            for width in [1, 2, 3, 5, 8, 12, 20, 40] {
+                let wrapped = crate::tui::util::wrap_text_with_ansi(text, width);
 
-        let lines = editor.render(12);
-        // Filter out border lines and padding-only lines
-        let content_lines: Vec<&str> = lines
-            .iter()
-            .map(|l| l.trim_end_matches(' '))
-            .filter(|l| !l.is_empty() && !l.contains('─'))
-            .collect();
+                // Total visible content of wrapped chunks must not exceed original
+                let total_vis_wrapped: usize = wrapped.iter().map(|c| visible_width(c)).sum();
+                let total_vis_original = visible_width(text);
+                assert!(
+                    total_vis_wrapped <= total_vis_original,
+                    "Width={}: wrapped visible {} > original visible {} for {:?}",
+                    width,
+                    total_vis_wrapped,
+                    total_vis_original,
+                    text
+                );
 
-        for i in 1..content_lines.len() {
-            assert_ne!(
-                content_lines[i],
-                content_lines[i - 1],
-                "Line {} duplicates line {}: '{}'",
-                i,
-                i - 1,
-                content_lines[i]
-            );
+                // No non-empty chunk should appear more times than it occurs
+                // as a substring in the original text.
+                for a in &wrapped {
+                    if a.is_empty() {
+                        continue;
+                    }
+                    let count_in_wrapped = wrapped.iter().filter(|c| *c == a).count();
+                    let count_in_original = text.matches(a.as_str()).count();
+                    assert!(
+                        count_in_wrapped <= count_in_original || count_in_original == 0,
+                        "Width={}: chunk '{}' appears {}x in wrapped but {}x in original for {:?}",
+                        width,
+                        a,
+                        count_in_wrapped,
+                        count_in_original,
+                        text
+                    );
+                }
+            }
         }
     }
 
