@@ -3,7 +3,10 @@ use crate::agent::types::{AgentMessage, Role, ToolCall};
 use crate::auth::AuthStorage;
 use async_trait::async_trait;
 use futures::{Stream, StreamExt};
-use genai::chat::{ChatMessage, ChatOptions, ChatRequest, ReasoningEffort, Tool, ToolResponse};
+use genai::chat::{
+    ChatMessage, ChatOptions, ChatRequest, ContentPart, MessageContent, ReasoningEffort, Tool,
+    ToolCall as GenaiToolCall, ToolResponse,
+};
 use genai::resolver::{AuthData, AuthResolver};
 use std::pin::Pin;
 
@@ -44,16 +47,21 @@ impl GenaiProvider {
             .with_auth_resolver(auth_resolver)
             .build();
 
-        let reasoning_effort = thinking_level.and_then(|level| match level {
-            "off" | "none" => Some(ReasoningEffort::None),
-            "minimal" => Some(ReasoningEffort::Minimal),
-            "low" => Some(ReasoningEffort::Low),
-            "medium" => Some(ReasoningEffort::Medium),
-            "high" => Some(ReasoningEffort::High),
-            "xhigh" => Some(ReasoningEffort::XHigh),
-            "max" => Some(ReasoningEffort::Max),
-            _ => None,
-        });
+        // Reasoning effort mapping:
+        // - When thinking_level is None (not configured), default to High (highest
+        //   commonly supported value across OpenAI-compatible providers).
+        // - When "off" or "none", set to None so the parameter is omitted entirely
+        //   ("none" is not widely supported and causes 400 errors with DeepSeek).
+        // - Values beyond "high" ("xhigh", "max") are clamped to "high" since few
+        //   providers support them.
+        // - "minimal" maps to "low" for the same reason.
+        // - Any unrecognized value also defaults to High.
+        let reasoning_effort = match thinking_level {
+            Some("off" | "none") => None,
+            Some("minimal" | "low") => Some(ReasoningEffort::Low),
+            Some("medium") => Some(ReasoningEffort::Medium),
+            _ => Some(ReasoningEffort::High), // None, xhigh, max, or unknown → highest commonly supported
+        };
 
         Ok(Self {
             client,
@@ -76,21 +84,24 @@ impl GenaiProvider {
             .map(|m| match m.role {
                 Role::User => ChatMessage::user(&m.content),
                 Role::Assistant => {
-                    if m.tool_calls.is_empty() {
-                        ChatMessage::assistant(&m.content)
-                    } else {
-                        let calls: Vec<genai::chat::ToolCall> = m
-                            .tool_calls
-                            .iter()
-                            .map(|tc| genai::chat::ToolCall {
-                                call_id: tc.id.clone(),
-                                fn_name: tc.name.clone(),
-                                fn_arguments: tc.arguments.clone(),
-                                thought_signatures: None,
-                            })
-                            .collect();
-                        ChatMessage::assistant_tool_calls_with_thoughts(calls, vec![])
+                    let mut parts: Vec<ContentPart> = Vec::new();
+
+                    // Include text content if present (supports models that emit both
+                    // text and tool calls in the same assistant turn)
+                    if !m.content.is_empty() {
+                        parts.push(ContentPart::from_text(&m.content));
                     }
+
+                    for tc in &m.tool_calls {
+                        parts.push(ContentPart::ToolCall(GenaiToolCall {
+                            call_id: tc.id.clone(),
+                            fn_name: tc.name.clone(),
+                            fn_arguments: tc.arguments.clone(),
+                            thought_signatures: None,
+                        }));
+                    }
+
+                    ChatMessage::assistant(MessageContent::from_parts(parts))
                 }
                 Role::ToolResult => ChatMessage::from(ToolResponse::new(
                     m.tool_call_id.clone().unwrap_or_default(),
