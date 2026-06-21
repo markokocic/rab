@@ -1,7 +1,9 @@
 use crate::tui::Theme;
+use crate::tui::components::markdown::{MarkdownTheme, StyleFn, create_highlight_fn};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::atomic::AtomicU16;
 
 // ── Color Types ──────────────────────────────────────────────────
@@ -498,6 +500,71 @@ fn fallback_theme() -> RabTheme {
             .insert(k.to_string(), ColorValue::HexOrVar(v.to_string()));
     }
     RabTheme::from_config(&config, ColorMode::TrueColor)
+}
+
+/// Build a `MarkdownTheme` from the current `RabTheme`.
+/// Wires all existing `md*` colors and text decorations.
+pub fn get_markdown_theme() -> MarkdownTheme {
+    let theme = current_theme();
+
+    let heading = mk_style(theme.fg_ansi("mdHeading"));
+    let link = mk_style(theme.fg_ansi("mdLink"));
+    let link_url = mk_style(theme.fg_ansi("mdLinkUrl"));
+    let code = mk_style(theme.fg_ansi("mdCode"));
+    let code_block = mk_style(theme.fg_ansi("mdCodeBlock"));
+    let code_block_border = mk_style(theme.fg_ansi("mdCodeBlockBorder"));
+    let quote = mk_style(theme.fg_ansi("mdQuote"));
+    let quote_border = mk_style(theme.fg_ansi("mdQuoteBorder"));
+    let hr = mk_style(theme.fg_ansi("mdHr"));
+    let list_bullet = mk_style(theme.fg_ansi("mdListBullet"));
+
+    // Release the lock before building closures
+    drop(theme);
+
+    let mut md = MarkdownTheme::new(
+        heading,
+        link,
+        link_url,
+        code,
+        code_block,
+        code_block_border,
+        quote,
+        quote_border,
+        hr,
+        list_bullet,
+        style_bold(),
+        style_italic(),
+        style_strikethrough(),
+        style_underline(),
+    );
+    md.highlight_code = create_highlight_fn();
+    md
+}
+
+/// Build a style function that wraps text with a foreground ANSI prefix and reset suffix.
+fn mk_style(prefix: &str) -> StyleFn {
+    let p = prefix.to_string();
+    Arc::new(move |text: &str| format!("{}{}\x1b[39m", p, text))
+}
+
+/// Build a bold style function.
+fn style_bold() -> StyleFn {
+    Arc::new(|text: &str| format!("\x1b[1m{}\x1b[22m", text))
+}
+
+/// Build an italic style function.
+fn style_italic() -> StyleFn {
+    Arc::new(|text: &str| format!("\x1b[3m{}\x1b[23m", text))
+}
+
+/// Build a strikethrough style function.
+fn style_strikethrough() -> StyleFn {
+    Arc::new(|text: &str| format!("\x1b[9m{}\x1b[29m", text))
+}
+
+/// Build an underline style function.
+fn style_underline() -> StyleFn {
+    Arc::new(|text: &str| format!("\x1b[4m{}\x1b[24m", text))
 }
 
 #[cfg(test)]

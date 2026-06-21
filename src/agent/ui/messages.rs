@@ -1,7 +1,10 @@
+use std::sync::Arc;
+
 use crate::tui::Component;
 use crate::tui::Theme;
 use crate::tui::components::Text as TuiText;
-use crate::tui::util::{visible_width, wrap_text_with_ansi};
+use crate::tui::components::markdown::{DefaultTextStyle, Markdown, MarkdownTheme};
+use crate::tui::util::visible_width;
 
 use super::components::bash_execution::{BashExecution, BashStatus};
 
@@ -47,8 +50,6 @@ pub fn render_messages(
     collapse_tool_output: bool,
     theme: &dyn Theme,
 ) -> Vec<String> {
-    let inner = width.saturating_sub(2);
-
     let mut lines: Vec<String> = Vec::new();
     let msg_count = messages.len();
 
@@ -59,24 +60,26 @@ pub fn render_messages(
             }
             DisplayMsg::User(text) => {
                 let lines_start = lines.len();
+                let md_theme = get_md_theme();
+                let default_style = DefaultTextStyle {
+                    color: Some(Arc::new(|s: &str| {
+                        crate::agent::ui::theme::current_theme().fg("userMessageText", s)
+                    })),
+                    bg_color: None,
+                    bold: false,
+                    italic: false,
+                    strikethrough: false,
+                    underline: false,
+                };
+                let md = Markdown::new(text.clone(), 0, 0, md_theme, Some(default_style), None);
                 let mut msg_box = crate::tui::components::r#box::TuiBox::new(
                     1,
                     1,
-                    Some(std::boxed::Box::new(move |s: &str| -> String {
-                        format!("\x1b[48;2;52;53;65m{}\x1b[49m", s)
+                    Some(std::boxed::Box::new(|s: &str| -> String {
+                        crate::agent::ui::theme::current_theme().bg("userMessageBg", s)
                     })),
                 );
-                let text_content = text
-                    .lines()
-                    .map(|l| theme.fg("text", l))
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                let text_content = if text_content.is_empty() {
-                    " ".into()
-                } else {
-                    text_content
-                };
-                msg_box.add_child(std::boxed::Box::new(TuiText::new(text_content, 0, 0, None)));
+                msg_box.add_child(std::boxed::Box::new(md));
                 lines.extend(msg_box.render(width));
                 if let Some(first) = lines.get_mut(lines_start) {
                     *first = format!("{}{}", OSC133_ZONE_START, first);
@@ -94,17 +97,9 @@ pub fn render_messages(
                     lines.push(String::new());
                 }
                 let asst_start = lines.len();
-                for line in text.lines() {
-                    if line.is_empty() {
-                        lines.push(String::new());
-                    } else {
-                        let wrapped = wrap_text_with_ansi(line, inner);
-                        for w in wrapped {
-                            let line = format!(" {}", w);
-                            lines.push(pad_to_width(&line, width));
-                        }
-                    }
-                }
+                let md_theme = get_md_theme();
+                let md = Markdown::new(text.clone(), 1, 0, md_theme, None, None);
+                lines.extend(md.render(width));
                 if let Some(first) = lines.get_mut(asst_start) {
                     *first = format!("{}{}", OSC133_ZONE_START, first);
                 }
@@ -128,10 +123,31 @@ pub fn render_messages(
                         .as_deref()
                         .and_then(thinking_level_color)
                         .unwrap_or("thinking_text");
-                    for line in text.lines() {
-                        let content = format!(" {}", theme.italic(&theme.fg(level_color, line)));
-                        lines.push(theme.bg("thinking_bg", &pad_to_width(&content, width)));
-                    }
+                    let color_fn = {
+                        let lc = level_color.to_string();
+                        move |s: &str| -> String {
+                            crate::agent::ui::theme::current_theme().fg(&lc, s)
+                        }
+                    };
+                    let default_style = DefaultTextStyle {
+                        color: Some(Arc::new(color_fn)),
+                        bg_color: None,
+                        bold: false,
+                        italic: true,
+                        strikethrough: false,
+                        underline: false,
+                    };
+                    let md_theme = get_md_theme();
+                    let md = Markdown::new(text.clone(), 1, 0, md_theme, Some(default_style), None);
+                    let mut md_box = crate::tui::components::r#box::TuiBox::new(
+                        1,
+                        0,
+                        Some(std::boxed::Box::new(|s: &str| -> String {
+                            crate::agent::ui::theme::current_theme().bg("thinking_bg", s)
+                        })),
+                    );
+                    md_box.add_child(std::boxed::Box::new(md));
+                    lines.extend(md_box.render(width));
                 }
                 if idx + 1 < msg_count {
                     let has_content = messages[idx + 1..].iter().any(|m| match m {
@@ -302,6 +318,11 @@ pub fn thinking_level_color(level: &str) -> Option<&'static str> {
 }
 
 /// Format token count for compact display (pi style).
+/// Get a `MarkdownTheme` from the current RabTheme.
+pub fn get_md_theme() -> MarkdownTheme {
+    crate::agent::ui::theme::get_markdown_theme()
+}
+
 pub fn fmt_tokens(count: f64) -> String {
     if count < 1000.0 {
         format!("{}", count as u64)

@@ -3,6 +3,7 @@ pub mod cancellable_loader;
 pub mod editor;
 pub mod input;
 pub mod loader;
+pub mod markdown;
 pub mod select_list;
 pub mod settings_list;
 pub mod spacer;
