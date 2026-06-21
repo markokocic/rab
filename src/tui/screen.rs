@@ -2,7 +2,7 @@ use std::io::{self, Write};
 
 use crate::tui::focusable::CURSOR_MARKER;
 
-/// The diff renderer — maintains previous frame and emits minimal ANSI updates.
+/// The diff renderer - maintains previous frame and emits minimal ANSI updates.
 pub struct Screen {
     prev_lines: Vec<String>,
     prev_width: u16,
@@ -162,7 +162,7 @@ impl Screen {
         };
         let mut viewport_top = prev_viewport_top;
 
-        // First render — output everything without clearing (assumes clean screen)
+        // First render - output everything without clearing (assumes clean screen)
         if self.prev_lines.is_empty() && !width_changed && !height_changed {
             return self.full_render(&new_lines, writer, false, width_usize, height_usize);
         }
@@ -172,7 +172,7 @@ impl Screen {
             return self.full_render(&new_lines, writer, true, width_usize, height_usize);
         }
 
-        // Content shrunk — full redraw to clear empty rows
+        // Content shrunk - full redraw to clear empty rows
         if self.clear_on_shrink && new_lines.len() < self.max_lines_rendered {
             return self.full_render(&new_lines, writer, true, width_usize, height_usize);
         }
@@ -225,7 +225,7 @@ impl Screen {
                 (target_row - prev_viewport_top) as i32
                     - (self.hardware_cursor_row.saturating_sub(prev_viewport_top)) as i32
             } else {
-                // Target is above viewport — need full redraw
+                // Target is above viewport - need full redraw
                 return self.full_render(&new_lines, writer, true, width_usize, height_usize);
             };
 
@@ -269,7 +269,7 @@ impl Screen {
             return Ok(());
         }
 
-        // First changed line is above viewport — need full redraw
+        // First changed line is above viewport - need full redraw
         if first < prev_viewport_top {
             return self.full_render(&new_lines, writer, true, width_usize, height_usize);
         }
@@ -354,7 +354,7 @@ impl Screen {
             let extra = self.prev_lines.len() - new_lines.len();
 
             if extra > height_usize {
-                // Too many extra lines — fall back to full redraw
+                // Too many extra lines - fall back to full redraw
                 buf.push_str("\x1b[?2026l");
                 write!(writer, "{}", buf)?;
                 writer.flush()?;
@@ -450,7 +450,7 @@ mod tests {
         screen.render(lines1.clone(), 80, 24, &mut output).unwrap();
         output.clear();
 
-        // Second render with same content — no output
+        // Second render with same content - no output
         screen.render(lines1.clone(), 80, 24, &mut output).unwrap();
         assert!(output.is_empty());
 
@@ -474,7 +474,7 @@ mod tests {
         screen.render(initial.clone(), 40, 24, &mut output).unwrap();
         output.clear();
 
-        // Type "/" — only index 7 changes
+        // Type "/" - only index 7 changes
         let mut after = initial.clone();
         after[7] = "line 07/".to_string();
         screen.render(after, 40, 24, &mut output).unwrap();
@@ -490,6 +490,128 @@ mod tests {
         assert!(
             !text.contains("\x1b[2J"),
             "Should not full-clear on single line change"
+        );
+    }
+
+    #[test]
+    fn test_screen_append_no_duplicate_content() {
+        let mut screen = Screen::new();
+        let mut output = Vec::new();
+
+        // First frame: 4 lines
+        let frame1 = vec!["a", "b", "c", "d"]
+            .into_iter()
+            .map(String::from)
+            .collect::<Vec<_>>();
+        screen.render(frame1, 40, 24, &mut output).unwrap();
+        output.clear();
+
+        // Second frame: content appended at end (exactly prev_lines.len())
+        let frame2 = vec!["a", "b", "c", "d", "e"]
+            .into_iter()
+            .map(String::from)
+            .collect::<Vec<_>>();
+        screen.render(frame2, 40, 24, &mut output).unwrap();
+
+        let content = String::from_utf8_lossy(&output);
+        eprintln!("Append-only diff output: {:?}", content);
+
+        // The diff output should only contain the new line "e" plus ANSI codes
+        // It must not repeat any of the unchanged lines ("a", "b", "c", "d")
+        let counts = ["a", "b", "c", "d"];
+        for &ch in &counts {
+            let n = content.matches(ch).count();
+            assert!(
+                n <= 1,
+                "'{}' should appear at most once in diff, got {}: {:?}",
+                ch, n, content
+            );
+        }
+        // "e" must appear exactly once
+        let e_count = content.matches('e').count();
+        assert_eq!(e_count, 1, "'e' should appear exactly once, got {}", e_count);
+    }
+
+    #[test]
+    fn test_screen_insert_line_mid_content_no_duplicates() {
+        let mut screen = Screen::new();
+        let mut output = Vec::new();
+
+        // First frame: 3 lines
+        let frame1 = vec!["a", "c", "d"]
+            .into_iter()
+            .map(String::from)
+            .collect::<Vec<_>>();
+        screen.render(frame1, 40, 24, &mut output).unwrap();
+        output.clear();
+
+        // Second frame: "b" inserted between "a" and "c"
+        let frame2 = vec!["a", "b", "c", "d"]
+            .into_iter()
+            .map(String::from)
+            .collect::<Vec<_>>();
+        screen.render(frame2, 40, 24, &mut output).unwrap();
+
+        let content = String::from_utf8_lossy(&output);
+        eprintln!("Insert-mid diff output: {:?}", content);
+
+        // "a" should appear at most once (unchanged line shouldn't be re-written)
+        assert!(
+            content.matches('a').count() <= 1,
+            "'a' should appear at most once: {:?}",
+            content
+        );
+        // "b", "c", "d" should appear (changed/new lines)
+        assert!(content.contains('b'), "Should contain 'b'");
+        assert!(content.contains('c'), "Should contain 'c'");
+        assert!(content.contains('d'), "Should contain 'd'");
+    }
+
+    #[test]
+    fn test_screen_editor_appended_empty_line_no_duplicate() {
+        // Simulates pressing Ctrl+J on "hello" → "hello\n"
+        // Editor renders change from 3 lines to 4 lines:
+        //   [border, "hello", border]  →  [border, "hello", "", border]
+        let mut screen = Screen::new();
+        let mut output = Vec::new();
+
+        let frame1 = vec![
+            "header".to_string(),
+            "── editor border ──".to_string(),
+            "hello".to_string(),
+            "── editor border ──".to_string(),
+            "footer".to_string(),
+        ];
+        screen.render(frame1, 30, 24, &mut output).unwrap();
+        output.clear();
+
+        // After Ctrl+J: "hello" → "hello\n"
+        let frame2 = vec![
+            "header".to_string(),
+            "── editor border ──".to_string(),
+            "hello".to_string(),
+            "".to_string(),          // new empty line
+            "── editor border ──".to_string(),
+            "footer".to_string(),
+        ];
+        screen.render(frame2, 30, 24, &mut output).unwrap();
+
+        let content = String::from_utf8_lossy(&output);
+        eprintln!("Editor append empty line diff: {:?}", content);
+
+        // "hello" should NOT be in the diff output (it didn't change)
+        let hello_count = content.matches("hello").count();
+        assert!(
+            hello_count <= 1,
+            "'hello' should appear at most once in diff, got {}: {:?}",
+            hello_count, content
+        );
+        // "footer" should NOT be duplicated (it just shifted down, should appear once)
+        let footer_count = content.matches("footer").count();
+        assert!(
+            footer_count <= 1,
+            "'footer' should appear at most once in diff, got {}: {:?}",
+            footer_count, content
         );
     }
 }
