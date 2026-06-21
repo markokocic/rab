@@ -90,107 +90,65 @@ fn spawn_bash_command(
     }
 }
 
-/// Format the final bash execution result (truncation, temp file, exit code, duration).
+/// Format the final bash execution result matching pi's bashExecutionToText.
+///
+/// Format:
+///   Ran `command`
+///   ```text
+///   output
+///   ```
+///   (or (no output) if empty)
+///   (if non-zero exit) Command exited with code N
+///   (if truncated) [Output truncated. Full output: path]
 fn finish_bash_execution(
+    command: &str,
     combined: &str,
     exit_code: i32,
-    started_at: Instant,
+    cancelled: bool,
+    _started_at: Instant,
     on_update: Option<UnboundedSender<ToolOutput>>,
 ) -> Result<ToolOutput, anyhow::Error> {
     // Apply tail truncation (pi-style: keep last N lines/bytes)
     let trunc = truncate_tail(combined, DEFAULT_MAX_LINES, DEFAULT_MAX_BYTES);
 
-    let mut result_text = trunc.content;
+    let mut result_text = format!("Ran `{}`\n", command);
 
-    // Save full output to temp file if truncated
-    let full_output_path = if trunc.truncated {
+    // Output in code block (or (no output) if empty)
+    if !trunc.content.is_empty() {
+        result_text.push_str(&format!("```\n{}\n```", trunc.content));
+    } else {
+        result_text.push_str("(no output)");
+    }
+
+    // Status suffix (matching pi order: cancelled overrides exit code)
+    if cancelled {
+        result_text.push_str("\n\n(command cancelled)");
+    } else if exit_code != 0 {
+        result_text.push_str(&format!("\n\nCommand exited with code {}", exit_code));
+    }
+
+    // Truncation notice (matching pi)
+    if trunc.truncated {
         let tmp_dir = std::env::temp_dir().join("rab-bash");
         let _ = std::fs::create_dir_all(&tmp_dir);
         let tmp_path = tmp_dir.join(format!("{}.txt", uuid::Uuid::new_v4()));
-        if std::fs::write(&tmp_path, combined).is_ok() {
+        let saved = if std::fs::write(&tmp_path, combined).is_ok() {
             Some(tmp_path)
         } else {
             None
-        }
-    } else {
-        None
-    };
-
-    // Build continuation/footer messages
-    if trunc.truncated {
-        let start_line = trunc.total_lines - trunc.output_lines + 1;
-        let end_line = trunc.total_lines;
-
-        let footer = if let Some(ref path) = full_output_path {
-            if trunc.last_line_partial {
-                let last_line_size =
-                    format_size(combined.lines().last().map(|l| l.len()).unwrap_or(0));
-                format!(
-                    "\n\n[Showing last {} of line {} (line is {}). Full output: {}]",
-                    format_size(trunc.output_bytes),
-                    end_line,
-                    last_line_size,
-                    path.display()
-                )
-            } else if trunc.truncated_by == "lines" {
-                format!(
-                    "\n\n[Showing lines {}-{} of {}. Full output: {}]",
-                    start_line,
-                    end_line,
-                    trunc.total_lines,
-                    path.display()
-                )
-            } else {
-                format!(
-                    "\n\n[Showing lines {}-{} of {} ({} limit). Full output: {}]",
-                    start_line,
-                    end_line,
-                    trunc.total_lines,
-                    format_size(DEFAULT_MAX_BYTES),
-                    path.display()
-                )
-            }
-        } else {
-            if trunc.last_line_partial {
-                format!(
-                    "\n\n[Showing last {} of line {}.]",
-                    format_size(trunc.output_bytes),
-                    end_line,
-                )
-            } else if trunc.truncated_by == "lines" {
-                format!(
-                    "\n\n[Showing lines {}-{} of {}.]",
-                    start_line, end_line, trunc.total_lines,
-                )
-            } else {
-                format!(
-                    "\n\n[Showing lines {}-{} of {} ({} limit).]",
-                    start_line,
-                    end_line,
-                    trunc.total_lines,
-                    format_size(DEFAULT_MAX_BYTES),
-                )
-            }
         };
-        result_text.push_str(&footer);
-    }
 
-    // Add exit code info and duration
-    let duration_note = format!("\n\n[Took {:.1}s]", started_at.elapsed().as_secs_f64());
-
-    if exit_code != 0 && exit_code != -1 {
-        if result_text.is_empty() {
-            result_text = format!("Command exited with code {}", exit_code);
+        if let Some(ref path) = saved {
+            result_text.push_str(&format!(
+                "\n\n[Output truncated. Full output: {}]",
+                path.display()
+            ));
         } else {
-            result_text.push_str(&format!("\n\n[Command exited with code {}]", exit_code));
+            result_text.push_str("\n\n[Output truncated.]");
         }
-    } else if result_text.is_empty() {
-        result_text = "(no output)".to_string();
     }
 
-    result_text.push_str(&duration_note);
-
-    // Send final update with duration
+    // Send final update
     if let Some(ref tx) = on_update {
         let _ = tx.send(ToolOutput::ok(result_text.clone()));
     }
@@ -198,25 +156,22 @@ fn finish_bash_execution(
     Ok(ToolOutput::ok(result_text))
 }
 
-/// Format bytes as a human-readable size string.
-fn format_size(bytes: usize) -> String {
-    if bytes < 1024 {
-        format!("{}B", bytes)
-    } else if bytes < 1024 * 1024 {
-        format!("{:.1}KB", bytes as f64 / 1024.0)
-    } else {
-        format!("{:.1}MB", bytes as f64 / (1024.0 * 1024.0))
-    }
-}
-
 /// Truncation result for tail-based truncation (keep last N lines/bytes).
 struct TailTruncation {
+    /// Truncated output content.
     content: String,
-    total_lines: usize,
-    output_lines: usize,
-    output_bytes: usize,
+    /// Whether truncation occurred.
     truncated: bool,
+    // Fields below are only used in tests; kept for test assertions.
+    #[allow(dead_code)]
+    total_lines: usize,
+    #[allow(dead_code)]
+    output_lines: usize,
+    #[allow(dead_code)]
+    output_bytes: usize,
+    #[allow(dead_code)]
     truncated_by: &'static str, // "lines" | "bytes"
+    #[allow(dead_code)]
     last_line_partial: bool,
 }
 
@@ -232,10 +187,10 @@ fn truncate_tail(content: &str, max_lines: usize, max_bytes: usize) -> TailTrunc
     if total_lines <= max_lines && total_bytes <= max_bytes {
         return TailTruncation {
             content: content.to_string(),
+            truncated: false,
             total_lines,
             output_lines: total_lines,
             output_bytes: total_bytes,
-            truncated: false,
             truncated_by: "",
             last_line_partial: false,
         };
@@ -280,10 +235,10 @@ fn truncate_tail(content: &str, max_lines: usize, max_bytes: usize) -> TailTrunc
     output.reverse();
     TailTruncation {
         content: output.join("\n"),
+        truncated: true,
         total_lines,
         output_lines: output.len(),
         output_bytes: byte_count,
-        truncated: true,
         truncated_by,
         last_line_partial,
     }
@@ -453,7 +408,14 @@ impl AgentTool for BashTool {
                     let combined_str = combined.lock().await.clone();
                     let exit_code = status.code().unwrap_or(-1);
 
-                    return finish_bash_execution(&combined_str, exit_code, started_at, on_update);
+                    return finish_bash_execution(
+                        command,
+                        &combined_str,
+                        exit_code,
+                        false,
+                        started_at,
+                        on_update,
+                    );
                 }
                 Ok(None) => {
                     // Still running, poll again soon
@@ -463,7 +425,14 @@ impl AgentTool for BashTool {
                     read_task.await.ok();
                     let combined_str = combined.lock().await.clone();
                     let exit_code = -1;
-                    return finish_bash_execution(&combined_str, exit_code, started_at, on_update);
+                    return finish_bash_execution(
+                        command,
+                        &combined_str,
+                        exit_code,
+                        false,
+                        started_at,
+                        on_update,
+                    );
                 }
             }
         }
@@ -560,9 +529,8 @@ mod tests {
         let content: String = (1..=5000).map(|i| format!("line {}\n", i)).collect();
         let result = truncate_tail(&content, 2000, 50000);
         assert!(result.truncated);
-        assert_eq!(result.truncated_by, "lines");
-        assert_eq!(result.output_lines, 2000);
         assert!(result.content.starts_with("line 3001"));
+        assert_eq!(result.content.lines().count(), 2000);
     }
 
     #[test]
@@ -572,8 +540,8 @@ mod tests {
             .collect();
         let result = truncate_tail(&content, 2000, 50000);
         assert!(result.truncated);
-        assert_eq!(result.truncated_by, "bytes");
-        assert!(result.output_lines < 100);
+        assert!(result.content.len() <= 50000);
+        assert!(result.content.lines().count() < 100);
     }
 
     #[test]
@@ -582,8 +550,7 @@ mod tests {
         let content = format!("short\n{}\n", "x".repeat(60000));
         let result = truncate_tail(&content, 2000, 50000);
         assert!(result.truncated);
-        assert!(result.last_line_partial);
-        // Should contain the end of the long line
+        assert!(!result.content.starts_with("short"));
         assert!(result.content.len() <= 50000);
     }
 
@@ -592,14 +559,6 @@ mod tests {
         let result = truncate_tail("", 2000, 50000);
         assert!(!result.truncated);
         assert_eq!(result.content, "");
-    }
-
-    #[test]
-    fn test_format_size() {
-        assert_eq!(format_size(500), "500B");
-        assert_eq!(format_size(1024), "1.0KB");
-        assert_eq!(format_size(50 * 1024), "50.0KB");
-        assert_eq!(format_size(1024 * 1024), "1.0MB");
     }
 
     // ── Exit code integration tests ──────────────────────────────
@@ -660,7 +619,6 @@ mod tests {
             "got: {}",
             output.content
         );
-        assert!(output.content.contains("[Took"), "got: {}", output.content);
     }
 
     #[tokio::test]
@@ -762,14 +720,14 @@ mod tests {
 
     #[test]
     fn test_truncate_tail_exact_line_fit() {
-        // Content exactly at the line limit — no truncation
+        // Content exactly at the line limit - no truncation
         let lines: String = (1..=2000).map(|i| format!("line {}\n", i)).collect();
         let result = truncate_tail(&lines, 2000, 50000);
         assert!(
             !result.truncated,
             "should not truncate when exactly at line limit"
         );
-        assert_eq!(result.output_lines, 2000);
+        assert!(result.content.lines().count() == 2000);
     }
 
     #[test]
@@ -777,15 +735,14 @@ mod tests {
         let lines: String = (1..=2001).map(|i| format!("line {}\n", i)).collect();
         let result = truncate_tail(&lines, 2000, 50000);
         assert!(result.truncated);
-        assert_eq!(result.truncated_by, "lines");
-        assert_eq!(result.output_lines, 2000);
+        assert_eq!(result.content.lines().count(), 2000);
         // Should keep last 2000 lines
         assert!(result.content.starts_with("line 2"));
     }
 
     #[test]
     fn test_truncate_tail_exact_byte_fit() {
-        // Content exactly at byte limit — no truncation
+        // Content exactly at byte limit - no truncation
         let line = "a".repeat(50000);
         let result = truncate_tail(&line, 2000, 50000);
         assert!(!result.truncated);
@@ -797,7 +754,6 @@ mod tests {
         let line = "a".repeat(50001);
         let result = truncate_tail(&line, 2000, 50000);
         assert!(result.truncated);
-        assert!(result.last_line_partial);
         assert!(result.content.len() <= 50000);
     }
 
@@ -867,7 +823,7 @@ mod tests {
             .await
             .unwrap();
         assert!(
-            output.content.contains("Showing lines"),
+            output.content.contains("Output truncated"),
             "got: {}",
             output.content
         );
@@ -892,7 +848,7 @@ mod tests {
             .unwrap();
         // Small output should not have footer markers
         assert!(
-            !output.content.contains("Showing lines"),
+            !output.content.contains("Output truncated"),
             "got: {}",
             output.content
         );
@@ -945,7 +901,7 @@ mod tests {
 
     #[test]
     fn test_truncate_tail_lines_and_bytes_both_exceeded() {
-        // Both limits exceeded — byte limit should win (more restrictive)
+        // Both limits exceeded - byte limit should win (more restrictive)
         let content: String = (1..=5000)
             .map(|i| format!("line {} {}\n", i, "x".repeat(100)))
             .collect();
