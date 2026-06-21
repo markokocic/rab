@@ -7,7 +7,7 @@ use crate::agent::extension::{AgentTool, Extension};
 use crate::agent::provider::{Provider, ToolDef};
 use crate::agent::session::SessionManager;
 use crate::agent::types::{AgentMessage, Usage};
-use crate::agent::ui::chat_editor::ChatEditor;
+use crate::agent::ui::chat_editor::{ChatEditor, InputAction};
 use crate::agent::ui::footer::Footer;
 use crate::agent::ui::help::HelpOverlay;
 use crate::agent::ui::messages::{DisplayMsg, render_messages, session_messages_to_display};
@@ -16,10 +16,9 @@ use crate::agent::ui::theme::RabTheme;
 use crate::agent::ui::working::WorkingIndicator;
 use crate::agent::{AgentEvent, LoopConfig, run_agent_loop};
 use crate::tui::Component;
-use crate::tui::keys::{Key, matches_key};
 use crate::tui::screen::Screen;
 use crate::tui::terminal::{self, Terminal};
-use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::event::KeyEvent;
 use tokio::sync::mpsc;
 
 /// Configuration for the UI app.
@@ -433,15 +432,16 @@ fn compose_ui(app: &mut App, width: usize, _height: usize) -> Vec<String> {
     lines
 }
 
-/// Handle keyboard input.
+/// Handle keyboard input. Mirrors pi's InteractiveMode key dispatch:
+///
+/// 1. Overlay handling (help, model selector) — checked first, consumes all keys
+/// 2. ChatEditor::handle_input checks app-level keys and returns InputAction
+/// 3. App.rs matches on InputAction to perform side effects
+///
+/// This keeps text-editing logic in the Editor component (via ChatEditor)
+/// and app-level side effects (aborting agents, toggling settings, etc.) here.
 fn handle_input(app: &mut App, key: &KeyEvent) {
-    // Global keys
-    if matches_key(key, &Key::Ctrl('d')) && app.editor.editor.get_text().is_empty() {
-        app.should_quit = true;
-        return;
-    }
-
-    // Overlay handling
+    // ── Overlay handling ──
     if app.show_help {
         app.show_help = false;
         return;
@@ -461,166 +461,100 @@ fn handle_input(app: &mut App, key: &KeyEvent) {
         return;
     }
 
-    // Normal mode keys
-    if matches_key(key, &Key::Ctrl('c')) {
-        // Interrupt streaming
-        if app.is_streaming {
-            if let Some(handle) = app.agent_abort.take() {
-                handle.abort();
-            }
-            app.is_streaming = false;
-            app.working.stop();
-            app.footer.set_streaming(false);
-
-            // Restore queued messages to editor (pi-style)
-            if !app.queued_messages.is_empty() {
-                let queued = app.queued_messages.join("\n\n");
-                app.editor.editor.set_text(&queued);
-                app.queued_messages.clear();
-            }
-
-            app.status_text = Some("Interrupted".into());
-        } else {
-            // Clear editor
-            app.editor.editor.set_text("");
-        }
-        return;
-    }
-
-    if matches_key(key, &Key::Escape) {
-        // Pi-style: close autocomplete first if active
-        if app.editor.editor.autocomplete_active {
-            app.editor.editor.clear_autocomplete();
-            return;
-        }
-        // Pi-style: Escape aborts current operation
-        if app.is_streaming {
-            // Abort agent task (same as Ctrl+C)
-            if let Some(handle) = app.agent_abort.take() {
-                handle.abort();
-            }
-            app.is_streaming = false;
-            app.working.stop();
-            app.footer.set_streaming(false);
-
-            // Restore queued messages to editor
-            if !app.queued_messages.is_empty() {
-                let queued = app.queued_messages.join("\n\n");
-                app.editor.editor.set_text(&queued);
-                app.queued_messages.clear();
-            }
-
-            app.status_text = Some("Interrupted".into());
-        } else {
-            app.editor.editor.set_text("");
-            app.history_index = None;
-        }
-        return;
-    }
-
-    if matches_key(key, &Key::Ctrl('l')) {
-        // Open model selector
-        let models = app.available_models.clone();
-        let current = app.model.clone();
-        app.model_selector = Some(ModelSelector::new(models, &current, &app.theme));
-        app.show_model_selector = true;
-        return;
-    }
-
-    if matches_key(key, &Key::Ctrl('t')) {
-        app.hide_thinking = !app.hide_thinking;
-        // Persist to settings (pi-style: settings survive restart)
-        app.settings.hide_thinking = Some(app.hide_thinking);
-        if let Err(e) = app.settings.save() {
-            app.messages.push(DisplayMsg::Info(format!(
-                "Failed to save thinking setting: {}",
-                e
-            )));
-        }
-        app.messages.push(DisplayMsg::Info(if app.hide_thinking {
-            "Thinking blocks: hidden".into()
-        } else {
-            "Thinking blocks: visible".into()
-        }));
-        return;
-    }
-
-    if matches_key(key, &Key::Ctrl('o')) {
-        app.collapse_tool_output = !app.collapse_tool_output;
-        // Persist to settings (pi-style: setting survives restart)
-        app.settings.collapse_tool_output = Some(app.collapse_tool_output);
-        if let Err(e) = app.settings.save() {
-            app.messages.push(DisplayMsg::Info(format!(
-                "Failed to save tool output setting: {}",
-                e
-            )));
-        }
-        app.messages
-            .push(DisplayMsg::Info(if app.collapse_tool_output {
-                "Tool output: collapsed".into()
+    // ── Dispatch to ChatEditor (mirrors pi's CustomEditor.handleInput) ──
+    match app.editor.handle_input(key) {
+        InputAction::Handled => {}
+        InputAction::Escape => {
+            if app.is_streaming {
+                interrupt_streaming(app);
             } else {
-                "Tool output: expanded".into()
-            }));
-        return;
-    }
-
-    // Tab = autocomplete slash command (pi-style)
-    // Tab = trigger or navigate autocomplete (pi-style)
-    if matches_key(key, &Key::Tab) && !app.editor.editor.autocomplete_active {
-        let text = app.editor.editor.get_text();
-        if text.starts_with('/') {
-            let suggestions = app.editor.get_autocomplete_suggestions();
-            app.editor.editor.set_autocomplete(suggestions);
+                app.editor.editor.set_text("");
+                app.history_index = None;
+            }
         }
-        return;
-    }
-
-    // F1 = help
-    if key.code == KeyCode::F(1) {
-        app.show_help = true;
-        return;
-    }
-
-    // Ctrl+J = literal newline in editor
-    if matches_key(key, &Key::Ctrl('j')) {
-        app.editor.editor.insert_text_at_cursor("\n");
-        return;
-    }
-
-    // Enter = submit
-    if matches_key(key, &Key::Enter) {
-        let text = app.editor.editor.get_text();
-        if !text.trim().is_empty() {
-            app.editor.editor.add_to_history(&text);
+        InputAction::Interrupt => {
+            if app.is_streaming {
+                interrupt_streaming(app);
+            } else {
+                app.editor.editor.set_text("");
+            }
+        }
+        InputAction::Exit => {
+            app.should_quit = true;
+        }
+        InputAction::ModelSelector => {
+            open_model_selector(app);
+        }
+        InputAction::ToggleThinking => {
+            app.hide_thinking = !app.hide_thinking;
+            app.settings.hide_thinking = Some(app.hide_thinking);
+            if let Err(e) = app.settings.save() {
+                app.messages.push(DisplayMsg::Info(format!(
+                    "Failed to save thinking setting: {}",
+                    e
+                )));
+            }
+            app.messages.push(DisplayMsg::Info(if app.hide_thinking {
+                "Thinking blocks: hidden".into()
+            } else {
+                "Thinking blocks: visible".into()
+            }));
+        }
+        InputAction::ToggleCollapse => {
+            app.collapse_tool_output = !app.collapse_tool_output;
+            app.settings.collapse_tool_output = Some(app.collapse_tool_output);
+            if let Err(e) = app.settings.save() {
+                app.messages.push(DisplayMsg::Info(format!(
+                    "Failed to save tool output setting: {}",
+                    e
+                )));
+            }
+            app.messages
+                .push(DisplayMsg::Info(if app.collapse_tool_output {
+                    "Tool output: collapsed".into()
+                } else {
+                    "Tool output: expanded".into()
+                }));
+        }
+        InputAction::Help => {
+            app.show_help = true;
+        }
+        InputAction::Submit(text) => {
             submit_message(app, text);
         }
-        app.editor.editor.set_text("");
-        return;
-    }
-
-    // Up/Down for history (pi: not when autocomplete is active)
-    if !app.editor.editor.autocomplete_active {
-        if matches_key(key, &Key::Up) && app.editor.editor.get_text().is_empty() {
-            recall_history(app, -1);
-            return;
+        InputAction::RecallHistory(direction) => {
+            recall_history(app, direction);
         }
-
-        if matches_key(key, &Key::Down) && app.editor.editor.get_text().is_empty() {
-            recall_history(app, 1);
-            return;
+        InputAction::PageUp | InputAction::PageDown => {
+            // TODO: wire up chat scrolling
         }
     }
+}
 
-    // PageUp/Down for scroll
-    if matches_key(key, &Key::PageUp) {
-        return;
+/// Interrupt streaming agent and restore queued messages to editor.
+fn interrupt_streaming(app: &mut App) {
+    if let Some(handle) = app.agent_abort.take() {
+        handle.abort();
     }
-    if matches_key(key, &Key::PageDown) {
-        return;
+    app.is_streaming = false;
+    app.working.stop();
+    app.footer.set_streaming(false);
+
+    if !app.queued_messages.is_empty() {
+        let queued = app.queued_messages.join("\n\n");
+        app.editor.editor.set_text(&queued);
+        app.queued_messages.clear();
     }
 
-    // Delegate to editor
-    app.editor.editor.handle_input(key);
+    app.status_text = Some("Interrupted".into());
+}
+
+/// Open the model selector overlay.
+fn open_model_selector(app: &mut App) {
+    let models = app.available_models.clone();
+    let current = app.model.clone();
+    app.model_selector = Some(ModelSelector::new(models, &current, &app.theme));
+    app.show_model_selector = true;
 }
 
 /// Submit or queue a user message. When streaming, queues instead of spawning
