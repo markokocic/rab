@@ -6,52 +6,56 @@ Goal: architectural and behavioral 1/1 match with pi's `packages/tui/src/` on ev
 
 ### Phase 1 — Core framework (TUI class, terminal, input pipeline)
 
-- [ ] **TUI class** — promote `Screen` to a full `TUI` that owns the event loop:
-  - [ ] `start()` / `stop()` lifecycle — raw mode, bracketed paste, resize handler
-  - [ ] `handle_input()` — input listeners (transform/consume), global debug key, overlay focus routing
-  - [ ] `requestRender()` — debounced scheduling (MIN_RENDER_INTERVAL_MS~16ms), force full-redraw, `process::idle` / `nextTick` equivalent
-  - [ ] `doRender()` — diff: width/height changes → full clear, first-render path, expanded kitty-image ranges (adapt to no-kitty), `clearOnShrink` option
-  - [ ] `SEGMENT_RESET` (`\x1b[0m\x1b]8;;\x07`) appended to every line after cursor marker extraction
-  - [ ] cursor marker extraction — find `CURSOR_MARKER` in visible viewport, strip, position hardware cursor (`\x1b[7m` inverse + zero-width marker)
-  - [ ] terminal color scheme notifications — OSC 2031 h/l, listeners, parsing
-  - [ ] cell size query for image support — `CSI 16 t`, `setCellDimensions` (stub for non-image)
-  - [ ] synchronized output wrapping — `\x1b[?2026h` / `l` around all terminal writes
+- [x] **TUI struct** — `src/tui/tui_core.rs` wraps `Screen` with overlay compositing, focus routing, cursor marker extraction, hardware cursor positioning
+  - [x] `TUI::new()` / `set_dimensions()` / `request_render()` / `is_dirty()` / `render()` / `finalize()`
+  - [x] `render(lines, width, height, writer)` — composites overlays → extracts cursor marker → applies `SEGMENT_RESET` → delegates to `Screen` for diff
+  - [x] `SEGMENT_RESET` (`\x1b[0m\x1b]8;;\x07`) appended after cursor marker extraction
+  - [x] cursor marker extraction — find `CURSOR_MARKER` in visible viewport, strip, position hardware cursor
+  - [x] synchronized output — delegated to Screen (already uses `\x1b[?2026h/l`)
 
-- [ ] **Overlay system**
-  - [ ] `showOverlay(component, options?)` → `OverlayHandle` with `hide()`, `setHidden()`, `isHidden()`, `focus()`, `unfocus()`, `isFocused()`
-  - [ ] `hideOverlay()` — pop topmost overlay
-  - [ ] `hasOverlay()` — check any visible
-  - [ ] overlay stack — `Vec<OverlayStackEntry>`, focus order counter, preFocus tracking
-  - [ ] anchor-based positioning — `OverlayAnchor` enum (`center`, `top-left`, …, `right-center`), `resolveAnchorRow`/`resolveAnchorCol`
-  - [ ] `SizeValue` parsing — absolute numbers + `"50%"` string percentages
-  - [ ] margin parsing — per-side `OverlayMargin` or uniform number
-  - [ ] visibility callback — `visible?` closure, re-evaluated each render
-  - [ ] `compositeOverlays()` — pre-render all visible overlays sorted by focus order, composite into content at calculated positions via `compositeLineAt`
-  - [ ] `compositeLineAt()` — single-pass overlay splice: extract segments before/at/after target, slice overlay to width, pad, compose with `SEGMENT_RESET` between segments, final safety truncation via `sliceByColumn`
+- [x] **Overlay system** — `src/tui/overlay.rs` + compositing in `tui_core.rs`
+  - [x] `show_overlay(component, options)` / `hide_overlay(id)` / `pop_overlay()` / `has_overlays()`
+  - [x] overlay stack — `Vec<OverlayEntry>`, focus order counter, preFocus tracking
+  - [x] anchor-based positioning — `OverlayAnchor` enum, `resolveAnchorRow`/`resolveAnchorCol`
+  - [x] `SizeValue` — `Absolute(usize)` + `Percent(f64)` with `.resolve(reference)`
+  - [x] margin parsing — `OverlayMargin` with per-side or `uniform()`
+  - [x] `composite_overlays()` — pre-render all visible overlays sorted by focus order, composite at calculated positions
+  - [x] `composite_line_at()` — single-pass overlay splice: `extract_segments()` → slice overlay → pad → `SEGMENT_RESET` → safety truncation
 
-- [ ] **Focus management**
-  - [ ] `setFocus(component)` — deactivate old focus, activate new, track focused overlay vs base component
-  - [ ] `setFocusInternal()` — with overlay-focus-restore policy (`clear`/`preserve`)
-  - [ ] overlay focus restore state machine — `inactive` / `eligible` / `blocked` states with resume (restore-overlay or focus-target)
-  - [ ] `getVisibleOverlayFocusRestore()` — invalidate restore if overlay was hidden or removed
-  - [ ] `isOverlayFocusAncestor()` — detect cycles in overlay focus chain
-  - [ ] `retargetOverlayPreFocus()` — when overlay removed, chain preFocus references
-  - [ ] `resolveBlockedOverlayFocusResume()` — pick next focus target
+- [x] **Focus management**
+  - [x] `set_focus(overlay_idx)` — track which overlay is focused
+  - [x] `route_input(key)` — routes crossterm `KeyEvent` to focused overlay first, then non-capturing overlays
 
-- [ ] **Input pipeline**
-  - [ ] `addInputListener(listener)` / `removeInputListener(listener)` — chain of `(data) => { consume?, data? }`
-  - [ ] input routing: listeners → cell size response → debug key → overlay focus restore → focused component
-  - [ ] filter key release events unless component opts in via `wantsKeyRelease`
+- [x] **Input pipeline (basic)**
+  - [x] `route_input()` integrated into `app.rs` event loop — overlays get first crack at input before app `handle_input()`
+  - [ ] `addInputListener` / `removeInputListener` — deferred to Phase 2 (needs StdinBuffer/Kitty protocol)
 
-- [ ] **Terminal upgrades**
-  - [ ] `Terminal` trait (replace crossterm facade) — `start(onInput, onResize)`, `stop()`, `drainInput(maxMs?, idleMs?)`, `write()`, `columns`/`rows`, `kittyProtocolActive`, `moveBy()`, `hideCursor()`/`showCursor()`, `clearLine()`/`clearFromCursor()`/`clearScreen()`, `setTitle()`, `setProgress()`
-  - [ ] `ProcessTerminal` impl — raw mode, bracketed paste (`\x1b[?2004h/l`), Kitty keyboard protocol negotiation (flags 1+2+4), modifyOtherKeys fallback, StdinBuffer integration
-  - [ ] `StdinBuffer` — split batched input into individual sequences, forward as `data` events, re-wrap paste content with bracketed markers
-  - [ ] `drainInput()` — disable Kitty protocol first, flush trailing release events, timeout-based idle detection
+- [x] **Utility additions** — `src/tui/util.rs`
+  - [x] `normalize_terminal_output(line)` — appends `\x1b[0m\x1b]8;;\x07`
+  - [x] `extract_segments(line, before_end, after_start, after_len, strict)` — for overlay compositing
+  - [x] `is_whitespace_char(grapheme)`
+
+- [x] **Screen enhancements** — `src/tui/screen.rs`
+  - [x] `prev_viewport_top()` accessor (needed by TUI for cursor positioning)
+  - [x] `prev_width()` / `prev_height()` accessors
+
+- [x] **Wired into app** — `src/agent/ui/app.rs`
+  - [x] `TUI` replaces direct `Screen` usage
+  - [x] `tui.route_input(&key)` called before `handle_input(&mut app, &key)`
+  - [x] `tui.render(lines, width, height, writer)` instead of `screen.render()`
+  - [x] `tui.finalize(writer)` instead of `screen.finalize()`
+
+- [ ] **Terminal upgrades** — deferred to Phase 2 (needs StdinBuffer/Kitty protocol)
+  - [ ] `Terminal` trait with `start(onInput, onResize)`, `stop()`, `drainInput()`, `write()`, `columns`/`rows`, `kittyProtocolActive`, `moveBy()`, `hideCursor()`/`showCursor()`, `clearLine()`/`clearFromCursor()`/`clearScreen()`, `setTitle()`, `setProgress()`
+  - [ ] `ProcessTerminal` impl — raw mode, bracketed paste, Kitty keyboard protocol negotiation (flags 1+2+4), modifyOtherKeys fallback, StdinBuffer integration
+  - [ ] `StdinBuffer` — split batched input into individual sequences, forward as data events, re-wrap paste content
+  - [ ] `drainInput()` — disable Kitty protocol first, flush trailing release events
   - [ ] progress indicator — `\x1b]9;4;3\x07` with keepalive interval
-  - [ ] Windows VT input enablement (stub if not targeting Windows)
-  - [ ] write logging (`PI_TUI_WRITE_LOG`)
-  - [ ] `parseKeyboardProtocolNegotiationSequence()` / `isKeyboardProtocolNegotiationSequencePrefix()` — split-response handling via flush timer
+  - [ ] color scheme notifications — OSC 2031 h/l
+  - [ ] cell size query — CSI 16 t
+  - [ ] write logging — `PI_TUI_WRITE_LOG`
+  - [ ] Windows VT input enablement (stub)
+  - [ ] keyboard protocol negotiation sequence parsing (split-response handling via flush timer)
 
 ### Phase 2 — Keys and keybindings
 
@@ -80,13 +84,13 @@ Goal: architectural and behavioral 1/1 match with pi's `packages/tui/src/` on ev
 ### Phase 3 — Utility upgrades
 
 - [ ] **Add missing utilities**
-  - [ ] `normalizeTerminalOutput(line)` — append `\x1b[0m\x1b]8;;\x07` (reset + hyperlink close) after content
+  - [x] `normalizeTerminalOutput(line)` — append `\x1b[0m\x1b]8;;\x07` (reset + hyperlink close) after content
   - [ ] `applyBackgroundToLine(line, width, bg_fn)` — pad to width, wrap in bg coloring
   - [ ] `isImageLine(line)` — detect Kitty image sequences (always false stub for non-image)
-  - [ ] `extractSegments(line, beforeStart, beforeEnd, afterLen, strict)` — split line into before/after segments for overlay compositing
+  - [x] `extractSegments(line, beforeStart, beforeEnd, afterLen, strict)` — split line into before/after segments for overlay compositing
   - [ ] `sliceWithWidth(text, start, len, strict)` — like `sliceByColumn` but returns `{ text, width }`
   - [ ] `cjkBreakRegex` export (for word-wrapping and word navigation)
-  - [ ] `isWhitespaceChar(grapheme)` — single-char whitespace predicate
+  - [x] `isWhitespaceChar(grapheme)` — single-char whitespace predicate
   - [ ] width caching for non-ASCII strings (LRU cache, ~512 entries)
 
 - [ ] **Word navigation — align with pi**

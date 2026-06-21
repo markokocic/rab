@@ -744,6 +744,46 @@ impl AnsiState {
     }
 }
 
+/// Normalize a terminal output line by appending a reset + hyperlink-close sequence.
+/// This ensures any open ANSI/OSC styles are cleanly terminated.
+/// Matches pi's normalizeTerminalOutput.
+pub fn normalize_terminal_output(line: &str) -> String {
+    format!("{}\x1b[0m\x1b]8;;\x07", line)
+}
+
+/// Check if a grapheme cluster is whitespace.
+/// Single-char check matching pi's isWhitespaceChar.
+pub fn is_whitespace_char(grapheme: &str) -> bool {
+    grapheme == " " || grapheme == "\t"
+}
+
+/// Extract segments from a line for overlay compositing.
+/// Returns (before_text, before_width, after_text, after_width).
+/// The "before" segment is columns [0, before_end).
+/// The "after" segment is columns [after_start, total_width).
+/// Matches pi's extractSegments.
+pub fn extract_segments(
+    line: &str,
+    before_end: usize,
+    after_start: usize,
+    after_len: usize,
+    strict: bool,
+) -> (String, usize, String, usize) {
+    let before = slice_by_column(line, 0, before_end);
+    let before_width = visible_width(&before);
+    let after = slice_by_column(line, after_start, after_len);
+    let after_width = visible_width(&after);
+
+    if strict {
+        // If before_text is wider than expected, use empty before
+        if before_width > before_end {
+            return (String::new(), 0, after, after_width);
+        }
+    }
+
+    (before, before_width, after, after_width)
+}
+
 fn update_tracker_from_text(text: &str, active_codes: &mut String) {
     // Simple: just re-evaluate ANSI state from scratch for the text
     let mut tracker = AnsiState::new();
@@ -848,5 +888,42 @@ mod tests {
     #[test]
     fn test_slice_by_column_empty() {
         assert_eq!(slice_by_column("test", 0, 0), "");
+    }
+
+    #[test]
+    fn test_normalize_terminal_output() {
+        let result = normalize_terminal_output("hello");
+        assert_eq!(result, "hello\x1b[0m\x1b]8;;\x07");
+    }
+
+    #[test]
+    fn test_is_whitespace_char() {
+        assert!(is_whitespace_char(" "));
+        assert!(is_whitespace_char("\t"));
+        assert!(!is_whitespace_char("a"));
+        assert!(!is_whitespace_char(""));
+    }
+
+    #[test]
+    fn test_extract_segments_basic() {
+        let line = "hello beautiful world";
+        // before_end=5 → cols [0,5) = "hello"
+        // after_start=15, len=5 → cols [15,20) = " worl" (space + first 4 chars of "world")
+        let (before, bw, after, aw) = extract_segments(line, 5, 15, 5, true);
+        assert_eq!(before, "hello");
+        assert_eq!(bw, 5);
+        assert_eq!(after, " worl");
+        assert_eq!(aw, 5);
+    }
+
+    #[test]
+    fn test_extract_segments_overflow() {
+        let line = "short";
+        // before_end=10 exceeds line width 5, strict mode doesn't trigger
+        // (before_width=5 <= before_end=10) so returns full line as before
+        let (before, bw, after, _aw) = extract_segments(line, 10, 15, 5, true);
+        assert_eq!(before, "short");
+        assert_eq!(bw, 5);
+        assert!(after.is_empty());
     }
 }

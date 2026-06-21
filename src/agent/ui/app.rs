@@ -16,7 +16,7 @@ use crate::agent::ui::theme::RabTheme;
 use crate::agent::ui::working::WorkingIndicator;
 use crate::agent::{AgentEvent, LoopConfig, run_agent_loop};
 use crate::tui::Component;
-use crate::tui::screen::Screen;
+use crate::tui::TUI;
 use crate::tui::terminal::{self, Terminal};
 use crossterm::event::KeyEvent;
 use tokio::sync::mpsc;
@@ -239,7 +239,7 @@ pub async fn run(config: AppConfig, session: SessionManager) -> anyhow::Result<(
     // Terminal scrolls naturally, editor/footer appear at the bottom.
     Terminal::hide_cursor(&mut stdout)?;
 
-    let mut screen = Screen::new();
+    let mut tui = TUI::new();
     let mut app = App::new(config, session);
 
     // Cache terminal dimensions to avoid expensive syscall on every frame.
@@ -259,7 +259,10 @@ pub async fn run(config: AppConfig, session: SessionManager) -> anyhow::Result<(
         };
 
         if let Some(key) = terminal::poll_key_event(Some(timeout))? {
-            handle_input(&mut app, &key);
+            // TUI overlay routing first (overlays get first crack at input)
+            if !tui.route_input(&key) {
+                handle_input(&mut app, &key);
+            }
             dirty = true;
         }
 
@@ -284,7 +287,8 @@ pub async fn run(config: AppConfig, session: SessionManager) -> anyhow::Result<(
         // Compose and render only when state has changed
         if dirty {
             let lines = compose_ui(&mut app, cols as usize, rows as usize);
-            screen.render(lines, cols, rows, &mut stdout)?;
+            tui.set_dimensions(cols as usize, rows as usize);
+            tui.render(lines, cols as usize, rows as usize, &mut stdout)?;
             dirty = false;
         }
 
@@ -298,7 +302,7 @@ pub async fn run(config: AppConfig, session: SessionManager) -> anyhow::Result<(
 
     // Cleanup - move cursor past all rendered content so the shell prompt
     // appears on a fresh line after the footer (matching pi's stop() behavior).
-    screen.finalize(&mut stdout)?;
+    tui.finalize(&mut stdout)?;
     Terminal::show_cursor(&mut stdout)?;
     stdout.flush()?;
     term.leave_raw_mode()?;

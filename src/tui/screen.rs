@@ -30,6 +30,19 @@ impl Screen {
         }
     }
 
+    /// Viewport top position (first visible line in terminal)
+    pub fn prev_viewport_top(&self) -> usize {
+        self.prev_viewport_top
+    }
+
+    pub fn prev_width(&self) -> usize {
+        self.prev_width as usize
+    }
+
+    pub fn prev_height(&self) -> usize {
+        self.prev_height as usize
+    }
+
     pub fn full_redraw_count(&self) -> usize {
         self.full_redraw_count
     }
