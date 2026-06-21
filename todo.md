@@ -72,12 +72,35 @@
 | Scroll indicator | ✅ "↑ N more" shown when scrolled |
 | Reset on submit | ✅ scroll_offset reset to 0 on new message |
 
+
+### 🟡 Missing — Slash commands (14 of 22 pi built-ins not implemented)
+
+#### Priority: high (core UX parity)
+- [ ] `/settings` — Open settings menu/overlay
+- [ ] `/export` — Export session (HTML default, or specify path: .html/.jsonl)
+- [ ] `/import` — Import and resume a session from a JSONL file
+- [ ] `/copy` — Copy last assistant message to clipboard
+- [ ] `/compact` — Manually compact the session context
+- [ ] `/changelog` — Show changelog entries overlay
+
+#### Priority: medium
+- [ ] `/scoped-models` — Enable/disable models for Ctrl+P cycling
+- [ ] `/fork` — Create a new fork from a previous user message
+- [ ] `/clone` — Duplicate the current session at the current position
+- [ ] `/trust` — Save project trust decision for future sessions
+- [ ] `/login` — Configure provider authentication (→ login-dialog overlay)
+- [ ] `/logout` — Remove provider authentication
+
+#### Priority: low
+- [ ] `/share` — Share session as a secret GitHub gist
+- [ ] `/tree` — Navigate session tree (→ session-selector overlay)
+
 ### 🟡 Deferred — Session management (complex, needs more architecture)
 
-- [ ] `app.session.new` — Start a new session
-- [ ] `app.session.tree` — Open session tree selector
-- [ ] `app.session.fork` — Fork current session
-- [ ] `app.session.resume` — Resume a session
+- [ ] `app.session.new` — Start a new session (→ `/new` exists, needs app action)
+- [ ] `app.session.tree` — Open session tree selector (→ `/tree`)
+- [ ] `app.session.fork` — Fork current session (→ `/fork`)
+- [ ] `app.session.resume` — Resume a session (→ `/resume` exists)
 - [ ] `app.session.toggleNamedFilter` — Toggle named session filter
 
 ### 🟡 Deferred — Image support (complex, scoped out)

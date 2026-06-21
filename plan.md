@@ -48,10 +48,32 @@ Reference: `~/src/cvstree/pi/` (TypeScript, same architecture).
 
 ## Chat/UX gaps — Deferred 🟡
 
+### Missing slash commands (14 of 22 pi built-ins not implemented)
+
+| Command | Priority | Notes |
+|---------|----------|-------|
+| `/settings` | high | Settings menu/overlay — needs overlay component |
+| `/export` | high | Session export (.html/.jsonl) — needs file I/O + HTML template |
+| `/import` | high | Import and resume a session from JSONL — needs file picker |
+| `/copy` | high | Copy last assistant message to clipboard — needs clipboard crate |
+| `/compact` | high | Manual session compaction — needs compaction logic first |
+| `/changelog` | high | Changelog overlay — needs overlay component + changelog data |
+| `/scoped-models` | medium | Filter models for Ctrl+P cycling — needs model filtering state |
+| `/fork` | medium | Fork session from previous message — needs fork UI |
+| `/clone` | medium | Duplicate current session — needs clone logic |
+| `/trust` | medium | Project trust decision — needs trust storage mechanism |
+| `/login` | medium | Provider auth config — login-dialog overlay |
+| `/logout` | medium | Remove provider auth — needs auth state management |
+| `/share` | low | Share as GitHub gist — needs GitHub API |
+| `/tree` | low | Session tree navigation — session-selector overlay |
+
+See `todo.md` for detailed task list.
+
+
 See `todo.md` for detailed task list. Major deferred areas:
 
 - **Overlays**: config-selector, theme-selector, session-selector, first-time-setup, changelog, login-dialog, oauth-selector
-- **Session management**: new, tree, fork, resume, toggleNamedFilter
+- **Session management** (→ slash commands in todo.md): new, tree, fork, resume, toggleNamedFilter
 - **Other**: suspend/resume, debug key, dynamic keybinding hints, viewport-managed scrolling
 
 ### Agent framework (from Phase 1 — Remaining)
@@ -65,4 +87,5 @@ See `todo.md` for detailed task list. Major deferred areas:
 | `~/.rab/models.json` | medium |
 | Image support (multimodal) | medium |
 | Tool execution modes (sequential) | low |
+| Slash commands (14 missing) | medium | See todo.md for full list, 8/22 implemented |
 | `rab plugin new` scaffold | low |

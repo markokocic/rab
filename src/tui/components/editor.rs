@@ -230,7 +230,7 @@ impl Editor {
     }
 
     /// After cursor movement, re-query autocomplete if active (pi-style).
-    /// Keeps the picker in sync with the new cursor position — closes when
+    /// Keeps the picker in sync with the new cursor position - closes when
     /// the new position yields no suggestions, refreshes otherwise.
     fn update_autocomplete_if_active(&mut self) {
         if self.autocomplete_active {
@@ -402,59 +402,69 @@ impl Editor {
         }
     }
 
-    pub fn try_trigger_autocomplete(&mut self) {
+    /// Trigger autocomplete.
+    ///
+    /// When `force` is true (Tab key):
+    /// - 1 match → complete immediately (no selector)
+    /// - Otherwise → open the selector
+    ///
+    /// When `force` is false (automatic on typing), always opens the selector.
+    fn trigger_autocomplete(&mut self, force: bool) {
         let Some(ref provider) = self.autocomplete_provider else {
             return;
         };
-        if let Some(suggestions) =
-            provider.get_suggestions(&self.lines, self.cursor_line, self.cursor_col, false)
-        {
-            let items: Vec<SelectItem> = suggestions
-                .items
-                .into_iter()
-                .map(|item| {
-                    let mut si = SelectItem::new(item.value, item.label);
-                    if let Some(desc) = item.description {
-                        si = si.with_description(desc);
-                    }
-                    si
-                })
-                .collect();
-            if !items.is_empty() {
-                self.set_autocomplete(items);
-            } else {
-                // Provider returned empty list — clear autocomplete (pi-style)
-                self.clear_autocomplete();
-            }
-        } else {
-            // Provider returned None — no longer in a completable context, clear (pi-style)
+        let Some(suggestions) =
+            provider.get_suggestions(&self.lines, self.cursor_line, self.cursor_col, force)
+        else {
             self.clear_autocomplete();
+            return;
+        };
+
+        let items = suggestions.items;
+        let prefix = suggestions.prefix;
+
+        if items.is_empty() {
+            self.clear_autocomplete();
+            return;
         }
+
+        // Pi behavior: on Tab (force), single match → complete immediately with no selector
+        if force && items.len() == 1 {
+            let (new_lines, new_line, new_col) = provider.apply_completion(
+                &self.lines,
+                self.cursor_line,
+                self.cursor_col,
+                &items[0],
+                &prefix,
+            );
+            self.lines = new_lines;
+            self.cursor_line = new_line;
+            self.cursor_col = new_col;
+            self.clear_autocomplete();
+            return;
+        }
+
+        // ── Open the selector with all matches ──
+        let select_items: Vec<SelectItem> = items
+            .into_iter()
+            .map(|item| {
+                let mut si = SelectItem::new(item.value, item.label);
+                if let Some(desc) = item.description {
+                    si = si.with_description(desc);
+                }
+                si
+            })
+            .collect();
+        self.set_autocomplete(select_items);
     }
 
-    /// Force-trigger autocomplete (for Tab key, pi-style).
+    pub fn try_trigger_autocomplete(&mut self) {
+        self.trigger_autocomplete(false);
+    }
+
+    /// Force-trigger autocomplete (for Tab key).
     fn try_trigger_autocomplete_force(&mut self) {
-        let Some(ref provider) = self.autocomplete_provider else {
-            return;
-        };
-        if let Some(suggestions) =
-            provider.get_suggestions(&self.lines, self.cursor_line, self.cursor_col, true)
-        {
-            let items: Vec<SelectItem> = suggestions
-                .items
-                .into_iter()
-                .map(|item| {
-                    let mut si = SelectItem::new(item.value, item.label);
-                    if let Some(desc) = item.description {
-                        si = si.with_description(desc);
-                    }
-                    si
-                })
-                .collect();
-            if !items.is_empty() {
-                self.set_autocomplete(items);
-            }
-        }
+        self.trigger_autocomplete(true);
     }
 
     fn add_newline(&mut self) {
@@ -819,7 +829,7 @@ impl Editor {
         ids.sort_unstable_by(|a, b| b.cmp(a)); // descending
         for paste_id in ids {
             if let Some(content) = self.pastes.get(&paste_id) {
-                // Simple replacement — find any marker with this ID
+                // Simple replacement - find any marker with this ID
                 let marker1 = format!("[paste #{} ", paste_id);
                 loop {
                     let start = result.find(&marker1);
@@ -1293,7 +1303,7 @@ impl Component for Editor {
             return true;
         }
 
-        // ── Escape — let parent handle ──
+        // ── Escape - let parent handle ──
         if kb.matches(key, ACTION_SELECT_CANCEL) {
             return false;
         }
@@ -1415,6 +1425,7 @@ fn is_printable_plain(key: &KeyEvent) -> bool {
         && key.code != KeyCode::Delete
         && key.code != KeyCode::Esc
 }
+
 
 #[cfg(test)]
 mod tests {
@@ -1554,7 +1565,7 @@ mod tests {
         editor.handle_input(&char_key('/'));
         assert!(editor.autocomplete_active);
 
-        // Type 'h' — should filter to help, history
+        // Type 'h' - should filter to help, history
         editor.handle_input(&char_key('h'));
         assert!(
             editor.autocomplete_active,
@@ -1562,7 +1573,7 @@ mod tests {
         );
         // Should still have items (no flicker on footer)
 
-        // Type 'e' — should filter to help only
+        // Type 'e' - should filter to help only
         editor.handle_input(&char_key('e'));
         assert!(editor.autocomplete_active);
         let selected = editor.autocomplete_selected_value();
@@ -1634,7 +1645,7 @@ mod tests {
         let val1 = editor.autocomplete_selected_value();
         assert_eq!(val1.as_deref(), Some("help"));
 
-        // Backspace the 'e' — should re-filter to show help, history
+        // Backspace the 'e' - should re-filter to show help, history
         editor.handle_input(&backspace());
         assert!(
             editor.autocomplete_active,
@@ -1656,7 +1667,7 @@ mod tests {
         editor.handle_input(&char_key('p'));
         assert!(editor.autocomplete_active);
 
-        // Now type a space after /help — autocomplete should dismiss because
+        // Now type a space after /help - autocomplete should dismiss because
         // the context changes (/command with space = file completion, not slash)
         editor.handle_input(&char_key(' '));
         assert!(
@@ -1664,7 +1675,7 @@ mod tests {
             "space after /cmd should dismiss slash autocomplete"
         );
 
-        // Move cursor left back into /help — should re-trigger autocomplete via update_autocomplete_if_active
+        // Move cursor left back into /help - should re-trigger autocomplete via update_autocomplete_if_active
         editor.handle_input(&left_key());
         // Actually, moving left won't trigger autocomplete since the provider doesn't
         // re-trigger from cursor movement alone when autocomplete was dismissed.
@@ -1678,7 +1689,7 @@ mod tests {
         editor.handle_input(&char_key('/'));
         assert!(editor.autocomplete_active);
 
-        // Type 'z' — no command starts with /z, provider returns None
+        // Type 'z' - no command starts with /z, provider returns None
         editor.handle_input(&char_key('z'));
         assert!(
             !editor.autocomplete_active,
@@ -1748,7 +1759,7 @@ mod tests {
         editor.handle_input(&char_key('/'));
         assert!(editor.autocomplete_active);
 
-        // Submit (Enter) — should apply completion or dismiss
+        // Submit (Enter) - should apply completion or dismiss
         editor.handle_input(&enter_key());
         // After submit, autocomplete is cleared
     }
@@ -1756,7 +1767,7 @@ mod tests {
     #[test]
     fn tab_force_triggers_autocomplete() {
         let mut editor = make_editor_with_slash_provider(vec!["help", "history"]);
-        // Type nothing — Tab should trigger file completion (not slash)
+        // Type nothing - Tab should trigger file completion (not slash)
         // Type / and then Tab
         editor.handle_input(&char_key('/'));
         // insert_character should have triggered autocomplete already
@@ -1888,7 +1899,7 @@ mod tests {
     #[test]
     fn test_cursor_in_layout() {
         let editor = Editor::new(EditorTheme::default(), EditorOptions::default());
-        // Empty editor — cursor should be in visual line 0
+        // Empty editor - cursor should be in visual line 0
         let vl = layout_text(&editor.lines, 80, editor.cursor_line, editor.cursor_col);
         assert!(vl[0].has_cursor);
         assert_eq!(vl[0].cursor_pos, Some(0));
@@ -2151,7 +2162,7 @@ mod tests {
 
     #[test]
     fn test_cursor_last_chunk_on_boundary() {
-        // Cursor at last byte of text — should be in the last visual line
+        // Cursor at last byte of text - should be in the last visual line
         let mut editor = Editor::new(EditorTheme::default(), EditorOptions::default());
         let text = "hello world this is a test";
         editor.set_text(text);
