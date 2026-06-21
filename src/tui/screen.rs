@@ -535,12 +535,18 @@ mod tests {
             assert!(
                 n <= 1,
                 "'{}' should appear at most once in diff, got {}: {:?}",
-                ch, n, content
+                ch,
+                n,
+                content
             );
         }
         // "e" must appear exactly once
         let e_count = content.matches('e').count();
-        assert_eq!(e_count, 1, "'e' should appear exactly once, got {}", e_count);
+        assert_eq!(
+            e_count, 1,
+            "'e' should appear exactly once, got {}",
+            e_count
+        );
     }
 
     #[test]
@@ -601,7 +607,7 @@ mod tests {
             "header".to_string(),
             "── editor border ──".to_string(),
             "hello".to_string(),
-            "".to_string(),          // new empty line
+            "".to_string(), // new empty line
             "── editor border ──".to_string(),
             "footer".to_string(),
         ];
@@ -615,14 +621,16 @@ mod tests {
         assert!(
             hello_count <= 1,
             "'hello' should appear at most once in diff, got {}: {:?}",
-            hello_count, content
+            hello_count,
+            content
         );
         // "footer" should NOT be duplicated (it just shifted down, should appear once)
         let footer_count = content.matches("footer").count();
         assert!(
             footer_count <= 1,
             "'footer' should appear at most once in diff, got {}: {:?}",
-            footer_count, content
+            footer_count,
+            content
         );
     }
 
@@ -638,7 +646,7 @@ mod tests {
         // Frame 1: editor with "hello world" (fits in 1 line at this width)
         let frame1 = vec![
             "──── editor ────".to_string(),
-            " hello world    ".to_string(),  // content, cursor at end
+            " hello world    ".to_string(), // content, cursor at end
             "──── editor ────".to_string(),
         ];
         screen.render(frame1.clone(), 18, 24, &mut output).unwrap();
@@ -653,12 +661,15 @@ mod tests {
         // "hello world is" wraps to ["hello world", "is"]
         let frame2 = vec![
             "──── editor ────".to_string(),
-            " hello world    ".to_string(),  // first wrapped chunk
-            " is             ".to_string(),  // second wrapped chunk, cursor here
+            " hello world    ".to_string(), // first wrapped chunk
+            " is             ".to_string(), // second wrapped chunk, cursor here
             "──── editor ────".to_string(),
         ];
         screen.render(frame2.clone(), 18, 24, &mut output).unwrap();
-        eprintln!("After wrap diff output: {:?}", String::from_utf8_lossy(&output));
+        eprintln!(
+            "After wrap diff output: {:?}",
+            String::from_utf8_lossy(&output)
+        );
 
         // The diff should NOT write " hello world" again (it's unchanged from frame 1)
         let output_str = String::from_utf8_lossy(&output);
@@ -669,7 +680,8 @@ mod tests {
         assert!(
             hw_count <= 1,
             "'hello world' should appear at most once in diff, got {}: {:?}",
-            hw_count, output_str
+            hw_count,
+            output_str
         );
 
         output.clear();
@@ -680,8 +692,8 @@ mod tests {
         // Frame 3: user types another char -> " is" -> " iss"
         let frame3 = vec![
             "──── editor ────".to_string(),
-            " hello world    ".to_string(),  // unchanged
-            " iss            ".to_string(),  // changed
+            " hello world    ".to_string(), // unchanged
+            " iss            ".to_string(), // changed
             "──── editor ────".to_string(),
         ];
         screen.render(frame3.clone(), 18, 24, &mut output).unwrap();
@@ -693,7 +705,8 @@ mod tests {
         assert!(
             hw_count2 <= 1,
             "'hello world' should NOT be rewritten in diff, got {}: {:?}",
-            hw_count2, output_str2
+            hw_count2,
+            output_str2
         );
     }
 
@@ -762,19 +775,20 @@ mod tests {
         // hardware_cursor_row is still 3 (Screen doesn't know TUI moved it).
         // current_screen_row=3, target=2, diff=-1 → write on line 1 instead of line 2
         // This means " hello world" gets overwritten or " iss" appears on wrong line.
-        
+
         // The bug symptom: " hello world" text would be overwritten.
         // We can detect this by checking that the output would corrupt line 1.
         // The output should contain " iss" (the changed content).
         // But if the bug is present, " iss" gets written on the wrong line.
-        
+
         // The exact assertion depends on terminal state, but the key check:
         // "hello world" should NOT be in the diff for frame 3 (unchanged line)
         let hw_count = output_str2.matches("hello world").count();
         assert!(
             hw_count <= 1,
             "BUG: 'hello world' appears in frame 3 diff, got {}: {:?}",
-            hw_count, output_str2
+            hw_count,
+            output_str2
         );
     }
 }

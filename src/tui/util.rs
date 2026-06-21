@@ -1034,94 +1034,100 @@ mod tests {
     }
 }
 
-    #[test]
-    fn test_wrap_multiline_preserves_line_count() {
-        // Joint: multiline text where lines both fit and need wrapping
-        let text = "hello world this is a test\nshort\nanother long line here yes";
-        let wrapped = wrap_text_with_ansi(text, 10);
-        // "hello world this is a test" → how many wrapped lines?
-        // "short" → 1
-        // "another long line here yes" → how many wrapped lines?
-        let total_wrapped = wrapped.len();
-        let expected_min = 3; // at least 3 visual lines
+#[test]
+fn test_wrap_multiline_preserves_line_count() {
+    // Joint: multiline text where lines both fit and need wrapping
+    let text = "hello world this is a test\nshort\nanother long line here yes";
+    let wrapped = wrap_text_with_ansi(text, 10);
+    // "hello world this is a test" → how many wrapped lines?
+    // "short" → 1
+    // "another long line here yes" → how many wrapped lines?
+    let total_wrapped = wrapped.len();
+    let expected_min = 3; // at least 3 visual lines
+    assert!(
+        total_wrapped >= expected_min,
+        "Expected at least {} lines, got {}",
+        expected_min,
+        total_wrapped
+    );
+    // Verify all lines fit within width
+    for (i, line) in wrapped.iter().enumerate() {
+        let w = visible_width(line);
         assert!(
-            total_wrapped >= expected_min,
-            "Expected at least {} lines, got {}",
-            expected_min,
-            total_wrapped
+            w <= 10,
+            "Line {}: '{}' has visible_width {} > 10",
+            i,
+            line,
+            w
         );
-        // Verify all lines fit within width
-        for (i, line) in wrapped.iter().enumerate() {
-            let w = visible_width(line);
-            assert!(
-                w <= 10,
-                "Line {}: '{}' has visible_width {} > 10",
-                i,
-                line,
-                w
-            );
-        }
     }
+}
 
-    #[test]
-    fn test_wrap_text_with_ansi_no_duplicate_lines() {
-        // Check that wrapping a multiline string produces exactly
-        // the sum of wrapped lines for each logical line, with no duplicates.
-        let text = "abc def ghi\njk lm no pq rs";
-        let result = wrap_text_with_ansi(text, 5);
-        // "abc def ghi" → ["abc", "def", "ghi"] (3 lines)
-        // "jk lm no pq rs" → ["jk lm", "no pq", "rs"] (3 lines)
-        // Total expected: 6
-        assert_eq!(
-            result.len(),
-            6,
-            "Expected 6 wrapped lines (3+3), got {}: {:?}",
-            result.len(),
-            result
-        );
+#[test]
+fn test_wrap_text_with_ansi_no_duplicate_lines() {
+    // Check that wrapping a multiline string produces exactly
+    // the sum of wrapped lines for each logical line, with no duplicates.
+    let text = "abc def ghi\njk lm no pq rs";
+    let result = wrap_text_with_ansi(text, 5);
+    // "abc def ghi" → ["abc", "def", "ghi"] (3 lines)
+    // "jk lm no pq rs" → ["jk lm", "no pq", "rs"] (3 lines)
+    // Total expected: 6
+    assert_eq!(
+        result.len(),
+        6,
+        "Expected 6 wrapped lines (3+3), got {}: {:?}",
+        result.len(),
+        result
+    );
 
-        // Verify no duplicate lines
-        let mut seen = std::collections::HashSet::new();
-        for line in &result {
-            let trimmed = line.trim().to_string();
-            if !trimmed.is_empty() {
-                if !seen.insert(trimmed.clone()) {
-                    panic!("Duplicate line found: '{}'", trimmed);
-                }
+    // Verify no duplicate lines
+    let mut seen = std::collections::HashSet::new();
+    for line in &result {
+        let trimmed = line.trim().to_string();
+        if !trimmed.is_empty() {
+            if !seen.insert(trimmed.clone()) {
+                panic!("Duplicate line found: '{}'", trimmed);
             }
         }
     }
+}
 
-    #[test]
-    fn test_wrap_user_text_does_not_introduce_duplicates() {
-        let t1 = "ghhh jjj jkkk  jrjrnr jrnr rkr rrkr rmrrkrr k   ghhh jjj jkkk  jrjrnr jrnr rkr rrkr rmrrkrr k";
-        let t2 = "rkrnrr kr k";
+#[test]
+fn test_wrap_user_text_does_not_introduce_duplicates() {
+    let t1 = "ghhh jjj jkkk  jrjrnr jrnr rkr rrkr rmrrkrr k   ghhh jjj jkkk  jrjrnr jrnr rkr rrkr rmrrkrr k";
+    let t2 = "rkrnrr kr k";
 
-        // The original input has the same 45-char substring twice separated by triple space.
-        // This is NOT a wrapping bug — the input legitimately has the duplicate.
-        // This test verifies that wrap_text_with_ansi does not INTRODUCE extra duplicates
-        // beyond what the input already contains.
+    // The original input has the same 45-char substring twice separated by triple space.
+    // This is NOT a wrapping bug — the input legitimately has the duplicate.
+    // This test verifies that wrap_text_with_ansi does not INTRODUCE extra duplicates
+    // beyond what the input already contains.
 
-        // Count occurrences of each substring in the original
-        fn count_occurrences(text: &str, pattern: &str) -> usize {
-            text.matches(pattern).count()
-        }
-
-        let pattern = "ghhh jjj jkkk  jrjrnr jrnr rkr rrkr rmrrkrr k";
-        let original_count = count_occurrences(t1, pattern);
-        assert_eq!(original_count, 2, "Input should have 2 occurrences of pattern");
-
-        for width in [40, 50, 60, 80, 100] {
-            let wrapped = wrap_text_with_ansi(t1, width);
-            // Count how many times the pattern appears in the wrapped output
-            let wrapped_count: usize = wrapped.iter().map(|line| count_occurrences(line, pattern)).sum();
-            // The wrapped output should have at most the same number of occurrences as the input
-            assert!(
-                wrapped_count <= original_count,
-                "Width {}: wrapped has {} occurrences, input has {}",
-                width,
-                wrapped_count,
-                original_count
-            );
-        }
+    // Count occurrences of each substring in the original
+    fn count_occurrences(text: &str, pattern: &str) -> usize {
+        text.matches(pattern).count()
     }
+
+    let pattern = "ghhh jjj jkkk  jrjrnr jrnr rkr rrkr rmrrkrr k";
+    let original_count = count_occurrences(t1, pattern);
+    assert_eq!(
+        original_count, 2,
+        "Input should have 2 occurrences of pattern"
+    );
+
+    for width in [40, 50, 60, 80, 100] {
+        let wrapped = wrap_text_with_ansi(t1, width);
+        // Count how many times the pattern appears in the wrapped output
+        let wrapped_count: usize = wrapped
+            .iter()
+            .map(|line| count_occurrences(line, pattern))
+            .sum();
+        // The wrapped output should have at most the same number of occurrences as the input
+        assert!(
+            wrapped_count <= original_count,
+            "Width {}: wrapped has {} occurrences, input has {}",
+            width,
+            wrapped_count,
+            original_count
+        );
+    }
+}

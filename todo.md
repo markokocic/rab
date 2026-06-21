@@ -200,7 +200,10 @@ Each tool should format its result matching pi's visual style.
 
 - [ ] Ctrl+T (thinking toggle) and Ctrl+O (tools expand) state doesn't persist across sessions
 - [ ] Slow rendering and typing for long chats
-- [ ] Duplicate line in editor when typing line longer than screen width
+- [x] Duplicate line in editor when typing line longer than screen width
+  - Fixed: visual column tracking in `layout_text` (byte-pos → visual-col),
+    Screen `hardware_cursor_row` sync after TUI cursor repositioning,
+    comprehensive regression tests added
 
 
 

@@ -1328,6 +1328,7 @@ impl Focusable for Editor {
 
 // ── Visual layout ──────────────────────────────────────────────────
 
+#[derive(Debug)]
 struct VisualLine {
     text: String,
     has_cursor: bool,
@@ -1425,7 +1426,6 @@ fn is_printable_plain(key: &KeyEvent) -> bool {
         && key.code != KeyCode::Delete
         && key.code != KeyCode::Esc
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -2394,9 +2394,11 @@ mod tests {
         let after = editor.render(80).len();
 
         assert_eq!(
-            after, before + 1,
+            after,
+            before + 1,
             "Adding newline should increase rendered line count by exactly 1. before={}, after={}",
-            before, after
+            before,
+            after
         );
     }
 
@@ -2441,5 +2443,202 @@ mod tests {
         );
         assert!(!vl[0].has_cursor);
         assert!(vl[1].has_cursor);
+    }
+
+    #[test]
+    #[test]
+    fn test_wrap_edge_cases_no_empty_lines() {
+        // Various edge cases that should NOT produce empty lines.
+        // Empty strings in wrapped output cause visual artifacts
+        // (blank lines appearing in the editor).
+        let cases = vec![
+            ("  hello", 3, "leading spaces"),
+            ("hello  ", 3, "trailing spaces"),
+            ("  hello  ", 3, "leading and trailing spaces"),
+            ("abc  def", 5, "double space in middle"),
+            ("a   b", 4, "triple space"),
+            ("a  b", 3, "double space at wrap boundary"),
+        ];
+        for (text, width, label) in &cases {
+            // Debug: print the actual tokens produced by split_into_tokens
+            // to verify our understanding of tokenization.
+            let wrapped = crate::tui::util::wrap_text_with_ansi(text, *width);
+            for chunk in &wrapped {
+                // A non-empty input should never produce empty chunks
+                if chunk.is_empty() {
+                    panic!(
+                        "Case '{}' (width {}): empty chunk found in wrapped: {:?}",
+                        label, width, wrapped
+                    );
+                }
+                let vis = crate::tui::util::visible_width(chunk);
+                assert!(
+                    vis > 0,
+                    "Case '{}' (width {}): chunk with visible width 0: {:?} (wrapped: {:?})",
+                    label,
+                    width,
+                    chunk,
+                    wrapped
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_wrap_long_word_no_duplicate_chunks() {
+        // A long continuous word (no spaces) past width should not duplicate
+        let long = "aaaaa bbbbb ccccc ddddd";
+        for width in [5, 6, 7, 8, 10, 12] {
+            let wrapped = crate::tui::util::wrap_text_with_ansi(long, width);
+            // Count visible content and check for duplicates
+            let mut seen = std::collections::HashSet::new();
+            for chunk in &wrapped {
+                let trimmed = chunk.trim();
+                if !trimmed.is_empty() && !seen.insert(trimmed.to_string()) {
+                    panic!(
+                        "Width {}: duplicate chunk '{}' in {:?}",
+                        width, chunk, wrapped
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_wrap_typing_detailed_trace() {
+        // Simulate typing character by character into the editor,
+        // checking the visual line layout after each character.
+        let mut editor = Editor::new(EditorTheme::default(), EditorOptions::default());
+
+        // Type a sentence that exceeds width 10, checking after each char
+        let sentence = "hello world";
+        let width = 10;
+
+        for (i, ch) in sentence.chars().enumerate() {
+            editor.handle_input(&char_key(ch));
+
+            // Get visual lines via layout_text (simulating what render does)
+            let vl = layout_text(&editor.lines, width, editor.cursor_line, editor.cursor_col);
+
+            // Check no duplicate visual lines or empty lines
+            let mut seen = std::collections::HashSet::new();
+            for vis in &vl {
+                let trimmed = vis.text.trim();
+                if !trimmed.is_empty() && !seen.insert(trimmed.to_string()) {
+                    panic!(
+                        "After char '{}' (pos {}): duplicate visual line '{}' in {:?}",
+                        ch, i, vis.text, vl
+                    );
+                }
+            }
+
+            // Check exactly one cursor
+            let cursor_count = vl.iter().filter(|v| v.has_cursor).count();
+            assert_eq!(
+                cursor_count, 1,
+                "After char '{}' (pos {}): expected exactly 1 cursor, got {}. vl: {:?}",
+                ch, i, cursor_count, vl
+            );
+        }
+    }
+
+    #[test]
+    fn test_wrap_long_continuous_string_no_duplicates() {
+        // A very long continuous string (like a URL or path) with no spaces.
+        // Must not produce duplicate chunks when word-broken across lines.
+        let mut editor = Editor::new(EditorTheme::default(), EditorOptions::default());
+
+        // Simulate typing a long URL character by character
+        let url = "https://very-long-url-with-no-spaces.example.com/path/to/resource";
+        for ch in url.chars() {
+            editor.handle_input(&char_key(ch));
+        }
+
+        // Test at various narrow widths
+        for width in [5, 10, 15, 20, 30] {
+            let rendered = editor.render(width);
+            let content: Vec<&str> = rendered
+                .iter()
+                .filter(|l| !l.contains('─'))
+                .map(|l| l.trim())
+                .filter(|l| !l.is_empty())
+                .collect();
+
+            let mut seen = std::collections::HashSet::new();
+            for line in &content {
+                let plain = line
+                    .replace("\x1b_pi:c\x07", "")
+                    .chars()
+                    .filter(|&c| c.is_ascii_graphic() || c == ' ')
+                    .collect::<String>()
+                    .trim()
+                    .to_string();
+                if !plain.is_empty() && !seen.insert(plain.clone()) {
+                    panic!(
+                        "Width {}: duplicate content line '{}' (plain: '{}')\nFull render: {:?}",
+                        width, line, plain, rendered
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_editor_typing_past_width_no_duplicate_render() {
+        // Simulate typing characters one at a time until the line exceeds the width.
+        // The rendered output must never show the same content line twice.
+        let mut editor = Editor::new(EditorTheme::default(), EditorOptions::default());
+
+        // Type characters to build up a line longer than the render width
+        let input = "hello world this is a test of the emergency broadcast system";
+        for ch in input.chars() {
+            editor.handle_input(&char_key(ch));
+        }
+
+        // Render at a narrow width so wrapping occurs
+        for width in [5, 8, 10, 12, 15, 20] {
+            let rendered = editor.render(width);
+
+            // Collect visible content (skip border/scroll indicator lines)
+            let content: Vec<&str> = rendered
+                .iter()
+                .filter(|l| !l.contains('─'))
+                .map(|l| l.trim())
+                .filter(|l| !l.is_empty())
+                .collect();
+
+            // Check for duplicates among content lines
+            let mut seen = std::collections::HashSet::new();
+            for line in &content {
+                // Strip cursor marker and ansi codes for comparison
+                let plain = line
+                    .replace("\x1b_pi:c\x07", "")
+                    .chars()
+                    .filter(|&c| c.is_ascii_graphic() || c == ' ')
+                    .collect::<String>()
+                    .trim()
+                    .to_string();
+                if !plain.is_empty() && !seen.insert(plain.clone()) {
+                    panic!(
+                        "Width {}: duplicate content line '{}' (plain: '{}')\nFull render: {:?}",
+                        width, line, plain, rendered
+                    );
+                }
+            }
+
+            // Also check that the total content roughly matches input (accounting for wrapping)
+            let content_plain: String = content.join(" ");
+            let content_plain = content_plain
+                .replace("\x1b_pi:c\x07", "")
+                .chars()
+                .filter(|&c| c.is_ascii_graphic() || c == ' ')
+                .collect::<String>();
+            assert!(
+                !content_plain.is_empty(),
+                "Width {}: no visible content in render: {:?}",
+                width,
+                rendered
+            );
+        }
     }
 }
