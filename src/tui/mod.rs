@@ -38,7 +38,7 @@ pub use overlay::{
     OverlayAnchor, OverlayEntry, OverlayLayout, OverlayMargin, OverlayOptions, SizeValue,
 };
 pub use screen::Screen;
-pub use terminal::Terminal;
+pub use terminal::{ProcessTerminal, Terminal, TerminalTrait};
 pub use theme::Theme;
 pub use tui_core::TUI;
 pub use util::{

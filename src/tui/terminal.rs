@@ -1,83 +1,302 @@
-use crossterm::{
-    cursor,
-    event::{self, Event, KeyEvent},
-    execute,
-    terminal::{self, ClearType},
-};
 use std::io::{self, Write};
 use std::time::Duration;
 
-/// Terminal wrapper providing raw mode, event polling, and cursor control.
+use crossterm::event::{self, Event, KeyEvent, KeyboardEnhancementFlags};
+
+// =============================================================================
+// Terminal trait — pi-compatible terminal interface
+// =============================================================================
+
+/// Terminal interface matching pi's `packages/tui/src/terminal.ts`.
+/// All methods work with a `&mut dyn Write` for flexibility.
+pub trait TerminalTrait {
+    fn start(&mut self, writer: &mut dyn Write) -> io::Result<()>;
+    fn stop(&mut self, writer: &mut dyn Write) -> io::Result<()>;
+    fn drain_input(&mut self, max_ms: u64) -> io::Result<()>;
+    fn write(&self, writer: &mut dyn Write, data: &str) -> io::Result<()>;
+    fn size(&self) -> io::Result<(u16, u16)>;
+    fn kitty_protocol_active(&self) -> bool;
+    fn move_by(&self, writer: &mut dyn Write, lines: i32) -> io::Result<()>;
+    fn hide_cursor(&self, writer: &mut dyn Write) -> io::Result<()>;
+    fn show_cursor(&self, writer: &mut dyn Write) -> io::Result<()>;
+    fn clear_line(&self, writer: &mut dyn Write) -> io::Result<()>;
+    fn clear_from_cursor(&self, writer: &mut dyn Write) -> io::Result<()>;
+    fn clear_screen(&self, writer: &mut dyn Write) -> io::Result<()>;
+    fn set_title(&self, writer: &mut dyn Write, title: &str) -> io::Result<()>;
+    fn set_progress(&self, writer: &mut dyn Write, active: bool) -> io::Result<()>;
+}
+
+// =============================================================================
+// Poll functions (kept as free functions for the event loop)
+// =============================================================================
+
+pub fn poll_key_event(timeout: Option<Duration>) -> io::Result<Option<KeyEvent>> {
+    if event::poll(timeout.unwrap_or(Duration::ZERO))? {
+        match event::read()? {
+            Event::Key(key) => Ok(Some(key)),
+            Event::Resize(_, _) => Ok(None),
+            _ => Ok(None),
+        }
+    } else {
+        Ok(None)
+    }
+}
+
+pub fn read_key_event() -> io::Result<KeyEvent> {
+    loop {
+        match event::read()? {
+            Event::Key(key) => return Ok(key),
+            _ => continue,
+        }
+    }
+}
+
+// =============================================================================
+// ProcessTerminal — crossterm-backed implementation
+// =============================================================================
+
+pub struct ProcessTerminal {
+    was_raw: bool,
+    kitty_active: bool,
+}
+
+impl ProcessTerminal {
+    pub fn new() -> Self {
+        Self {
+            was_raw: false,
+            kitty_active: false,
+        }
+    }
+
+    fn enable_bracketed_paste(&self, writer: &mut dyn Write) -> io::Result<()> {
+        write!(writer, "\x1b[?2004h")?;
+        writer.flush()
+    }
+
+    fn disable_bracketed_paste(&self, writer: &mut dyn Write) -> io::Result<()> {
+        write!(writer, "\x1b[?2004l")?;
+        writer.flush()
+    }
+
+    fn enable_kitty_protocol(&mut self, writer: &mut dyn Write) -> io::Result<()> {
+        let flags = KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+            | KeyboardEnhancementFlags::REPORT_EVENT_TYPES
+            | KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS;
+        write!(writer, "\x1b[>{}u", flags.bits())?;
+        writer.flush()?;
+        self.kitty_active = true;
+        Ok(())
+    }
+
+    fn disable_kitty_protocol(&mut self, writer: &mut dyn Write) -> io::Result<()> {
+        if self.kitty_active {
+            write!(writer, "\x1b[<u")?;
+            writer.flush()?;
+            self.kitty_active = false;
+        }
+        Ok(())
+    }
+}
+
+impl Default for ProcessTerminal {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Drop for ProcessTerminal {
+    fn drop(&mut self) {
+        if self.was_raw {
+            let _ = crossterm::terminal::disable_raw_mode();
+        }
+    }
+}
+
+impl TerminalTrait for ProcessTerminal {
+    fn start(&mut self, writer: &mut dyn Write) -> io::Result<()> {
+        crossterm::terminal::enable_raw_mode()?;
+        self.was_raw = true;
+        self.enable_bracketed_paste(writer)?;
+        self.enable_kitty_protocol(writer)?;
+        // Refresh terminal dimensions
+        let _ = crossterm::terminal::size();
+        Ok(())
+    }
+
+    fn stop(&mut self, writer: &mut dyn Write) -> io::Result<()> {
+        self.disable_kitty_protocol(writer)?;
+        self.disable_bracketed_paste(writer)?;
+        if self.was_raw {
+            crossterm::terminal::disable_raw_mode()?;
+            self.was_raw = false;
+        }
+        Ok(())
+    }
+
+    fn drain_input(&mut self, max_ms: u64) -> io::Result<()> {
+        // Disable Kitty protocol so trailing release events don't leak
+        let mut buf = Vec::new();
+        self.disable_kitty_protocol(&mut buf)?;
+        if !buf.is_empty() {
+            let stdout = std::io::stdout();
+            let mut handle = stdout.lock();
+            handle.write_all(&buf)?;
+            handle.flush()?;
+        }
+
+        let start = std::time::Instant::now();
+        let mut last_data = start;
+        loop {
+            if start.elapsed().as_millis() as u64 >= max_ms {
+                break;
+            }
+            if event::poll(Duration::from_millis(10))? {
+                let _ = event::read()?;
+                last_data = std::time::Instant::now();
+            } else if last_data.elapsed().as_millis() > 50 {
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    fn write(&self, writer: &mut dyn Write, data: &str) -> io::Result<()> {
+        write!(writer, "{}", data)?;
+        writer.flush()
+    }
+
+    fn size(&self) -> io::Result<(u16, u16)> {
+        crossterm::terminal::size()
+    }
+
+    fn kitty_protocol_active(&self) -> bool {
+        self.kitty_active
+    }
+
+    fn move_by(&self, writer: &mut dyn Write, lines: i32) -> io::Result<()> {
+        if lines > 0 {
+            write!(writer, "\x1b[{}B", lines)?;
+        } else if lines < 0 {
+            write!(writer, "\x1b[{}A", -lines)?;
+        }
+        writer.flush()
+    }
+
+    fn hide_cursor(&self, writer: &mut dyn Write) -> io::Result<()> {
+        write!(writer, "\x1b[?25l")?;
+        writer.flush()
+    }
+
+    fn show_cursor(&self, writer: &mut dyn Write) -> io::Result<()> {
+        write!(writer, "\x1b[?25h")?;
+        writer.flush()
+    }
+
+    fn clear_line(&self, writer: &mut dyn Write) -> io::Result<()> {
+        write!(writer, "\x1b[2K")?;
+        writer.flush()
+    }
+
+    fn clear_from_cursor(&self, writer: &mut dyn Write) -> io::Result<()> {
+        write!(writer, "\x1b[J")?;
+        writer.flush()
+    }
+
+    fn clear_screen(&self, writer: &mut dyn Write) -> io::Result<()> {
+        write!(writer, "\x1b[2J\x1b[H")?;
+        writer.flush()
+    }
+
+    fn set_title(&self, writer: &mut dyn Write, title: &str) -> io::Result<()> {
+        write!(writer, "\x1b]0;{}\x07", title)?;
+        writer.flush()
+    }
+
+    fn set_progress(&self, writer: &mut dyn Write, active: bool) -> io::Result<()> {
+        if active {
+            write!(writer, "\x1b]9;4;3\x07")?;
+        } else {
+            write!(writer, "\x1b]9;4;0;\x07")?;
+        }
+        writer.flush()
+    }
+}
+
+// =============================================================================
+// Legacy Terminal struct (backward compat) — uses crossterm execute! for Sized writers
+// =============================================================================
+
+use crossterm::{cursor, execute, terminal::ClearType};
+
 pub struct Terminal {
-    prev_raw_mode: bool,
+    inner: ProcessTerminal,
 }
 
 impl Terminal {
     pub fn new() -> Self {
         Self {
-            prev_raw_mode: false,
+            inner: ProcessTerminal::new(),
         }
     }
 
-    /// Enter raw mode and start input event channel.
     pub fn enter_raw_mode(&mut self) -> io::Result<()> {
-        terminal::enable_raw_mode()?;
-        self.prev_raw_mode = true;
-        Ok(())
-    }
-
-    /// Leave raw mode and restore terminal.
-    pub fn leave_raw_mode(&mut self) -> io::Result<()> {
-        if self.prev_raw_mode {
-            terminal::disable_raw_mode()?;
-            self.prev_raw_mode = false;
+        let mut buf = Vec::new();
+        self.inner.start(&mut buf)?;
+        if !buf.is_empty() {
+            let stdout = std::io::stdout();
+            let mut handle = stdout.lock();
+            handle.write_all(&buf)?;
+            handle.flush()?;
         }
         Ok(())
     }
 
-    /// Show the terminal cursor.
+    pub fn leave_raw_mode(&mut self) -> io::Result<()> {
+        let mut buf = Vec::new();
+        self.inner.stop(&mut buf)?;
+        if !buf.is_empty() {
+            let stdout = std::io::stdout();
+            let mut handle = stdout.lock();
+            handle.write_all(&buf)?;
+            handle.flush()?;
+        }
+        Ok(())
+    }
+
     pub fn show_cursor(writer: &mut impl Write) -> io::Result<()> {
         execute!(writer, cursor::Show)
     }
 
-    /// Hide the terminal cursor.
     pub fn hide_cursor(writer: &mut impl Write) -> io::Result<()> {
         execute!(writer, cursor::Hide)
     }
 
-    /// Move cursor to a specific position (1-based row, 1-based col).
     pub fn move_cursor_to(writer: &mut impl Write, row: u16, col: u16) -> io::Result<()> {
         execute!(writer, cursor::MoveTo(col, row))
     }
 
-    /// Clear the current line.
     pub fn clear_line(writer: &mut impl Write) -> io::Result<()> {
-        execute!(writer, terminal::Clear(ClearType::CurrentLine))
+        execute!(writer, crossterm::terminal::Clear(ClearType::CurrentLine))
     }
 
-    /// Clear the entire screen.
     pub fn clear_screen(writer: &mut impl Write) -> io::Result<()> {
-        execute!(writer, terminal::Clear(ClearType::All))
+        execute!(writer, crossterm::terminal::Clear(ClearType::All))
     }
 
-    /// Get the current terminal size.
     pub fn size() -> io::Result<(u16, u16)> {
-        terminal::size()
+        crossterm::terminal::size()
     }
 
-    /// Write raw bytes to stdout.
     pub fn write(writer: &mut impl Write, data: &str) -> io::Result<()> {
         write!(writer, "{}", data)?;
         writer.flush()
     }
 
-    /// Begin synchronized output mode.
     pub fn begin_sync(writer: &mut impl Write) -> io::Result<()> {
         write!(writer, "\x1b[?2026h")?;
         writer.flush()
     }
 
-    /// End synchronized output mode.
     pub fn end_sync(writer: &mut impl Write) -> io::Result<()> {
         write!(writer, "\x1b[?2026l")?;
         writer.flush()
@@ -92,34 +311,24 @@ impl Default for Terminal {
 
 impl Drop for Terminal {
     fn drop(&mut self) {
-        let _ = self.leave_raw_mode();
+        let _ = self.inner.stop(&mut std::io::sink());
     }
 }
 
-/// Poll for a keyboard event with an optional timeout.
-/// Returns `None` if timeout expires, `Some(KeyEvent)` if a key is pressed.
-pub fn poll_key_event(timeout: Option<Duration>) -> io::Result<Option<KeyEvent>> {
-    if event::poll(timeout.unwrap_or(Duration::from_secs(0)))? {
-        match event::read()? {
-            Event::Key(key) => Ok(Some(key)),
-            Event::Resize(_, _) => {
-                // Resize events are consumed but we return None
-                // The caller should check terminal size separately
-                Ok(None)
-            }
-            _ => Ok(None),
-        }
-    } else {
-        Ok(None)
-    }
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-/// Block waiting for a keyboard event.
-pub fn read_key_event() -> io::Result<KeyEvent> {
-    loop {
-        match event::read()? {
-            Event::Key(key) => return Ok(key),
-            _ => continue,
-        }
+    #[test]
+    fn test_new_terminal() {
+        let term = ProcessTerminal::new();
+        assert!(!term.kitty_protocol_active());
+    }
+
+    #[test]
+    fn test_drain_input_timeout() {
+        let mut term = ProcessTerminal::new();
+        // drain_input may fail if no TTY is available in test env — that's ok
+        let _ = term.drain_input(10);
     }
 }

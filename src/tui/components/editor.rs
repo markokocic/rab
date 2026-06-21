@@ -14,6 +14,7 @@ use crate::tui::keybindings::{
 };
 use crate::tui::component::Component;
 use crate::tui::components::select_list::{SelectItem, SelectList, SelectListTheme};
+use crate::tui::util::is_whitespace_char;
 use crate::tui::focusable::{CURSOR_MARKER, Focusable};
 use crate::tui::keys::key_event_to_string;
 use crate::tui::kill_ring::KillRing;
@@ -75,11 +76,13 @@ pub struct Editor {
     undo_stack: UndoStack<EditorSnapshot>,
     history: Vec<String>,
     history_index: i32,
+    history_draft: Option<EditorSnapshot>,
     preferred_col: Option<usize>,
     last_action: Option<String>,
     pub on_submit: Option<Box<dyn FnMut(String)>>,
     pub on_change: Option<Box<dyn FnMut(&str)>>,
     pub disable_submit: bool,
+    pub border_color: Box<dyn Fn(&str) -> String>,
 
     // Pi-style autocomplete state (uses SelectList)
     autocomplete_list: Option<SelectList>,
@@ -108,6 +111,7 @@ impl Editor {
             undo_stack: UndoStack::new(),
             history: Vec::new(),
             history_index: -1,
+            history_draft: None,
             preferred_col: None,
             last_action: None,
             on_submit: None,
@@ -115,6 +119,7 @@ impl Editor {
             disable_submit: false,
             autocomplete_list: None,
             autocomplete_active: false,
+            border_color: Box::new(|s| s.to_string()),
         }
     }
 
@@ -204,6 +209,20 @@ impl Editor {
 
     // ── Undo ──
 
+    // Pi fish-style undo coalescing:
+    // - Consecutive word chars coalesce into one undo unit
+    // - Space captures state before itself (undo removes space + following word)
+    fn maybe_push_undo(&mut self, ch: &str) {
+        if is_whitespace_char(ch) || self.last_action.as_deref() != Some("type_word") {
+            self.undo_stack.push(&EditorSnapshot {
+                lines: self.lines.clone(),
+                cursor_line: self.cursor_line,
+                cursor_col: self.cursor_col,
+            });
+        }
+        self.last_action = Some("type_word".into());
+    }
+
     fn push_undo(&mut self) {
         self.undo_stack.push(&EditorSnapshot {
             lines: self.lines.clone(),
@@ -261,7 +280,7 @@ impl Editor {
 
     fn insert_character(&mut self, ch: &str) {
         self.exit_history();
-        self.push_undo();
+        self.maybe_push_undo(ch);
         self.insert_text_internal(ch);
     }
 
@@ -512,6 +531,7 @@ impl Editor {
 
     fn exit_history(&mut self) {
         self.history_index = -1;
+        self.history_draft = None;
         self.undo_stack.clear();
         self.last_action = None;
     }
@@ -528,6 +548,16 @@ impl Editor {
         if idx < 0 {
             return;
         }
+
+        // Pi: save draft when first entering history browsing
+        if self.history_index < 0 && idx >= 0 {
+            self.history_draft = Some(EditorSnapshot {
+                lines: self.lines.clone(),
+                cursor_line: self.cursor_line,
+                cursor_col: self.cursor_col,
+            });
+        }
+
         let text = self.history[idx as usize].clone();
         self.set_text(&text);
         self.cursor_col = 0; // pi: cursor at start when going older
@@ -540,12 +570,19 @@ impl Editor {
         }
         let idx = self.history_index + 1;
         if idx >= self.history.len() as i32 {
-            self.set_text("");
+            // Pi: restore draft instead of clearing to empty
+            if let Some(draft) = self.history_draft.take() {
+                self.lines = draft.lines;
+                self.cursor_line = draft.cursor_line;
+                self.cursor_col = draft.cursor_col;
+                self.preferred_col = None;
+            } else {
+                self.set_text("");
+            }
             self.history_index = -1;
         } else {
             let text = self.history[idx as usize].clone();
             self.set_text(&text);
-            // cursor stays at end (set_text default)
             self.history_index = idx;
         }
     }
@@ -651,9 +688,9 @@ impl Component for Editor {
             } else {
                 String::new()
             };
-            result.push((self.theme.border)(&format!("{}{}", indicator, fill)));
+            result.push((self.border_color)(&format!("{}{}", indicator, fill)));
         } else {
-            result.push((self.theme.border)(&horizontal.repeat(width)));
+            result.push((self.border_color)(&horizontal.repeat(width)));
         }
 
         // ── Content lines ──
@@ -708,9 +745,9 @@ impl Component for Editor {
             } else {
                 String::new()
             };
-            result.push((self.theme.border)(&format!("{}{}", indicator, fill)));
+            result.push((self.border_color)(&format!("{}{}", indicator, fill)));
         } else {
-            result.push((self.theme.border)(&horizontal.repeat(width)));
+            result.push((self.border_color)(&horizontal.repeat(width)));
         }
 
         // ── Autocomplete dropdown (pi-style: renders SelectList below bottom border) ──

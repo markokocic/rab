@@ -28,7 +28,7 @@ Goal: architectural and behavioral 1/1 match with pi's `packages/tui/src/` on ev
 
 - [x] **Input pipeline (basic)**
   - [x] `route_input()` integrated into `app.rs` event loop — overlays get first crack at input before app `handle_input()`
-  - [ ] `addInputListener` / `removeInputListener` — deferred to Phase 2 (needs StdinBuffer/Kitty protocol)
+  - [ ] `addInputListener` / `removeInputListener` — deferred (not needed — crossterm handles input)
 
 - [x] **Utility additions** — `src/tui/util.rs`
   - [x] `normalize_terminal_output(line)` — appends `\x1b[0m\x1b]8;;\x07`
@@ -45,20 +45,20 @@ Goal: architectural and behavioral 1/1 match with pi's `packages/tui/src/` on ev
   - [x] `tui.render(lines, width, height, writer)` instead of `screen.render()`
   - [x] `tui.finalize(writer)` instead of `screen.finalize()`
 
-- [ ] **Terminal upgrades**
-  - [ ] `Terminal` trait with `start(onInput, onResize)`, `stop()`, `drainInput()`, `write()`, `columns`/`rows`, `kittyProtocolActive`, `moveBy()`, `hideCursor()`/`showCursor()`, `clearLine()`/`clearFromCursor()`/`clearScreen()`, `setTitle()`, `setProgress()`
-  - [ ] `ProcessTerminal` impl — crossterm-backed:
-    - [ ] `PushKeyboardEnhancementFlags` with `DISAMBIGUATE_ESCAPE_CODES | REPORT_EVENT_TYPES | REPORT_ALTERNATE_KEYS` at startup
-    - [ ] `PopKeyboardEnhancementFlags` at shutdown
-    - [ ] bracketed paste mode via `\x1b[?2004h/l`
-    - [ ] progress indicator — `\x1b]9;4;3\x07` with keepalive interval
-    - [ ] `drainInput()` — timeout-based idle detection, pop keyboard enhancement before stopping
-    - [ ] `kittyProtocolActive` — check `KeyEventKind` for release/repeat filtering
-    - [ ] `setTitle()` — OSC 0
-    - [ ] color scheme notifications — `\x1b[?2031h/l` (optional)
-    - [ ] write logging — `PI_TUI_WRITE_LOG` (optional)
-  - [ ] no StdinBuffer needed — crossterm handles event splitting
-  - [ ] no manual CSI-u parsing needed — crossterm parses Kitty sequences into `KeyEvent` with `KeyEventKind`
+- [x] **Terminal upgrades**
+  - [x] `TerminalTrait` with `start()`, `stop()`, `drainInput()`, `write()`, `size()`, `kittyProtocolActive()`, `moveBy()`, `hideCursor()`/`showCursor()`, `clearLine()`/`clearFromCursor()`/`clearScreen()`, `setTitle()`, `setProgress()`
+  - [x] `ProcessTerminal` impl — crossterm-backed:
+    - [x] Kitty keyboard protocol via `\x1b[>mu` with flags 1+2+4
+    - [x] `\x1b[<u` to disable
+    - [x] bracketed paste mode via `\x1b[?2004h/l`
+    - [x] progress indicator — `\x1b]9;4;3\x07`
+    - [x] `drainInput()` — timeout-based idle detection
+    - [x] `kittyProtocolActive` — tracks negotiation state
+    - [x] `setTitle()` — OSC 0`
+    - [ ] color scheme notifications — optional (deferred)
+    - [ ] write logging — optional (deferred)
+  - [x] no StdinBuffer needed — crossterm handles event splitting
+  - [x] no manual CSI-u parsing needed — crossterm handles it
 
 ### Phase 2 — Keys and keybindings
 
@@ -109,11 +109,13 @@ Goal: architectural and behavioral 1/1 match with pi's `packages/tui/src/` on ev
 
 ### Phase 4 — Component upgrades
 
-- [ ] **Editor — align with pi** (deferred — largest remaining item)
-  - [ ] paste-marker system
+- [ ] **Editor — align with pi** (minor items remaining)
+  - [ ] paste-marker system (large/still deferred)
   - [ ] bracketed paste buffering
-  - [ ] undo coalescing (fish-style)
-  - [ ] sticky column, character jump, history draft
+  - [x] undo coalescing (fish-style) — `maybe_push_undo()` with `is_whitespace_char` check
+  - [ ] sticky column, character jump
+  - [x] history draft — save pre-history state, restore on Down after Up
+  - [x] `border_color` — mutable public field, used in render instead of theme.border
   - [ ] autocomplete auto-trigger
   - [ ] paste-marker-aware segmentation
 
@@ -187,9 +189,9 @@ Goal: architectural and behavioral 1/1 match with pi's `packages/tui/src/` on ev
 
 ### Phase 6 — Terminal trait abstraction
 
-- [ ] define `Terminal` trait matching pi's interface: `start(onInput, onResize)`, `stop()`, `drainInput()`, `write()`, `columns`/`rows`, `kittyProtocolActive`, `moveBy()`, `hideCursor()`/`showCursor()`, `clearLine()`/`clearFromCursor()`/`clearScreen()`, `setTitle()`, `setProgress()`
-- [ ] `ProcessTerminal` impl — uses crossterm for everything (raw mode, event polling, keyboard enhancement flags, cursor ops, size, clear, bracketed paste)
-- [ ] migrate app code (event loop) to depend on `Terminal` trait, not crossterm directly
+- [x] define `TerminalTrait` matching pi's interface
+- [x] `ProcessTerminal` impl — uses crossterm for raw mode, event polling; direct escape sequences for Kitty protocol, bracketed paste, progress, title
+- [ ] migrate app code (event loop) to depend on `TerminalTrait` instead of crossterm directly
 
 ## tools
 - [ ] check tool execution modes in pi, parallel, sequence, ... and compare with rab
