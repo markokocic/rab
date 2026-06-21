@@ -1,4 +1,3 @@
-use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -16,7 +15,7 @@ use crate::agent::ui::working::WorkingIndicator;
 use crate::agent::{AgentEvent, LoopConfig, run_agent_loop};
 use crate::tui::Component;
 use crate::tui::TUI;
-use crate::tui::terminal::{self, Terminal};
+use crate::tui::terminal::{self, ProcessTerminal, TerminalTrait};
 use crossterm::event::KeyEvent;
 use tokio::sync::mpsc;
 
@@ -217,14 +216,15 @@ pub async fn run(config: AppConfig, session: SessionManager) -> anyhow::Result<(
     // Initialize theme system
     crate::agent::ui::theme::init_theme(Some("dark"), false);
 
-    let mut term = Terminal::new();
-    term.enter_raw_mode()?;
+    let mut term = ProcessTerminal::new();
     let mut stdout = std::io::stdout();
 
     // Main-screen mode (like pi) - no alternate screen, no clear.
     // Content writes from current cursor position (after shell prompt).
     // Terminal scrolls naturally, editor/footer appear at the bottom.
-    Terminal::hide_cursor(&mut stdout)?;
+    term.start(&mut stdout)?;
+    term.hide_cursor(&mut stdout)?;
+    term.set_color_scheme_notifications(&mut stdout, true)?;
 
     let mut tui = TUI::new();
     let mut app = App::new(config, session);
@@ -261,7 +261,7 @@ pub async fn run(config: AppConfig, session: SessionManager) -> anyhow::Result<(
 
         // Check terminal size only when we're about to render
         // (avoids expensive ioctl syscall on idle frames)
-        if dirty && let Ok((w, h)) = Terminal::size() {
+        if dirty && let Ok((w, h)) = term.size() {
             cols = w;
             rows = h;
         }
@@ -290,9 +290,9 @@ pub async fn run(config: AppConfig, session: SessionManager) -> anyhow::Result<(
     // Cleanup - move cursor past all rendered content so the shell prompt
     // appears on a fresh line after the footer (matching pi's stop() behavior).
     tui.finalize(&mut stdout)?;
-    Terminal::show_cursor(&mut stdout)?;
-    stdout.flush()?;
-    term.leave_raw_mode()?;
+    term.set_color_scheme_notifications(&mut stdout, false)?;
+    term.show_cursor(&mut stdout)?;
+    term.stop(&mut stdout)?;
 
     Ok(())
 }

@@ -24,6 +24,10 @@ pub trait TerminalTrait {
     fn clear_screen(&self, writer: &mut dyn Write) -> io::Result<()>;
     fn set_title(&self, writer: &mut dyn Write, title: &str) -> io::Result<()>;
     fn set_progress(&self, writer: &mut dyn Write, active: bool) -> io::Result<()>;
+    /// Enable/disable terminal color scheme change notifications (OSC 2031).
+    /// When enabled, the terminal reports color scheme changes via
+    /// `\x1b]10;rgb:RRRR/GGGG/BBBB\x07` sequences.
+    fn set_color_scheme_notifications(&self, writer: &mut dyn Write, enabled: bool) -> io::Result<()>;
 }
 
 // =============================================================================
@@ -220,6 +224,15 @@ impl TerminalTrait for ProcessTerminal {
         }
         writer.flush()
     }
+
+    fn set_color_scheme_notifications(&self, writer: &mut dyn Write, enabled: bool) -> io::Result<()> {
+        if enabled {
+            write!(writer, "\x1b[?2031h")?;
+        } else {
+            write!(writer, "\x1b[?2031l")?;
+        }
+        writer.flush()
+    }
 }
 
 // =============================================================================
@@ -299,6 +312,15 @@ impl Terminal {
 
     pub fn end_sync(writer: &mut impl Write) -> io::Result<()> {
         write!(writer, "\x1b[?2026l")?;
+        writer.flush()
+    }
+
+    pub fn set_color_scheme_notifications(writer: &mut impl Write, enabled: bool) -> io::Result<()> {
+        if enabled {
+            write!(writer, "\x1b[?2031h")?;
+        } else {
+            write!(writer, "\x1b[?2031l")?;
+        }
         writer.flush()
     }
 }

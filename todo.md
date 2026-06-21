@@ -11,8 +11,8 @@ All 6 phases of the pi-tui alignment are implemented. 429 tests pass. 27 modules
 - **Overlays**: HelpOverlay, ModelSelector via `TUI.show_overlay()`
 
 ### TUI low-priority deferred items
-- [ ] migrate app loop to `TerminalTrait` (currently uses crossterm directly — no behavior difference)
-- [ ] color scheme notifications (OSC 2031) — optional
+- [x] migrate app loop to `TerminalTrait` — `ProcessTerminal` + `TerminalTrait` replacing legacy `Terminal`
+- [x] color scheme notifications (OSC 2031) — `set_color_scheme_notifications()` on trait and struct
 - [ ] write logging (`PI_TUI_WRITE_LOG`) — optional
 
 ## tools
