@@ -240,6 +240,8 @@ impl TUI {
         // 5. Position hardware cursor if marker was found
         if let Some((row, col)) = cursor_pos {
             self.position_hard_cursor(row, col, writer)?;
+            // Sync Screen's cursor tracking with actual hardware cursor position
+            self.screen.set_hardware_cursor_row(row);
         }
 
         self.dirty = false;

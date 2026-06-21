@@ -35,6 +35,17 @@ impl Screen {
         self.prev_viewport_top
     }
 
+    /// The current hardware cursor row tracking.
+    pub fn hardware_cursor_row(&self) -> usize {
+        self.hardware_cursor_row
+    }
+
+    /// Update the hardware cursor row after TUI repositions the cursor.
+    /// This keeps Screen's delta calculations in sync with the actual cursor position.
+    pub fn set_hardware_cursor_row(&mut self, row: usize) {
+        self.hardware_cursor_row = row;
+    }
+
     pub fn prev_width(&self) -> usize {
         self.prev_width as usize
     }
