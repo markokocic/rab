@@ -6,20 +6,17 @@ lets it act on your codebase.
 
 ## Pi component mapping
 
-| pi (`packages/`) | rab equivalent | Notes |
+| pi (`packages/`) | rab equivalent | Status |
 |---|---|---|
-| `pi-ai` (providers, streaming, models) | `Provider` trait + `adapter/genai.rs` → [genai](https://github.com/jeremychone/rust-genai) crate | Isolated behind trait; swappable. PoC targets [OpenCode Go](https://opencode.ai/docs/go/) (DeepSeek V4 Flash/Pro) via genai's OpenAI adapter. Phase 1 adds Anthropic, OpenAI, Google, Ollama |
-| `pi-agent-core` (agent loop, session, compaction, skills) | `src/agent/`, `src/agent/session.rs`, `compaction.rs`, `src/agent/types.rs`, `src/agent/skills.rs` | Loop ported directly from `agent-loop.ts` |
-| `pi-tui` (terminal UI, components, editor) | `src/tui/` + `src/agent/ui/` ✅ - direct Rust port of `@earendil-works/pi-tui` on top of [crossterm](https://github.com/crossterm-rs/crossterm) 0.28 | Full port: diff renderer, Component trait, Editor, Input, SelectList, SettingsList, etc. No ratatui. Main-screen mode (no alternate screen), native terminal scrolling. See [`tui.md`](tui.md) for full design. |
-| `coding-agent` (CLI, extensions, built-in tools, settings, commands) | `cli.rs`, `src/agent/extension.rs`, `builtin/`, `src/agent/settings.rs` | Single `Extension` trait for built-in + user extensions; commands use same `CommandHandler` interface; built-in commands in `builtin/commands.rs` |
-| `coding-agent/modes/interactive/theme/theme.ts` | `src/agent/ui/theme.rs` ✅ - JSON-based theme system | Dark/light themes with variable resolution, truecolor + 256-color fallback, `COLORFGBG` detection, global singleton via `init_theme()`. See [`tui.md`](tui.md) for details. |
-| `coding-agent/modes/interactive/components/bash-execution.ts` | `src/agent/ui/components/bash_execution.rs` ✅ - styled bash execution | Borders in status-aware colors, command header with `$`, output in muted, preview truncation, expand/collapse support. |
-| `coding-agent/modes/interactive/components/assistant-message.ts` (`renderCall`/`renderResult` on tools) | `src/agent/extension.rs` ✅ - `AgentTool::render_call()` / `render_result()` | Custom ANSI-styled rendering per tool; falls back to default text when `None`. |
-| `coding-agent/resource-loader.ts` (loadProjectContextFiles) | `src/agent/context_files.rs` | AGENTS.md/CLAUDE.md discovery: global → ancestors → cwd |
-| `coding-agent/skills.ts` + `agent/harness/skills.ts` | `src/agent/skills.rs` | Skill loading, `format_skills_for_prompt()`, `format_skill_invocation()`, `/skill:name` expansion |
-| `coding-agent/modes/interactive` | `src/agent/ui/` (app-specific UI components) | ChatEditor, MessageList, Footer, ModelSelector, queued messages, streaming text display - built on `src/tui/` primitives |
-| MCP extensions (third-party) | `pi-mcp-adapter` built-in extension | Phase 2. Uses `rmcp` crate. Configured via `.rab/mcp.json` |
-| Config files (`~/.pi/agent/`) | `~/.rab/` | Same file names and JSON schema as pi |
+| `pi-tui` (terminal UI, components, editor) | `src/tui/` + `src/agent/ui/` | ✅ **1/1 complete** — 27 modules, 429 tests. Direct Rust port on crossterm. See [`tui.md`](tui.md). |
+| `pi-agent-core` (agent loop, session, compaction, skills) | `src/agent/` | ✅ loop, session, skills done. ⬜ compaction not implemented. |
+| `coding-agent` (CLI, extensions, tools, settings, commands) | `cli.rs`, `builtin/`, `settings.rs`, `commands.rs` | ✅ tools, settings, auth, CLI done. ⬜ models.json, hooks, steering. |
+| `pi-ai` (providers, streaming) | `Provider` trait + `adapter/genai.rs` | ⬜ needs multi-backend support (currently OpenCode Go only) |
+| `coding-agent/modes/interactive/theme/` | `src/agent/ui/theme.rs` | ✅ JSON theme system with resolution, fallback, detection |
+| `coding-agent/resource-loader.ts` | `src/agent/context_files.rs` | ✅ AGENTS.md/CLAUDE.md discovery |
+| `coding-agent/skills.ts` | `src/agent/skills.rs` | ✅ Skill loading, frontmatter, prompt formatting |
+| MCP extensions | `pi-mcp-adapter` (planned) | ⬜ Phase 2 |
+| Config files | `~/.rab/` | ✅ Same schema as pi |
 
 ## Design constraints
 
@@ -648,27 +645,26 @@ AgentMessages (e.g. for compaction, later).
 
 ---
 
-## Settings (`src/agent/settings.rs`)
+## Settings (`src/agent/settings.rs`) — ✅
 
-Same file names and format as pi, but under `~/.rab/agent/` instead of
-`~/.pi/agent/`. Auth lives in `~/.rab/agent/auth.json`, settings in
-`~/.rab/agent/settings.json`.
+Same file names and format as pi, under `~/.rab/agent/`. Auth in `~/.rab/agent/auth.json`,
+settings in `~/.rab/agent/settings.json`. Keybindings in `~/.rab/keybindings.json`.
+`~/.rab/models.json` for custom provider/models is not yet implemented.
 
 ### Config files
 
-| Pi path | rab path | Purpose |
+| Pi path | rab path | Status |
 |---|---|---|
-| `~/.pi/agent/settings.json` | `~/.rab/agent/settings.json` | Global settings (model, thinking, tools, theme) |
-| `.pi/settings.json` | `.rab/settings.json` | Project-local overrides |
-| `~/.pi/agent/auth.json` | `~/.rab/agent/auth.json` | API keys and OAuth credentials |
-| `~/.pi/agent/models.json` | `~/.rab/models.json` | Custom provider/model definitions |
-| `~/.pi/agent/AGENTS.md` | `~/.rab/AGENTS.md` | Global context instructions |
-| `AGENTS.md` / `CLAUDE.md` | `AGENTS.md` / `CLAUDE.md` | Project context files (walked up from cwd) |
-| `~/.pi/agent/keybindings.json` | `~/.rab/keybindings.json` | Custom keybinds (phase 2) |
-| `~/.pi/agent/sessions/` | `~/.rab/sessions/` | Session files |
-| `~/.pi/agent/extensions/` | `~/.rab/extensions/` | User extensions (phase 2 - WASM) |
-| `~/.pi/agent/skills/` | `~/.rab/skills/` | Agent skills (phase 2) |
-| `~/.pi/agent/themes/` | `~/.rab/themes/` + embedded `src/agent/ui/themes/dark.json`, `light.json` | TUI themes ✅ - JSON-based dark/light with variable resolution, truecolor + 256 fallback, custom themes in `~/.rab/themes/` |
+| `~/.pi/agent/settings.json` | `~/.rab/agent/settings.json` | ✅ |
+| `.pi/settings.json` | `.rab/settings.json` | ✅ |
+| `~/.pi/agent/auth.json` | `~/.rab/agent/auth.json` | ✅ |
+| `~/.pi/agent/models.json` | `~/.rab/models.json` | ⬜ |
+| `~/.pi/agent/AGENTS.md` | `~/.rab/AGENTS.md` | ✅ |
+| `AGENTS.md` / `CLAUDE.md` | `AGENTS.md` / `CLAUDE.md` | ✅ |
+| `~/.pi/agent/keybindings.json` | `~/.rab/keybindings.json` | ✅ |
+| `~/.pi/agent/sessions/` | `~/.rab/sessions/` | ✅ |
+| `~/.pi/agent/skills/` | `~/.rab/skills/` | ✅ |
+| `~/.pi/agent/themes/` | `~/.rab/themes/` + embedded | ✅ |
 
 ### `settings.json` format
 
@@ -764,117 +760,60 @@ Same crate - no separate abstraction layer needed.
 
 ---
 
-## TUI (`src/tui/` + `src/agent/ui/`)
+## TUI (`src/tui/` + `src/agent/ui/`) — ✅ COMPLETE
 
-Direct Rust port of pi's `@earendil-works/pi-tui` package. The TUI runs in the
-**main terminal screen** (no alternate screen), using native terminal scrolling
-for message history. Only changed lines are redrawn each frame (line-level diffing).
+The TUI library is a 1/1 port of pi's `@earendil-works/pi-tui` (27 modules, 429 tests).
+See [`tui.md`](tui.md) for the full design.
 
-See [`tui.md`](tui.md) for the full design: component catalog, Editor/Input/SettingsList
-API specifications, keybinding tables, render layout diagrams, and porting estimates.
+**Core**: Component trait, Container, Focusable, Screen diff renderer, overlay system (show/hide/composite), cursor marker extraction, hardware cursor positioning, synchronized output.
 
-### Architecture
+**Terminal**: TerminalTrait, ProcessTerminal, Kitty keyboard protocol (flags 1+2+4), bracketed paste, progress indicator, drainInput, setTitle, OSC 2031 color scheme notifications. No direct crossterm in app layer.
 
-```
-┌──────────────────────────────────────────────────┐
-│  src/agent/ui/           rab-specific UI               │
-│  ChatEditor, Messages, Footer, ModelSelector, …  │
-│                                                  │
-│  src/tui/          core TUI library              │
-│  Component trait, diff renderer, text primitives │
-│  Editor, SelectList, Input, SettingsList, …      │
-│                                                  │
-│  crossterm         terminal I/O                  │
-│  unicode-segmentation  grapheme clusters         │
-│  unicode-width     character width               │
-└──────────────────────────────────────────────────┘
-```
+**Keys & keybindings**: String-based key IDs (match_key_id, key_event_to_id), 27 action IDs with defaults, JSON config loading from `~/.rab/keybindings.json`, all 7 components migrated to `get_keybindings().matches()`.
 
-`src/tui/` is generic and reusable - ports pi's `@earendil-works/pi-tui` core.
-`src/agent/ui/` is rab's app layer - ports pi's `coding-agent` interactive mode components.
+**Components**:
+- Editor (multi-line, word-wrap, kill ring, undo stack, paste markers, bracketed paste, history recall, character jump, sticky column, border_color, AutocompleteProvider integration)
+- Input (single-line, undo coalescing, smart scroll centering, paste handling)
+- SelectList (two-column layout, layout options, prefix filter, selection change callback)
+- SettingsList (submenu support, two-column layout, description wrapping, search)
+- Loader / CancellableLoader (color functions, timer-based animation, abort support)
+- Box (render cache), Text/TruncatedText (RefCell cache), Spacer
 
-### Key differences from the old ratatui approach
+**Autocomplete**: AutocompleteProvider trait, CombinedAutocompleteProvider (slash commands + file path completion via read_dir)
 
-| Aspect | Old (ratatui) | New (pi-tui port) |
-|---|---|---|
-| Screen mode | Alternate screen (full takeover) | Main screen (native terminal scrolling) |
-| Rendering | Full-screen redraw each frame (`Terminal::draw`) | Line-level diffing (only changed lines redrawn) |
-| Scrollback | Manual scroll state in `App` | Native terminal scrollback (Shift+PgUp just works) |
-| Component model | `Widget` trait (immediate mode) | `Component` trait (retained mode with `render(width) → Vec<String>`) |
-| Layout | ratatui `Layout` constraint solver | Vertical `Container` stacking |
-| Editor | Custom widget (~1,500 lines) | Full pi-tui editor port (~1,450 lines) |
-| Focus/Ime | `Frame::set_cursor_position()` | `Focusable` trait + `CURSOR_MARKER` APC sequence |
-| Flicker | Built into ratatui's cell-level diffing | Synchronized output (`\x1b[?2026h/l`) + line-level diffing |
+**App layer**: ChatEditor, Messages, WorkingIndicator, Footer, ModelSelector, HelpOverlay, BashExecution. All wired through `TUI.show_overlay()`. Header/messages/editor/footer layout matching pi exactly.
 
-### Core modules (`src/tui/`)
-
-| Module | Purpose |
-|---|---|
-| `screen.rs` | Diff renderer - port of `tui.ts:doRender()`. Line-level comparison, ANSI cursor moves, synchronized output. |
-| `terminal.rs` | Crossterm wrapper: raw mode, events, cursor, resize. |
-| `component.rs` | `Component` trait, `Focusable` trait, `CURSOR_MARKER`. |
-| `container.rs` | `Container` struct - vertical child stacking. |
-| `keys.rs` | Key identifiers, `matches_key()`. |
-| `util.rs` | ANSI-aware width, wrap, truncate, slice. |
-| `fuzzy.rs` | Fuzzy matching/filtering. |
-| `theme.rs` | `Theme` trait (fg/bg color functions). |
-| `kill_ring.rs`, `undo_stack.rs`, `word_nav.rs` | Editor support utilities. |
-
-### Components (`src/tui/components/`)
-
-| Component | Purpose |
-|---|---|
-| `editor.rs` | Full pi-tui editor port (~1,450 lines). Multi-line, word-wrap, kill-ring, undo, paste markers, bracketed paste, autocomplete, history recall, character jump. |
-| `input.rs` | Single-line text input (~300 lines). Horizontal scrolling, grapheme cursor, kill-ring, undo. |
-| `select_list.rs` | Scrollable selection list with fuzzy search. |
-| `settings_list.rs` | Toggleable settings picker with value cycling and submenus. |
-| `text.rs`, `truncated_text.rs`, `spacer.rs`, `box.rs` | Structural primitives. |
-| `loader.rs`, `cancellable_loader.rs` | Spinners. |
-
-### App components (`src/agent/ui/`)
-
-| Component | Purpose |
-|---|---|
-| `app.rs` | Main event loop, App state. Pi-style header, queued messages, streaming text, transient status, message queuing during streaming. |
-| `chat_editor.rs` | Thin wrapper around `tui::Editor` for slash commands, file autocomplete, submission hook. |
-| `messages.rs` | Conversation history → styled lines. User/ToolCall in TuiBox (paddingY=1), ToolResult in TuiBox (paddingY=0), Thinking italic+muted, OSC133 terminal markers on User/AssistantText. |
-| `working.rs` | Streaming spinner. Always rendered (empty line when inactive) for layout stability. |
-| `footer.rs` | Cwd + git branch + token stats + model. |
-| `model_selector.rs` | Model picker using `tui::SelectList`. |
-| `help.rs` | `/help` display. |
-| `theme.rs` | Concrete color theme (direct ANSI emission). |
-
-### Layout
+### Layout (current implementation)
 
 ```
-Terminal (main screen, rows=40):
+Terminal (main screen, no alternate screen):
 ┌──────────────────────────────────────────┐
-│  [old messages in scrollback]            │  ← terminal's native scroll buffer
+│  [terminal scrollback - Shift+PgUp]      │  ← native scroll, not managed by TUI
+├──────────────────────────────────────────┤
 │  rab · model deepseek-v4-flash           │  ← header (logo + model)
-│  Enter submit · Ctrl+J … F1 · Ctrl+L     │  ← keybinding hints
+│   Enter submit · Ctrl+J · Esc …          │  ← keybinding hints
 │                                          │
-│  ┌─────────────────────────────────────┐ │
-│  │  user message (userMessageBg)       │ │  ← TuiBox(paddingY=1)
-│  └─────────────────────────────────────┘ │
-│  Assistant response text …               │  ← plain text, no bg
-│  Thinking… (italic, muted)               │  ← thinking block
-│                                          │  ← spacer after thinking
-│  Assistant final answer …                │
-│  ┌─────────────────────────────────────┐ │
-│  │  ⚙️ tool_name  args (toolPendingBg) │ │  ← TuiBox(paddingY=1)
-│  │  tool result (toolSuccessBg)        │ │  ← TuiBox(paddingY=0)
-│  └─────────────────────────────────────┘ │
-│  ◷ queued-while-streaming                │  ← queued messages
-│  ↳ queued - will send when current…      │
-│  Thinking blocks: hidden                 │  ← transient status (1 frame)
-│                                          │  ← spacer
-│  ⠋                                       │  ← working indicator (always present)
+│  user message text…                      │  ← DisplayMsg::User
+│                                          │
+│  Assistant response text…                │  ← DisplayMsg::AssistantText
+│  _Thinking about the problem…_           │  ← DisplayMsg::Thinking (italic)
+│                                          │
+│  ⚙ tool_name  args                       │  ← DisplayMsg::ToolCall
+│  ─────────────────────                   │
+│  tool result line 1                      │  ← DisplayMsg::ToolResult
+│  tool result line 2                      │
+│  ─────────────────────                   │
+│                                          │
+│  ◷ queued-while-streaming                │  ← queued messages (during streaming)
+│  ↳ queued — will send when current…      │
+│                                          │
+│  ⠋ Working...                            │  ← working indicator (always 1 line)
 │ ┌─────────────────────────────────────┐  │
-│ │ user types here…      /quit         │  │  ← editor (bordered, autocomplete)
-│ │ → quit                              │  │  ← autocomplete dropdown (SelectList)
+│ │ > user types here…                 │  │  ← editor (bordered)
+│ │                                    │  │
 │ └─────────────────────────────────────┘  │
-│ ~/src/my/rab (master)                    │  ← footer line 1
-│ ○ 2↑ 5↓ 45%/100k (auto)   model-name    │  ← footer line 2
+│ ~/rab (master)                           │  ← footer cwd
+│ ● ↑23k ↓45k  42%/100k (auto)  model     │  ← footer stats
 └──────────────────────────────────────────┘
 ```
 
