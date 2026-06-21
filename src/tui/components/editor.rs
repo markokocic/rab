@@ -13,6 +13,7 @@ use crate::tui::keybindings::{
     ACTION_SELECT_DOWN, ACTION_SELECT_UP, ACTION_EDITOR_JUMP_FORWARD,
     ACTION_EDITOR_JUMP_BACKWARD,
 };
+use crate::tui::autocomplete::AutocompleteProvider;
 use crate::tui::component::Component;
 use crate::tui::components::select_list::{SelectItem, SelectList, SelectListTheme};
 use crate::tui::util::is_whitespace_char;
@@ -97,6 +98,9 @@ pub struct Editor {
     // Character jump mode (pi-style: await next printable char to jump to)
     jump_mode: Option<JumpDirection>,
 
+    // Pi-style autocomplete provider (handles slash commands, file paths, etc.)
+    autocomplete_provider: Option<Box<dyn AutocompleteProvider>>,
+
     // Pi-style paste markers (large pastes stored, marker inserted in place)
     pastes: HashMap<u32, String>,
     paste_counter: u32,
@@ -137,6 +141,7 @@ impl Editor {
             autocomplete_list: None,
             autocomplete_active: false,
             border_color: Box::new(|s| s.to_string()),
+            autocomplete_provider: None,
             pastes: HashMap::new(),
             paste_counter: 0,
             jump_mode: None,
@@ -182,6 +187,11 @@ impl Editor {
     }
 
     // ── Autocomplete (pi-style: uses SelectList) ──
+
+    /// Set the autocomplete provider (handles slash commands, file paths, etc.).
+    pub fn set_autocomplete_provider(&mut self, provider: Box<dyn AutocompleteProvider>) {
+        self.autocomplete_provider = Some(provider);
+    }
 
     pub fn set_autocomplete(&mut self, items: Vec<SelectItem>) {
         if items.is_empty() {
@@ -349,10 +359,30 @@ impl Editor {
     }
 
     fn try_trigger_autocomplete(&mut self) {
-        // This is a stub — the actual autocomplete provider integration would
-        // query the provider and set up the SelectList. For now, this marks
-        // the autocomplete as active so the framework knows to show it.
-        // The actual suggestions are set externally via set_autocomplete().
+        let Some(ref provider) = self.autocomplete_provider else {
+            return;
+        };
+        if let Some(suggestions) = provider.get_suggestions(
+            &self.lines,
+            self.cursor_line,
+            self.cursor_col,
+            false,
+        ) {
+            let items: Vec<SelectItem> = suggestions
+                .items
+                .into_iter()
+                .map(|item| {
+                    let mut si = SelectItem::new(item.value, item.label);
+                    if let Some(desc) = item.description {
+                        si = si.with_description(desc);
+                    }
+                    si
+                })
+                .collect();
+            if !items.is_empty() {
+                self.set_autocomplete(items);
+            }
+        }
     }
 
     fn add_newline(&mut self) {

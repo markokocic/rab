@@ -76,6 +76,7 @@ All Tier 1 components are implemented and tested. 83 tests pass with zero warnin
 | **Key** | `keys.ts` (1,400 lines) | `src/tui/keys.rs` (✅ 267 lines) | Key identifiers (`Key::Enter`, `Key::Up`, `Key::Ctrl('c')`, `Key::CtrlShift('p')`). `matches_key(event, key) -> bool`. Wraps crossterm's `KeyEvent` - no Kitty protocol parsing needed. |
 | **Util** | `utils.ts` (1,188 lines) | `src/tui/util.rs` (✅ 817 lines) | `visible_width(s) -> usize` (strip ANSI, measure Unicode). `truncate_to_width(s, w) -> String`. `wrap_text_with_ansi(s, w) -> Vec<String>`. `slice_by_column(s, start, end) -> String`. |
 | **Fuzzy** | `fuzzy.ts` (137 lines) | `src/tui/fuzzy.rs` (✅ 263 lines) | `fuzzy_match(query, text) -> FuzzyMatch` with score and match positions. `fuzzy_filter(query, items) -> Vec<usize>`. Supports swapped alphanumeric tokens. |
+| **Autocomplete** | `autocomplete.ts` (300 lines) | `src/tui/autocomplete.rs` (✅ 360 lines) | `AutocompleteProvider` trait, `CombinedAutocompleteProvider` (slash commands + file paths), `AutocompleteItem`, `AutocompleteSuggestions`, `SlashCommand`. File path completion via `std::fs::read_dir`. |
 | **Theme** | `src/tui/theme.rs` (✅ 34 lines) | Trait for colors. `fg(color: &str, text: &str) -> String`, `bg(color: &str, text: &str) -> String`, `bold(text: &str) -> String`. Concrete implementation in `src/agent/ui/` with JSON configs, variable resolution, truecolor+256 fallback. |
 
 #### Deliberately Skipped (not needed for rab)
@@ -86,9 +87,10 @@ pi-tui components we are NOT porting:
 |---|---|
 | Markdown | Rab doesn't render markdown in TUI |
 | Image | No terminal image support needed |
-| KeybindingsManager | Rab hard-codes keybindings (simpler, matches current approach) |
+| KeybindingsManager | Rab has `Keybindings` struct with defaults, JSON load/save — covers pi's functionality |
 | StdinBuffer | crossterm's `event::read()` handles escape sequence parsing |
 | TerminalImage, TerminalColors | Not needed |
+| EditorComponent | Interface for custom editors — not needed (rab uses Editor directly) |
 
 ---
 
@@ -162,6 +164,7 @@ src/
 │   ├── keys.rs                      # ✅ Key identifiers, matches_key()
 │   ├── util.rs                      # ✅ ANSI-aware width, wrap, truncate, slice
 │   ├── fuzzy.rs                     # ✅ Fuzzy matching/filtering
+│   ├── autocomplete.rs              # ✅ AutocompleteProvider trait, CombinedAutocompleteProvider
 │   ├── theme.rs                     # ✅ Theme trait (fg, bg, bold)
 │   ├── kill_ring.rs                 # ✅ KillRing
 │   ├── undo_stack.rs                # ✅ UndoStack
@@ -370,7 +373,7 @@ The editor computes a **visual line map** from logical lines + word-wrap. It ren
 | Character jump | ~40 | ~30 | Simpler in Rust (direct char search) |
 | History navigation | ~80 | ~60 | Vec of strings with index |
 | Paste handling (bracketed + markers) | ~120 | ~100 | `\x1b[200~...\x1b[201~` → `String` + marker logic |
-| Autocomplete integration | ~300 | ~200 | Async → sync with debounce timer. `AutocompleteProvider` trait. |
+| Autocomplete integration | ~300 | ~250 | `AutocompleteProvider` trait, `CombinedAutocompleteProvider` (slash commands + file paths). `check_autocomplete_trigger()` on `/`, `@`, `#`, letters in slash context. |
 | **Total** | **~2,300** | **~1,450** | |
 
 Rust reduces line count because: no need for `isPasteMarker()` segmenter wrapping (grapheme iteration is simpler), no `structuredClone()` for undo (just clone the struct), no async autocomplete preamble (use `tokio::spawn` in the app layer).

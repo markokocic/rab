@@ -1,3 +1,4 @@
+pub mod autocomplete;
 pub mod component;
 pub mod container;
 pub mod focusable;
