@@ -1033,3 +1033,61 @@ mod tests {
         assert!(after.is_empty());
     }
 }
+
+    #[test]
+    fn test_wrap_multiline_preserves_line_count() {
+        // Joint: multiline text where lines both fit and need wrapping
+        let text = "hello world this is a test\nshort\nanother long line here yes";
+        let wrapped = wrap_text_with_ansi(text, 10);
+        // "hello world this is a test" → how many wrapped lines?
+        // "short" → 1
+        // "another long line here yes" → how many wrapped lines?
+        let total_wrapped = wrapped.len();
+        let expected_min = 3; // at least 3 visual lines
+        assert!(
+            total_wrapped >= expected_min,
+            "Expected at least {} lines, got {}",
+            expected_min,
+            total_wrapped
+        );
+        // Verify all lines fit within width
+        for (i, line) in wrapped.iter().enumerate() {
+            let w = visible_width(line);
+            assert!(
+                w <= 10,
+                "Line {}: '{}' has visible_width {} > 10",
+                i,
+                line,
+                w
+            );
+        }
+    }
+
+    #[test]
+    fn test_wrap_text_with_ansi_no_duplicate_lines() {
+        // Check that wrapping a multiline string produces exactly
+        // the sum of wrapped lines for each logical line, with no duplicates.
+        let text = "abc def ghi\njk lm no pq rs";
+        let result = wrap_text_with_ansi(text, 5);
+        // "abc def ghi" → ["abc", "def", "ghi"] (3 lines)
+        // "jk lm no pq rs" → ["jk lm", "no pq", "rs"] (3 lines)
+        // Total expected: 6
+        assert_eq!(
+            result.len(),
+            6,
+            "Expected 6 wrapped lines (3+3), got {}: {:?}",
+            result.len(),
+            result
+        );
+
+        // Verify no duplicate lines
+        let mut seen = std::collections::HashSet::new();
+        for line in &result {
+            let trimmed = line.trim().to_string();
+            if !trimmed.is_empty() {
+                if !seen.insert(trimmed.clone()) {
+                    panic!("Duplicate line found: '{}'", trimmed);
+                }
+            }
+        }
+    }
