@@ -346,17 +346,54 @@ impl Screen {
             buf.push_str(&line_without_marker);
         }
 
+        // Clear any trailing old lines beyond the new content.
+        // This is needed when content shrinks (e.g. autocomplete list narrows)
+        // and clear_on_shrink is disabled (the app sets it to false to avoid
+        // full redraws during streaming).
+        if new_lines.len() < self.prev_lines.len() {
+            let extra = self.prev_lines.len() - new_lines.len();
+
+            if extra > height_usize {
+                // Too many extra lines — fall back to full redraw
+                buf.push_str("\x1b[?2026l");
+                write!(writer, "{}", buf)?;
+                writer.flush()?;
+                return self.full_render(&new_lines, writer, true, width_usize, height_usize);
+            }
+
+            // Move from render_end to the first extra line = new_lines.len()
+            let move_to_first_extra = new_lines.len() - render_end;
+            if move_to_first_extra > 0 {
+                buf.push_str(&format!("\x1b[{}B", move_to_first_extra));
+            }
+
+            // Clear each extra line
+            for i in 0..extra {
+                buf.push_str("\r\x1b[2K");
+                if i + 1 < extra {
+                    buf.push_str("\x1b[1B");
+                }
+            }
+
+            // Move cursor back to new_lines.len() - 1 (end of new content).
+            // After the last clear, cursor is at prev_lines.len() - 1.
+            if extra > 0 {
+                buf.push_str(&format!("\x1b[{}A", extra));
+            }
+        }
+
         buf.push_str("\x1b[?2026l");
         write!(writer, "{}", buf)?;
         writer.flush()?;
 
-        self.cursor_row = new_lines.len().saturating_sub(1);
-        self.hardware_cursor_row = render_end;
+        let final_cursor_row = new_lines.len().saturating_sub(1);
+        self.cursor_row = final_cursor_row;
+        self.hardware_cursor_row = final_cursor_row;
         self.max_lines_rendered = self.max_lines_rendered.max(new_lines.len());
         self.prev_lines = new_lines;
         // Advance viewport_top if cursor ended up below the viewport
         // (matching pi's Math.max(prevViewportTop, finalCursorRow - height + 1)).
-        self.prev_viewport_top = viewport_top.max(render_end.saturating_sub(height_usize - 1));
+        self.prev_viewport_top = viewport_top.max(final_cursor_row.saturating_sub(height_usize - 1));
         self.prev_height = height_usize as u16;
         self.prev_width = width_usize as u16;
 
