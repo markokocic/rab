@@ -87,20 +87,20 @@ Goal: architectural and behavioral 1/1 match with pi's `packages/tui/src/` on ev
 
 ### Phase 3 — Utility upgrades
 
-- [ ] **Add missing utilities**
+- [x] **Add missing utilities**
   - [x] `normalizeTerminalOutput(line)` — append `\x1b[0m\x1b]8;;\x07` (reset + hyperlink close) after content
-  - [ ] `applyBackgroundToLine(line, width, bg_fn)` — pad to width, wrap in bg coloring
-  - [ ] `isImageLine(line)` — detect Kitty image sequences (always false stub for non-image)
+  - [x] `applyBackgroundToLine(line, width, bg_fn)` — pad to width, wrap in bg coloring
+  - [x] `isImageLine(line)` — detect Kitty image sequences (always false stub for non-image)
   - [x] `extractSegments(line, beforeStart, beforeEnd, afterLen, strict)` — split line into before/after segments for overlay compositing
-  - [ ] `sliceWithWidth(text, start, len, strict)` — like `sliceByColumn` but returns `{ text, width }`
-  - [ ] `cjkBreakRegex` export (for word-wrapping and word navigation)
+  - [x] `sliceWithWidth(text, start, len, strict)` — like `sliceByColumn` but returns `{ text, width }`
+  - [x] `cjkBreakRegex` export — `CJK_BREAK_REGEX` regex pattern string
   - [x] `isWhitespaceChar(grapheme)` — single-char whitespace predicate
-  - [ ] width caching for non-ASCII strings (LRU cache, ~512 entries)
+  - [x] width caching for non-ASCII strings (thread-local LRU cache, 512 entries)
 
-- [ ] **Word navigation — align with pi**
-  - [ ] `WordNavigationOptions` — custom segmenter + `isAtomicSegment` predicate
-  - [ ] `find_word_backward` / `find_word_forward` — use `Intl.Segmenter`-style word segmentation (punctuation boundaries, ASCII punctuation regex)
-  - [ ] export `PUNCTUATION_REGEX` constant
+- [x] **Word navigation — align with pi**
+  - [x] `WordNavigationOptions` — custom segmenter + `isAtomicSegment` predicate
+  - [x] `find_word_backward_with` / `find_word_forward_with` — options-aware versions
+  - [x] `PUNCTUATION_CHARS` constant (exported as slice)
 
 ### Phase 4 — Component upgrades
 

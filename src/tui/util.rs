@@ -1,8 +1,13 @@
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthChar;
 
+/// Regex pattern matching CJK characters for word-wrapping breaks.
+/// Matches pi's `cjkBreakRegex` script extension pattern.
+pub const CJK_BREAK_REGEX: &str = r"[\p{Script_Extensions=Han}\p{Script_Extensions=Hiragana}\p{Script_Extensions=Katakana}\p{Script_Extensions=Hangul}\p{Script_Extensions=Bopomofo}]";
+
 /// Calculate the visible width of a string in terminal columns.
 /// Strips ANSI escape codes and counts grapheme cluster widths.
+/// Uses a thread-local LRU cache for non-ASCII strings (matching pi).
 pub fn visible_width(str: &str) -> usize {
     if str.is_empty() {
         return 0;
@@ -13,37 +18,19 @@ pub fn visible_width(str: &str) -> usize {
         return str.len();
     }
 
-    // Normalize: tabs to 3 spaces, strip ANSI escape codes
-    let mut clean = String::with_capacity(str.len());
-    let mut i = 0;
-    let bytes = str.as_bytes();
-    while i < bytes.len() {
-        if bytes[i] == b'\t' {
-            clean.push_str("   ");
-            i += 1;
-            continue;
+    // Use cache for non-ASCII
+    WIDTH_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if let Some(&w) = cache.get(str) {
+            return w;
         }
-        if bytes[i] == 0x1b
-            && let Some(ansi) = extract_ansi_code_at(str, i)
-        {
-            i += ansi.len();
-            continue;
+        let w = compute_visible_width_inner(str);
+        if cache.len() >= WIDTH_CACHE_SIZE {
+            cache.clear();
         }
-        // Convert &[u8] to &str safely for the single byte
-        if let Some(ch) = str[i..].chars().next() {
-            clean.push(ch);
-            i += ch.len_utf8();
-        } else {
-            i += 1;
-        }
-    }
-
-    // Calculate width using grapheme clusters
-    let mut width = 0;
-    for grapheme in clean.graphemes(true) {
-        width += grapheme_width(grapheme);
-    }
-    width
+        cache.insert(str.to_string(), w);
+        w
+    })
 }
 
 /// Check if a string consists entirely of printable ASCII characters (0x20-0x7E).
@@ -480,20 +467,7 @@ fn split_into_tokens(text: &str) -> Vec<String> {
     tokens
 }
 
-/// Check if a grapheme cluster is CJK (needs its own token for wrapping).
-fn is_cjk_break(grapheme: &str) -> bool {
-    if let Some(c) = grapheme.chars().next() {
-        let block = c as u32;
-        // CJK Unified, Hiragana, Katakana, Hangul, Bopomofo
-        (0x4E00..=0x9FFF).contains(&block)
-            || (0x3040..=0x309F).contains(&block)
-            || (0x30A0..=0x30FF).contains(&block)
-            || (0xAC00..=0xD7AF).contains(&block)
-            || (0x3100..=0x312F).contains(&block)
-    } else {
-        false
-    }
-}
+
 
 /// Break a long word (wider than available width) into multiple lines.
 fn break_long_word(word: &str, width: usize, tracker: &mut AnsiState) -> Vec<String> {
@@ -782,6 +756,96 @@ pub fn extract_segments(
     }
 
     (before, before_width, after, after_width)
+}
+
+/// Apply a background color function to a line, padding it to the given width.
+/// Matches pi's `applyBackgroundToLine`.
+pub fn apply_background_to_line(line: &str, width: usize, bg_fn: &dyn Fn(&str) -> String) -> String {
+    let vis = visible_width(line);
+    let padded = if vis < width {
+        let mut result = line.to_string();
+        result.push_str(&" ".repeat(width - vis));
+        result
+    } else {
+        line.to_string()
+    };
+    bg_fn(&padded)
+}
+
+/// Check if a line contains a Kitty image sequence.
+/// Always returns false for non-image builds. Stub matching pi's `isImageLine`.
+pub fn is_image_line(_line: &str) -> bool {
+    false
+}
+
+/// Slice text by visible columns, returning both the extracted text and its width.
+/// Like `slice_by_column` but also returns the actual visible width of the result.
+/// Matches pi's `sliceWithWidth`.
+pub fn slice_with_width(line: &str, start_col: usize, length: usize) -> (String, usize) {
+    let text = slice_by_column(line, start_col, length);
+    let width = visible_width(&text);
+    (text, width)
+}
+
+// Width cache for non-ASCII strings (matching pi's WIDTH_CACHE_SIZE = 512)
+use std::cell::RefCell;
+use std::collections::HashMap;
+
+const WIDTH_CACHE_SIZE: usize = 512;
+
+thread_local! {
+    static WIDTH_CACHE: RefCell<HashMap<String, usize>> = RefCell::new(HashMap::new());
+}
+
+/// Compute visible width without cache (used by `visible_width` for cache misses).
+fn compute_visible_width_inner(s: &str) -> usize {
+    if s.is_empty() {
+        return 0;
+    }
+    // Normalize: tabs to 3 spaces, strip ANSI escape codes
+    let mut clean = String::with_capacity(s.len());
+    let mut i = 0;
+    let bytes = s.as_bytes();
+    while i < bytes.len() {
+        if bytes[i] == b'\t' {
+            clean.push_str("   ");
+            i += 1;
+            continue;
+        }
+        if bytes[i] == 0x1b
+            && let Some(ansi) = extract_ansi_code_at(s, i)
+        {
+            i += ansi.len();
+            continue;
+        }
+        if let Some(ch) = s[i..].chars().next() {
+            clean.push(ch);
+            i += ch.len_utf8();
+        } else {
+            i += 1;
+        }
+    }
+
+    let mut width = 0;
+    for grapheme in clean.graphemes(true) {
+        width += grapheme_width(grapheme);
+    }
+    width
+}
+
+/// Check if a grapheme cluster is CJK (needs its own token for wrapping).
+pub fn is_cjk_break(grapheme: &str) -> bool {
+    if let Some(c) = grapheme.chars().next() {
+        let block = c as u32;
+        // CJK Unified, Hiragana, Katakana, Hangul, Bopomofo
+        (0x4E00..=0x9FFF).contains(&block)
+            || (0x3040..=0x309F).contains(&block)
+            || (0x30A0..=0x30FF).contains(&block)
+            || (0xAC00..=0xD7AF).contains(&block)
+            || (0x3100..=0x312F).contains(&block)
+    } else {
+        false
+    }
 }
 
 fn update_tracker_from_text(text: &str, active_codes: &mut String) {

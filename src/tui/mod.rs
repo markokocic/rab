@@ -42,6 +42,11 @@ pub use terminal::Terminal;
 pub use theme::Theme;
 pub use tui_core::TUI;
 pub use util::{
-    normalize_terminal_output, slice_by_column, truncate_to_width, visible_width,
-    visual_col_to_byte_offset, wrap_text_with_ansi,
+    apply_background_to_line, is_cjk_break, is_image_line, is_whitespace_char,
+    normalize_terminal_output, slice_by_column, slice_with_width, truncate_to_width,
+    visible_width, visual_col_to_byte_offset, wrap_text_with_ansi, CJK_BREAK_REGEX,
+};
+pub use word_nav::{
+    find_word_backward, find_word_backward_with, find_word_forward, find_word_forward_with,
+    WordNavigationOptions, WordSegment,
 };
