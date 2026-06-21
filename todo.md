@@ -1,4 +1,4 @@
-## Built-in tool rendering — match pi 1/1
+## Built-in tool rendering - match pi 1/1
 
 ### Per-tool call rendering (renderCall)
 
@@ -6,9 +6,9 @@ Each tool should have a custom renderCall matching pi's format, instead of the c
 
 | Tool | pi format | rab (current) |
 |------|-----------|---------------|
-| **read** | `bold("read") + accent(path) + warning(":start-end")` — compact mode: `"read docs label"`, `"read resource label"`, `"[skill] label"` | `bold("read") + "  " + {truncated JSON args}` |
+| **read** | `bold("read") + accent(path) + warning(":start-end")` - compact mode: `"read docs label"`, `"read resource label"`, `"[skill] label"` | `bold("read") + "  " + {truncated JSON args}` |
 | **bash** | `bold("$ command") + muted(timeout)` | ✅ already done |
-| **edit** | `bold("edit") + accent(path)` — with `renderShell: "self"` + inline diff preview | `bold("edit") + "  " + {truncated JSON args}` |
+| **edit** | `bold("edit") + accent(path)` - with `renderShell: "self"` + inline diff preview | `bold("edit") + "  " + {truncated JSON args}` |
 | **write** | `bold("write") + accent(path) + dim(" (N lines)")` | `bold("write") + "  " + {truncated JSON args}` |
 | **grep** | `bold("grep") + accent("/pattern/") + toolOutput(" in path") + optional glob/limit` | `bold("grep") + "  " + {truncated JSON args}` |
 | **find** | `bold("find") + accent(pattern) + toolOutput(" in path") + optional limit` | `bold("find") + "  " + {truncated JSON args}` |
@@ -32,18 +32,18 @@ Each tool should format its result matching pi's visual style.
 
 - [ ] **Phase 1**: Add `DisplayMsg` variants for each tool call with structured args (path, pattern, etc.) so rendering can extract fields instead of raw JSON
 - [ ] **Phase 2**: Add `DisplayMsg` variants for each tool result with structured details (truncation, diff, timing)
-- [ ] **Phase 3**: Implement per-tool `renderCall` formatting in `render_messages()` — match pi's `toolTitle` bold name + `accent` path/pattern + `toolOutput`/`warning` decorations
-- [ ] **Phase 4**: Implement per-tool `renderResult` formatting — syntax highlighting for read/write, diff for edit, output preview with expand hint + truncation warnings for all
-- [ ] **Phase 5**: Support `renderShell: "self"` for edit tool — edit renders its own Box with inline diff preview, no outer Box
-- [ ] **Phase 6**: Align BashExecution component — add timing info (`Elapsed`/`Took X.Xs`), keybinding hints (`keyHint`), width-aware visual truncation (`truncateToVisualLines` instead of simple wrap)
+- [ ] **Phase 3**: Implement per-tool `renderCall` formatting in `render_messages()` - match pi's `toolTitle` bold name + `accent` path/pattern + `toolOutput`/`warning` decorations
+- [ ] **Phase 4**: Implement per-tool `renderResult` formatting - syntax highlighting for read/write, diff for edit, output preview with expand hint + truncation warnings for all
+- [ ] **Phase 5**: Support `renderShell: "self"` for edit tool - edit renders its own Box with inline diff preview, no outer Box
+- [ ] **Phase 6**: Align BashExecution component - add timing info (`Elapsed`/`Took X.Xs`), keybinding hints (`keyHint`), width-aware visual truncation (`truncateToVisualLines` instead of simple wrap)
 
 ### TuiBox cache fix
 
-- [ ] Fix `TuiBox` render cache — currently has cache fields but `render(&self)` can't write to them. Use `RefCell` or switch to interior mutability pattern.
+- [ ] Fix `TuiBox` render cache - currently has cache fields but `render(&self)` can't write to them. Use `RefCell` or switch to interior mutability pattern.
 
 ---
 
-## Markdown rendering — planned
+## Markdown rendering - planned
 
 ### Approach
 - **Parser**: `pulldown-cmark` - fast, zero-copy, event-based iterator, used by cargo doc
@@ -195,6 +195,14 @@ Each tool should format its result matching pi's visual style.
 - [ ] Debug key (Shift+Ctrl+D)
 - [ ] Keybinding hints in header (dynamic, based on context)
 - [ ] Proper chat scrolling with viewport management (terminal natural scrolling)
+
+### 🐛 Bugs
+
+- [ ] Ctrl+T (thinking toggle) and Ctrl+O (tools expand) state doesn't persist across sessions
+- [ ] Slow rendering and typing for long chats
+- [ ] Duplicate line in editor when typing line longer than screen width
+
+
 
 ---
 
