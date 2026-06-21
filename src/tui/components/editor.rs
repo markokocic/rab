@@ -19,6 +19,8 @@ use crate::tui::util::is_whitespace_char;
 use crate::tui::focusable::{CURSOR_MARKER, Focusable};
 use crate::tui::keys::key_event_to_string;
 use crate::tui::kill_ring::KillRing;
+use std::collections::HashMap;
+
 use crate::tui::undo_stack::UndoStack;
 use crate::tui::util::{visible_width, visual_col_to_byte_offset, wrap_text_with_ansi};
 use crate::tui::word_nav::{find_word_backward, find_word_forward};
@@ -95,6 +97,10 @@ pub struct Editor {
     // Character jump mode (pi-style: await next printable char to jump to)
     jump_mode: Option<JumpDirection>,
 
+    // Pi-style paste markers (large pastes stored, marker inserted in place)
+    pastes: HashMap<u32, String>,
+    paste_counter: u32,
+
     // Pi-style autocomplete state (uses SelectList)
     autocomplete_list: Option<SelectList>,
     pub autocomplete_active: bool,
@@ -131,6 +137,8 @@ impl Editor {
             autocomplete_list: None,
             autocomplete_active: false,
             border_color: Box::new(|s| s.to_string()),
+            pastes: HashMap::new(),
+            paste_counter: 0,
             jump_mode: None,
         }
     }
@@ -677,6 +685,67 @@ impl Editor {
         }
     }
 
+    // ── Paste markers (pi-style) ──
+
+    /// Handle a paste: for large pastes (>10 lines or >1000 chars),
+    /// stores the content and inserts a marker like "[paste #1 +123 lines]".
+    /// Small pastes are inserted directly.
+    pub fn handle_paste(&mut self, text: &str) {
+        let lines: Vec<&str> = text.split('\n').collect();
+        let total_chars = text.len();
+
+        if lines.len() > 10 || total_chars > 1000 {
+            self.paste_counter += 1;
+            let paste_id = self.paste_counter;
+            self.pastes.insert(paste_id, text.to_string());
+
+            let marker = if lines.len() > 10 {
+                format!("[paste #{} +{} lines]", paste_id, lines.len())
+            } else {
+                format!("[paste #{} {} chars]", paste_id, total_chars)
+            };
+            self.insert_text_at_cursor(&marker);
+        } else {
+            self.insert_text_at_cursor(text);
+        }
+    }
+
+    /// Expand paste markers in text back to their full content.
+    pub fn expand_paste_markers(&self, text: &str) -> String {
+        let mut result = text.to_string();
+        // Replace markers from highest ID to lowest to avoid ID conflicts
+        let mut ids: Vec<u32> = self.pastes.keys().copied().collect();
+        ids.sort_unstable_by(|a, b| b.cmp(a)); // descending
+        for paste_id in ids {
+            if let Some(content) = self.pastes.get(&paste_id) {
+                // Simple replacement — find any marker with this ID
+                let marker1 = format!("[paste #{} ", paste_id);
+                loop {
+                    let start = result.find(&marker1);
+                    match start {
+                        Some(pos) => {
+                            let end = result[pos..].find(']').map(|e| pos + e + 1).unwrap_or(result.len());
+                            result.replace_range(pos..end, content);
+                        }
+                        None => break,
+                    }
+                }
+            }
+        }
+        result
+    }
+
+    /// Get text with paste markers expanded.
+    /// Use this when you need the full content (e.g., for external editor).
+    pub fn get_expanded_text(&self) -> String {
+        self.expand_paste_markers(&self.lines.join("\n"))
+    }
+
+    /// Check if a string is a paste marker.
+    pub fn is_paste_marker(segment: &str) -> bool {
+        segment.starts_with("[paste #") && segment.ends_with(']')
+    }
+
     // ── Page scroll ──
 
     fn page_up(&mut self) {
@@ -690,11 +759,15 @@ impl Editor {
     // ── Submit ──
 
     fn submit(&mut self) {
-        let result = self.lines.join("\n");
+        // Pi: expand paste markers before submitting
+        let raw = self.lines.join("\n");
+        let result = self.expand_paste_markers(&raw);
         self.lines = vec![String::new()];
         self.cursor_line = 0;
         self.cursor_col = 0;
         self.scroll_offset = 0;
+        self.pastes.clear();
+        self.paste_counter = 0;
         self.undo_stack.clear();
         self.last_action = None;
         self.preferred_col = None;
@@ -1607,5 +1680,64 @@ mod tests {
             crate::tui::util::visual_col_to_byte_offset("\x1b[31mabc", 0),
             5
         );
+    }
+
+    // ── Paste marker tests ──
+
+    #[test]
+    fn test_large_paste_creates_marker() {
+        let mut editor = Editor::new(EditorTheme::default(), EditorOptions::default());
+        let large = "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\nline11";
+        editor.handle_paste(large);
+        let text = editor.get_text();
+        assert!(text.contains("[paste #"), "Should contain paste marker");
+        assert!(!text.contains("line1"), "Should not contain original content");
+        assert_eq!(editor.pastes.len(), 1, "Should store one paste");
+    }
+
+    #[test]
+    fn test_small_paste_no_marker() {
+        let mut editor = Editor::new(EditorTheme::default(), EditorOptions::default());
+        editor.handle_paste("hello");
+        let text = editor.get_text();
+        assert!(!text.contains("[paste #"), "Small paste should not create marker");
+        assert_eq!(text, "hello");
+    }
+
+    #[test]
+    fn test_expand_paste_markers() {
+        let mut editor = Editor::new(EditorTheme::default(), EditorOptions::default());
+        editor.handle_paste("line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\nline11");
+        let expanded = editor.get_expanded_text();
+        assert!(expanded.contains("line1"), "Expanded text should contain original content");
+        assert!(!expanded.contains("[paste #"), "Expanded text should not contain markers");
+    }
+
+    #[test]
+    fn test_submit_expands_markers() {
+        let mut editor = Editor::new(EditorTheme::default(), EditorOptions::default());
+        editor.handle_paste("line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\nline11");
+        let large_content = "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\nline11";
+        // Manually call the submit logic to verify expansion
+        let raw = editor.lines.join("\n");
+        let expanded = editor.expand_paste_markers(&raw);
+        assert_eq!(expanded, large_content, "Submit should expand to original content");
+    }
+
+    #[test]
+    fn test_is_paste_marker() {
+        assert!(Editor::is_paste_marker("[paste #1 +5 lines]"));
+        assert!(Editor::is_paste_marker("[paste #123 456 chars]"));
+        assert!(!Editor::is_paste_marker("normal text"));
+        assert!(!Editor::is_paste_marker(""));
+    }
+
+    #[test]
+    fn test_get_expanded_text() {
+        let mut editor = Editor::new(EditorTheme::default(), EditorOptions::default());
+        editor.handle_paste("line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\nline11");
+        let expanded = editor.get_expanded_text();
+        assert!(expanded.contains("line1"), "get_expanded_text should expand markers");
+        assert!(expanded.starts_with("line1"), "Should start with original content");
     }
 }
