@@ -1,5 +1,203 @@
 # Remaining work
 
+## pi-tui alignment
+
+Goal: architectural and behavioral 1/1 match with pi's `packages/tui/src/` on everything except images, Kitty protocol, and Markdown.
+
+### Phase 1 — Core framework (TUI class, terminal, input pipeline)
+
+- [ ] **TUI class** — promote `Screen` to a full `TUI` that owns the event loop:
+  - [ ] `start()` / `stop()` lifecycle — raw mode, bracketed paste, resize handler
+  - [ ] `handle_input()` — input listeners (transform/consume), global debug key, overlay focus routing
+  - [ ] `requestRender()` — debounced scheduling (MIN_RENDER_INTERVAL_MS~16ms), force full-redraw, `process::idle` / `nextTick` equivalent
+  - [ ] `doRender()` — diff: width/height changes → full clear, first-render path, expanded kitty-image ranges (adapt to no-kitty), `clearOnShrink` option
+  - [ ] `SEGMENT_RESET` (`\x1b[0m\x1b]8;;\x07`) appended to every line after cursor marker extraction
+  - [ ] cursor marker extraction — find `CURSOR_MARKER` in visible viewport, strip, position hardware cursor (`\x1b[7m` inverse + zero-width marker)
+  - [ ] terminal color scheme notifications — OSC 2031 h/l, listeners, parsing
+  - [ ] cell size query for image support — `CSI 16 t`, `setCellDimensions` (stub for non-image)
+  - [ ] synchronized output wrapping — `\x1b[?2026h` / `l` around all terminal writes
+
+- [ ] **Overlay system**
+  - [ ] `showOverlay(component, options?)` → `OverlayHandle` with `hide()`, `setHidden()`, `isHidden()`, `focus()`, `unfocus()`, `isFocused()`
+  - [ ] `hideOverlay()` — pop topmost overlay
+  - [ ] `hasOverlay()` — check any visible
+  - [ ] overlay stack — `Vec<OverlayStackEntry>`, focus order counter, preFocus tracking
+  - [ ] anchor-based positioning — `OverlayAnchor` enum (`center`, `top-left`, …, `right-center`), `resolveAnchorRow`/`resolveAnchorCol`
+  - [ ] `SizeValue` parsing — absolute numbers + `"50%"` string percentages
+  - [ ] margin parsing — per-side `OverlayMargin` or uniform number
+  - [ ] visibility callback — `visible?` closure, re-evaluated each render
+  - [ ] `compositeOverlays()` — pre-render all visible overlays sorted by focus order, composite into content at calculated positions via `compositeLineAt`
+  - [ ] `compositeLineAt()` — single-pass overlay splice: extract segments before/at/after target, slice overlay to width, pad, compose with `SEGMENT_RESET` between segments, final safety truncation via `sliceByColumn`
+
+- [ ] **Focus management**
+  - [ ] `setFocus(component)` — deactivate old focus, activate new, track focused overlay vs base component
+  - [ ] `setFocusInternal()` — with overlay-focus-restore policy (`clear`/`preserve`)
+  - [ ] overlay focus restore state machine — `inactive` / `eligible` / `blocked` states with resume (restore-overlay or focus-target)
+  - [ ] `getVisibleOverlayFocusRestore()` — invalidate restore if overlay was hidden or removed
+  - [ ] `isOverlayFocusAncestor()` — detect cycles in overlay focus chain
+  - [ ] `retargetOverlayPreFocus()` — when overlay removed, chain preFocus references
+  - [ ] `resolveBlockedOverlayFocusResume()` — pick next focus target
+
+- [ ] **Input pipeline**
+  - [ ] `addInputListener(listener)` / `removeInputListener(listener)` — chain of `(data) => { consume?, data? }`
+  - [ ] input routing: listeners → cell size response → debug key → overlay focus restore → focused component
+  - [ ] filter key release events unless component opts in via `wantsKeyRelease`
+
+- [ ] **Terminal upgrades**
+  - [ ] `Terminal` trait (replace crossterm facade) — `start(onInput, onResize)`, `stop()`, `drainInput(maxMs?, idleMs?)`, `write()`, `columns`/`rows`, `kittyProtocolActive`, `moveBy()`, `hideCursor()`/`showCursor()`, `clearLine()`/`clearFromCursor()`/`clearScreen()`, `setTitle()`, `setProgress()`
+  - [ ] `ProcessTerminal` impl — raw mode, bracketed paste (`\x1b[?2004h/l`), Kitty keyboard protocol negotiation (flags 1+2+4), modifyOtherKeys fallback, StdinBuffer integration
+  - [ ] `StdinBuffer` — split batched input into individual sequences, forward as `data` events, re-wrap paste content with bracketed markers
+  - [ ] `drainInput()` — disable Kitty protocol first, flush trailing release events, timeout-based idle detection
+  - [ ] progress indicator — `\x1b]9;4;3\x07` with keepalive interval
+  - [ ] Windows VT input enablement (stub if not targeting Windows)
+  - [ ] write logging (`PI_TUI_WRITE_LOG`)
+  - [ ] `parseKeyboardProtocolNegotiationSequence()` / `isKeyboardProtocolNegotiationSequencePrefix()` — split-response handling via flush timer
+
+### Phase 2 — Keys and keybindings
+
+- [ ] **Keys — extend to match pi**
+  - [ ] `KeyId` — replace enum with string-based identifiers (e.g. `"ctrl+c"`, `"shift+enter"`)
+  - [ ] `matchesKey(data, key_id)` — parse raw terminal data directly (not via crossterm `KeyEvent`):
+    - [ ] Kitty CSI-u sequences: `\x1b[<codepoint>;<mod>:<event>u`, alternate keys, functional key equivalents
+    - [ ] modifyOtherKeys: `\x1b[27;<mod>;<codepoint>~`
+    - [ ] legacy sequences: arrows, home/end, F-keys, application mode (SS3)
+    - [ ] raw control characters: `Ctrl+letter` = `code & 0x1f`, `Alt+letter` = `ESC letter`, etc.
+  - [ ] `isKeyRelease(data)` / `isKeyRepeat(data)` — Kitty flag 2 event type detection
+  - [ ] `parseKey(data)` → `KeyId` — reverse mapping from raw sequence to canonical identifier
+  - [ ] `decodeKittyPrintable(data)` — extract printable character from non-Shift-modified CSI-u
+  - [ ] `decodePrintableKey(data)` — combines Kitty + modifyOtherKeys printable decoding
+  - [ ] full modifier support: `super` key, all `ctrl+shift+alt`, `ctrl+super`, etc. combinations
+  - [ ] `Key` helper — named constants + type-safe builders (matching pi's `Key.ctrl("c")` pattern)
+
+- [ ] **Keybindings system**
+  - [ ] `KeybindingDefinition` — action → list of key IDs (`tui.editor.undo` → `["ctrl+z"]`)
+  - [ ] `Keybindings` — map of action → resolved key IDs
+  - [ ] `KeybindingsManager` — load from config, merge with defaults, detect conflicts
+  - [ ] `getKeybindings()` / `setKeybindings()` — global accessors
+  - [ ] `TUI_KEYBINDINGS` — default definitions: `tui.editor.*`, `tui.input.*`, `tui.select.*`, `tui.editor.cursorUp/Down/Left/Right`, `tui.editor.delete*`, `tui.editor.yank*`, `tui.editor.undo`, `tui.input.submit`, `tui.input.tab`, `tui.input.newLine`, `tui.input.copy`, `tui.select.confirm/cancel/up/down`
+  - [ ] migrate all components from hardcoded `matches_key(&Key::X)` to `kb.matches(data, "action.id")`
+
+### Phase 3 — Utility upgrades
+
+- [ ] **Add missing utilities**
+  - [ ] `normalizeTerminalOutput(line)` — append `\x1b[0m\x1b]8;;\x07` (reset + hyperlink close) after content
+  - [ ] `applyBackgroundToLine(line, width, bg_fn)` — pad to width, wrap in bg coloring
+  - [ ] `isImageLine(line)` — detect Kitty image sequences (always false stub for non-image)
+  - [ ] `extractSegments(line, beforeStart, beforeEnd, afterLen, strict)` — split line into before/after segments for overlay compositing
+  - [ ] `sliceWithWidth(text, start, len, strict)` — like `sliceByColumn` but returns `{ text, width }`
+  - [ ] `cjkBreakRegex` export (for word-wrapping and word navigation)
+  - [ ] `isWhitespaceChar(grapheme)` — single-char whitespace predicate
+  - [ ] width caching for non-ASCII strings (LRU cache, ~512 entries)
+
+- [ ] **Word navigation — align with pi**
+  - [ ] `WordNavigationOptions` — custom segmenter + `isAtomicSegment` predicate
+  - [ ] `find_word_backward` / `find_word_forward` — use `Intl.Segmenter`-style word segmentation (punctuation boundaries, ASCII punctuation regex)
+  - [ ] export `PUNCTUATION_REGEX` constant
+
+### Phase 4 — Component upgrades
+
+- [ ] **Editor — align with pi**
+  - [ ] paste-marker system:
+    - [ ] `pastes: HashMap<u32, String>`, `paste_counter: u32`
+    - [ ] on large paste (>10 lines or >1000 chars): store content, insert `[paste #N +M lines]` marker
+    - [ ] `expand_paste_markers(text)` on submit
+    - [ ] `get_expanded_text()` for external editor
+    - [ ] paste-marker-aware segmentation — `segment_with_markers()` merges marker graphemes into atomic units
+  - [ ] bracketed paste handling in `handle_input` — buffer `\x1b[200~` … `\x1b[201~`, decode CSI-u-encoded control bytes, filter non-printables, prepend space for file paths
+  - [ ] undo coalescing (pi fish-style):
+    - [ ] consecutive word chars coalesce into one undo unit
+    - [ ] `last_action: Option<"type_word" | "kill" | "yank">`
+    - [ ] space captures state before itself (undo removes space + following word together)
+  - [ ] sticky column for vertical movement — `preferred_visual_col: Option<usize>`, `snapped_from_cursor_col`, `compute_vertical_move_column()` decision table match
+  - [ ] character jump mode — `jump_mode: Option<"forward" | "backward">`, await next printable char, `jump_to_char()`
+  - [ ] page up/down — `page_scroll(delta)`, move cursor to first/last visible line after scroll
+  - [ ] history draft — save pre-history state so Down after Up restores it exactly
+  - [ ] autocomplete integration:
+    - [ ] `AutocompleteProvider` trait (`get_suggestions`, `apply_completion`, `should_trigger_file_completion`)
+    - [ ] auto-trigger on `/`, `@`, `#`, and trigger characters at token boundaries
+    - [ ] auto-trigger on letter typing in slash command context (`/commandName` or after space in slash command)
+    - [ ] auto-update on typing/backspace when autocomplete already active
+    - [ ] cancel on navigation away from completable context
+    - [ ] Tab triggers completion in non-autocomplete state
+  - [ ] `snapped_from_cursor_col` — snap cursor to atomic segment boundaries (paste markers), resolve pre-snap position on next vertical move
+  - [ ] `segment()` method — paste-marker-aware grapheme/word segmentation via `segment_with_markers()`
+  - [ ] `wordWrapLine`-compatible layout with paste-marker-aware chunks
+  - [ ] `normalize_text()` — `\r\n`/`\r` → `\n`, tabs → 4 spaces
+  - [ ] keybinding-based input dispatch (use `getKeybindings().matches()`)
+  - [ ] `border_color` — mutable public field for dynamic styling
+
+- [ ] **Input — align with pi**
+  - [ ] bracketed paste buffering — same as Editor but single-line
+  - [ ] undo coalescing — `last_action` tracking per pi pattern
+  - [ ] horizontal scroll with smart centering — `half_width` centering, reserve column for cursor at end
+  - [ ] Kitty CSI-u printable decode — `decodeKittyPrintable` instead of control char filter
+  - [ ] keybinding-based dispatch
+
+- [ ] **SelectList — align with pi**
+  - [ ] `SelectListLayoutOptions` — `min_primary_column_width`, `max_primary_column_width`, `truncate_primary` callback
+  - [ ] primary column width calculation — clamp between min/max bounds, measure widest item
+  - [ ] two-column layout (value + description) when width > 40 and description exists
+  - [ ] `normalize_to_single_line()` for description
+  - [ ] `on_selection_change` callback
+  - [ ] `get_selected_item()` — return `SelectItem` (not just value string)
+  - [ ] `set_filter()` — prefix-based filter (simpler than fuzzy for user-typed single char)
+  - [ ] keybinding-based dispatch
+
+- [ ] **SettingsList — align with pi**
+  - [ ] submenu support — `SettingItem.submenu: Option<Box<dyn Fn(&str, Box<dyn Fn(Option<String>)>) -> Box<dyn Component>>>`
+  - [ ] `submenu_component` / `submenu_item_index` — delegate all input to submenu when active
+  - [ ] on submenu close via `done()`, restore selection to the item that opened it
+  - [ ] two-column layout (label aligned left, value right) with max-label-width calculation
+  - [ ] description display for selected item (wrapped, padded)
+  - [ ] hint line at bottom (dynamic based on search enabled)
+  - [ ] keybinding-based dispatch
+
+- [ ] **Loader — align with pi**
+  - [ ] Extend `Text` component instead of standalone struct
+  - [ ] Frame/message color function fields (`spinner_color_fn`, `message_color_fn`)
+  - [ ] Timer-based animation via `start()`/`stop()` with update callback
+  - [ ] `render()` returns `["", ...super.render(width)]` — one blank line above for spacing
+  - [ ] `indicator` field — `LoaderIndicatorOptions` (custom frames, interval)
+  - [ ] `render_indicator_verbatim` flag — when custom frames provided, render without spinner color function
+
+- [ ] **CancellableLoader — align with pi**
+  - [ ] `AbortController`-style cancellation — `cancelled: bool`, `on_abort: Option<Box<dyn FnMut()>>`
+  - [ ] `handle_input()` — check Escape via keybinding `tui.select.cancel`
+  - [ ] `dispose()` — stop animation
+
+- [ ] **Box — align with pi**
+  - [ ] render cache — track `child_lines`, `width`, `bg_sample`, compare on render; invalidate on child add/remove/clear
+  - [ ] `applyBg()` uses `applyBackgroundToLine` (new utility)
+
+- [ ] **Text — align with pi**
+  - [ ] render cache — `cached_text`, `cached_width`, `cached_lines`
+  - [ ] empty/whitespace text returns `vec![]` (not `vec![""]`)
+  - [ ] tabs → 3 spaces (not 4)
+
+- [ ] **TruncatedText — align with pi**
+  - [ ] add `padding_x`, `padding_y` fields
+  - [ ] pad to full width with spaces
+  - [ ] only first line before newline is used
+  - [ ] vertical padding (empty lines above/below)
+
+### Phase 5 — Overlay-aware application layer
+
+- [ ] **Wire up overlay system in app**
+  - [ ] migrate all modals/dialogs to use `TUI.showOverlay()` instead of manual compositing
+  - [ ] verify focus restore works correctly when overlays are dismissed
+  - [ ] add `nonCapturing: true` for non-interactive overlays (e.g. toasts/notifications)
+
+- [ ] **Wire up keybinding system in app**
+  - [ ] create `~/.rab/keybindings.json` schema (matching pi's format)
+  - [ ] load/merge keybindings on startup
+  - [ ] all components use `getKeybindings().matches()`
+
+### Phase 6 — Terminal trait abstraction
+
+- [ ] define `Terminal` trait matching pi's interface: `start(onInput, onResize)`, `stop()`, `drainInput()`, `write()`, `columns`/`rows`, `kittyProtocolActive`, `moveBy()`, `hideCursor()`/`showCursor()`, `clearLine()`/`clearFromCursor()`/`clearScreen()`, `setTitle()`, `setProgress()`
+- [ ] `ProcessTerminal` impl — keeps crossterm for raw mode, cursor ops, size queries, clear operations; adds direct escape sequences for Kitty protocol, bracketed paste, progress indicator, etc. where crossterm has no API
+- [ ] migrate app code (event loop, Screen) to depend on `Terminal` trait, not crossterm directly
+
 ## tools
 - [ ] check tool execution modes in pi, parallel, sequence, ... and compare with rab
 
