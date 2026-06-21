@@ -324,7 +324,7 @@ impl Screen {
         }
 
         // Write changed lines
-        let render_end = last.min(new_lines.len() - 1);
+        let mut render_end = last.min(new_lines.len() - 1);
         for (i, line) in new_lines
             .iter()
             .enumerate()
@@ -377,8 +377,10 @@ impl Screen {
 
             // Move cursor back to new_lines.len() - 1 (end of new content).
             // After the last clear, cursor is at prev_lines.len() - 1.
+            // Set render_end to final cursor position since we're moving there.
             if extra > 0 {
                 buf.push_str(&format!("\x1b[{}A", extra));
+                render_end = new_lines.len().saturating_sub(1);
             }
         }
 
@@ -386,14 +388,13 @@ impl Screen {
         write!(writer, "{}", buf)?;
         writer.flush()?;
 
-        let final_cursor_row = new_lines.len().saturating_sub(1);
-        self.cursor_row = final_cursor_row;
-        self.hardware_cursor_row = final_cursor_row;
+        self.cursor_row = new_lines.len().saturating_sub(1);
+        self.hardware_cursor_row = render_end;
         self.max_lines_rendered = self.max_lines_rendered.max(new_lines.len());
         self.prev_lines = new_lines;
         // Advance viewport_top if cursor ended up below the viewport
         // (matching pi's Math.max(prevViewportTop, finalCursorRow - height + 1)).
-        self.prev_viewport_top = viewport_top.max(final_cursor_row.saturating_sub(height_usize - 1));
+        self.prev_viewport_top = viewport_top.max(render_end.saturating_sub(height_usize - 1));
         self.prev_height = height_usize as u16;
         self.prev_width = width_usize as u16;
 
