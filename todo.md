@@ -18,14 +18,57 @@ All 6 phases of the pi-tui alignment are implemented. 429 tests pass. 27 modules
 ## tools
 - [ ] check tool execution modes in pi, parallel, sequence, ... and compare with rab
 
-## Chat/UX
-- [ ] auto-trigger slash commands on `/` (currently requires `/` + Tab)
+## Chat/UX gaps vs pi
+
+### Missing app actions (pi has 18 app.*, rab has 9)
+- [ ] `app.clear` — Ctrl+C when not streaming = clear editor
+- [ ] `app.suspend` — Ctrl+Z / SIGTSTP suspend
+- [ ] `app.thinking.cycle` — cycle thinking levels (off/low/medium/high/xhigh)
+- [ ] `app.model.cycleForward` / `app.model.cycleBackward` — cycle models with keybindings
+- [ ] `app.tools.expand` — toggle all tool output expansion
+- [ ] `app.editor.external` — open \$EDITOR for current editor content
+- [ ] `app.message.followUp` — type-ahead: queue a message while streaming
+- [ ] `app.message.dequeue` — edit all queued messages
+- [ ] `app.clipboard.pasteImage` — paste clipboard image as attachment
+- [ ] `app.session.fork` / `app.session.new` / `app.session.resume` / `app.session.tree` — session management
+
+### Message rendering
+- [ ] user messages: render as Markdown (same as pi — currently plain text)
+- [ ] assistant messages: use theme colors for bold, code, links (pi uses Markdown component)
+- [ ] OSC 133 zone markers around messages (`\x1b]133;A\x07` / `\x1b]133;B\x07` / `\x1b]133;C\x07`)
+- [ ] tool output: expand/collapse with preview truncation (pi's `BashExecutionComponent`)
+- [ ] tool output: preview vs full toggle keybinding
+- [ ] visual truncation of long output lines (pi's `visual-truncate.ts`)
+- [ ] countdown timer for auto-retry (pi's `CountdownTimer`)
+
+### Scrolling & navigation
 - [ ] mouse wheel events for chat scrolling
 - [ ] Page Up/Down chat scrolling (when editor not focused)
 - [ ] scrollbar/scroll indicators
-- [ ] check other message types rendering (tool results, assistant text)
-- [ ] footer token display padding fix on narrow terminals
-- [ ] assistant text: apply theme colors for bold, code, links
+
+### Footer
+- [ ] context window auto-compact indicator toggle
+- [ ] token display padding fix on narrow terminals
+- [ ] extension status line (already partially there)
+
+### Editor & input
+- [ ] auto-trigger slash commands on `/` (currently requires `/` + Tab)
+- [ ] external editor (":e" or keybinding opens \$EDITOR)
+- [ ] paste image from clipboard (requires image support)
+
+### Overlays (missing pi components)
+- [ ] `config-selector` — pick from stored configs
+- [ ] `theme-selector` — pick theme
+- [ ] `session-selector` — tree view of sessions
+- [ ] `first-time-setup` — guided setup on first run
+- [ ] `changelog` — what's new since last version
+- [ ] `login-dialog` — OAuth login
+- [ ] `oauth-selector` — pick OAuth provider
+
+### Other
+- [ ] suspend/resume (Ctrl+Z → `kill -CONT`)
+- [ ] debug key (Shift+Ctrl+D)
+- [ ] keybinding hints in header (dynamic, based on context)
 
 ## Agent framework
 - [ ] `adapter/genai.rs` — multiple backends (Anthropic, OpenAI, Google, Ollama)
