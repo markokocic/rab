@@ -71,7 +71,16 @@ pub fn render_messages(
                     strikethrough: false,
                     underline: false,
                 };
-                let md = Markdown::new(text.clone(), 0, 0, md_theme, Some(default_style), None);
+                let md = Markdown::new(
+                    text.clone(),
+                    0,
+                    0,
+                    md_theme,
+                    Some(default_style),
+                    Some(crate::tui::components::markdown::MarkdownOptions {
+                        preserve_ordered_list_markers: true,
+                    }),
+                );
                 let mut msg_box = crate::tui::components::r#box::TuiBox::new(
                     1,
                     1,
@@ -165,7 +174,7 @@ pub fn render_messages(
                     1,
                     1,
                     Some(std::boxed::Box::new(move |s: &str| -> String {
-                        format!("\x1b[48;2;40;40;50m{}\x1b[49m", s)
+                        crate::agent::ui::theme::current_theme().bg("toolPendingBg", s)
                     })),
                 );
                 let truncated = if args.len() > 80 {
@@ -173,7 +182,7 @@ pub fn render_messages(
                 } else {
                     args.clone()
                 };
-                let styled_name = theme.bold(name);
+                let styled_name = theme.fg("toolTitle", &theme.bold(name));
                 let content = if truncated.is_empty() || truncated == "{}" {
                     styled_name
                 } else {
@@ -197,7 +206,7 @@ pub fn render_messages(
                         1,
                         1,
                         Some(std::boxed::Box::new(move |s: &str| -> String {
-                            format!("\x1b[48;2;40;40;50m{}\x1b[49m", s)
+                            crate::agent::ui::theme::current_theme().bg("toolPendingBg", s)
                         })),
                     );
                     msg_box.add_child(std::boxed::Box::new(TuiText::new(
@@ -208,13 +217,17 @@ pub fn render_messages(
                     )));
                     lines.extend(msg_box.render(width));
                 } else {
-                    let bg_code = if *is_error { "60;40;40" } else { "40;50;40" };
+                    let bg_key = if *is_error {
+                        "toolErrorBg"
+                    } else {
+                        "toolSuccessBg"
+                    };
                     let fg = if *is_error { "error" } else { "muted" };
                     let mut msg_box = crate::tui::components::r#box::TuiBox::new(
                         1,
                         0,
                         Some(std::boxed::Box::new(move |s: &str| -> String {
-                            format!("\x1b[48;2;{}m{}\x1b[49m", bg_code, s)
+                            crate::agent::ui::theme::current_theme().bg(bg_key, s)
                         })),
                     );
                     if collapse_tool_output {
