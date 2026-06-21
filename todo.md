@@ -1,8 +1,53 @@
+## Built-in tool rendering — match pi 1/1
+
+### Per-tool call rendering (renderCall)
+
+Each tool should have a custom renderCall matching pi's format, instead of the current generic name+args display.
+
+| Tool | pi format | rab (current) |
+|------|-----------|---------------|
+| **read** | `bold("read") + accent(path) + warning(":start-end")` — compact mode: `"read docs label"`, `"read resource label"`, `"[skill] label"` | `bold("read") + "  " + {truncated JSON args}` |
+| **bash** | `bold("$ command") + muted(timeout)` | ✅ already done |
+| **edit** | `bold("edit") + accent(path)` — with `renderShell: "self"` + inline diff preview | `bold("edit") + "  " + {truncated JSON args}` |
+| **write** | `bold("write") + accent(path) + dim(" (N lines)")` | `bold("write") + "  " + {truncated JSON args}` |
+| **grep** | `bold("grep") + accent("/pattern/") + toolOutput(" in path") + optional glob/limit` | `bold("grep") + "  " + {truncated JSON args}` |
+| **find** | `bold("find") + accent(pattern) + toolOutput(" in path") + optional limit` | `bold("find") + "  " + {truncated JSON args}` |
+| **ls** | `bold("ls") + accent(path) + optional limit` | `bold("ls") + "  " + {truncated JSON args}` |
+
+### Per-tool result rendering (renderResult)
+
+Each tool should format its result matching pi's visual style.
+
+| Tool | pi format | rab (current) |
+|------|-----------|---------------|
+| **read** | Syntax-highlighted code + `"N more lines (to expand)"` + truncation warnings | Just raw content |
+| **bash** | Output preview (5 lines collapsed) + `"Elapsed/Took X.Xs"` + expand hint + truncation | Just raw content (no timing) |
+| **edit** | Unified diff (additions green, removals red) | Just raw content |
+| **write** | Syntax-highlighted preview | Just raw content |
+| **grep** | Output lines (15 collapsed) + `"N more lines (to expand)"` + truncation warnings | Just raw content |
+| **find** | File list (20 collapsed) + `"N more lines (to expand)"` + truncation warnings | Just raw content |
+| **ls** | Directory listing (20 collapsed) + `"N more lines (to expand)"` + truncation warnings | Just raw content |
+
+### ⚠️ Implementation strategy
+
+- [ ] **Phase 1**: Add `DisplayMsg` variants for each tool call with structured args (path, pattern, etc.) so rendering can extract fields instead of raw JSON
+- [ ] **Phase 2**: Add `DisplayMsg` variants for each tool result with structured details (truncation, diff, timing)
+- [ ] **Phase 3**: Implement per-tool `renderCall` formatting in `render_messages()` — match pi's `toolTitle` bold name + `accent` path/pattern + `toolOutput`/`warning` decorations
+- [ ] **Phase 4**: Implement per-tool `renderResult` formatting — syntax highlighting for read/write, diff for edit, output preview with expand hint + truncation warnings for all
+- [ ] **Phase 5**: Support `renderShell: "self"` for edit tool — edit renders its own Box with inline diff preview, no outer Box
+- [ ] **Phase 6**: Align BashExecution component — add timing info (`Elapsed`/`Took X.Xs`), keybinding hints (`keyHint`), width-aware visual truncation (`truncateToVisualLines` instead of simple wrap)
+
+### TuiBox cache fix
+
+- [ ] Fix `TuiBox` render cache — currently has cache fields but `render(&self)` can't write to them. Use `RefCell` or switch to interior mutability pattern.
+
+---
+
 ## Markdown rendering — planned
 
 ### Approach
-- **Parser**: `pulldown-cmark` — fast, zero-copy, event-based iterator, used by cargo doc
-- **Syntax highlighting**: `syntect` — same engine as bat/delta/broot, ~250 grammars, ~1 MiB binary cost
+- **Parser**: `pulldown-cmark` - fast, zero-copy, event-based iterator, used by cargo doc
+- **Syntax highlighting**: `syntect` - same engine as bat/delta/broot, ~250 grammars, ~1 MiB binary cost
 
 ### New: `src/tui/components/markdown.rs`
 - `Markdown` component impl (analogous to pi's `packages/tui/src/components/markdown.ts`)
@@ -11,19 +56,19 @@
   - Style reapplication: emit parent style prefix after inline resets (matching pi)
   - Cache rendered output by text+width
 - `MarkdownTheme` struct with `Arc<dyn Fn(&str) -> String>` fields for each element type (heading, link, code, etc.)
-- `DefaultTextStyle` — base fg color + decorations (bold/italic/etc.)
-- `MarkdownOptions` — `preserve_ordered_list_markers`
+- `DefaultTextStyle` - base fg color + decorations (bold/italic/etc.)
+- `MarkdownOptions` - `preserve_ordered_list_markers`
 - `get_markdown_theme()` factory in `src/agent/ui/theme.rs` using RabTheme colors + syntect
 
 ### Supported elements (1/1 with pi)
-- **Block**: headings (h1–h6), paragraphs, fenced code blocks (with syntax highlighting), lists (ordered/unordered, nested, task items), blockquotes (nested block tokens, "│ " prefix), tables (width-aware column sizing, cell wrapping, box-drawing borders), horizontal rules, HTML (plain text)
+- **Block**: headings (h1-h6), paragraphs, fenced code blocks (with syntax highlighting), lists (ordered/unordered, nested, task items), blockquotes (nested block tokens, "│ " prefix), tables (width-aware column sizing, cell wrapping, box-drawing borders), horizontal rules, HTML (plain text)
 - **Inline**: bold, italic, codespan, links (OSC 8 hyperlinks where supported, else inline URL), strikethrough, line breaks
 
 ### Integration in `src/agent/ui/messages.rs`
 | Current message type | New rendering |
 |---|---|
 | `DisplayMsg::User` | `Box(1,1, userMessageBg)` → `Markdown(0,0, mdTheme, {color: userMessageText})` |
-| `DisplayMsg::AssistantText` | `Markdown(1,0, mdTheme)` — no bg, left padding only |
+| `DisplayMsg::AssistantText` | `Markdown(1,0, mdTheme)` - no bg, left padding only |
 | `DisplayMsg::Thinking` | `Markdown(1,0, mdTheme, {color: thinkingText, italic: true})` |
 
 ### Phases
@@ -39,7 +84,7 @@
 
 ## Chat/UX gaps vs pi
 
-### ✅ Completed — Missing app actions (all 10 implemented)
+### ✅ Completed - Missing app actions (all 10 implemented)
 
 | Action | Key | Status |
 |--------|-----|--------|
@@ -54,7 +99,7 @@
 | `app.message.dequeue` | Alt+Up | ✅ Restores queued messages to editor |
 | `app.thinking.toggle` | Ctrl+T | ✅ Keep existing toggle thinking visibility |
 
-### ✅ Completed — Message rendering polish
+### ✅ Completed - Message rendering polish
 
 | Item | Status |
 |------|--------|
@@ -63,7 +108,7 @@
 | Expand/collapse toggle (Ctrl+O) | ✅ Toggles all tool outputs |
 | OSC 133 zone markers | ✅ Already present in messages.rs |
 
-### ✅ Completed — Chat scrolling
+### ✅ Completed - Chat scrolling
 
 | Item | Status |
 |------|--------|
@@ -73,80 +118,80 @@
 | Reset on submit | ✅ scroll_offset reset to 0 on new message |
 
 
-### 🟡 Missing — Slash commands (14 of 22 pi built-ins not implemented)
+### 🟡 Missing - Slash commands (14 of 22 pi built-ins not implemented)
 
 #### Priority: high (core UX parity)
-- [ ] `/settings` — Open settings menu/overlay
-- [ ] `/export` — Export session (HTML default, or specify path: .html/.jsonl)
-- [ ] `/import` — Import and resume a session from a JSONL file
-- [ ] `/copy` — Copy last assistant message to clipboard
-- [ ] `/compact` — Manually compact the session context
-- [ ] `/changelog` — Show changelog entries overlay
+- [ ] `/settings` - Open settings menu/overlay
+- [ ] `/export` - Export session (HTML default, or specify path: .html/.jsonl)
+- [ ] `/import` - Import and resume a session from a JSONL file
+- [ ] `/copy` - Copy last assistant message to clipboard
+- [ ] `/compact` - Manually compact the session context
+- [ ] `/changelog` - Show changelog entries overlay
 
 #### Priority: medium
-- [ ] `/scoped-models` — Enable/disable models for Ctrl+P cycling
-- [ ] `/fork` — Create a new fork from a previous user message
-- [ ] `/clone` — Duplicate the current session at the current position
-- [ ] `/trust` — Save project trust decision for future sessions
-- [ ] `/login` — Configure provider authentication (→ login-dialog overlay)
-- [ ] `/logout` — Remove provider authentication
+- [ ] `/scoped-models` - Enable/disable models for Ctrl+P cycling
+- [ ] `/fork` - Create a new fork from a previous user message
+- [ ] `/clone` - Duplicate the current session at the current position
+- [ ] `/trust` - Save project trust decision for future sessions
+- [ ] `/login` - Configure provider authentication (→ login-dialog overlay)
+- [ ] `/logout` - Remove provider authentication
 
 #### Priority: low
-- [ ] `/share` — Share session as a secret GitHub gist
-- [ ] `/tree` — Navigate session tree (→ session-selector overlay)
+- [ ] `/share` - Share session as a secret GitHub gist
+- [ ] `/tree` - Navigate session tree (→ session-selector overlay)
 
-### 🟡 Deferred — Session management (complex, needs more architecture)
+### 🟡 Deferred - Session management (complex, needs more architecture)
 
-- [ ] `app.session.new` — Start a new session (→ `/new` exists, needs app action)
-- [ ] `app.session.tree` — Open session tree selector (→ `/tree`)
-- [ ] `app.session.fork` — Fork current session (→ `/fork`)
-- [ ] `app.session.resume` — Resume a session (→ `/resume` exists)
-- [ ] `app.session.toggleNamedFilter` — Toggle named session filter
+- [ ] `app.session.new` - Start a new session (→ `/new` exists, needs app action)
+- [ ] `app.session.tree` - Open session tree selector (→ `/tree`)
+- [ ] `app.session.fork` - Fork current session (→ `/fork`)
+- [ ] `app.session.resume` - Resume a session (→ `/resume` exists)
+- [ ] `app.session.toggleNamedFilter` - Toggle named session filter
 
-### 🟡 Deferred — Image support (complex, scoped out)
+### 🟡 Deferred - Image support (complex, scoped out)
 
-- [ ] `app.clipboard.pasteImage` — Paste clipboard image as attachment
+- [ ] `app.clipboard.pasteImage` - Paste clipboard image as attachment
 - [ ] Image support in multimodal payload
 
-### 🟡 Deferred — Overlays (all missing)
+### 🟡 Deferred - Overlays (all missing)
 
-- [ ] `config-selector` — pick from stored configs
-- [ ] `theme-selector` — pick theme
-- [ ] `session-selector` — tree view of sessions
-- [ ] `first-time-setup` — guided setup on first run
-- [ ] `changelog` — what's new since last version
-- [ ] `login-dialog` — OAuth login
-- [ ] `oauth-selector` — pick OAuth provider
+- [ ] `config-selector` - pick from stored configs
+- [ ] `theme-selector` - pick theme
+- [ ] `session-selector` - tree view of sessions
+- [ ] `first-time-setup` - guided setup on first run
+- [ ] `changelog` - what's new since last version
+- [ ] `login-dialog` - OAuth login
+- [ ] `oauth-selector` - pick OAuth provider
 
-### ✅ Completed — Footer improvements
+### ✅ Completed - Footer improvements
 
 - [x] Auto-compact toggle (`app.compact.toggle`, Ctrl+Shift+C) with styled ⚡ indicator
-- [x] Narrow terminal protection — graceful truncation with priority: dot > model > stats
-- [x] Extension status line — verified working, truncated to width
+- [x] Narrow terminal protection - graceful truncation with priority: dot > model > stats
+- [x] Extension status line - verified working, truncated to width
 
-### ✅ Completed — Editor & input (pi-aligned 1/1)
+### ✅ Completed - Editor & input (pi-aligned 1/1)
 
-- [x] Auto-trigger slash commands on `/` — shows autocomplete as soon as `/char` is typed
+- [x] Auto-trigger slash commands on `/` - shows autocomplete as soon as `/char` is typed
 - [x] Check autocomplete after external editor restore and dequeue restore
-- [x] **ChatEditor fully aligned to pi's CustomEditor** — text-editing keys (Ctrl+Z undo, Ctrl+J newline, Up/Down history, Tab, PageUp/PageDown) delegate to inner Editor; only app-level actions (interrupt, exit, model selector, help, etc.) intercepted
-- [x] **Ctrl+Z → undo** (not suspend) — `ACTION_EDITOR_UNDO` processed by Editor, matching pi
-- [x] **Up/Down history** — handled by Editor's internal history with pi-compatible condition (`is_first_visual_line() && (is_empty() || history_index >= 0 || cursor_col == 0)`)
-- [x] **Tab completion** — wired through `CombinedAutocompleteProvider` (slash commands + file paths), `AutocompleteProvider` trait, matching pi
-- [x] **Backslash+Enter continuation** — `\`+Enter inserts newline instead of submitting (pi-style)
-- [x] **Enter delegates to Editor's submit()** — proper state cleanup (paste markers cleared, undo stack cleared, history browsing exited, `last_action` reset)
-- [x] **Empty Enter submits empty string** — matches pi's `submitValue()` behavior
-- [x] **`disable_submit` flag respected** — Editor handles it before submit
-- [x] **`is_first_visual_line` uses visual lines** — stores `last_width` during render, computes visual line positions via `layout_text()`, matching pi's `buildVisualLineMap`
-- [x] **`exit_history()` no longer clears undo stack** — fixes pre-existing bug where undo was impossible
-- [x] **`on_submit` callback is `Send`** — for future thread-safe callback use
+- [x] **ChatEditor fully aligned to pi's CustomEditor** - text-editing keys (Ctrl+Z undo, Ctrl+J newline, Up/Down history, Tab, PageUp/PageDown) delegate to inner Editor; only app-level actions (interrupt, exit, model selector, help, etc.) intercepted
+- [x] **Ctrl+Z → undo** (not suspend) - `ACTION_EDITOR_UNDO` processed by Editor, matching pi
+- [x] **Up/Down history** - handled by Editor's internal history with pi-compatible condition (`is_first_visual_line() && (is_empty() || history_index >= 0 || cursor_col == 0)`)
+- [x] **Tab completion** - wired through `CombinedAutocompleteProvider` (slash commands + file paths), `AutocompleteProvider` trait, matching pi
+- [x] **Backslash+Enter continuation** - `\`+Enter inserts newline instead of submitting (pi-style)
+- [x] **Enter delegates to Editor's submit()** - proper state cleanup (paste markers cleared, undo stack cleared, history browsing exited, `last_action` reset)
+- [x] **Empty Enter submits empty string** - matches pi's `submitValue()` behavior
+- [x] **`disable_submit` flag respected** - Editor handles it before submit
+- [x] **`is_first_visual_line` uses visual lines** - stores `last_width` during render, computes visual line positions via `layout_text()`, matching pi's `buildVisualLineMap`
+- [x] **`exit_history()` no longer clears undo stack** - fixes pre-existing bug where undo was impossible
+- [x] **`on_submit` callback is `Send`** - for future thread-safe callback use
 
-### 🟡 Deferred — Editor & input (image-blocked)
+### 🟡 Deferred - Editor & input (image-blocked)
 
 - [ ] Paste image from clipboard (blocked on image support)
 
-### 🟡 Deferred — Other
+### 🟡 Deferred - Other
 
-- [ ] Suspend/resume (Ctrl+Z → `kill -CONT`) — needs TTY save/restore
+- [ ] Suspend/resume (Ctrl+Z → `kill -CONT`) - needs TTY save/restore
 - [ ] Debug key (Shift+Ctrl+D)
 - [ ] Keybinding hints in header (dynamic, based on context)
 - [ ] Proper chat scrolling with viewport management (terminal natural scrolling)
@@ -159,18 +204,18 @@
 ---
 
 ## Agent framework
-- [ ] `adapter/genai.rs` — multiple backends (Anthropic, OpenAI, Google, Ollama)
-- [ ] `compaction.rs` — context window compaction
-- [ ] Hook pipeline — `before_tool_call`, `after_tool_call`, `CancellationToken`
-- [ ] Steering / follow-up queues — runtime message injection
-- [ ] Tool execution modes — sequential mode
-- [ ] `~/.rab/models.json` — custom provider/model definitions
-- [ ] Image support — multimodal payload
-- [ ] `rab plugin new` — scaffold extension crate
+- [ ] `adapter/genai.rs` - multiple backends (Anthropic, OpenAI, Google, Ollama)
+- [ ] `compaction.rs` - context window compaction
+- [ ] Hook pipeline - `before_tool_call`, `after_tool_call`, `CancellationToken`
+- [ ] Steering / follow-up queues - runtime message injection
+- [ ] Tool execution modes - sequential mode
+- [ ] `~/.rab/models.json` - custom provider/model definitions
+- [ ] Image support - multimodal payload
+- [ ] `rab plugin new` - scaffold extension crate
 
 ---
 
-## pi-tui alignment — ✅ COMPLETE
+## pi-tui alignment - ✅ COMPLETE
 
 All 6 phases of the pi-tui alignment are implemented. 429 tests pass. 27 modules cover all scoped pi-tui functionality (excluding images, Markdown, and Kitty protocol which were scoped out).
 
@@ -178,11 +223,11 @@ All 6 phases of the pi-tui alignment are implemented. 429 tests pass. 27 modules
 - **Terminal**: `TerminalTrait`, `ProcessTerminal`, Kitty keyboard protocol (flags 1+2+4), bracketed paste, progress indicator, `drainInput()`, `setTitle()`
 - **Keys & keybindings**: String-based key IDs, 27 action IDs, JSON config loading, all components migrated
 - **Utilities**: Width caching, `applyBackgroundToLine`, `extractSegments`, `CJK_BREAK_REGEX`, `WordNavigationOptions`, `PUNCTUATION_CHARS`
-- **Components**: Editor (paste markers, undo coalescing, sticky column, character jump, history draft, `border_color`, autocomplete), Input, SelectList, SettingsList, Loader, CancellableLoader, Box, Text, TruncatedText — all 1/1 with pi
+- **Components**: Editor (paste markers, undo coalescing, sticky column, character jump, history draft, `border_color`, autocomplete), Input, SelectList, SettingsList, Loader, CancellableLoader, Box, Text, TruncatedText - all 1/1 with pi
 - **Autocomplete**: `AutocompleteProvider` trait, `CombinedAutocompleteProvider` (slash commands + file paths)
 - **Overlays**: HelpOverlay, ModelSelector via `TUI.show_overlay()`
 
-### TUI — ✅ complete
+### TUI - ✅ complete
 - [x] App loop uses `ProcessTerminal` + `TerminalTrait` (no direct crossterm)
 - [x] Color scheme notifications (OSC 2031)
 
@@ -194,12 +239,12 @@ All 6 phases of the pi-tui alignment are implemented. 429 tests pass. 27 modules
 - [x] Skills loading and `/skill:name` expansion
 - [x] CLI flags (`--no-context-files`, `--system-prompt`, `--append-system-prompt`)
 - [x] Startup resource listing
-- [x] Built-in tools (bash, read, write, edit) — behavioral 1/1 with pi
+- [x] Built-in tools (bash, read, write, edit) - behavioral 1/1 with pi
 - [x] Thinking message rendering with per-level colors
-- [x] **Complete pi-tui alignment** — 27 modules, $\ge$ 429 tests, all 6 phases
-- [x] **Missing app actions (11)** — clear, suspend, thinking cycle, model cycle, tools expand, external editor, follow-up, dequeue, compact toggle
-- [x] **Message rendering polish** — tool output preview truncation, visual line truncation, expand/collapse
-- [x] **Chat scrolling** — PageUp/PageDown, scroll indicator, reset on submit
-- [x] **Footer improvements** — auto-compact toggle, narrow terminal protection, extension status line
-- [x] **Editor & input** — auto-trigger slash autocomplete on `/`
-- [ ] Write logging (`PI_TUI_WRITE_LOG`) — optional, defer
+- [x] **Complete pi-tui alignment** - 27 modules, $\ge$ 429 tests, all 6 phases
+- [x] **Missing app actions (11)** - clear, suspend, thinking cycle, model cycle, tools expand, external editor, follow-up, dequeue, compact toggle
+- [x] **Message rendering polish** - tool output preview truncation, visual line truncation, expand/collapse
+- [x] **Chat scrolling** - PageUp/PageDown, scroll indicator, reset on submit
+- [x] **Footer improvements** - auto-compact toggle, narrow terminal protection, extension status line
+- [x] **Editor & input** - auto-trigger slash autocomplete on `/`
+- [ ] Write logging (`PI_TUI_WRITE_LOG`) - optional, defer
