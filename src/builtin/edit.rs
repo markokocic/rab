@@ -292,7 +292,7 @@ impl AgentTool for EditTool {
     }
 
     fn label(&self) -> &str {
-        "Make precise file edits"
+        "Make precise file edits with exact text replacement, including multiple disjoint edits in one call"
     }
 
     async fn execute(

@@ -276,7 +276,7 @@ impl AgentTool for BashTool {
     }
 
     fn label(&self) -> &str {
-        "Execute bash commands"
+        "Execute bash commands (ls, grep, find, etc.)"
     }
 
     async fn execute(
