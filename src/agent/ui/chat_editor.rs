@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use crossterm::event::KeyEvent;
 
 use crate::tui::Component;
@@ -65,12 +67,17 @@ pub enum InputAction {
 ///   matching pi's editor-centric handling.
 /// - Only app-level keybindings (interrupt, exit, model selector, help, etc.)
 ///   are intercepted here.
+#[allow(clippy::type_complexity)]
 pub struct ChatEditor {
     pub editor: Editor,
     /// Working directory for file path completion in autocomplete provider.
     cwd: std::path::PathBuf,
     /// Slash commands for the autocomplete provider.
     slash_commands: Vec<SlashCommand>,
+    /// Extension-registered shortcuts (pi-style). Checked before built-in handling.
+    on_extension_shortcut: Option<Box<dyn FnMut(&KeyEvent) -> bool + Send>>,
+    /// Dynamically registered app action handlers (pi-style).
+    action_handlers: HashMap<String, Box<dyn FnMut() + Send>>,
 }
 
 impl ChatEditor {
@@ -108,6 +115,8 @@ impl ChatEditor {
             editor,
             cwd,
             slash_commands: Vec::new(),
+            on_extension_shortcut: None,
+            action_handlers: HashMap::new(),
         }
     }
 
@@ -131,6 +140,22 @@ impl ChatEditor {
             })
             .collect();
         self.rebuild_autocomplete_provider();
+    }
+
+    /// Set a handler for extension-registered shortcuts (pi-style).
+    /// The handler receives the key event and returns true if the key was handled.
+    pub fn set_extension_shortcut_handler(
+        &mut self,
+        handler: Box<dyn FnMut(&KeyEvent) -> bool + Send>,
+    ) {
+        self.on_extension_shortcut = Some(handler);
+    }
+
+    /// Register a dynamic app action handler (pi-style).
+    /// When the keybinding for `action` is pressed, `handler` is called.
+    /// Does NOT override built-in actions (Escape, Ctrl+C, Ctrl+D, Enter).
+    pub fn on_action(&mut self, action: &str, handler: Box<dyn FnMut() + Send>) {
+        self.action_handlers.insert(action.to_string(), handler);
     }
 
     /// After programmatic set_text, trigger autocomplete check (pi-style).
@@ -160,6 +185,19 @@ impl ChatEditor {
     /// in the app layer while keeping text-editing logic in the Editor component.
     pub fn handle_input(&mut self, key: &KeyEvent) -> InputAction {
         let kb = get_keybindings();
+
+        // ═══════════════════════════════════════════════════════════════════
+        // 1. Extension shortcuts (pi-style: checked before built-in handling)
+        // ═══════════════════════════════════════════════════════════════════
+        if let Some(ref mut handler) = self.on_extension_shortcut
+            && handler(key)
+        {
+            return InputAction::Handled;
+        }
+
+        // ═══════════════════════════════════════════════════════════════════
+        // 2. Built-in app-level actions (hardcoded, matching pi's CustomEditor)
+        // ═══════════════════════════════════════════════════════════════════
 
         // ── Escape: close autocomplete first if active, else signal app ──
         // Mirrors pi: if autocomplete is active, let Editor handle it (cancels autocomplete).
@@ -247,7 +285,21 @@ impl ChatEditor {
             return InputAction::CompactToggle;
         }
 
-        // ── Enter: let Editor handle submit (pi-style) ──
+        // ═══════════════════════════════════════════════════════════════════
+        // 3. Dynamically registered app actions (pi-style actionHandlers)
+        // ═══════════════════════════════════════════════════════════════════
+        // Matches pi: checked after built-ins, before Editor delegation.
+        // Excludes app.interrupt and app.exit which are handled above.
+        for (action, handler) in &mut self.action_handlers {
+            if action != "app.interrupt" && action != "app.exit" && kb.matches(key, action) {
+                handler();
+                return InputAction::Handled;
+            }
+        }
+
+        // ═══════════════════════════════════════════════════════════════════
+        // 4. Enter: let Editor handle submit (pi-style)
+        // ═══════════════════════════════════════════════════════════════════
         // The Editor's handle_input processes Enter via submit(), which:
         //   1. Expands paste markers
         //   2. Clears editor state (pastes, undo, history browsing)
@@ -270,7 +322,9 @@ impl ChatEditor {
             return InputAction::Handled;
         }
 
-        // ── All other keys: delegate to the core Editor for text editing ──
+        // ═══════════════════════════════════════════════════════════════════
+        // 5. All other keys: delegate to the core Editor for text editing
+        // ═══════════════════════════════════════════════════════════════════
         // This includes:
         //   - Ctrl+Z → undo (ACTION_EDITOR_UNDO)
         //   - Ctrl+J → newline (ACTION_INPUT_NEW_LINE)
