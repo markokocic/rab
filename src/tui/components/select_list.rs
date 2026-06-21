@@ -1,8 +1,10 @@
+#![allow(clippy::type_complexity)]
+
 use crate::tui::component::Component;
 use crate::tui::fuzzy::fuzzy_filter;
 use crate::tui::keybindings::{
-    get_keybindings, ACTION_EDITOR_DELETE_CHAR_BACKWARD, ACTION_SELECT_CANCEL,
-    ACTION_SELECT_CONFIRM, ACTION_SELECT_DOWN, ACTION_SELECT_UP,
+    ACTION_EDITOR_DELETE_CHAR_BACKWARD, ACTION_SELECT_CANCEL, ACTION_SELECT_CONFIRM,
+    ACTION_SELECT_DOWN, ACTION_SELECT_UP, get_keybindings,
 };
 use crate::tui::util::{truncate_to_width, visible_width};
 use crossterm::event::KeyEvent;
@@ -64,8 +66,7 @@ pub struct SelectListLayoutOptions {
     pub min_primary_column_width: Option<usize>,
     pub max_primary_column_width: Option<usize>,
     /// Custom truncation function for primary column.
-    pub truncate_primary:
-        Option<Box<dyn Fn(&str, usize, usize, &SelectItem, bool) -> String>>,
+    pub truncate_primary: Option<Box<dyn Fn(&str, usize, usize, &SelectItem, bool) -> String>>,
 }
 
 /// Scrollable list with optional fuzzy search and two-column layout.
@@ -165,12 +166,7 @@ impl SelectList {
         } else {
             let lower = filter.to_lowercase();
             self.filtered_indices = (0..self.items.len())
-                .filter(|&i| {
-                    self.items[i]
-                        .label
-                        .to_lowercase()
-                        .contains(&lower)
-                })
+                .filter(|&i| self.items[i].label.to_lowercase().contains(&lower))
                 .collect();
         }
         self.selected_index = 0;
@@ -352,7 +348,7 @@ impl SelectList {
     }
 
     fn normalize_to_single_line(text: &str) -> String {
-        text.replace('\r', " ").replace('\n', " ").trim().to_string()
+        text.replace(['\r', '\n'], " ").trim().to_string()
     }
 
     fn get_primary_column_width(&self) -> usize {
@@ -393,21 +389,28 @@ impl SelectList {
         let effective_primary = primary_column_width.max(1).min(width - prefix_width - 4);
         let max_primary_width = effective_primary.saturating_sub(PRIMARY_COLUMN_GAP).max(1);
 
-        let truncated_value = self.truncate_primary(item, is_selected, max_primary_width, effective_primary);
+        let truncated_value =
+            self.truncate_primary(item, is_selected, max_primary_width, effective_primary);
         let truncated_vw = visible_width(&truncated_value);
         let spacing = " ".repeat(effective_primary.saturating_sub(truncated_vw));
 
         let description_start = prefix_width + truncated_vw + spacing.len();
         let remaining = width.saturating_sub(description_start + 2);
 
-        let desc_single = item.description.as_ref().map(|d| Self::normalize_to_single_line(d));
+        let desc_single = item
+            .description
+            .as_ref()
+            .map(|d| Self::normalize_to_single_line(d));
 
         if let Some(ref desc) = desc_single
             && remaining > MIN_DESCRIPTION_WIDTH
         {
             let truncated_desc = truncate_to_width(desc, remaining, "", false);
             if is_selected {
-                return (self.theme.selected_text)(&format!("{}{}{}{}", prefix, truncated_value, spacing, truncated_desc));
+                return (self.theme.selected_text)(&format!(
+                    "{}{}{}{}",
+                    prefix, truncated_value, spacing, truncated_desc
+                ));
             }
             let desc_text = (self.theme.description)(&format!("{}{}", spacing, truncated_desc));
             return format!("{}{}{}", prefix, truncated_value, desc_text);
@@ -496,8 +499,7 @@ mod tests {
         let items = vec![
             SelectItem::new("alpha-command", "Alpha command")
                 .with_description("Does something useful"),
-            SelectItem::new("beta-tool", "Beta tool")
-                .with_description("Another tool description"),
+            SelectItem::new("beta-tool", "Beta tool").with_description("Another tool description"),
         ];
         let list = SelectList::new(items, 10, SelectListTheme::default(), None);
         let lines = list.render(80);

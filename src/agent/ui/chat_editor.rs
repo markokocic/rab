@@ -1,16 +1,16 @@
 use crossterm::event::KeyEvent;
 
-use crate::tui::keybindings::{
-    get_keybindings, ACTION_APP_ESCAPE, ACTION_APP_EXIT, ACTION_APP_HELP,
-    ACTION_APP_HISTORY_DOWN, ACTION_APP_HISTORY_UP, ACTION_APP_INTERRUPT,
-    ACTION_APP_MODEL_SELECTOR, ACTION_APP_TOGGLE_COLLAPSE, ACTION_APP_TOGGLE_THINKING,
-    ACTION_EDITOR_PAGE_DOWN, ACTION_EDITOR_PAGE_UP, ACTION_INPUT_NEW_LINE,
-    ACTION_INPUT_SUBMIT, ACTION_INPUT_TAB, ACTION_SELECT_CANCEL,
-};
 use crate::tui::Component;
 use crate::tui::Theme;
 use crate::tui::components::Editor;
 use crate::tui::components::editor::{EditorOptions, EditorTheme};
+use crate::tui::keybindings::{
+    ACTION_APP_ESCAPE, ACTION_APP_EXIT, ACTION_APP_HELP, ACTION_APP_HISTORY_DOWN,
+    ACTION_APP_HISTORY_UP, ACTION_APP_INTERRUPT, ACTION_APP_MODEL_SELECTOR,
+    ACTION_APP_TOGGLE_COLLAPSE, ACTION_APP_TOGGLE_THINKING, ACTION_EDITOR_PAGE_DOWN,
+    ACTION_EDITOR_PAGE_UP, ACTION_INPUT_NEW_LINE, ACTION_INPUT_SUBMIT, ACTION_INPUT_TAB,
+    ACTION_SELECT_CANCEL, get_keybindings,
+};
 
 /// Actions that ChatEditor can signal to the app layer.
 /// Mirrors pi's CustomEditor approach: the editor handles its own text keys

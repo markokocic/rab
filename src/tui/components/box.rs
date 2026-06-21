@@ -1,5 +1,5 @@
-use crate::tui::util::{apply_background_to_line, visible_width};
 use crate::tui::Component;
+use crate::tui::util::{apply_background_to_line, visible_width};
 
 /// Type alias for background color functions.
 pub type BgFn = Box<dyn Fn(&str) -> String>;

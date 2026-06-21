@@ -1,7 +1,7 @@
 use std::cell::RefCell;
 
-use crate::tui::util::{truncate_to_width, visible_width};
 use crate::tui::Component;
+use crate::tui::util::{truncate_to_width, visible_width};
 
 /// Text truncated to fit within a maximum visible width with configurable ellipsis.
 /// Port of pi's `packages/tui/src/components/truncated-text.ts`.
@@ -51,7 +51,8 @@ impl TruncatedText {
 impl Component for TruncatedText {
     fn render(&self, width: usize) -> Vec<String> {
         // Use cache for single-line no-padding case
-        if self.padding_x == 0 && self.padding_y == 0 && *self.cached_width.borrow() == Some(width) {
+        if self.padding_x == 0 && self.padding_y == 0 && *self.cached_width.borrow() == Some(width)
+        {
             return vec![self.cached_line.borrow().clone()];
         }
 
@@ -138,9 +139,15 @@ mod tests {
         let tt = TruncatedText::new("hello").with_padding(1, 1);
         let lines = tt.render(10);
         assert_eq!(lines.len(), 3, "Should have top pad + line + bottom pad");
-        assert!(lines[0].chars().all(|c| c == ' '), "Top padding should be spaces");
+        assert!(
+            lines[0].chars().all(|c| c == ' '),
+            "Top padding should be spaces"
+        );
         assert!(lines[1].contains("hello"), "Content should contain text");
-        assert!(lines[2].chars().all(|c| c == ' '), "Bottom padding should be spaces");
+        assert!(
+            lines[2].chars().all(|c| c == ' '),
+            "Bottom padding should be spaces"
+        );
     }
 
     #[test]
@@ -148,6 +155,9 @@ mod tests {
         let tt = TruncatedText::new("line1\nline2");
         let lines = tt.render(20);
         assert_eq!(lines.len(), 1);
-        assert!(!lines[0].contains("line2"), "Should not contain second line");
+        assert!(
+            !lines[0].contains("line2"),
+            "Should not contain second line"
+        );
     }
 }

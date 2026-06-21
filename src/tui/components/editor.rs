@@ -1,25 +1,24 @@
 #![allow(clippy::type_complexity)]
 
-use crate::tui::keybindings::{
-    get_keybindings, ACTION_EDITOR_CURSOR_DOWN, ACTION_EDITOR_CURSOR_LEFT,
-    ACTION_EDITOR_CURSOR_LINE_END, ACTION_EDITOR_CURSOR_LINE_START,
-    ACTION_EDITOR_CURSOR_RIGHT, ACTION_EDITOR_CURSOR_UP, ACTION_EDITOR_CURSOR_WORD_LEFT,
-    ACTION_EDITOR_CURSOR_WORD_RIGHT, ACTION_EDITOR_DELETE_CHAR_BACKWARD,
-    ACTION_EDITOR_DELETE_CHAR_FORWARD, ACTION_EDITOR_DELETE_TO_LINE_END,
-    ACTION_EDITOR_DELETE_TO_LINE_START, ACTION_EDITOR_DELETE_WORD_BACKWARD,
-    ACTION_EDITOR_DELETE_WORD_FORWARD, ACTION_EDITOR_PAGE_DOWN, ACTION_EDITOR_PAGE_UP,
-    ACTION_EDITOR_UNDO, ACTION_EDITOR_YANK, ACTION_EDITOR_YANK_POP, ACTION_INPUT_NEW_LINE,
-    ACTION_INPUT_SUBMIT, ACTION_INPUT_TAB, ACTION_SELECT_CANCEL, ACTION_SELECT_CONFIRM,
-    ACTION_SELECT_DOWN, ACTION_SELECT_UP, ACTION_EDITOR_JUMP_FORWARD,
-    ACTION_EDITOR_JUMP_BACKWARD,
-};
 use crate::tui::autocomplete::AutocompleteProvider;
 use crate::tui::component::Component;
 use crate::tui::components::select_list::{SelectItem, SelectList, SelectListTheme};
-use crate::tui::util::is_whitespace_char;
 use crate::tui::focusable::{CURSOR_MARKER, Focusable};
+use crate::tui::keybindings::{
+    ACTION_EDITOR_CURSOR_DOWN, ACTION_EDITOR_CURSOR_LEFT, ACTION_EDITOR_CURSOR_LINE_END,
+    ACTION_EDITOR_CURSOR_LINE_START, ACTION_EDITOR_CURSOR_RIGHT, ACTION_EDITOR_CURSOR_UP,
+    ACTION_EDITOR_CURSOR_WORD_LEFT, ACTION_EDITOR_CURSOR_WORD_RIGHT,
+    ACTION_EDITOR_DELETE_CHAR_BACKWARD, ACTION_EDITOR_DELETE_CHAR_FORWARD,
+    ACTION_EDITOR_DELETE_TO_LINE_END, ACTION_EDITOR_DELETE_TO_LINE_START,
+    ACTION_EDITOR_DELETE_WORD_BACKWARD, ACTION_EDITOR_DELETE_WORD_FORWARD,
+    ACTION_EDITOR_JUMP_BACKWARD, ACTION_EDITOR_JUMP_FORWARD, ACTION_EDITOR_PAGE_DOWN,
+    ACTION_EDITOR_PAGE_UP, ACTION_EDITOR_UNDO, ACTION_EDITOR_YANK, ACTION_EDITOR_YANK_POP,
+    ACTION_INPUT_NEW_LINE, ACTION_INPUT_SUBMIT, ACTION_INPUT_TAB, ACTION_SELECT_CANCEL,
+    ACTION_SELECT_CONFIRM, ACTION_SELECT_DOWN, ACTION_SELECT_UP, get_keybindings,
+};
 use crate::tui::keys::key_event_to_string;
 use crate::tui::kill_ring::KillRing;
+use crate::tui::util::is_whitespace_char;
 use std::collections::HashMap;
 
 use crate::tui::undo_stack::UndoStack;
@@ -81,7 +80,7 @@ pub struct Editor {
     padding_x: usize,
     max_visible_lines: usize,
     scroll_offset: usize,
-    theme: EditorTheme,
+    _theme: EditorTheme,
     focused: bool,
     kill_ring: KillRing,
     undo_stack: UndoStack<EditorSnapshot>,
@@ -126,7 +125,7 @@ impl Editor {
             padding_x: options.padding_x,
             max_visible_lines: options.max_visible_lines.max(3),
             scroll_offset: 0,
-            theme,
+            _theme: theme,
             focused: false,
             kill_ring: KillRing::new(),
             undo_stack: UndoStack::new(),
@@ -339,14 +338,21 @@ impl Editor {
         // @ and # at token boundaries
         if ch == "@" || ch == "#" {
             let before_char = text_before.chars().nth_back(1);
-            if text_before.len() == 1 || before_char.is_none_or(|c| c.is_whitespace() || c == ' ' || c == '\t') {
+            if text_before.len() == 1
+                || before_char.is_none_or(|c| c.is_whitespace() || c == ' ' || c == '\t')
+            {
                 self.try_trigger_autocomplete();
                 return;
             }
         }
 
         // Letters when in a slash command context
-        if ch.len() == 1 && ch.chars().next().is_some_and(|c| c.is_alphanumeric() || c == '-' || c == '_') {
+        if ch.len() == 1
+            && ch
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_alphanumeric() || c == '-' || c == '_')
+        {
             if text_before.starts_with('/') && !text_before.contains(' ') {
                 self.try_trigger_autocomplete();
                 return;
@@ -362,12 +368,9 @@ impl Editor {
         let Some(ref provider) = self.autocomplete_provider else {
             return;
         };
-        if let Some(suggestions) = provider.get_suggestions(
-            &self.lines,
-            self.cursor_line,
-            self.cursor_col,
-            false,
-        ) {
+        if let Some(suggestions) =
+            provider.get_suggestions(&self.lines, self.cursor_line, self.cursor_col, false)
+        {
             let items: Vec<SelectItem> = suggestions
                 .items
                 .into_iter()
@@ -754,7 +757,10 @@ impl Editor {
                     let start = result.find(&marker1);
                     match start {
                         Some(pos) => {
-                            let end = result[pos..].find(']').map(|e| pos + e + 1).unwrap_or(result.len());
+                            let end = result[pos..]
+                                .find(']')
+                                .map(|e| pos + e + 1)
+                                .unwrap_or(result.len());
                             result.replace_range(pos..end, content);
                         }
                         None => break,
@@ -960,17 +966,19 @@ impl Component for Editor {
         // ── Character jump mode: await next printable char ──
         if let Some(dir) = self.jump_mode {
             // Cancel on jump hotkey again
-            if kb.matches(key, ACTION_EDITOR_JUMP_FORWARD) || kb.matches(key, ACTION_EDITOR_JUMP_BACKWARD) {
+            if kb.matches(key, ACTION_EDITOR_JUMP_FORWARD)
+                || kb.matches(key, ACTION_EDITOR_JUMP_BACKWARD)
+            {
                 self.jump_mode = None;
                 return true;
             }
-            if is_printable_plain(key) {
-                if let Some(s) = key_event_to_string(key) {
-                    let ch = s.chars().next().unwrap_or(' ');
-                    self.jump_mode = None;
-                    self.jump_to_char(ch, dir);
-                    return true;
-                }
+            if is_printable_plain(key)
+                && let Some(s) = key_event_to_string(key)
+            {
+                let ch = s.chars().next().unwrap_or(' ');
+                self.jump_mode = None;
+                self.jump_to_char(ch, dir);
+                return true;
             }
             // Non-printable cancels jump mode
             self.jump_mode = None;
@@ -1721,7 +1729,10 @@ mod tests {
         editor.handle_paste(large);
         let text = editor.get_text();
         assert!(text.contains("[paste #"), "Should contain paste marker");
-        assert!(!text.contains("line1"), "Should not contain original content");
+        assert!(
+            !text.contains("line1"),
+            "Should not contain original content"
+        );
         assert_eq!(editor.pastes.len(), 1, "Should store one paste");
     }
 
@@ -1730,28 +1741,45 @@ mod tests {
         let mut editor = Editor::new(EditorTheme::default(), EditorOptions::default());
         editor.handle_paste("hello");
         let text = editor.get_text();
-        assert!(!text.contains("[paste #"), "Small paste should not create marker");
+        assert!(
+            !text.contains("[paste #"),
+            "Small paste should not create marker"
+        );
         assert_eq!(text, "hello");
     }
 
     #[test]
     fn test_expand_paste_markers() {
         let mut editor = Editor::new(EditorTheme::default(), EditorOptions::default());
-        editor.handle_paste("line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\nline11");
+        editor.handle_paste(
+            "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\nline11",
+        );
         let expanded = editor.get_expanded_text();
-        assert!(expanded.contains("line1"), "Expanded text should contain original content");
-        assert!(!expanded.contains("[paste #"), "Expanded text should not contain markers");
+        assert!(
+            expanded.contains("line1"),
+            "Expanded text should contain original content"
+        );
+        assert!(
+            !expanded.contains("[paste #"),
+            "Expanded text should not contain markers"
+        );
     }
 
     #[test]
     fn test_submit_expands_markers() {
         let mut editor = Editor::new(EditorTheme::default(), EditorOptions::default());
-        editor.handle_paste("line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\nline11");
-        let large_content = "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\nline11";
+        editor.handle_paste(
+            "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\nline11",
+        );
+        let large_content =
+            "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\nline11";
         // Manually call the submit logic to verify expansion
         let raw = editor.lines.join("\n");
         let expanded = editor.expand_paste_markers(&raw);
-        assert_eq!(expanded, large_content, "Submit should expand to original content");
+        assert_eq!(
+            expanded, large_content,
+            "Submit should expand to original content"
+        );
     }
 
     #[test]
@@ -1765,9 +1793,17 @@ mod tests {
     #[test]
     fn test_get_expanded_text() {
         let mut editor = Editor::new(EditorTheme::default(), EditorOptions::default());
-        editor.handle_paste("line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\nline11");
+        editor.handle_paste(
+            "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\nline11",
+        );
         let expanded = editor.get_expanded_text();
-        assert!(expanded.contains("line1"), "get_expanded_text should expand markers");
-        assert!(expanded.starts_with("line1"), "Should start with original content");
+        assert!(
+            expanded.contains("line1"),
+            "get_expanded_text should expand markers"
+        );
+        assert!(
+            expanded.starts_with("line1"),
+            "Should start with original content"
+        );
     }
 }

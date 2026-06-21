@@ -1,7 +1,9 @@
+#![allow(clippy::type_complexity)]
+
 use std::cell::RefCell;
 
-use crate::tui::util::{visible_width, wrap_text_with_ansi};
 use crate::tui::Component;
+use crate::tui::util::{visible_width, wrap_text_with_ansi};
 
 /// Multi-line text component with word wrapping and padding.
 /// Port of pi's `packages/tui/src/components/text.ts`.

@@ -80,16 +80,40 @@ impl Keybindings {
     }
 
     fn set_defaults(&mut self) {
-        self.set(ACTION_EDITOR_CURSOR_LEFT, vec!["left".into(), "ctrl+b".into()]);
-        self.set(ACTION_EDITOR_CURSOR_RIGHT, vec!["right".into(), "ctrl+f".into()]);
+        self.set(
+            ACTION_EDITOR_CURSOR_LEFT,
+            vec!["left".into(), "ctrl+b".into()],
+        );
+        self.set(
+            ACTION_EDITOR_CURSOR_RIGHT,
+            vec!["right".into(), "ctrl+f".into()],
+        );
         self.set(ACTION_EDITOR_CURSOR_UP, vec!["up".into()]);
         self.set(ACTION_EDITOR_CURSOR_DOWN, vec!["down".into()]);
-        self.set(ACTION_EDITOR_CURSOR_LINE_START, vec!["home".into(), "ctrl+a".into()]);
-        self.set(ACTION_EDITOR_CURSOR_LINE_END, vec!["end".into(), "ctrl+e".into()]);
-        self.set(ACTION_EDITOR_CURSOR_WORD_LEFT, vec!["ctrl+left".into(), "alt+b".into()]);
-        self.set(ACTION_EDITOR_CURSOR_WORD_RIGHT, vec!["ctrl+right".into(), "alt+f".into()]);
-        self.set(ACTION_EDITOR_DELETE_CHAR_BACKWARD, vec!["backspace".into(), "ctrl+h".into()]);
-        self.set(ACTION_EDITOR_DELETE_CHAR_FORWARD, vec!["delete".into(), "ctrl+d".into()]);
+        self.set(
+            ACTION_EDITOR_CURSOR_LINE_START,
+            vec!["home".into(), "ctrl+a".into()],
+        );
+        self.set(
+            ACTION_EDITOR_CURSOR_LINE_END,
+            vec!["end".into(), "ctrl+e".into()],
+        );
+        self.set(
+            ACTION_EDITOR_CURSOR_WORD_LEFT,
+            vec!["ctrl+left".into(), "alt+b".into()],
+        );
+        self.set(
+            ACTION_EDITOR_CURSOR_WORD_RIGHT,
+            vec!["ctrl+right".into(), "alt+f".into()],
+        );
+        self.set(
+            ACTION_EDITOR_DELETE_CHAR_BACKWARD,
+            vec!["backspace".into(), "ctrl+h".into()],
+        );
+        self.set(
+            ACTION_EDITOR_DELETE_CHAR_FORWARD,
+            vec!["delete".into(), "ctrl+d".into()],
+        );
         self.set(ACTION_EDITOR_DELETE_WORD_BACKWARD, vec!["ctrl+w".into()]);
         self.set(ACTION_EDITOR_DELETE_WORD_FORWARD, vec!["alt+d".into()]);
         self.set(ACTION_EDITOR_DELETE_TO_LINE_START, vec!["ctrl+u".into()]);
@@ -158,8 +182,8 @@ impl Keybindings {
     /// Load keybindings from a JSON file.
     pub fn load(path: &std::path::Path) -> std::io::Result<Self> {
         let content = std::fs::read_to_string(path)?;
-        let bindings: HashMap<String, Vec<String>> =
-            serde_json::from_str(&content).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        let bindings: HashMap<String, Vec<String>> = serde_json::from_str(&content)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
         Ok(Self { bindings })
     }
 
@@ -223,10 +247,22 @@ mod tests {
     #[test]
     fn test_select_up_down() {
         let kb = get_keybindings();
-        assert!(kb.matches(&KeyEvent::new(KeyCode::Up, KeyModifiers::NONE), ACTION_SELECT_UP));
-        assert!(kb.matches(&KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), ACTION_SELECT_DOWN));
-        assert!(kb.matches(&KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), ACTION_SELECT_CONFIRM));
-        assert!(kb.matches(&KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), ACTION_SELECT_CANCEL));
+        assert!(kb.matches(
+            &KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
+            ACTION_SELECT_UP
+        ));
+        assert!(kb.matches(
+            &KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+            ACTION_SELECT_DOWN
+        ));
+        assert!(kb.matches(
+            &KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            ACTION_SELECT_CONFIRM
+        ));
+        assert!(kb.matches(
+            &KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+            ACTION_SELECT_CANCEL
+        ));
     }
 
     #[test]

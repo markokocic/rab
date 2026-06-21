@@ -11,7 +11,7 @@ use rab::builtin::{
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use rab::tui::keybindings::{init_keybindings, Keybindings};
+use rab::tui::keybindings::{Keybindings, init_keybindings};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -94,12 +94,13 @@ async fn main() -> anyhow::Result<()> {
 
     // Load custom keybindings from ~/.rab/keybindings.json, merging with defaults
     let mut keybindings = Keybindings::with_defaults();
-    if let Some(home) = directories::BaseDirs::new().map(|d| d.home_dir().join(".rab").join("keybindings.json")) {
-        if home.exists() {
-            match Keybindings::load(&home) {
-                Ok(custom) => keybindings.merge(custom),
-                Err(e) => eprintln!("Warning: failed to load keybindings: {}", e),
-            }
+    if let Some(home) =
+        directories::BaseDirs::new().map(|d| d.home_dir().join(".rab").join("keybindings.json"))
+        && home.exists()
+    {
+        match Keybindings::load(&home) {
+            Ok(custom) => keybindings.merge(custom),
+            Err(e) => eprintln!("Warning: failed to load keybindings: {}", e),
         }
     }
     init_keybindings(keybindings);

@@ -1,8 +1,8 @@
 use std::time::Instant;
 
+use crate::tui::Component;
 use crate::tui::components::text::Text;
 use crate::tui::util::visible_width;
-use crate::tui::Component;
 
 /// Options for Loader indicator appearance.
 pub struct LoaderIndicatorOptions {
@@ -16,9 +16,16 @@ impl Default for LoaderIndicatorOptions {
     fn default() -> Self {
         Self {
             frames: vec![
-                "⠋".into(), "⠙".into(), "⠹".into(), "⠸".into(),
-                "⠼".into(), "⠴".into(), "⠦".into(), "⠧".into(),
-                "⠇".into(), "⠏".into(),
+                "⠋".into(),
+                "⠙".into(),
+                "⠹".into(),
+                "⠸".into(),
+                "⠼".into(),
+                "⠴".into(),
+                "⠦".into(),
+                "⠧".into(),
+                "⠇".into(),
+                "⠏".into(),
             ],
             interval_ms: 80,
         }
@@ -110,7 +117,11 @@ impl Loader {
     }
 
     fn update_display(&self) -> String {
-        let frame = self.frames.get(self.current_frame).map(|s| s.as_str()).unwrap_or("");
+        let frame = self
+            .frames
+            .get(self.current_frame)
+            .map(|s| s.as_str())
+            .unwrap_or("");
         let rendered_frame = if frame.is_empty() {
             String::new()
         } else if self.render_indicator_verbatim {

@@ -1,9 +1,11 @@
+#![allow(clippy::type_complexity)]
+
 use crate::tui::component::Component;
 use crate::tui::components::input::Input;
 use crate::tui::fuzzy::fuzzy_filter;
 use crate::tui::keybindings::{
-    get_keybindings, ACTION_SELECT_CANCEL, ACTION_SELECT_CONFIRM, ACTION_SELECT_DOWN,
-    ACTION_SELECT_UP,
+    ACTION_SELECT_CANCEL, ACTION_SELECT_CONFIRM, ACTION_SELECT_DOWN, ACTION_SELECT_UP,
+    get_keybindings,
 };
 use crate::tui::util::{truncate_to_width, visible_width, wrap_text_with_ansi};
 use crossterm::event::KeyEvent;
@@ -21,7 +23,11 @@ pub struct SettingItem {
 }
 
 impl SettingItem {
-    pub fn new(id: impl Into<String>, label: impl Into<String>, current_value: impl Into<String>) -> Self {
+    pub fn new(
+        id: impl Into<String>,
+        label: impl Into<String>,
+        current_value: impl Into<String>,
+    ) -> Self {
         Self {
             id: id.into(),
             label: label.into(),
@@ -183,32 +189,33 @@ impl SettingsList {
             let mut saved_on_change = None;
             std::mem::swap(&mut self.on_change, &mut saved_on_change);
 
-            let done_cb: Box<dyn Fn(Option<String>)> = Box::new(move |selected_value: Option<String>| {
-                if let Some(_val) = selected_value {
-                    // Update the item's value — need a way to reach back
-                    // This is a simplified version; a full implementation would use
-                    // channels or shared state. For now, the submenu caller handles persistence.
-                }
-            });
+            let done_cb: Box<dyn Fn(Option<String>)> =
+                Box::new(move |selected_value: Option<String>| {
+                    if let Some(_val) = selected_value {
+                        // Update the item's value — need a way to reach back
+                        // This is a simplified version; a full implementation would use
+                        // channels or shared state. For now, the submenu caller handles persistence.
+                    }
+                });
 
             self.submenu_component = Some(submenu_fn(current_value, done_cb));
             self.submenu_item_index = Some(item_index);
 
             // Restore on_change
             std::mem::swap(&mut self.on_change, &mut saved_on_change);
-        } else if let Some(ref values) = item.values.clone() {
-            if !values.is_empty() {
-                let current_pos = values
-                    .iter()
-                    .position(|v| v == &item.current_value)
-                    .unwrap_or(0);
-                let next_pos = (current_pos + 1) % values.len();
-                item.current_value = values[next_pos].clone();
-                let id = item.id.clone();
-                let val = item.current_value.clone();
-                if let Some(ref mut cb) = self.on_change {
-                    cb(&id, &val);
-                }
+        } else if let Some(ref values) = item.values.clone()
+            && !values.is_empty()
+        {
+            let current_pos = values
+                .iter()
+                .position(|v| v == &item.current_value)
+                .unwrap_or(0);
+            let next_pos = (current_pos + 1) % values.len();
+            item.current_value = values[next_pos].clone();
+            let id = item.id.clone();
+            let val = item.current_value.clone();
+            if let Some(ref mut cb) = self.on_change {
+                cb(&id, &val);
             }
         }
     }
@@ -299,7 +306,12 @@ impl Component for SettingsList {
             let separator = "  ";
             let used = prefix_width + max_label_width + visible_width(separator);
             let value_max = width.saturating_sub(used + 2);
-            let value = (self.theme.value_text)(&truncate_to_width(&item.current_value, value_max, "", false));
+            let value = (self.theme.value_text)(&truncate_to_width(
+                &item.current_value,
+                value_max,
+                "",
+                false,
+            ));
 
             let line = format!("{}{}{}{}", prefix, label, separator, value);
             lines.push(truncate_to_width(&line, width, "", false));
@@ -364,7 +376,9 @@ impl Component for SettingsList {
             return true;
         }
 
-        if kb.matches(key, ACTION_SELECT_CONFIRM) || matches!(key.code, crossterm::event::KeyCode::Char(' ')) {
+        if kb.matches(key, ACTION_SELECT_CONFIRM)
+            || matches!(key.code, crossterm::event::KeyCode::Char(' '))
+        {
             self.activate_item();
             return true;
         }
@@ -379,7 +393,9 @@ impl Component for SettingsList {
         // If search is enabled, any printable char activates search
         if self.enable_search
             && let crossterm::event::KeyCode::Char(_) = key.code
-            && !key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL)
+            && !key
+                .modifiers
+                .contains(crossterm::event::KeyModifiers::CONTROL)
             && !key.modifiers.contains(crossterm::event::KeyModifiers::ALT)
         {
             self.search_active = true;

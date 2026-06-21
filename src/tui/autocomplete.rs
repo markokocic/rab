@@ -120,9 +120,9 @@ impl CombinedAutocompleteProvider {
 
     fn get_file_suggestions(&self, prefix: &str) -> Option<AutocompleteSuggestions> {
         // Determine search directory and file prefix
-        let expanded = if prefix.starts_with("~/") {
+        let expanded = if let Some(stripped) = prefix.strip_prefix("~/") {
             let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-            format!("{}/{}", home, &prefix[2..])
+            format!("{}/{}", home, stripped)
         } else if prefix == "~" {
             std::env::var("HOME").unwrap_or_else(|_| "/tmp".into())
         } else if prefix.starts_with('/') {
@@ -136,9 +136,22 @@ impl CombinedAutocompleteProvider {
             (expanded_clone, String::new())
         } else {
             let p = Path::new(&expanded);
-            let parent = p.parent().map(|p| p.to_string_lossy().to_string()).unwrap_or("/".into());
-            let file = p.file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_default();
-            (if parent.is_empty() { "/".into() } else { parent }, file)
+            let parent = p
+                .parent()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or("/".into());
+            let file = p
+                .file_name()
+                .map(|f| f.to_string_lossy().to_string())
+                .unwrap_or_default();
+            (
+                if parent.is_empty() {
+                    "/".into()
+                } else {
+                    parent
+                },
+                file,
+            )
         };
 
         let dir_path = Path::new(&dir);
@@ -170,17 +183,18 @@ impl CombinedAutocompleteProvider {
                             expanded.clone()
                         } else {
                             let p = Path::new(&expanded);
-                            p.parent().map(|p| p.to_string_lossy().to_string()).unwrap_or("/".into())
+                            p.parent()
+                                .map(|p| p.to_string_lossy().to_string())
+                                .unwrap_or("/".into())
                         }
                     } else {
                         dir.clone()
                     };
-                    let completion = if is_dir {
+                    if is_dir {
                         format!("{}{}/", base_dir, name)
                     } else {
                         format!("{}{}", base_dir, name)
-                    };
-                    completion
+                    }
                 } else {
                     // Relative to cwd
                     // We need to construct the relative path from base_path
@@ -188,8 +202,15 @@ impl CombinedAutocompleteProvider {
                         String::new()
                     } else {
                         let p = Path::new(prefix);
-                        let parent = p.parent().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
-                        if parent.is_empty() { String::new() } else { format!("{}/", parent) }
+                        let parent = p
+                            .parent()
+                            .map(|p| p.to_string_lossy().to_string())
+                            .unwrap_or_default();
+                        if parent.is_empty() {
+                            String::new()
+                        } else {
+                            format!("{}/", parent)
+                        }
                     };
                     format!("{}{}{}", rel_dir, name, suffix)
                 };
@@ -256,7 +277,11 @@ impl AutocompleteProvider for CombinedAutocompleteProvider {
             for cmd in &self.slash_commands {
                 if cmd.name == cmd_name {
                     // File path completion for command arguments
-                    if force || arg_text.contains('/') || arg_text.contains('.') || arg_text.is_empty() {
+                    if force
+                        || arg_text.contains('/')
+                        || arg_text.contains('.')
+                        || arg_text.is_empty()
+                    {
                         return self.get_file_suggestions(arg_text);
                     }
                     return None;
@@ -266,9 +291,8 @@ impl AutocompleteProvider for CombinedAutocompleteProvider {
 
         // @ and # file/attachment completion
         if let Some(pos) = text_before.rfind(['@', '#']) {
-            let is_token_start = pos == 0
-                || text_before[..pos].ends_with(' ')
-                || text_before[..pos].ends_with('\t');
+            let is_token_start =
+                pos == 0 || text_before[..pos].ends_with(' ') || text_before[..pos].ends_with('\t');
             if is_token_start {
                 let path = &text_before[pos + 1..];
                 return self.get_file_suggestions(path);
@@ -306,10 +330,16 @@ impl AutocompleteProvider for CombinedAutocompleteProvider {
         let after = &current_line[cursor_col..];
 
         let (new_line, new_col) = if prefix.starts_with('/') {
-            (format!("{}/{} {}", before, item.value, after), before.len() + 1 + item.value.len() + 1)
+            (
+                format!("{}/{} {}", before, item.value, after),
+                before.len() + 1 + item.value.len() + 1,
+            )
         } else {
             let suffix = if item.value.ends_with('/') { "" } else { " " };
-            (format!("{}{}{}{}", before, item.value, suffix, after), before.len() + item.value.len() + suffix.len())
+            (
+                format!("{}{}{}{}", before, item.value, suffix, after),
+                before.len() + item.value.len() + suffix.len(),
+            )
         };
 
         let mut new_lines = lines.to_vec();
@@ -323,7 +353,9 @@ impl AutocompleteProvider for CombinedAutocompleteProvider {
         cursor_line: usize,
         cursor_col: usize,
     ) -> bool {
-        let current_line = lines.get(cursor_line).map(|l| &l[..cursor_col.min(l.len())]);
+        let current_line = lines
+            .get(cursor_line)
+            .map(|l| &l[..cursor_col.min(l.len())]);
         match current_line {
             Some(text) => {
                 // Don't trigger in slash command name context
@@ -398,8 +430,7 @@ mod tests {
             description: None,
         };
         let lines = vec!["/".into()];
-        let (new_lines, new_line, new_col) =
-            provider.apply_completion(&lines, 0, 1, &item, "/");
+        let (new_lines, new_line, new_col) = provider.apply_completion(&lines, 0, 1, &item, "/");
         assert_eq!(new_lines[0], "/help "); // space appended after command
         assert_eq!(new_line, 0);
         assert_eq!(new_col, 6); // / + "help" + space

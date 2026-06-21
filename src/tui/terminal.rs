@@ -27,7 +27,11 @@ pub trait TerminalTrait {
     /// Enable/disable terminal color scheme change notifications (OSC 2031).
     /// When enabled, the terminal reports color scheme changes via
     /// `\x1b]10;rgb:RRRR/GGGG/BBBB\x07` sequences.
-    fn set_color_scheme_notifications(&self, writer: &mut dyn Write, enabled: bool) -> io::Result<()>;
+    fn set_color_scheme_notifications(
+        &self,
+        writer: &mut dyn Write,
+        enabled: bool,
+    ) -> io::Result<()>;
 }
 
 // =============================================================================
@@ -225,7 +229,11 @@ impl TerminalTrait for ProcessTerminal {
         writer.flush()
     }
 
-    fn set_color_scheme_notifications(&self, writer: &mut dyn Write, enabled: bool) -> io::Result<()> {
+    fn set_color_scheme_notifications(
+        &self,
+        writer: &mut dyn Write,
+        enabled: bool,
+    ) -> io::Result<()> {
         if enabled {
             write!(writer, "\x1b[?2031h")?;
         } else {
@@ -315,7 +323,10 @@ impl Terminal {
         writer.flush()
     }
 
-    pub fn set_color_scheme_notifications(writer: &mut impl Write, enabled: bool) -> io::Result<()> {
+    pub fn set_color_scheme_notifications(
+        writer: &mut impl Write,
+        enabled: bool,
+    ) -> io::Result<()> {
         if enabled {
             write!(writer, "\x1b[?2031h")?;
         } else {

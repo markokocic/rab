@@ -1,15 +1,17 @@
+#![allow(clippy::type_complexity)]
+
 use crate::tui::component::Component;
 use crate::tui::focusable::{CURSOR_MARKER, Focusable};
-use crate::tui::keys::key_event_to_string;
 use crate::tui::keybindings::{
-    get_keybindings, ACTION_EDITOR_CURSOR_LINE_END, ACTION_EDITOR_CURSOR_LINE_START,
-    ACTION_EDITOR_CURSOR_LEFT, ACTION_EDITOR_CURSOR_RIGHT, ACTION_EDITOR_CURSOR_WORD_LEFT,
-    ACTION_EDITOR_CURSOR_WORD_RIGHT, ACTION_EDITOR_DELETE_CHAR_BACKWARD,
-    ACTION_EDITOR_DELETE_CHAR_FORWARD, ACTION_EDITOR_DELETE_TO_LINE_END,
-    ACTION_EDITOR_DELETE_TO_LINE_START, ACTION_EDITOR_DELETE_WORD_BACKWARD,
-    ACTION_EDITOR_DELETE_WORD_FORWARD, ACTION_EDITOR_UNDO, ACTION_EDITOR_YANK,
-    ACTION_EDITOR_YANK_POP, ACTION_INPUT_SUBMIT, ACTION_SELECT_CANCEL,
+    ACTION_EDITOR_CURSOR_LEFT, ACTION_EDITOR_CURSOR_LINE_END, ACTION_EDITOR_CURSOR_LINE_START,
+    ACTION_EDITOR_CURSOR_RIGHT, ACTION_EDITOR_CURSOR_WORD_LEFT, ACTION_EDITOR_CURSOR_WORD_RIGHT,
+    ACTION_EDITOR_DELETE_CHAR_BACKWARD, ACTION_EDITOR_DELETE_CHAR_FORWARD,
+    ACTION_EDITOR_DELETE_TO_LINE_END, ACTION_EDITOR_DELETE_TO_LINE_START,
+    ACTION_EDITOR_DELETE_WORD_BACKWARD, ACTION_EDITOR_DELETE_WORD_FORWARD, ACTION_EDITOR_UNDO,
+    ACTION_EDITOR_YANK, ACTION_EDITOR_YANK_POP, ACTION_INPUT_SUBMIT, ACTION_SELECT_CANCEL,
+    get_keybindings,
 };
+use crate::tui::keys::key_event_to_string;
 use crate::tui::kill_ring::KillRing;
 use crate::tui::undo_stack::UndoStack;
 use crate::tui::util::{slice_by_column, visible_width};
@@ -117,14 +119,12 @@ impl Input {
 
     // ── Bracketed paste ──
 
+    #[allow(dead_code)]
     fn handle_paste(&mut self, pasted_text: &str) {
         self.last_action = None;
         self.save_undo();
 
-        let clean = pasted_text
-            .replace('\r', "")
-            .replace('\n', "")
-            .replace('\t', "    ");
+        let clean = pasted_text.replace(['\r', '\n'], "").replace('\t', "    ");
 
         self.value = format!(
             "{}{}{}",

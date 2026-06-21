@@ -467,8 +467,6 @@ fn split_into_tokens(text: &str) -> Vec<String> {
     tokens
 }
 
-
-
 /// Break a long word (wider than available width) into multiple lines.
 fn break_long_word(word: &str, width: usize, tracker: &mut AnsiState) -> Vec<String> {
     let mut lines: Vec<String> = Vec::new();
@@ -760,7 +758,11 @@ pub fn extract_segments(
 
 /// Apply a background color function to a line, padding it to the given width.
 /// Matches pi's `applyBackgroundToLine`.
-pub fn apply_background_to_line(line: &str, width: usize, bg_fn: &dyn Fn(&str) -> String) -> String {
+pub fn apply_background_to_line(
+    line: &str,
+    width: usize,
+    bg_fn: &dyn Fn(&str) -> String,
+) -> String {
     let vis = visible_width(line);
     let padded = if vis < width {
         let mut result = line.to_string();

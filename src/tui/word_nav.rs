@@ -2,12 +2,8 @@ use unicode_segmentation::UnicodeSegmentation;
 
 /// Characters recognized as ASCII punctuation, matching pi's PUNCTUATION_REGEX.
 pub const PUNCTUATION_CHARS: &[char] = &[
-    '.', ',', ';', ':', '!', '?',
-    '(', ')', '[', ']', '{', '}',
-    '<', '>', '\'', '"',
-    '+', '-', '*', '/', '\\', '|',
-    '&', '%', '$', '#', '@',
-    '~', '`', '^', '=',
+    '.', ',', ';', ':', '!', '?', '(', ')', '[', ']', '{', '}', '<', '>', '\'', '"', '+', '-', '*',
+    '/', '\\', '|', '&', '%', '$', '#', '@', '~', '`', '^', '=',
 ];
 
 /// Options for word navigation functions (matching pi's WordNavigationOptions).
@@ -102,7 +98,11 @@ pub fn find_word_backward(text: &str, cursor: usize) -> usize {
 
 /// Find word backward with custom options (pi-style WordNavigationOptions).
 /// Supports custom segmenter and isAtomicSegment predicate.
-pub fn find_word_backward_with(text: &str, cursor: usize, options: &WordNavigationOptions) -> usize {
+pub fn find_word_backward_with(
+    text: &str,
+    cursor: usize,
+    options: &WordNavigationOptions,
+) -> usize {
     if cursor == 0 {
         return 0;
     }
@@ -187,7 +187,10 @@ pub fn find_word_forward_with(text: &str, cursor: usize, options: &WordNavigatio
     let mut i = 0;
 
     // Skip leading whitespace
-    while i < segments.len() && !is_atomic(&segments[i].text, options) && is_whitespace_segment(&segments[i]) {
+    while i < segments.len()
+        && !is_atomic(&segments[i].text, options)
+        && is_whitespace_segment(&segments[i])
+    {
         pos += segments[i].text.len();
         i += 1;
     }
@@ -211,7 +214,11 @@ pub fn find_word_forward_with(text: &str, cursor: usize, options: &WordNavigatio
         }
     } else {
         // Skip non-word non-whitespace run (punctuation)
-        while i < segments.len() && !is_atomic(&segments[i].text, options) && !segments[i].is_word && !is_whitespace_segment(&segments[i]) {
+        while i < segments.len()
+            && !is_atomic(&segments[i].text, options)
+            && !segments[i].is_word
+            && !is_whitespace_segment(&segments[i])
+        {
             pos += segments[i].text.len();
             i += 1;
         }

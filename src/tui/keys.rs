@@ -166,10 +166,18 @@ pub fn match_key_id(event: &KeyEvent, key_id: &str) -> bool {
 
     // For events, check that the requested modifiers match (extra modifiers are OK)
     // But if no modifiers are requested, we require exactly no modifiers
-    if wants_ctrl && !has_ctrl { return false; }
-    if wants_shift && !has_shift { return false; }
-    if wants_alt && !has_alt { return false; }
-    if wants_super && !has_super { return false; }
+    if wants_ctrl && !has_ctrl {
+        return false;
+    }
+    if wants_shift && !has_shift {
+        return false;
+    }
+    if wants_alt && !has_alt {
+        return false;
+    }
+    if wants_super && !has_super {
+        return false;
+    }
 
     // If no modifiers requested, enforce exact no-modifier match
     if !wants_ctrl && !wants_shift && !wants_alt && !wants_super {
@@ -177,7 +185,35 @@ pub fn match_key_id(event: &KeyEvent, key_id: &str) -> bool {
             return false;
         }
         // Allow shift only for letters (uppercase = same key)
-        if has_shift && !key.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || matches!(c, '!' | '@' | '#' | '$' | '%' | '^' | '&' | '*' | '(' | ')' | '_' | '+' | '|' | '~' | '{' | '}' | ':' | '"' | '<' | '>' | '?')) {
+        if has_shift
+            && !key.chars().all(|c| {
+                c.is_ascii_uppercase()
+                    || c.is_ascii_digit()
+                    || matches!(
+                        c,
+                        '!' | '@'
+                            | '#'
+                            | '$'
+                            | '%'
+                            | '^'
+                            | '&'
+                            | '*'
+                            | '('
+                            | ')'
+                            | '_'
+                            | '+'
+                            | '|'
+                            | '~'
+                            | '{'
+                            | '}'
+                            | ':'
+                            | '"'
+                            | '<'
+                            | '>'
+                            | '?'
+                    )
+            })
+        {
             // Allow shift for symbols
         }
     }
@@ -229,7 +265,12 @@ pub fn is_key_repeat(event: &KeyEvent) -> bool {
 /// `key_event_to_string` for printable characters.
 pub fn decode_kitty_printable(event: &KeyEvent) -> Option<String> {
     match event.code {
-        KeyCode::Char(c) if !event.modifiers.contains(KeyModifiers::CONTROL) && !event.modifiers.contains(KeyModifiers::ALT) => Some(c.to_string()),
+        KeyCode::Char(c)
+            if !event.modifiers.contains(KeyModifiers::CONTROL)
+                && !event.modifiers.contains(KeyModifiers::ALT) =>
+        {
+            Some(c.to_string())
+        }
         _ => None,
     }
 }
@@ -275,28 +316,72 @@ pub enum Key {
 }
 
 impl Key {
-    pub fn enter() -> Self { Key::Enter }
-    pub fn escape() -> Self { Key::Escape }
-    pub fn tab() -> Self { Key::Tab }
-    pub fn space() -> Self { Key::Space }
-    pub fn backspace() -> Self { Key::Backspace }
-    pub fn delete() -> Self { Key::Delete }
-    pub fn home() -> Self { Key::Home }
-    pub fn end() -> Self { Key::End }
-    pub fn up() -> Self { Key::Up }
-    pub fn down() -> Self { Key::Down }
-    pub fn left() -> Self { Key::Left }
-    pub fn right() -> Self { Key::Right }
-    pub fn page_up() -> Self { Key::PageUp }
-    pub fn page_down() -> Self { Key::PageDown }
-    pub fn ctrl(c: char) -> Self { Key::Ctrl(c.to_ascii_lowercase()) }
-    pub fn alt(c: char) -> Self { Key::Alt(c) }
-    pub fn shift_tab() -> Self { Key::ShiftTab }
-    pub fn ctrl_shift(c: char) -> Self { Key::CtrlShift(c.to_ascii_lowercase()) }
-    pub fn alt_left() -> Self { Key::AltLeft }
-    pub fn alt_right() -> Self { Key::AltRight }
-    pub fn ctrl_left() -> Self { Key::CtrlLeft }
-    pub fn ctrl_right() -> Self { Key::CtrlRight }
+    pub fn enter() -> Self {
+        Key::Enter
+    }
+    pub fn escape() -> Self {
+        Key::Escape
+    }
+    pub fn tab() -> Self {
+        Key::Tab
+    }
+    pub fn space() -> Self {
+        Key::Space
+    }
+    pub fn backspace() -> Self {
+        Key::Backspace
+    }
+    pub fn delete() -> Self {
+        Key::Delete
+    }
+    pub fn home() -> Self {
+        Key::Home
+    }
+    pub fn end() -> Self {
+        Key::End
+    }
+    pub fn up() -> Self {
+        Key::Up
+    }
+    pub fn down() -> Self {
+        Key::Down
+    }
+    pub fn left() -> Self {
+        Key::Left
+    }
+    pub fn right() -> Self {
+        Key::Right
+    }
+    pub fn page_up() -> Self {
+        Key::PageUp
+    }
+    pub fn page_down() -> Self {
+        Key::PageDown
+    }
+    pub fn ctrl(c: char) -> Self {
+        Key::Ctrl(c.to_ascii_lowercase())
+    }
+    pub fn alt(c: char) -> Self {
+        Key::Alt(c)
+    }
+    pub fn shift_tab() -> Self {
+        Key::ShiftTab
+    }
+    pub fn ctrl_shift(c: char) -> Self {
+        Key::CtrlShift(c.to_ascii_lowercase())
+    }
+    pub fn alt_left() -> Self {
+        Key::AltLeft
+    }
+    pub fn alt_right() -> Self {
+        Key::AltRight
+    }
+    pub fn ctrl_left() -> Self {
+        Key::CtrlLeft
+    }
+    pub fn ctrl_right() -> Self {
+        Key::CtrlRight
+    }
 }
 
 /// Check if a crossterm KeyEvent matches a Key identifier.
@@ -341,9 +426,15 @@ pub fn matches_key(event: &KeyEvent, key: &Key) -> bool {
                 && event.modifiers.contains(KeyModifiers::SHIFT)
         }
         Key::AltLeft => event.code == KeyCode::Left && event.modifiers.contains(KeyModifiers::ALT),
-        Key::AltRight => event.code == KeyCode::Right && event.modifiers.contains(KeyModifiers::ALT),
-        Key::CtrlLeft => event.code == KeyCode::Left && event.modifiers.contains(KeyModifiers::CONTROL),
-        Key::CtrlRight => event.code == KeyCode::Right && event.modifiers.contains(KeyModifiers::CONTROL),
+        Key::AltRight => {
+            event.code == KeyCode::Right && event.modifiers.contains(KeyModifiers::ALT)
+        }
+        Key::CtrlLeft => {
+            event.code == KeyCode::Left && event.modifiers.contains(KeyModifiers::CONTROL)
+        }
+        Key::CtrlRight => {
+            event.code == KeyCode::Right && event.modifiers.contains(KeyModifiers::CONTROL)
+        }
     }
 }
 
@@ -406,7 +497,10 @@ mod tests {
 
     #[test]
     fn test_key_event_to_id_ctrl_shift() {
-        let event = KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL | KeyModifiers::SHIFT);
+        let event = KeyEvent::new(
+            KeyCode::Char('p'),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        );
         assert_eq!(key_event_to_id(&event), Some("ctrl+shift+p".into()));
     }
 
@@ -466,28 +560,55 @@ mod tests {
 
     #[test]
     fn test_matches_arrow_keys() {
-        assert!(matches_key(&KeyEvent::new(KeyCode::Up, KeyModifiers::NONE), &Key::Up));
-        assert!(matches_key(&KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), &Key::Down));
-        assert!(matches_key(&KeyEvent::new(KeyCode::Left, KeyModifiers::NONE), &Key::Left));
-        assert!(matches_key(&KeyEvent::new(KeyCode::Right, KeyModifiers::NONE), &Key::Right));
+        assert!(matches_key(
+            &KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
+            &Key::Up
+        ));
+        assert!(matches_key(
+            &KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+            &Key::Down
+        ));
+        assert!(matches_key(
+            &KeyEvent::new(KeyCode::Left, KeyModifiers::NONE),
+            &Key::Left
+        ));
+        assert!(matches_key(
+            &KeyEvent::new(KeyCode::Right, KeyModifiers::NONE),
+            &Key::Right
+        ));
     }
 
     #[test]
     fn test_shift_tab() {
-        assert!(matches_key(&KeyEvent::new(KeyCode::BackTab, KeyModifiers::NONE), &Key::ShiftTab));
+        assert!(matches_key(
+            &KeyEvent::new(KeyCode::BackTab, KeyModifiers::NONE),
+            &Key::ShiftTab
+        ));
     }
 
     #[test]
     fn test_ctrl_shift() {
-        let event = KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL | KeyModifiers::SHIFT);
+        let event = KeyEvent::new(
+            KeyCode::Char('p'),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        );
         assert!(matches_key(&event, &Key::CtrlShift('p')));
     }
 
     #[test]
     fn test_is_printable() {
-        assert!(is_printable(&KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE)));
-        assert!(!is_printable(&KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)));
-        assert!(!is_printable(&KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)));
+        assert!(is_printable(&KeyEvent::new(
+            KeyCode::Char('a'),
+            KeyModifiers::NONE
+        )));
+        assert!(!is_printable(&KeyEvent::new(
+            KeyCode::Char('c'),
+            KeyModifiers::CONTROL
+        )));
+        assert!(!is_printable(&KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE
+        )));
     }
 
     #[test]

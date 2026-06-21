@@ -1,6 +1,6 @@
-use crate::tui::components::loader::Loader;
-use crate::tui::keybindings::{get_keybindings, ACTION_SELECT_CANCEL};
 use crate::tui::Component;
+use crate::tui::components::loader::Loader;
+use crate::tui::keybindings::{ACTION_SELECT_CANCEL, get_keybindings};
 
 /// Loader with escape-to-cancel functionality.
 /// Port of pi's `packages/tui/src/components/cancellable-loader.ts`.
