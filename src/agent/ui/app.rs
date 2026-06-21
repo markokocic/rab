@@ -131,9 +131,6 @@ pub struct App {
 
     /// Settings reference for persisting toggle changes.
     settings: crate::agent::settings::Settings,
-
-    /// Command from the last bash tool call, used by ToolResult to build BashCommand.
-    last_bash_command: Option<String>,
 }
 
 impl App {
@@ -228,7 +225,6 @@ impl App {
             settings: config.settings,
             auto_compact: true,
             status_text: None,
-            last_bash_command: None,
         }
     }
 }
@@ -1005,38 +1001,22 @@ fn handle_agent_event(app: &mut App, event: AgentEvent) {
         }
         AgentEvent::ToolCall { name, args, .. } => {
             flush_all(app);
-            // Store bash command for later use by ToolResult handler
-            if name == "bash"
-                && let Some(cmd) = args["command"].as_str()
-            {
-                app.last_bash_command = Some(cmd.to_string());
-            }
             app.messages.push(DisplayMsg::ToolCall {
                 name,
                 args: serde_json::to_string(&args).unwrap_or_default(),
             });
         }
         AgentEvent::ToolResult {
-            name,
             content,
             compact,
             is_error,
             ..
         } => {
-            if name == "bash" {
-                // Replace preceding bash ToolCall with a BashCommand entry
-                let command = app.last_bash_command.take().unwrap_or_default();
-                // Pop the last entry (the preceding ToolCall for bash)
-                app.messages.pop();
-                // Parse the result and create a BashCommand
-                push_bash_command(app, &command, &content, is_error);
-            } else {
-                app.messages.push(DisplayMsg::ToolResult {
-                    content,
-                    compact,
-                    is_error,
-                });
-            }
+            app.messages.push(DisplayMsg::ToolResult {
+                content,
+                compact,
+                is_error,
+            });
         }
         AgentEvent::TurnEnd => {
             flush_all(app);
@@ -1097,62 +1077,6 @@ fn flush_thinking(app: &mut App) {
 fn flush_all(app: &mut App) {
     flush_text(app);
     flush_thinking(app);
-}
-
-/// Parse bash tool result content and create a BashCommand display message.
-/// The bash result format is: Ran `command`, then a fenced code block with output,
-/// then an optional status line (command cancelled / Command exited with code N).
-fn push_bash_command(app: &mut App, command: &str, content: &str, is_error: bool) {
-    use crate::agent::ui::components::bash_execution::BashStatus;
-
-    let lines: Vec<&str> = content.lines().collect();
-    let mut in_output = false;
-    let mut output_parts: Vec<String> = Vec::new();
-    let mut status_text: Option<&str> = None;
-
-    for line in &lines {
-        if *line == format!("Ran `{}`", command) || *line == format!("Ran `{}`\r", command) {
-            continue;
-        }
-        if *line == "```" {
-            in_output = !in_output;
-            continue;
-        }
-        if *line == "(no output)" {
-            output_parts.push("(no output)".to_string());
-            continue;
-        }
-        if in_output {
-            output_parts.push((*line).to_string());
-        } else if !output_parts.is_empty() && !line.trim().is_empty() {
-            // Lines after output block (status)
-            status_text = Some(line.trim());
-        }
-    }
-
-    // Determine status
-    let status = match status_text {
-        Some(s) if s.contains("cancelled") || s.contains("aborted") => BashStatus::Cancelled,
-        Some(s) if s.contains("exited with code") => {
-            let code = s
-                .rsplit_once(' ')
-                .and_then(|(_, c)| c.parse::<i32>().ok())
-                .unwrap_or(1);
-            BashStatus::Complete { exit_code: code }
-        }
-        Some(s) if s.starts_with("Error:") => {
-            BashStatus::Error(s.trim_start_matches("Error:").trim().to_string())
-        }
-        None if is_error => BashStatus::Complete { exit_code: 1 },
-        _ => BashStatus::Complete { exit_code: 0 },
-    };
-
-    app.messages.push(DisplayMsg::BashCommand {
-        command: command.to_string(),
-        output_lines: output_parts,
-        status,
-        expanded: app.tools_expanded || !app.collapse_tool_output,
-    });
 }
 
 /// Collect tool definitions from the app's agent tools.
