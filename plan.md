@@ -39,15 +39,29 @@ Reference: `~/src/cvstree/pi/` (TypeScript, same architecture).
 
 | Area | Status |
 |------|--------|
-| Missing app actions (clear, suspend, thinking cycle, model cycle, etc.) | ✅ 10 actions implemented |
+| Missing app actions (clear, suspend, thinking cycle, model cycle, etc.) | ✅ 11 actions implemented |
 | Message rendering polish (Markdown, OSC 133, tool expand/collapse) | ✅ Markdown + table rendering, OSC 133, expand/collapse |
 | Scrolling (Page Up/Down, scroll indicators) | ✅ PageUp/PageDown, scroll indicator, reset on submit |
+| Editor & input (auto-trigger slash autocomplete) | ✅ Auto-shows on `/char`, checked after external editor/dequeue |
+| Footer improvements (auto-compact, narrow terminal, extension status) | ✅ `app.compact.toggle`, graceful truncation, status line |
 
 ## Chat/UX gaps — Deferred 🟡
 
 See `todo.md` for detailed task list. Major deferred areas:
 
-- **Session management**: new, tree, fork, resume, toggleNamedFilter
 - **Overlays**: config-selector, theme-selector, session-selector, first-time-setup, changelog, login-dialog, oauth-selector
-- **Image support**: paste from clipboard, multimodal
+- **Session management**: new, tree, fork, resume, toggleNamedFilter
 - **Other**: suspend/resume, debug key, dynamic keybinding hints, viewport-managed scrolling
+
+### Agent framework (from Phase 1 — Remaining)
+
+| Item | Priority |
+|------|----------|
+| Multi-backend provider (`adapter/genai.rs`) | high |
+| Context window compaction | high |
+| Hook pipeline (`before_tool_call`, `after_tool_call`) | medium |
+| Steering / follow-up queues | medium |
+| `~/.rab/models.json` | medium |
+| Image support (multimodal) | medium |
+| Tool execution modes (sequential) | low |
+| `rab plugin new` scaffold | low |

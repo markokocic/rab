@@ -148,10 +148,9 @@ All 6 phases of the pi-tui alignment are implemented. 429 tests pass. 27 modules
 - **Autocomplete**: `AutocompleteProvider` trait, `CombinedAutocompleteProvider` (slash commands + file paths)
 - **Overlays**: HelpOverlay, ModelSelector via `TUI.show_overlay()`
 
-### TUI — ✅ complete (write logging is optional debug tooling)
+### TUI — ✅ complete
 - [x] App loop uses `ProcessTerminal` + `TerminalTrait` (no direct crossterm)
 - [x] Color scheme notifications (OSC 2031)
-- [ ] Write logging (`PI_TUI_WRITE_LOG`) — optional, defer
 
 ---
 
@@ -163,7 +162,10 @@ All 6 phases of the pi-tui alignment are implemented. 429 tests pass. 27 modules
 - [x] Startup resource listing
 - [x] Built-in tools (bash, read, write, edit) — behavioral 1/1 with pi
 - [x] Thinking message rendering with per-level colors
-- [x] **Complete pi-tui alignment** — 27 modules, 429 tests, all 6 phases
-- [x] **Missing app actions (10)** — clear, suspend, thinking cycle, model cycle, tools expand, external editor, follow-up, dequeue
+- [x] **Complete pi-tui alignment** — 27 modules, $\ge$ 429 tests, all 6 phases
+- [x] **Missing app actions (11)** — clear, suspend, thinking cycle, model cycle, tools expand, external editor, follow-up, dequeue, compact toggle
 - [x] **Message rendering polish** — tool output preview truncation, visual line truncation, expand/collapse
 - [x] **Chat scrolling** — PageUp/PageDown, scroll indicator, reset on submit
+- [x] **Footer improvements** — auto-compact toggle, narrow terminal protection, extension status line
+- [x] **Editor & input** — auto-trigger slash autocomplete on `/`
+- [ ] Write logging (`PI_TUI_WRITE_LOG`) — optional, defer
