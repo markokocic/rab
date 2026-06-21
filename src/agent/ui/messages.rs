@@ -421,8 +421,7 @@ mod tests {
         let all = lines.join("\n");
         assert!(all.contains("echo hello"), "Should show command");
         assert!(all.contains("hello"), "Should show output");
-        assert!(all.contains("┌"), "Should have top border");
-        assert!(all.contains("└"), "Should have bottom border");
+        assert!(all.contains('─'), "Should have borders");
     }
 
     #[test]

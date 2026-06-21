@@ -138,6 +138,13 @@ pub async fn run_agent_loop(
                     tool_calls: tcs,
                     ..
                 } => {
+                    // If we haven't emitted any TextDelta but Done has text,
+                    // emit it so the UI can display the response.
+                    if response_text.is_empty() && !text.is_empty() {
+                        emit(AgentEvent::TextDelta {
+                            delta: text.clone(),
+                        });
+                    }
                     response_text = text;
                     stop_reason = sr;
                     // Merge tool calls from Done event (more complete)
@@ -146,12 +153,19 @@ pub async fn run_agent_loop(
                     }
                 }
                 StreamEvent::Error { message } => {
+                    emit(AgentEvent::ToolResult {
+                        id: String::new(),
+                        name: String::new(),
+                        content: message.clone(),
+                        compact: None,
+                        is_error: true,
+                    });
                     let error_msg = AgentMessage::tool_result(String::new(), message.clone(), true);
                     new_messages.push(error_msg);
                     emit(AgentEvent::AgentEnd {
                         messages: new_messages.clone(),
                     });
-                    return Err(anyhow::anyhow!("Provider error: {}", message));
+                    return Ok(new_messages);
                 }
             }
         }

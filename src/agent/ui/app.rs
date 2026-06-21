@@ -850,7 +850,18 @@ fn start_agent_loop(app: &mut App, message: String) {
         };
 
         let prompt = AgentMessage::user(message);
-        let _ = run_agent_loop(vec![prompt], history, &config, &*provider, &mut emit).await;
+        if let Err(e) = run_agent_loop(vec![prompt], history, &config, &*provider, &mut emit).await
+        {
+            // Emit error so app resets streaming state
+            emit(AgentEvent::ToolResult {
+                id: String::new(),
+                name: "error".into(),
+                content: format!("Error: {:#}", e),
+                compact: None,
+                is_error: true,
+            });
+            emit(AgentEvent::AgentEnd { messages: vec![] });
+        }
     });
     app.agent_abort = Some(handle.abort_handle());
 }

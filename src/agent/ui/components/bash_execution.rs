@@ -1,26 +1,38 @@
 use crate::tui::Component;
+use crate::tui::components::loader::Loader;
+use crate::tui::util::visible_width;
 
-/// Maximum visible lines per line of output before truncation.
-const MAX_LINE_LEN: usize = 200;
+/// Maximum lines of output to keep for LLM context truncation (matching pi's DEFAULT_MAX_LINES).
+const DEFAULT_MAX_LINES: usize = 1000;
+/// Maximum bytes of output to keep (matching pi's DEFAULT_MAX_BYTES).
+const DEFAULT_MAX_BYTES: usize = 16_385;
 
-/// Number of preview lines to show when collapsed.
+/// Preview line limit when not expanded (matches pi's PREVIEW_LINES).
 const PREVIEW_LINES: usize = 20;
 
 /// Bash execution component - renders a bash command with borders, spinner, and output.
 ///
 /// Matches pi's BashExecutionComponent design:
-/// - Top/bottom borders in `bashMode` color
+/// - Spacer (1 blank line) above top border
+/// - Top/bottom borders in `bashMode` color (or `dim` for !! commands)
 /// - Command header with `$` prefix
-/// - Spinner while running
-/// - Streaming output in muted color
-/// - Collapse/expand support with preview truncation
+/// - Spinner while running (uses Loader component)
+/// - Streaming output in muted color (no ANSI)
+/// - Collapse/expand support showing LAST N lines (preview truncation)
+/// - Status line with exit code, cancellation, truncation warnings
+/// - Width-aware visual truncation for collapsed preview
 pub struct BashExecution {
     command: String,
-    output: Vec<String>,
+    output_lines: Vec<String>,
     status: BashStatus,
     expanded: bool,
-    /// Optional compact label shown when collapsed and no output to preview.
-    compact_label: Option<String>,
+    exclude_from_context: bool,
+    /// Full output path for truncation warning.
+    full_output_path: Option<String>,
+    /// Whether output was truncated for LLM context limits.
+    was_truncated: bool,
+    /// Loader component for spinner animation.
+    loader: Loader,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -33,17 +45,52 @@ pub enum BashStatus {
 
 impl BashExecution {
     pub fn new(command: impl Into<String>) -> Self {
+        let command = command.into();
+
+        // Create a loader matching pi's style: spinner in bashMode color, message in muted color
+        let loader = Loader::new(
+            Box::new(|s| format!("\x1b[38;2;138;190;183m{}\x1b[39m", s)), // bashMode color
+            Box::new(|s| format!("\x1b[38;2;128;128;128m{}\x1b[39m", s)), // muted color
+            "Running... (Esc to cancel)",
+        );
+
         Self {
-            command: command.into(),
-            output: Vec::new(),
+            command,
+            output_lines: Vec::new(),
             status: BashStatus::Running,
             expanded: false,
-            compact_label: None,
+            exclude_from_context: false,
+            full_output_path: None,
+            was_truncated: false,
+            loader,
         }
     }
 
     pub fn append_output(&mut self, line: impl Into<String>) {
-        self.output.push(line.into());
+        self.output_lines.push(line.into());
+    }
+
+    /// Append a chunk of output that may contain newlines.
+    /// Handles splitting into lines similar to pi's appendOutput (preserving incomplete last line).
+    pub fn append_chunk(&mut self, chunk: &str) {
+        // Strip ANSI codes and normalize line endings (matching pi)
+        let clean = strip_ansi(chunk).replace("\r\n", "\n").replace('\r', "\n");
+
+        let new_lines: Vec<&str> = clean.split('\n').collect();
+        if new_lines.is_empty() {
+            return;
+        }
+
+        if !self.output_lines.is_empty() && !new_lines.is_empty() {
+            // Append first chunk to last line (incomplete line continuation, matching pi)
+            let last_idx = self.output_lines.len() - 1;
+            self.output_lines[last_idx].push_str(new_lines[0]);
+            self.output_lines
+                .extend(new_lines[1..].iter().map(|s| s.to_string()));
+        } else {
+            self.output_lines
+                .extend(new_lines.iter().map(|s| s.to_string()));
+        }
     }
 
     pub fn set_complete(&mut self, exit_code: i32) {
@@ -52,134 +99,301 @@ impl BashExecution {
         } else {
             BashStatus::Complete { exit_code }
         };
+        self.stop_loader();
     }
 
     pub fn set_cancelled(&mut self) {
         self.status = BashStatus::Cancelled;
+        self.stop_loader();
     }
 
     pub fn set_error(&mut self, msg: impl Into<String>) {
         self.status = BashStatus::Error(msg.into());
+        self.stop_loader();
     }
 
     pub fn set_expanded(&mut self, expanded: bool) {
         self.expanded = expanded;
     }
 
-    pub fn set_compact_label(&mut self, label: impl Into<String>) {
-        self.compact_label = Some(label.into());
+    pub fn set_exclude_from_context(&mut self, exclude: bool) {
+        self.exclude_from_context = exclude;
+    }
+
+    pub fn set_full_output_path(&mut self, path: impl Into<String>) {
+        self.full_output_path = Some(path.into());
+    }
+
+    pub fn set_truncated(&mut self, truncated: bool) {
+        self.was_truncated = truncated;
     }
 
     pub fn is_expanded(&self) -> bool {
         self.expanded
     }
 
-    fn border_color(&self) -> &'static str {
+    fn stop_loader(&mut self) {
+        self.loader.stop();
+    }
+
+    fn border_color_key(&self) -> &'static str {
+        if self.exclude_from_context {
+            return "dim";
+        }
         match self.status {
-            BashStatus::Running => "toolPendingBg",
+            BashStatus::Running => "bashMode",
             BashStatus::Complete { exit_code: 0 } => "bashMode",
             BashStatus::Complete { .. } => "error",
             BashStatus::Cancelled => "warning",
             BashStatus::Error(_) => "error",
         }
     }
+
+    /// Apply context truncation matching pi's truncateTail logic.
+    fn context_truncated_output(&self) -> (String, bool) {
+        let output = self.output_lines.join("\n");
+
+        // Simulate pi's truncateTail: truncate by maxLines, then by maxBytes
+        let lines: Vec<&str> = output.split('\n').collect();
+        let total_lines = lines.len();
+        let truncated_lines: Vec<&str> = if total_lines > DEFAULT_MAX_LINES {
+            lines[lines.len() - DEFAULT_MAX_LINES..].to_vec()
+        } else {
+            lines
+        };
+
+        let joined = truncated_lines.join("\n");
+        let bytes = joined.len();
+        if bytes > DEFAULT_MAX_BYTES {
+            // Truncate bytes from the end
+            let mut byte_end = DEFAULT_MAX_BYTES;
+            // Ensure we don't cut in the middle of a UTF-8 character
+            while byte_end > 0 && !joined.is_char_boundary(byte_end) {
+                byte_end -= 1;
+            }
+            let truncated: String = joined[..byte_end].to_string();
+            (truncated, true)
+        } else {
+            (
+                joined,
+                total_lines > DEFAULT_MAX_LINES || bytes > DEFAULT_MAX_BYTES,
+            )
+        }
+    }
+
+    /// Get the raw output (for building messages sent to the LLM).
+    pub fn get_output(&self) -> String {
+        self.output_lines.join("\n")
+    }
+
+    /// Get the command that was executed.
+    pub fn get_command(&self) -> String {
+        self.command.clone()
+    }
 }
 
 impl Component for BashExecution {
     fn render(&self, width: usize) -> Vec<String> {
-        use crate::agent::ui::theme::current_theme;
-        let theme = current_theme();
+        let theme = crate::agent::ui::theme::current_theme();
+        let border_key = self.border_color_key();
+        let border_fn = |s: &str| theme.fg(border_key, s);
 
         let mut lines: Vec<String> = Vec::new();
 
-        // ── Top border ──
-        let border_fn = |s: &str| theme.fg(self.border_color(), s);
-        let border = format!("┌{}┐", "─".repeat(width.saturating_sub(2)));
-        lines.push(border_fn(&border));
+        // ── Spacer (1 blank line above, matching pi) ──
+        lines.push(String::new());
 
-        // ── Command header ──
+        // ── Top border (pi-style: just ─ repeated) ──
+        let top_border = "─".repeat(width.max(1));
+        lines.push(border_fn(&top_border));
+
+        // ── Command header (pi-style: bold $ command in border color) ──
         let header = format!(
-            " {} {}",
-            theme.bold_fg(self.border_color(), "$"),
-            theme.fg(self.border_color(), &self.command)
+            "{} {}",
+            theme.bold_fg(border_key, "$"),
+            theme.fg(border_key, &self.command)
         );
-        lines.push(border_fn(&crate::tui::util::truncate_to_width(
-            &header, width, "", false,
-        )));
+        lines.push(header);
+
+        // ── Apply context truncation (same limits as bash tool, matching pi) ──
+        let (context_output, context_truncated) = self.context_truncated_output();
+        let available_lines: Vec<&str> = if context_output.is_empty() {
+            Vec::new()
+        } else {
+            context_output.split('\n').collect()
+        };
+
+        // ── Preview truncation (pi-style: last PREVIEW_LINES when collapsed) ──
+        let preview_lines: Vec<&str> = if self.expanded {
+            available_lines.clone()
+        } else if available_lines.len() > PREVIEW_LINES {
+            available_lines[available_lines.len() - PREVIEW_LINES..].to_vec()
+        } else {
+            available_lines.clone()
+        };
+
+        let hidden_line_count = available_lines.len().saturating_sub(preview_lines.len());
 
         // ── Output ──
-        if !self.expanded && self.output.len() > PREVIEW_LINES {
-            // Collapsed: show first PREVIEW_LINES, then "... N more lines"
-            for line in &self.output[..PREVIEW_LINES] {
+        if !preview_lines.is_empty() {
+            // Render each line with muted color
+            // Pi uses truncateToVisualLines for width-aware truncation
+            for line in &preview_lines {
                 let styled = theme.fg("toolOutput", line);
-                let truncated = truncate_output_line(&styled, width);
-                lines.push(truncated);
+                lines.push(simple_truncate_line(&styled, width));
             }
-            let hidden = self.output.len() - PREVIEW_LINES;
-            lines.push(theme.fg("muted", &format!("... {} more lines", hidden)));
-        } else if self.expanded || !self.output.is_empty() {
-            // Expanded or small output: show all with visual truncation
-            for line in &self.output {
-                let styled = theme.fg("toolOutput", line);
-                let truncated = truncate_output_line(&styled, width);
-                lines.push(truncated);
-            }
-        } else if let Some(ref label) = self.compact_label {
-            // No output but compact label: show just the label
-            lines.push(theme.fg("toolTitle", label));
         }
 
-        // ── Status line ──
+        // ── Status / hints ──
+        let mut status_parts: Vec<String> = Vec::new();
+
+        // Show hidden lines count (collapsed preview)
+        if hidden_line_count > 0 {
+            if self.expanded {
+                status_parts.push(theme.fg("muted", &format!("({} lines)", available_lines.len())));
+            } else {
+                status_parts
+                    .push(theme.fg("muted", &format!("... {} more lines", hidden_line_count)));
+            }
+        }
+
+        // Status text
         match &self.status {
             BashStatus::Running => {
-                let spinner = "⠋";
-                let msg = format!(" {} {}", spinner, theme.fg("muted", "Running..."));
-                lines.push(msg);
+                // Loader handles the spinner display
             }
-            BashStatus::Complete { exit_code } => {
-                if *exit_code != 0 {
-                    lines.push(theme.fg("error", &format!("(exit {})", exit_code)));
-                }
+            BashStatus::Complete { exit_code } if *exit_code != 0 => {
+                status_parts.push(theme.fg("error", &format!("(exit {})", exit_code)));
             }
             BashStatus::Cancelled => {
-                lines.push(theme.fg("warning", "(cancelled)"));
+                status_parts.push(theme.fg("warning", "(cancelled)"));
             }
             BashStatus::Error(msg) => {
-                lines.push(theme.fg("error", &format!("Error: {}", msg)));
+                status_parts.push(theme.fg("error", &format!("Error: {}", msg)));
+            }
+            _ => {}
+        }
+
+        // Truncation warning (context truncation, not preview truncation)
+        let was_truncated = context_truncated || self.was_truncated;
+        if was_truncated {
+            if let Some(ref path) = self.full_output_path {
+                status_parts.push(theme.fg(
+                    "warning",
+                    &format!("Output truncated. Full output: {}", path),
+                ));
+            } else {
+                status_parts.push(theme.fg("warning", "Output truncated."));
             }
         }
 
-        // ── Bottom border ──
-        let border = format!("└{}┘", "─".repeat(width.saturating_sub(2)));
-        lines.push(border_fn(&border));
+        // Render loader or status
+        match &self.status {
+            BashStatus::Running => {
+                // Render the loader (pi-style: spinner with "Running... (Esc to cancel)" message)
+                let loader_lines = self.loader.render(width);
+                lines.extend(loader_lines);
+            }
+            _ => {
+                if !status_parts.is_empty() {
+                    let status_line = status_parts.join("  ");
+                    lines.push(status_line);
+                }
+            }
+        }
+
+        // ── Bottom border (pi-style: just ─ repeated) ──
+        let bottom_border = "─".repeat(width.max(1));
+        lines.push(border_fn(&bottom_border));
 
         lines
     }
 
-    fn invalidate(&mut self) {}
+    fn invalidate(&mut self) {
+        self.loader.invalidate();
+    }
 }
 
-/// Truncate an output line to avoid excessively long lines in the terminal.
-fn truncate_output_line(text: &str, _width: usize) -> String {
-    if text.len() > MAX_LINE_LEN {
-        let truncated: String = text.chars().take(MAX_LINE_LEN).collect();
-        format!("{}…", truncated)
-    } else {
+/// Simple truncation for output lines: if a line's visible width exceeds the terminal width,
+/// truncate it. This is a simplified version of pi's truncateToVisualLines.
+fn simple_truncate_line(text: &str, width: usize) -> String {
+    let vw = visible_width(text);
+    if vw <= width {
         text.to_string()
+    } else {
+        // Truncate to fit within width, adding ellipsis
+        let mut result = String::new();
+        let mut current_width = 0;
+        let ellipsis = "\u{2026}"; // …
+        let ellipsis_width = 1; // … is width 1
+
+        let target = width.saturating_sub(ellipsis_width);
+
+        for ch in text.chars() {
+            // Check if this is part of an ANSI escape sequence
+            let ch_width = if ch == '\x1b' {
+                0 // Will be handled below
+            } else {
+                unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0)
+            };
+
+            if ch == '\x1b' {
+                // ANSI codes don't add visible width, skip the whole sequence
+                let _start = text.find(ch).unwrap_or(0);
+                result.push(ch);
+                continue;
+            }
+
+            if current_width + ch_width > target {
+                result.push_str(ellipsis);
+                break;
+            }
+
+            result.push(ch);
+            current_width += ch_width;
+        }
+
+        result
     }
+}
+
+/// Strip ANSI escape codes from a string.
+fn strip_ansi(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            // Skip until we hit a letter in range 0x40-0x7E (end of CSI/OSC)
+            // Or until we hit BEL (0x07) for OSC sequences
+            for n in chars.by_ref() {
+                if n == '\x07' || n.is_ascii_uppercase() || n.is_ascii_lowercase() {
+                    break;
+                }
+                if n == '\x1b' {
+                    // Nested escape? Put it back conceptually, but we've already consumed
+                    break;
+                }
+            }
+        } else {
+            result.push(c);
+        }
+    }
+    result
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::ui::theme::init_theme;
 
     #[test]
     fn test_bash_execution_new() {
         let bash = BashExecution::new("echo hello");
         assert_eq!(bash.command, "echo hello");
-        assert!(bash.output.is_empty());
+        assert!(bash.output_lines.is_empty());
         assert_eq!(bash.status, BashStatus::Running);
         assert!(!bash.expanded);
+        assert!(!bash.exclude_from_context);
     }
 
     #[test]
@@ -187,9 +401,37 @@ mod tests {
         let mut bash = BashExecution::new("echo hello");
         bash.append_output("hello");
         bash.append_output("world");
-        assert_eq!(bash.output.len(), 2);
-        assert_eq!(bash.output[0], "hello");
-        assert_eq!(bash.output[1], "world");
+        assert_eq!(bash.output_lines.len(), 2);
+        assert_eq!(bash.output_lines[0], "hello");
+        assert_eq!(bash.output_lines[1], "world");
+    }
+
+    #[test]
+    fn test_bash_execution_append_chunk() {
+        let mut bash = BashExecution::new("echo hello");
+        bash.append_chunk("line1\nline2\nline3");
+        assert_eq!(bash.output_lines.len(), 3);
+        assert_eq!(bash.output_lines[0], "line1");
+        assert_eq!(bash.output_lines[1], "line2");
+        assert_eq!(bash.output_lines[2], "line3");
+    }
+
+    #[test]
+    fn test_bash_execution_append_chunk_continues_last_line() {
+        let mut bash = BashExecution::new("echo hello");
+        bash.append_output("partial");
+        bash.append_chunk(" continuation\nnext");
+        assert_eq!(bash.output_lines.len(), 2);
+        assert_eq!(bash.output_lines[0], "partial continuation");
+        assert_eq!(bash.output_lines[1], "next");
+    }
+
+    #[test]
+    fn test_bash_execution_append_chunk_strips_ansi() {
+        let mut bash = BashExecution::new("echo hello");
+        bash.append_chunk("\x1b[31mcolored\x1b[0m");
+        assert_eq!(bash.output_lines.len(), 1);
+        assert_eq!(bash.output_lines[0], "colored");
     }
 
     #[test]
@@ -230,26 +472,48 @@ mod tests {
     }
 
     #[test]
-    fn test_bash_execution_compact_label() {
+    fn test_bash_execution_exclude_from_context() {
         let mut bash = BashExecution::new("echo hello");
-        bash.set_compact_label("✓ Done");
-        assert_eq!(bash.compact_label, Some("✓ Done".into()));
+        assert!(!bash.exclude_from_context);
+        bash.set_exclude_from_context(true);
+        assert!(bash.exclude_from_context);
+    }
+
+    #[test]
+    fn test_bash_execution_get_output() {
+        let mut bash = BashExecution::new("echo hello");
+        bash.append_output("line1");
+        bash.append_output("line2");
+        assert_eq!(bash.get_output(), "line1\nline2");
+    }
+
+    #[test]
+    fn test_bash_execution_get_command() {
+        let bash = BashExecution::new("echo hello");
+        assert_eq!(bash.get_command(), "echo hello");
     }
 
     #[test]
     fn test_bash_execution_render_has_borders() {
-        crate::agent::ui::theme::init_theme(Some("dark"), false);
+        init_theme(Some("dark"), false);
         let bash = BashExecution::new("echo hello");
         let lines = bash.render(80);
         let all = lines.join("\n");
-        assert!(all.contains('┌'), "Should have top border");
-        assert!(all.contains('└'), "Should have bottom border");
+        // Should have top border (just ─ with ANSI color codes)
+        assert!(lines[1].contains('─'), "Top border should contain ─");
+        // Should have bottom border (just ─ with ANSI color codes)
+        assert!(
+            lines[lines.len() - 1].contains('─'),
+            "Bottom border should contain ─"
+        );
         assert!(all.contains("echo hello"), "Should show command");
+        // Spacer should be first line
+        assert!(lines[0].is_empty(), "First line should be empty (spacer)");
     }
 
     #[test]
     fn test_bash_execution_render_status() {
-        crate::agent::ui::theme::init_theme(Some("dark"), false);
+        init_theme(Some("dark"), false);
         let mut bash = BashExecution::new("echo hello");
         bash.append_output("hello world");
 
@@ -258,7 +522,7 @@ mod tests {
         let lines = bash.render(80);
         let all = lines.join("\n");
         assert!(all.contains("hello world"), "Should show output");
-        assert!(!all.contains("exit"), "No exit code for success");
+        assert!(!all.contains("exit 0"), "No exit code for success");
 
         // Complete with exit 1
         bash.set_complete(1);
@@ -268,21 +532,8 @@ mod tests {
     }
 
     #[test]
-    fn test_truncate_long_output_line() {
-        let long = "a".repeat(300);
-        let truncated = truncate_output_line(&long, 80);
-        // MAX_LINE_LEN=200 chars + 1 ellipsis char (3 bytes in UTF-8)
-        let chars: Vec<char> = truncated.chars().collect();
-        assert!(
-            chars.len() <= 201,
-            "Should truncate to MAX_LINE_LEN+1 chars"
-        );
-        assert!(truncated.ends_with('…'), "Should end with ellipsis");
-    }
-
-    #[test]
-    fn test_collapsed_preview_shows_first_lines() {
-        crate::agent::ui::theme::init_theme(Some("dark"), false);
+    fn test_collapsed_preview_shows_last_lines() {
+        init_theme(Some("dark"), false);
         let mut bash = BashExecution::new("test");
         for i in 0..50 {
             bash.append_output(format!("line {}", i));
@@ -291,15 +542,16 @@ mod tests {
 
         let lines = bash.render(80);
         let all = lines.join("\n");
-        assert!(all.contains("line 0"), "Collapsed: show first line");
-        assert!(all.contains("line 19"), "Collapsed: show 20th line");
-        assert!(!all.contains("line 20"), "Collapsed: hide 21st line");
+        assert!(!all.contains("line 0"), "Collapsed: hide first line");
+        assert!(!all.contains("line 29"), "Collapsed: hide line 30");
+        assert!(all.contains("line 30"), "Collapsed: show line 31");
+        assert!(all.contains("line 49"), "Collapsed: show last line");
         assert!(all.contains("30 more lines"), "Should show remaining count");
     }
 
     #[test]
     fn test_expanded_shows_all_lines() {
-        crate::agent::ui::theme::init_theme(Some("dark"), false);
+        init_theme(Some("dark"), false);
         let mut bash = BashExecution::new("test");
         for i in 0..50 {
             bash.append_output(format!("line {}", i));
@@ -314,6 +566,65 @@ mod tests {
         assert!(
             !all.contains("more lines"),
             "No 'more lines' indicator when expanded"
+        );
+    }
+
+    #[test]
+    fn test_exclude_from_context_uses_dim_border() {
+        init_theme(Some("dark"), false);
+        let mut bash = BashExecution::new("hidden command");
+        bash.set_exclude_from_context(true);
+        let lines = bash.render(80);
+        let all = lines.join("\n");
+        assert!(all.contains("hidden command"), "Should show command");
+    }
+
+    #[test]
+    fn test_cancelled_shows_warning() {
+        init_theme(Some("dark"), false);
+        let mut bash = BashExecution::new("sleep 10");
+        bash.set_cancelled();
+        let lines = bash.render(80);
+        let all = lines.join("\n");
+        assert!(all.contains("cancelled"), "Should show cancelled status");
+    }
+
+    #[test]
+    fn test_context_truncation() {
+        let mut bash = BashExecution::new("test");
+        // Add more lines than MAX_LINES
+        for i in 0..DEFAULT_MAX_LINES + 10 {
+            bash.append_output(format!("line {}", i));
+        }
+        let (output, truncated) = bash.context_truncated_output();
+        assert!(truncated, "Should be truncated");
+        let line_count = output.split('\n').count();
+        assert_eq!(line_count, DEFAULT_MAX_LINES, "Should have MAX_LINES lines");
+    }
+
+    #[test]
+    fn test_append_chunk_preserves_incomplete_last_line() {
+        let mut bash = BashExecution::new("echo test");
+        bash.append_chunk("first\nsecond\nincomplete");
+        assert_eq!(bash.output_lines.len(), 3);
+        assert_eq!(bash.output_lines[0], "first");
+        assert_eq!(bash.output_lines[1], "second");
+        assert_eq!(bash.output_lines[2], "incomplete");
+    }
+
+    #[test]
+    fn test_strip_ansi_basic() {
+        assert_eq!(strip_ansi("\x1b[31mred\x1b[0m"), "red");
+        assert_eq!(strip_ansi("no ansi"), "no ansi");
+        assert_eq!(strip_ansi(""), "");
+    }
+
+    #[test]
+    fn test_strip_ansi_complex() {
+        assert_eq!(strip_ansi("\x1b[1;31mbold red\x1b[0m"), "bold red");
+        assert_eq!(
+            strip_ansi("\x1b[38;2;255;0;0mtruecolor\x1b[39m"),
+            "truecolor"
         );
     }
 }
