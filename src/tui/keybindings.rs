@@ -44,16 +44,29 @@ pub const ACTION_SELECT_DOWN: &str = "tui.select.down";
 pub const ACTION_SELECT_CONFIRM: &str = "tui.select.confirm";
 pub const ACTION_SELECT_CANCEL: &str = "tui.select.cancel";
 
-// ── Application-level actions (rab-specific, not in pi) ──
+// ── Application-level actions (matching pi's KEYBINDINGS) ──
 pub const ACTION_APP_ESCAPE: &str = "app.escape";
+pub const ACTION_APP_CLEAR: &str = "app.clear";
 pub const ACTION_APP_INTERRUPT: &str = "app.interrupt";
 pub const ACTION_APP_EXIT: &str = "app.exit";
-pub const ACTION_APP_MODEL_SELECTOR: &str = "app.modelSelector";
-pub const ACTION_APP_TOGGLE_THINKING: &str = "app.toggleThinking";
-pub const ACTION_APP_TOGGLE_COLLAPSE: &str = "app.toggleCollapse";
+pub const ACTION_APP_SUSPEND: &str = "app.suspend";
+pub const ACTION_APP_THINKING_CYCLE: &str = "app.thinking.cycle";
+pub const ACTION_APP_MODEL_SELECTOR: &str = "app.model.select";
+pub const ACTION_APP_MODEL_CYCLE_FORWARD: &str = "app.model.cycleForward";
+pub const ACTION_APP_MODEL_CYCLE_BACKWARD: &str = "app.model.cycleBackward";
+pub const ACTION_APP_TOGGLE_THINKING: &str = "app.thinking.toggle";
+pub const ACTION_APP_TOOLS_EXPAND: &str = "app.tools.expand";
+pub const ACTION_APP_EDITOR_EXTERNAL: &str = "app.editor.external";
 pub const ACTION_APP_HELP: &str = "app.help";
 pub const ACTION_APP_HISTORY_UP: &str = "app.historyUp";
 pub const ACTION_APP_HISTORY_DOWN: &str = "app.historyDown";
+pub const ACTION_APP_MESSAGE_FOLLOW_UP: &str = "app.message.followUp";
+pub const ACTION_APP_MESSAGE_DEQUEUE: &str = "app.message.dequeue";
+pub const ACTION_APP_COMPACT_TOGGLE: &str = "app.compact.toggle";
+pub const ACTION_APP_SESSION_NEW: &str = "app.session.new";
+pub const ACTION_APP_SESSION_TREE: &str = "app.session.tree";
+pub const ACTION_APP_SESSION_FORK: &str = "app.session.fork";
+pub const ACTION_APP_SESSION_RESUME: &str = "app.session.resume";
 
 // =============================================================================
 // Keybindings
@@ -137,14 +150,28 @@ impl Keybindings {
         self.set(ACTION_SELECT_CANCEL, vec!["escape".into()]);
 
         self.set(ACTION_APP_ESCAPE, vec!["escape".into()]);
-        self.set(ACTION_APP_INTERRUPT, vec!["ctrl+c".into()]);
+        self.set(ACTION_APP_CLEAR, vec!["ctrl+c".into()]);
+        self.set(ACTION_APP_INTERRUPT, vec!["escape".into()]);
         self.set(ACTION_APP_EXIT, vec!["ctrl+d".into()]);
+        self.set(ACTION_APP_SUSPEND, vec!["ctrl+z".into()]);
+        self.set(ACTION_APP_THINKING_CYCLE, vec!["shift+tab".into()]);
         self.set(ACTION_APP_MODEL_SELECTOR, vec!["ctrl+l".into()]);
+        self.set(ACTION_APP_MODEL_CYCLE_FORWARD, vec!["ctrl+p".into()]);
+        self.set(ACTION_APP_MODEL_CYCLE_BACKWARD, vec!["ctrl+shift+p".into()]);
         self.set(ACTION_APP_TOGGLE_THINKING, vec!["ctrl+t".into()]);
-        self.set(ACTION_APP_TOGGLE_COLLAPSE, vec!["ctrl+o".into()]);
+        self.set(ACTION_APP_TOOLS_EXPAND, vec!["ctrl+o".into()]);
+        self.set(ACTION_APP_EDITOR_EXTERNAL, vec!["ctrl+g".into()]);
         self.set(ACTION_APP_HELP, vec!["f1".into()]);
         self.set(ACTION_APP_HISTORY_UP, vec!["up".into()]);
         self.set(ACTION_APP_HISTORY_DOWN, vec!["down".into()]);
+        self.set(ACTION_APP_MESSAGE_FOLLOW_UP, vec!["alt+enter".into()]);
+        self.set(ACTION_APP_MESSAGE_DEQUEUE, vec!["alt+up".into()]);
+        self.set(ACTION_APP_COMPACT_TOGGLE, vec!["ctrl+shift+c".into()]);
+        // Session actions (deferred — no default keybindings)
+        self.set(ACTION_APP_SESSION_NEW, vec![]);
+        self.set(ACTION_APP_SESSION_TREE, vec![]);
+        self.set(ACTION_APP_SESSION_FORK, vec![]);
+        self.set(ACTION_APP_SESSION_RESUME, vec![]);
     }
 
     /// Set the key IDs for an action.
@@ -271,6 +298,88 @@ mod tests {
         assert!(kb.matches(
             &KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL),
             ACTION_EDITOR_DELETE_WORD_BACKWARD,
+        ));
+    }
+
+    #[test]
+    fn test_app_clear() {
+        let kb = get_keybindings();
+        assert!(kb.matches(
+            &KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+            ACTION_APP_CLEAR,
+        ));
+        assert!(!kb.matches(
+            &KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+            ACTION_APP_CLEAR,
+        ));
+    }
+
+    #[test]
+    fn test_app_suspend() {
+        let kb = get_keybindings();
+        assert!(kb.matches(
+            &KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL),
+            ACTION_APP_SUSPEND,
+        ));
+    }
+
+    #[test]
+    fn test_app_thinking_cycle() {
+        let kb = get_keybindings();
+        assert!(kb.matches(
+            &KeyEvent::new(KeyCode::BackTab, KeyModifiers::NONE),
+            ACTION_APP_THINKING_CYCLE,
+        ));
+        assert!(kb.matches(
+            &KeyEvent::new(KeyCode::Tab, KeyModifiers::SHIFT),
+            ACTION_APP_THINKING_CYCLE,
+        ));
+    }
+
+    #[test]
+    fn test_app_model_cycle() {
+        let kb = get_keybindings();
+        assert!(kb.matches(
+            &KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL),
+            ACTION_APP_MODEL_CYCLE_FORWARD,
+        ));
+        assert!(kb.matches(
+            &KeyEvent::new(
+                KeyCode::Char('p'),
+                KeyModifiers::CONTROL | KeyModifiers::SHIFT
+            ),
+            ACTION_APP_MODEL_CYCLE_BACKWARD,
+        ));
+    }
+
+    #[test]
+    fn test_app_tools_expand() {
+        let kb = get_keybindings();
+        assert!(kb.matches(
+            &KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL),
+            ACTION_APP_TOOLS_EXPAND,
+        ));
+    }
+
+    #[test]
+    fn test_app_editor_external() {
+        let kb = get_keybindings();
+        assert!(kb.matches(
+            &KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL),
+            ACTION_APP_EDITOR_EXTERNAL,
+        ));
+    }
+
+    #[test]
+    fn test_app_follow_up_dequeue() {
+        let kb = get_keybindings();
+        assert!(kb.matches(
+            &KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT),
+            ACTION_APP_MESSAGE_FOLLOW_UP,
+        ));
+        assert!(kb.matches(
+            &KeyEvent::new(KeyCode::Up, KeyModifiers::ALT),
+            ACTION_APP_MESSAGE_DEQUEUE,
         ));
     }
 

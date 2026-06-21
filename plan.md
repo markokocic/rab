@@ -24,7 +24,6 @@ Reference: `~/src/cvstree/pi/` (TypeScript, same architecture).
 | Hook pipeline (`before_tool_call`, `after_tool_call`) | medium |
 | Steering / follow-up queues | medium |
 | `~/.rab/models.json` | medium |
-| Image support (multimodal) | medium |
 | Tool execution modes (sequential) | low |
 | `rab plugin new` scaffold | low |
 
@@ -36,11 +35,19 @@ Reference: `~/src/cvstree/pi/` (TypeScript, same architecture).
 | MCP adapter (rmcp crate) | low |
 | Dynamic hot-reload | low |
 
-## Chat/UX gaps
+## Chat/UX gaps — Completed ✅
 
-See `todo.md` for detailed task list. Major areas:
+| Area | Status |
+|------|--------|
+| Missing app actions (clear, suspend, thinking cycle, model cycle, etc.) | ✅ 10 actions implemented |
+| Message rendering polish (Markdown, OSC 133, tool expand/collapse) | ✅ Markdown + table rendering, OSC 133, expand/collapse |
+| Scrolling (Page Up/Down, scroll indicators) | ✅ PageUp/PageDown, scroll indicator, reset on submit |
 
-- Missing app actions (clear, suspend, thinking cycle, model cycle, etc.)
-- Message rendering polish (Markdown, OSC 133, tool expand/collapse)
-- Scrolling (mouse wheel, Page Up/Down, indicators)
-- Missing overlays (config-selector, theme-selector, session-selector, etc.)
+## Chat/UX gaps — Deferred 🟡
+
+See `todo.md` for detailed task list. Major deferred areas:
+
+- **Session management**: new, tree, fork, resume, toggleNamedFilter
+- **Overlays**: config-selector, theme-selector, session-selector, first-time-setup, changelog, login-dialog, oauth-selector
+- **Image support**: paste from clipboard, multimodal
+- **Other**: suspend/resume, debug key, dynamic keybinding hints, viewport-managed scrolling

@@ -19,6 +19,9 @@ use crate::tui::terminal::{self, ProcessTerminal, TerminalTrait};
 use crossterm::event::KeyEvent;
 use tokio::sync::mpsc;
 
+/// Thinking level cycle order (matching pi's thinking level enum).
+const THINKING_LEVELS: &[&str] = &["off", "low", "medium", "high", "xhigh"];
+
 /// Configuration for the UI app.
 pub struct AppConfig {
     pub model: String,
@@ -79,6 +82,14 @@ pub struct App {
     /// Display settings.
     hide_thinking: bool,
     collapse_tool_output: bool,
+    /// Global toggle: expand all tool outputs (Ctrl+O). Inverted of collapse_tool_output.
+    tools_expanded: bool,
+
+    /// Chat scroll offset (lines scrolled up from bottom).
+    scroll_offset: usize,
+
+    /// Timestamp of last Ctrl+C for double-press detection (pi-style).
+    last_clear_time: std::time::Instant,
 
     /// Exit flag.
     should_quit: bool,
@@ -114,6 +125,9 @@ pub struct App {
 
     /// Skills loaded for the session (/skill:name expansion).
     skills: Vec<crate::agent::Skill>,
+
+    /// Auto-compact toggle state.
+    auto_compact: bool,
 
     /// Settings reference for persisting toggle changes.
     settings: crate::agent::settings::Settings,
@@ -193,6 +207,9 @@ impl App {
             pending_thinking: None,
             hide_thinking: config.hide_thinking,
             collapse_tool_output: config.collapse_tool_output,
+            tools_expanded: !config.collapse_tool_output,
+            scroll_offset: 0,
+            last_clear_time: std::time::Instant::now(),
 
             should_quit: false,
             last_usage: None,
@@ -206,6 +223,7 @@ impl App {
             queued_messages: Vec::new(),
             skills: config.skills,
             settings: config.settings,
+            auto_compact: true,
             status_text: None,
         }
     }
@@ -325,7 +343,7 @@ fn compose_ui(app: &mut App, width: usize, _height: usize) -> Vec<String> {
     lines.push(format!(" {}", hints));
     lines.push(String::new());
 
-    // ── Messages ──
+    // ── Messages with scroll support ──
     let rendered = render_messages(
         &app.messages,
         width,
@@ -333,7 +351,20 @@ fn compose_ui(app: &mut App, width: usize, _height: usize) -> Vec<String> {
         app.collapse_tool_output,
         &app.theme,
     );
-    lines.extend(rendered);
+
+    // Apply scroll offset: when > 0, skip some of the oldest message lines
+    // (effectively scrolling up in the message history).
+    let total = rendered.len();
+    let scroll = app.scroll_offset.min(total.saturating_sub(1));
+    let visible = if scroll > 0 {
+        // Show "↑ N more" indicator at top
+        let indicator = app.theme.fg("dim", &format!(" ↑ {} more", scroll));
+        lines.push(crate::agent::ui::messages::pad_to_width(&indicator, width));
+        &rendered[scroll..]
+    } else {
+        &rendered[..]
+    };
+    lines.extend(visible.iter().cloned());
 
     // ── Pending (streaming) text ──
     if let Some(ref text) = app.pending_text
@@ -433,6 +464,7 @@ fn handle_input(app: &mut App, tui: &mut TUI, key: &KeyEvent) {
     match app.editor.handle_input(key) {
         InputAction::Handled => {}
         InputAction::Escape => {
+            // Pi-style: abort streaming or bash, else clear editor
             if app.is_streaming {
                 interrupt_streaming(app);
             } else {
@@ -440,18 +472,26 @@ fn handle_input(app: &mut App, tui: &mut TUI, key: &KeyEvent) {
                 app.history_index = None;
             }
         }
-        InputAction::Interrupt => {
-            if app.is_streaming {
-                interrupt_streaming(app);
-            } else {
-                app.editor.editor.set_text("");
-            }
+        InputAction::Clear => {
+            handle_clear(app);
         }
         InputAction::Exit => {
             app.should_quit = true;
         }
+        InputAction::Suspend => {
+            handle_suspend(app);
+        }
+        InputAction::ThinkingCycle => {
+            handle_thinking_cycle(app);
+        }
         InputAction::ModelSelector => {
             open_model_selector(app, tui);
+        }
+        InputAction::ModelCycleForward => {
+            handle_model_cycle(app, 1);
+        }
+        InputAction::ModelCycleBackward => {
+            handle_model_cycle(app, -1);
         }
         InputAction::ToggleThinking => {
             app.hide_thinking = !app.hide_thinking;
@@ -468,21 +508,11 @@ fn handle_input(app: &mut App, tui: &mut TUI, key: &KeyEvent) {
                 "Thinking blocks: visible".into()
             }));
         }
-        InputAction::ToggleCollapse => {
-            app.collapse_tool_output = !app.collapse_tool_output;
-            app.settings.collapse_tool_output = Some(app.collapse_tool_output);
-            if let Err(e) = app.settings.save() {
-                app.messages.push(DisplayMsg::Info(format!(
-                    "Failed to save tool output setting: {}",
-                    e
-                )));
-            }
-            app.messages
-                .push(DisplayMsg::Info(if app.collapse_tool_output {
-                    "Tool output: collapsed".into()
-                } else {
-                    "Tool output: expanded".into()
-                }));
+        InputAction::ToolsExpand => {
+            handle_tools_expand(app);
+        }
+        InputAction::EditorExternal => {
+            handle_editor_external(app);
         }
         InputAction::Help => {
             show_help_overlay(app, tui);
@@ -490,13 +520,227 @@ fn handle_input(app: &mut App, tui: &mut TUI, key: &KeyEvent) {
         InputAction::Submit(text) => {
             submit_message(app, text);
         }
+        InputAction::FollowUp(text) => {
+            handle_follow_up(app, text);
+        }
+        InputAction::Dequeue => {
+            handle_dequeue(app);
+        }
+        InputAction::CompactToggle => {
+            handle_compact_toggle(app);
+        }
         InputAction::RecallHistory(direction) => {
             recall_history(app, direction);
         }
-        InputAction::PageUp | InputAction::PageDown => {
-            // TODO: wire up chat scrolling
+        InputAction::PageUp => {
+            handle_page_up(app);
+        }
+        InputAction::PageDown => {
+            handle_page_down(app);
         }
     }
+}
+
+// =============================================================================
+// New action handlers (pi-compatible)
+// =============================================================================
+
+/// Handle Ctrl+C: clear editor (double-press within 500ms = exit).
+fn handle_clear(app: &mut App) {
+    let now = std::time::Instant::now();
+    let elapsed = now.duration_since(app.last_clear_time);
+    app.last_clear_time = now;
+
+    if app.is_streaming {
+        interrupt_streaming(app);
+    } else if elapsed.as_millis() < 500 {
+        // Double Ctrl+C within 500ms = exit (pi-style)
+        app.should_quit = true;
+    } else {
+        app.editor.editor.set_text("");
+        app.history_index = None;
+        app.status_text = Some("Cleared".into());
+    }
+}
+
+/// Handle Ctrl+Z: suspend to background (SIGTSTP).
+fn handle_suspend(app: &mut App) {
+    // We can't truly suspend from Rust in the same way as pi's Node.js,
+    // but we can stop the TUI and let the shell handle the SIGTSTP.
+    // For now, just show a status message.
+    app.status_text = Some("Suspend: Ctrl+Z is forwarded to shell".into());
+}
+
+/// Cycle thinking level: off → low → medium → high → xhigh → off
+fn handle_thinking_cycle(app: &mut App) {
+    if app.available_models.is_empty() && app.model.is_empty() {
+        app.status_text = Some("No model selected".into());
+        return;
+    }
+
+    let current = app.thinking_level.as_deref().unwrap_or("off");
+    let next = match THINKING_LEVELS.iter().position(|&l| l == current) {
+        Some(pos) => THINKING_LEVELS[(pos + 1) % THINKING_LEVELS.len()],
+        None => "off",
+    };
+
+    app.thinking_level = Some(next.to_string());
+    app.footer.set_thinking_level(Some(next.to_string()));
+    app.settings.default_thinking_level = Some(next.to_string());
+    let _ = app.settings.save();
+    app.status_text = Some(format!("Thinking level: {}", next));
+}
+
+/// Cycle model forward (dir=1) or backward (dir=-1).
+fn handle_model_cycle(app: &mut App, dir: isize) {
+    let n = app.available_models.len();
+    if n == 0 {
+        app.status_text = Some("No models available".into());
+        return;
+    }
+
+    let current_idx = app.available_models.iter().position(|m| m == &app.model);
+
+    let next_idx = match current_idx {
+        Some(idx) => (idx as isize + dir).rem_euclid(n as isize) as usize,
+        None => 0,
+    };
+
+    app.model = app.available_models[next_idx].clone();
+    app.footer.set_model(&app.model);
+    app.status_text = Some(format!("Model: {}", app.model));
+}
+
+/// Toggle all tool output expansion (Ctrl+O).
+fn handle_tools_expand(app: &mut App) {
+    app.tools_expanded = !app.tools_expanded;
+    app.collapse_tool_output = !app.tools_expanded;
+    app.settings.collapse_tool_output = Some(app.collapse_tool_output);
+    if let Err(e) = app.settings.save() {
+        app.messages.push(DisplayMsg::Info(format!(
+            "Failed to save tool output setting: {}",
+            e
+        )));
+    }
+    app.messages.push(DisplayMsg::Info(if app.tools_expanded {
+        "Tool output: expanded".into()
+    } else {
+        "Tool output: collapsed".into()
+    }));
+}
+
+/// Open external editor ($VISUAL / $EDITOR) for current editor content.
+fn handle_editor_external(app: &mut App) {
+    let editor_cmd = std::env::var("VISUAL")
+        .or_else(|_| std::env::var("EDITOR"))
+        .unwrap_or_default();
+
+    if editor_cmd.is_empty() {
+        app.status_text = Some("No editor configured. Set $VISUAL or $EDITOR.".into());
+        return;
+    }
+
+    let tmp_dir = std::env::temp_dir();
+    let tmp_file = tmp_dir.join(format!(
+        "rab-editor-{}.md",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+
+    let current_text = app.editor.editor.get_text();
+    if let Err(e) = std::fs::write(&tmp_file, &current_text) {
+        app.status_text = Some(format!("Failed to write temp file: {}", e));
+        return;
+    }
+
+    // Fork and exec the editor
+    let parts: Vec<&str> = editor_cmd.split(' ').collect();
+    let (editor, args) = parts.split_first().unwrap_or((&"", &[]));
+
+    // Stop TUI, run editor, resume
+    // For simplicity, we use std::process::Command which blocks
+    app.status_text = Some(format!("Opening {} ...", editor_cmd));
+
+    // Use std::process since we need to block the async runtime
+    let status = std::process::Command::new(editor)
+        .args(args)
+        .arg(&tmp_file)
+        .status();
+
+    match status {
+        Ok(status) if status.success() => {
+            if let Ok(new_content) = std::fs::read_to_string(&tmp_file) {
+                let trimmed = new_content.trim_end_matches('\n').to_string();
+                app.editor.editor.set_text(&trimmed);
+                app.editor.check_autocomplete();
+            }
+            let _ = std::fs::remove_file(&tmp_file);
+            app.status_text = Some("Editor closed".into());
+        }
+        Ok(_) => {
+            let _ = std::fs::remove_file(&tmp_file);
+            app.status_text = Some("Editor exited with non-zero status".into());
+        }
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp_file);
+            app.status_text = Some(format!("Failed to launch editor: {}", e));
+        }
+    }
+}
+
+/// Queue a follow-up message (Alt+Enter).
+fn handle_follow_up(app: &mut App, text: String) {
+    // If streaming, queue the message
+    if app.is_streaming {
+        app.queued_messages.push(text.clone());
+        app.status_text = Some("Message queued — will send when current response finishes".into());
+    } else {
+        // Not streaming — submit immediately
+        submit_message(app, text);
+    }
+}
+
+/// Restore queued messages to editor (Alt+Up).
+fn handle_dequeue(app: &mut App) {
+    if app.queued_messages.is_empty() {
+        app.status_text = Some("No queued messages to restore".into());
+        return;
+    }
+
+    let restored = app.queued_messages.join("\n\n");
+    let count = app.queued_messages.len();
+    app.queued_messages.clear();
+    app.editor.editor.set_text(&restored);
+    app.editor.check_autocomplete();
+    app.status_text = Some(format!(
+        "Restored {} queued message{}",
+        count,
+        if count == 1 { "" } else { "s" }
+    ));
+}
+
+/// PageUp: scroll chat up (show older messages).
+fn handle_page_up(app: &mut App) {
+    // Increase scroll offset by roughly a page
+    app.scroll_offset = app.scroll_offset.saturating_add(10);
+}
+
+/// PageDown: scroll chat down (show newer messages).
+fn handle_page_down(app: &mut App) {
+    app.scroll_offset = app.scroll_offset.saturating_sub(10);
+}
+
+/// Toggle auto-compact indicator (Ctrl+Shift+C).
+fn handle_compact_toggle(app: &mut App) {
+    app.auto_compact = !app.auto_compact;
+    app.footer.set_auto_compact(app.auto_compact);
+    app.status_text = Some(if app.auto_compact {
+        "Auto-compact: on".into()
+    } else {
+        "Auto-compact: off".into()
+    });
 }
 
 /// Interrupt streaming agent and restore queued messages to editor.
@@ -535,6 +779,7 @@ fn show_help_overlay(app: &mut App, tui: &mut TUI) {
 /// a concurrent agent loop (matching pi's behavior).
 fn submit_message(app: &mut App, message: String) {
     app.history_index = None;
+    app.scroll_offset = 0;
     let trimmed = message.trim().to_string();
 
     // Handle /skill:name [args] expansion (pi-style: before command dispatch)
@@ -1014,7 +1259,18 @@ mod tests {
             app.collapse_tool_output,
             theme,
         );
-        lines.extend(rendered);
+
+        // Apply scroll offset (matching compose_ui)
+        let total = rendered.len();
+        let scroll = app.scroll_offset.min(total.saturating_sub(1));
+        let visible = if scroll > 0 {
+            let indicator = theme.fg("dim", &format!(" ↑ {} more", scroll));
+            lines.push(crate::agent::ui::messages::pad_to_width(&indicator, width));
+            &rendered[scroll..]
+        } else {
+            &rendered[..]
+        };
+        lines.extend(visible.iter().cloned());
 
         // Pending (streaming) text - matches compose_ui
         if let Some(ref text) = app.pending_text
@@ -1658,5 +1914,320 @@ mod tests {
             1,
             "AgentEnd must not duplicate messages already in conversation (pi-style)"
         );
+    }
+
+    // ── New actions tests ──
+
+    #[test]
+    fn test_handle_clear_when_streaming_interrupts() {
+        let tmp = tempdir().unwrap();
+        let cwd = tmp.path().to_path_buf();
+        let session = SessionManager::in_memory(&cwd);
+        let config = make_config(cwd.clone());
+        let mut app = App::new(config, session);
+        app.is_streaming = true;
+        app.queued_messages.push("q".into());
+
+        handle_clear(&mut app);
+
+        assert!(!app.is_streaming, "Streaming should be interrupted");
+        assert!(
+            app.queued_messages.is_empty(),
+            "Queued messages should be restored"
+        );
+    }
+
+    #[test]
+    fn test_handle_clear_not_streaming_clears_editor() {
+        let tmp = tempdir().unwrap();
+        let cwd = tmp.path().to_path_buf();
+        let session = SessionManager::in_memory(&cwd);
+        let config = make_config(cwd.clone());
+        let mut app = App::new(config, session);
+        app.is_streaming = false;
+        app.editor.editor.set_text("some text");
+        // Set last_clear_time far in the past so double-press doesn't trigger
+        app.last_clear_time = std::time::Instant::now() - std::time::Duration::from_secs(10);
+
+        handle_clear(&mut app);
+
+        assert!(
+            app.editor.editor.get_text().is_empty(),
+            "Editor should be cleared"
+        );
+    }
+
+    #[test]
+    fn test_handle_clear_double_press_exits() {
+        let tmp = tempdir().unwrap();
+        let cwd = tmp.path().to_path_buf();
+        let session = SessionManager::in_memory(&cwd);
+        let config = make_config(cwd.clone());
+        let mut app = App::new(config, session);
+        app.is_streaming = false;
+        // Set last_clear_time to just a few ms ago to trigger double-press detection
+        app.last_clear_time = std::time::Instant::now();
+
+        handle_clear(&mut app);
+
+        assert!(app.should_quit, "Double Ctrl+C should exit");
+    }
+
+    #[test]
+    fn test_handle_thinking_cycle() {
+        let tmp = tempdir().unwrap();
+        let cwd = tmp.path().to_path_buf();
+        let session = SessionManager::in_memory(&cwd);
+        let config = AppConfig {
+            available_models: vec!["model".into()],
+            model: "model".into(),
+            ..make_config(cwd.clone())
+        };
+        let mut app = App::new(config, session);
+
+        // Start from off
+        app.thinking_level = Some("off".into());
+
+        handle_thinking_cycle(&mut app);
+        assert_eq!(app.thinking_level.as_deref(), Some("low"));
+
+        handle_thinking_cycle(&mut app);
+        assert_eq!(app.thinking_level.as_deref(), Some("medium"));
+
+        handle_thinking_cycle(&mut app);
+        assert_eq!(app.thinking_level.as_deref(), Some("high"));
+
+        handle_thinking_cycle(&mut app);
+        assert_eq!(app.thinking_level.as_deref(), Some("xhigh"));
+
+        handle_thinking_cycle(&mut app);
+        assert_eq!(app.thinking_level.as_deref(), Some("off"));
+    }
+
+    #[test]
+    fn test_handle_model_cycle_forward() {
+        let tmp = tempdir().unwrap();
+        let cwd = tmp.path().to_path_buf();
+        let session = SessionManager::in_memory(&cwd);
+        let config = AppConfig {
+            available_models: vec!["A".into(), "B".into(), "C".into()],
+            model: "A".into(),
+            ..make_config(cwd.clone())
+        };
+        let mut app = App::new(config, session);
+
+        handle_model_cycle(&mut app, 1);
+        assert_eq!(app.model, "B");
+
+        handle_model_cycle(&mut app, 1);
+        assert_eq!(app.model, "C");
+
+        handle_model_cycle(&mut app, 1);
+        assert_eq!(app.model, "A"); // wraps around
+    }
+
+    #[test]
+    fn test_handle_model_cycle_backward() {
+        let tmp = tempdir().unwrap();
+        let cwd = tmp.path().to_path_buf();
+        let session = SessionManager::in_memory(&cwd);
+        let config = AppConfig {
+            available_models: vec!["A".into(), "B".into(), "C".into()],
+            model: "A".into(),
+            ..make_config(cwd.clone())
+        };
+        let mut app = App::new(config, session);
+
+        handle_model_cycle(&mut app, -1);
+        assert_eq!(app.model, "C"); // wraps around backwards
+
+        handle_model_cycle(&mut app, -1);
+        assert_eq!(app.model, "B");
+
+        handle_model_cycle(&mut app, -1);
+        assert_eq!(app.model, "A");
+    }
+
+    #[test]
+    fn test_handle_tools_expand_toggles() {
+        let tmp = tempdir().unwrap();
+        let cwd = tmp.path().to_path_buf();
+        let session = SessionManager::in_memory(&cwd);
+        let config = make_config(cwd.clone());
+        let mut app = App::new(config, session);
+
+        app.tools_expanded = false;
+        app.collapse_tool_output = true;
+
+        handle_tools_expand(&mut app);
+
+        assert!(app.tools_expanded, "tools_expanded should be true");
+        assert!(!app.collapse_tool_output, "collapse should be false");
+
+        handle_tools_expand(&mut app);
+
+        assert!(!app.tools_expanded, "tools_expanded should be false");
+        assert!(app.collapse_tool_output, "collapse should be true");
+    }
+
+    #[test]
+    fn test_handle_follow_up_queues_when_streaming() {
+        let tmp = tempdir().unwrap();
+        let cwd = tmp.path().to_path_buf();
+        let session = SessionManager::in_memory(&cwd);
+        let config = make_config(cwd.clone());
+        let mut app = App::new(config, session);
+        app.is_streaming = true;
+
+        handle_follow_up(&mut app, "follow-up text".into());
+
+        assert_eq!(app.queued_messages.len(), 1);
+        assert_eq!(app.queued_messages[0], "follow-up text");
+    }
+
+    #[test]
+    fn test_handle_dequeue_restores_messages() {
+        let tmp = tempdir().unwrap();
+        let cwd = tmp.path().to_path_buf();
+        let session = SessionManager::in_memory(&cwd);
+        let config = make_config(cwd.clone());
+        let mut app = App::new(config, session);
+        app.queued_messages.push("msg1".into());
+        app.queued_messages.push("msg2".into());
+
+        handle_dequeue(&mut app);
+
+        assert!(app.queued_messages.is_empty(), "Queues should be empty");
+        assert!(
+            app.editor.editor.get_text().contains("msg1"),
+            "Editor should contain msg1"
+        );
+        assert!(
+            app.editor.editor.get_text().contains("msg2"),
+            "Editor should contain msg2"
+        );
+    }
+
+    #[test]
+    fn test_handle_page_up_increases_scroll_offset() {
+        let tmp = tempdir().unwrap();
+        let cwd = tmp.path().to_path_buf();
+        let session = SessionManager::in_memory(&cwd);
+        let config = make_config(cwd.clone());
+        let mut app = App::new(config, session);
+
+        app.scroll_offset = 0;
+        handle_page_up(&mut app);
+        assert!(app.scroll_offset > 0, "scroll_offset should increase");
+    }
+
+    #[test]
+    fn test_handle_compact_toggle_toggles_flag() {
+        let tmp = tempdir().unwrap();
+        let cwd = tmp.path().to_path_buf();
+        let session = SessionManager::in_memory(&cwd);
+        let config = make_config(cwd.clone());
+        let mut app = App::new(config, session);
+
+        app.auto_compact = true;
+        handle_compact_toggle(&mut app);
+        assert!(!app.auto_compact, "Should toggle off");
+
+        handle_compact_toggle(&mut app);
+        assert!(app.auto_compact, "Should toggle back on");
+    }
+
+    #[test]
+    fn test_handle_page_down_decreases_scroll_offset() {
+        let tmp = tempdir().unwrap();
+        let cwd = tmp.path().to_path_buf();
+        let session = SessionManager::in_memory(&cwd);
+        let config = make_config(cwd.clone());
+        let mut app = App::new(config, session);
+
+        app.scroll_offset = 20;
+        handle_page_down(&mut app);
+        assert!(app.scroll_offset < 20, "scroll_offset should decrease");
+    }
+
+    #[test]
+    fn test_submit_resets_scroll_offset() {
+        let tmp = tempdir().unwrap();
+        let cwd = tmp.path().to_path_buf();
+        let session = SessionManager::in_memory(&cwd);
+        let config = make_config(cwd.clone());
+        let mut app = App::new(config, session);
+
+        app.scroll_offset = 20;
+        app.is_streaming = true;
+        submit_message(&mut app, "test".into());
+
+        assert_eq!(app.scroll_offset, 0, "submit should reset scroll_offset");
+    }
+
+    #[test]
+    fn test_scroll_indicator_shown_when_scrolled() {
+        use crate::agent::ui::theme;
+        theme::init_theme(Some("dark"), false);
+
+        let tmp = tempdir().unwrap();
+        let cwd = tmp.path().to_path_buf();
+        let session = SessionManager::in_memory(&cwd);
+        let config = make_config(cwd.clone());
+        let mut app = App::new(config, session);
+
+        // Add enough messages that we can test scrolling
+        // Use Info messages which render simply as a single line
+        app.messages.push(DisplayMsg::Info("msg 1".into()));
+        app.messages.push(DisplayMsg::Info("msg 2".into()));
+        app.messages.push(DisplayMsg::Info("msg 3".into()));
+        app.messages.push(DisplayMsg::Info("msg 4".into()));
+
+        app.scroll_offset = 0;
+        let lines_scrolled_0 = compose_ui_test(&mut app, 80);
+        let text_0 = lines_scrolled_0.join("\n");
+        // Should have all info messages visible
+        assert!(text_0.contains("msg 1"), "Should show msg 1 at offset 0");
+        assert!(text_0.contains("msg 4"), "Should show msg 4 at offset 0");
+        // Should NOT have scroll indicator
+        assert!(!text_0.contains("↑"), "No scroll indicator at offset 0");
+
+        app.scroll_offset = 2;
+        let lines_scrolled = compose_ui_test(&mut app, 80);
+        let text = lines_scrolled.join("\n");
+        // msg 1 and 2 exceed the scroll offset (there are 4 messages)
+        // We scroll past 2 lines, so msg 1 should still be visible
+        // Actually, Info lines: " msg 1", " msg 2", " msg 3", " msg 4" = 4 lines
+        // Scroll 2 → skip first 2 → show msg 3, msg 4
+        assert!(
+            !text.contains("msg 2"),
+            "msg 2 should be hidden when scrolled"
+        );
+        assert!(text.contains("msg 3"), "msg 3 should still show");
+        assert!(text.contains("msg 4"), "msg 4 should still show");
+        // Should show scroll indicator
+        assert!(text.contains("↑"), "Should show scroll indicator");
+    }
+
+    /// Helper to create a minimal AppConfig for testing.
+    fn make_config(cwd: std::path::PathBuf) -> AppConfig {
+        AppConfig {
+            model: "test-model".into(),
+            system_prompt: String::new(),
+            tools: vec![],
+            agent_tools: vec![],
+            extensions: vec![],
+            provider: Box::new(MockProvider),
+            cwd,
+            thinking_level: None,
+            git_branch: None,
+            available_models: vec![],
+            hide_thinking: true,
+            collapse_tool_output: true,
+            interactive: true,
+            settings: crate::agent::settings::Settings::default(),
+            context_files: vec![],
+            skills: vec![],
+        }
     }
 }

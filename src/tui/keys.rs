@@ -164,12 +164,21 @@ pub fn match_key_id(event: &KeyEvent, key_id: &str) -> bool {
     let has_alt = mods.contains(KeyModifiers::ALT);
     let has_super = mods.contains(KeyModifiers::SUPER);
 
-    // For events, check that the requested modifiers match (extra modifiers are OK)
-    // But if no modifiers are requested, we require exactly no modifiers
+    // Special case: BackTab is inherently Shift+Tab. If the key ID wants
+    // shift and the event is BackTab, treat it as having the shift modifier.
+    let is_backtab = event.code == KeyCode::BackTab;
+    let wants_tab = key == "tab";
+
+    // Treat BackTab as having an implicit shift modifier (only for the
+    // "wants_shift" check — actual has_shift is used for rejecting extra shift).
+    let wanted_shift = has_shift || (is_backtab && wants_tab);
+
+    // ── Required-modifier check ──
+    // If the key ID requests a modifier, the event must have it.
     if wants_ctrl && !has_ctrl {
         return false;
     }
-    if wants_shift && !has_shift {
+    if wants_shift && !wanted_shift {
         return false;
     }
     if wants_alt && !has_alt {
@@ -179,43 +188,62 @@ pub fn match_key_id(event: &KeyEvent, key_id: &str) -> bool {
         return false;
     }
 
-    // If no modifiers requested, enforce exact no-modifier match
-    if !wants_ctrl && !wants_shift && !wants_alt && !wants_super {
-        if has_ctrl || has_alt || has_super {
+    // ── Extra-modifier rejection ──
+    // If the key ID does NOT request a modifier, extra instances of that
+    // modifier on the event cause a non-match.  The only exception is shift
+    // when it only changes case (uppercase letter or shifted symbol).
+    if !wants_ctrl && has_ctrl {
+        return false;
+    }
+    if !wants_alt && has_alt {
+        return false;
+    }
+    if !wants_super && has_super {
+        return false;
+    }
+    // Shift is special: lowercase key "p" with shift modifier could just be
+    // the user pressing Shift+P (uppercase). Allow shift when the expected
+    // key is an uppercase letter or shifted symbol.  For BackTab we already
+    // handle it via effective_shift — it counts as having shift implicitly.
+    if !wants_shift && has_shift && !is_backtab {
+        // Allow shift only for letters where key_name is the uppercase version
+        // or for symbols that require shift
+        let shiftable = key.len() == 1 && {
+            let c = key.chars().next().unwrap();
+            c.is_ascii_uppercase()
+                || c.is_ascii_digit()
+                || matches!(
+                    c,
+                    '!' | '@'
+                        | '#'
+                        | '$'
+                        | '%'
+                        | '^'
+                        | '&'
+                        | '*'
+                        | '('
+                        | ')'
+                        | '_'
+                        | '+'
+                        | '|'
+                        | '~'
+                        | '{'
+                        | '}'
+                        | ':'
+                        | '"'
+                        | '<'
+                        | '>'
+                        | '?'
+                )
+        };
+        if !shiftable {
             return false;
         }
-        // Allow shift only for letters (uppercase = same key)
-        if has_shift
-            && !key.chars().all(|c| {
-                c.is_ascii_uppercase()
-                    || c.is_ascii_digit()
-                    || matches!(
-                        c,
-                        '!' | '@'
-                            | '#'
-                            | '$'
-                            | '%'
-                            | '^'
-                            | '&'
-                            | '*'
-                            | '('
-                            | ')'
-                            | '_'
-                            | '+'
-                            | '|'
-                            | '~'
-                            | '{'
-                            | '}'
-                            | ':'
-                            | '"'
-                            | '<'
-                            | '>'
-                            | '?'
-                    )
-            })
-        {
-            // Allow shift for symbols
-        }
+    }
+
+    // BackTab (shift+tab) should only match key IDs that explicitly request shift
+    if event.code == KeyCode::BackTab && !wants_shift {
+        return false;
     }
 
     // Match the key name against the event code
@@ -227,7 +255,7 @@ fn matches_key_name(code: &KeyCode, key_name: &str) -> bool {
     match code {
         KeyCode::Enter => key_name == "enter" || key_name == "return",
         KeyCode::Esc => key_name == "escape" || key_name == "esc",
-        KeyCode::Tab => key_name == "tab",
+        KeyCode::Tab | KeyCode::BackTab => key_name == "tab",
         KeyCode::Backspace => key_name == "backspace",
         KeyCode::Delete => key_name == "delete",
         KeyCode::Home => key_name == "home",
@@ -238,7 +266,6 @@ fn matches_key_name(code: &KeyCode, key_name: &str) -> bool {
         KeyCode::Down => key_name == "down",
         KeyCode::Left => key_name == "left",
         KeyCode::Right => key_name == "right",
-        KeyCode::BackTab => key_name == "tab", // BackTab is shift+tab
         KeyCode::Insert => key_name == "insert",
         KeyCode::F(n) => Some(*n) == parse_f_key(key_name),
         KeyCode::Char(c) if key_name.len() == 1 => {

@@ -5,11 +5,13 @@ use crate::tui::Theme;
 use crate::tui::components::Editor;
 use crate::tui::components::editor::{EditorOptions, EditorTheme};
 use crate::tui::keybindings::{
-    ACTION_APP_ESCAPE, ACTION_APP_EXIT, ACTION_APP_HELP, ACTION_APP_HISTORY_DOWN,
-    ACTION_APP_HISTORY_UP, ACTION_APP_INTERRUPT, ACTION_APP_MODEL_SELECTOR,
-    ACTION_APP_TOGGLE_COLLAPSE, ACTION_APP_TOGGLE_THINKING, ACTION_EDITOR_PAGE_DOWN,
-    ACTION_EDITOR_PAGE_UP, ACTION_INPUT_NEW_LINE, ACTION_INPUT_SUBMIT, ACTION_INPUT_TAB,
-    ACTION_SELECT_CANCEL, get_keybindings,
+    ACTION_APP_CLEAR, ACTION_APP_COMPACT_TOGGLE, ACTION_APP_EDITOR_EXTERNAL, ACTION_APP_ESCAPE,
+    ACTION_APP_EXIT, ACTION_APP_HELP, ACTION_APP_HISTORY_DOWN, ACTION_APP_HISTORY_UP,
+    ACTION_APP_MESSAGE_DEQUEUE, ACTION_APP_MESSAGE_FOLLOW_UP, ACTION_APP_MODEL_CYCLE_BACKWARD,
+    ACTION_APP_MODEL_CYCLE_FORWARD, ACTION_APP_MODEL_SELECTOR, ACTION_APP_SUSPEND,
+    ACTION_APP_THINKING_CYCLE, ACTION_APP_TOGGLE_THINKING, ACTION_APP_TOOLS_EXPAND,
+    ACTION_EDITOR_PAGE_DOWN, ACTION_EDITOR_PAGE_UP, ACTION_INPUT_NEW_LINE, ACTION_INPUT_SUBMIT,
+    ACTION_INPUT_TAB, ACTION_SELECT_CANCEL, get_keybindings,
 };
 
 /// Actions that ChatEditor can signal to the app layer.
@@ -19,18 +21,28 @@ use crate::tui::keybindings::{
 pub enum InputAction {
     /// Key was consumed by the editor (text editing, navigation, etc.)
     Handled,
-    /// Escape pressed (app should clear/abort)
+    /// Escape pressed (app should abort streaming or close autocomplete)
     Escape,
-    /// Ctrl+C pressed (app should interrupt streaming or clear)
-    Interrupt,
+    /// Ctrl+C pressed (app should clear editor, or double-press to exit)
+    Clear,
     /// Ctrl+D pressed while editor is empty (app should quit)
     Exit,
+    /// Ctrl+Z pressed (app should suspend)
+    Suspend,
+    /// Shift+Tab pressed (app should cycle thinking level)
+    ThinkingCycle,
     /// Ctrl+L pressed (app should open model selector)
     ModelSelector,
+    /// Ctrl+P pressed (app should cycle to next model)
+    ModelCycleForward,
+    /// Shift+Ctrl+P pressed (app should cycle to previous model)
+    ModelCycleBackward,
     /// Ctrl+T pressed (app should toggle thinking visibility)
     ToggleThinking,
-    /// Ctrl+O pressed (app should toggle tool output collapse)
-    ToggleCollapse,
+    /// Ctrl+O pressed (app should toggle all tool output expansion)
+    ToolsExpand,
+    /// Ctrl+G pressed (app should open external editor)
+    EditorExternal,
     /// F1 pressed (app should show help overlay)
     Help,
     /// Enter pressed with text (app should submit the message)
@@ -41,6 +53,12 @@ pub enum InputAction {
     PageUp,
     /// PageDown pressed (app should scroll down)
     PageDown,
+    /// Alt+Enter pressed (app should queue follow-up message)
+    FollowUp(String),
+    /// Alt+Up pressed (app should restore queued messages to editor)
+    Dequeue,
+    /// Ctrl+Shift+C pressed (app should toggle auto-compact)
+    CompactToggle,
 }
 
 /// Rab-specific chat editor that wraps the core tui::Editor.
@@ -127,7 +145,7 @@ impl ChatEditor {
 
     /// Handle keyboard input. Mirrors pi's CustomEditor.handleInput:
     ///
-    /// 1. Checks app-level keys (escape, interrupt, submit, model selector, etc.)
+    /// 1. Checks app-level keys (escape, clear, submit, model selector, etc.)
     ///    and returns the corresponding InputAction for the app layer to handle.
     /// 2. For text-editing keys, delegates to the inner Editor.handle_input.
     ///
@@ -145,9 +163,9 @@ impl ChatEditor {
             return InputAction::Escape;
         }
 
-        // ── Ctrl+C: interrupt or clear ──
-        if kb.matches(key, ACTION_APP_INTERRUPT) {
-            return InputAction::Interrupt;
+        // ── Ctrl+C: clear (abort streaming or clear editor) ──
+        if kb.matches(key, ACTION_APP_CLEAR) {
+            return InputAction::Clear;
         }
 
         // ── Ctrl+D: exit when editor is empty (mirrors pi's app.exit) ──
@@ -155,9 +173,29 @@ impl ChatEditor {
             return InputAction::Exit;
         }
 
+        // ── Ctrl+Z: suspend ──
+        if kb.matches(key, ACTION_APP_SUSPEND) {
+            return InputAction::Suspend;
+        }
+
+        // ── Shift+Tab: cycle thinking level ──
+        if kb.matches(key, ACTION_APP_THINKING_CYCLE) {
+            return InputAction::ThinkingCycle;
+        }
+
         // ── Ctrl+L: model selector ──
         if kb.matches(key, ACTION_APP_MODEL_SELECTOR) {
             return InputAction::ModelSelector;
+        }
+
+        // ── Ctrl+P: cycle model forward ──
+        if kb.matches(key, ACTION_APP_MODEL_CYCLE_FORWARD) {
+            return InputAction::ModelCycleForward;
+        }
+
+        // ── Shift+Ctrl+P: cycle model backward ──
+        if kb.matches(key, ACTION_APP_MODEL_CYCLE_BACKWARD) {
+            return InputAction::ModelCycleBackward;
         }
 
         // ── Ctrl+T: toggle thinking visibility ──
@@ -165,14 +203,40 @@ impl ChatEditor {
             return InputAction::ToggleThinking;
         }
 
-        // ── Ctrl+O: toggle tool output collapse ──
-        if kb.matches(key, ACTION_APP_TOGGLE_COLLAPSE) {
-            return InputAction::ToggleCollapse;
+        // ── Ctrl+O: toggle all tool output expansion ──
+        if kb.matches(key, ACTION_APP_TOOLS_EXPAND) {
+            return InputAction::ToolsExpand;
+        }
+
+        // ── Ctrl+G: external editor ──
+        if kb.matches(key, ACTION_APP_EDITOR_EXTERNAL) {
+            return InputAction::EditorExternal;
         }
 
         // ── F1: help overlay ──
         if kb.matches(key, ACTION_APP_HELP) {
             return InputAction::Help;
+        }
+
+        // ── Alt+Enter: queue follow-up message ──
+        if kb.matches(key, ACTION_APP_MESSAGE_FOLLOW_UP) {
+            let text = self.editor.get_text();
+            if !text.trim().is_empty() {
+                self.editor.add_to_history(&text);
+                self.editor.set_text("");
+                return InputAction::FollowUp(text);
+            }
+            return InputAction::Handled;
+        }
+
+        // ── Alt+Up: restore queued messages ──
+        if kb.matches(key, ACTION_APP_MESSAGE_DEQUEUE) {
+            return InputAction::Dequeue;
+        }
+
+        // ── Ctrl+Shift+C: toggle auto-compact ──
+        if kb.matches(key, ACTION_APP_COMPACT_TOGGLE) {
+            return InputAction::CompactToggle;
         }
 
         // ── Tab: trigger slash-command autocomplete (pi-style) ──
@@ -222,7 +286,30 @@ impl ChatEditor {
 
         // ── All other keys: delegate to the core Editor for text editing ──
         self.editor.handle_input(key);
+
+        // ── Auto-trigger slash autocomplete on / ──
+        self.check_slash_autocomplete();
+
         InputAction::Handled
+    }
+
+    /// Check if the current text starts with `/` and auto-trigger autocomplete.
+    fn check_slash_autocomplete(&mut self) {
+        if self.editor.autocomplete_active {
+            return;
+        }
+        let text = self.editor.get_text();
+        if text.starts_with('/') && text.len() > 1 && !text[1..].starts_with(' ') {
+            let suggestions = self.get_autocomplete_suggestions();
+            if !suggestions.is_empty() {
+                self.editor.set_autocomplete(suggestions);
+            }
+        }
+    }
+
+    /// Public method for app layer to trigger autocomplete check after set_text.
+    pub fn check_autocomplete(&mut self) {
+        self.check_slash_autocomplete();
     }
 }
 
@@ -242,6 +329,17 @@ mod tests {
 
     fn ctrl(c: char) -> KeyEvent {
         KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)
+    }
+
+    fn alt_key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::ALT)
+    }
+
+    fn ctrl_shift(c: char) -> KeyEvent {
+        KeyEvent::new(
+            KeyCode::Char(c),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        )
     }
 
     fn enter() -> KeyEvent {
@@ -276,6 +374,10 @@ mod tests {
         KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE)
     }
 
+    fn shift_tab() -> KeyEvent {
+        KeyEvent::new(KeyCode::BackTab, KeyModifiers::NONE)
+    }
+
     // ── App-level key tests ──
 
     #[test]
@@ -305,10 +407,10 @@ mod tests {
     }
 
     #[test]
-    fn test_ctrl_c_returns_interrupt() {
+    fn test_ctrl_c_returns_clear() {
         let mut ed = make_editor();
         let action = ed.handle_input(&ctrl('c'));
-        assert!(matches!(action, InputAction::Interrupt));
+        assert!(matches!(action, InputAction::Clear));
     }
 
     #[test]
@@ -335,10 +437,38 @@ mod tests {
     }
 
     #[test]
+    fn test_ctrl_z_returns_suspend() {
+        let mut ed = make_editor();
+        let action = ed.handle_input(&ctrl('z'));
+        assert!(matches!(action, InputAction::Suspend));
+    }
+
+    #[test]
+    fn test_shift_tab_returns_thinking_cycle() {
+        let mut ed = make_editor();
+        let action = ed.handle_input(&shift_tab());
+        assert!(matches!(action, InputAction::ThinkingCycle));
+    }
+
+    #[test]
     fn test_ctrl_l_returns_model_selector() {
         let mut ed = make_editor();
         let action = ed.handle_input(&ctrl('l'));
         assert!(matches!(action, InputAction::ModelSelector));
+    }
+
+    #[test]
+    fn test_ctrl_p_returns_model_cycle_forward() {
+        let mut ed = make_editor();
+        let action = ed.handle_input(&ctrl('p'));
+        assert!(matches!(action, InputAction::ModelCycleForward));
+    }
+
+    #[test]
+    fn test_ctrl_shift_p_returns_model_cycle_backward() {
+        let mut ed = make_editor();
+        let action = ed.handle_input(&ctrl_shift('p'));
+        assert!(matches!(action, InputAction::ModelCycleBackward));
     }
 
     #[test]
@@ -349,10 +479,17 @@ mod tests {
     }
 
     #[test]
-    fn test_ctrl_o_returns_toggle_collapse() {
+    fn test_ctrl_o_returns_tools_expand() {
         let mut ed = make_editor();
         let action = ed.handle_input(&ctrl('o'));
-        assert!(matches!(action, InputAction::ToggleCollapse));
+        assert!(matches!(action, InputAction::ToolsExpand));
+    }
+
+    #[test]
+    fn test_ctrl_g_returns_editor_external() {
+        let mut ed = make_editor();
+        let action = ed.handle_input(&ctrl('g'));
+        assert!(matches!(action, InputAction::EditorExternal));
     }
 
     #[test]
@@ -360,6 +497,151 @@ mod tests {
         let mut ed = make_editor();
         let action = ed.handle_input(&f1());
         assert!(matches!(action, InputAction::Help));
+    }
+
+    #[test]
+    fn test_alt_enter_queues_follow_up() {
+        let mut ed = make_editor();
+        ed.editor.set_text("follow up text");
+        let action = ed.handle_input(&alt_key(KeyCode::Enter));
+        match action {
+            InputAction::FollowUp(text) => {
+                assert_eq!(text, "follow up text");
+            }
+            other => panic!("Expected FollowUp, got {:?}", other),
+        }
+        assert!(
+            ed.editor.get_text().is_empty(),
+            "editor should clear on follow-up"
+        );
+    }
+
+    #[test]
+    fn test_alt_enter_empty_returns_handled() {
+        let mut ed = make_editor();
+        let action = ed.handle_input(&alt_key(KeyCode::Enter));
+        assert!(matches!(action, InputAction::Handled));
+    }
+
+    // ── Auto-trigger slash autocomplete tests ──
+
+    #[test]
+    fn test_check_autocomplete_triggers_on_slash() {
+        let mut ed = make_editor();
+        ed.set_slash_commands(vec!["help".into(), "history".into(), "model".into()]);
+
+        // Set text to /h and check autocomplete
+        ed.editor.set_text("/h");
+        ed.check_autocomplete();
+        assert!(
+            ed.editor.autocomplete_active,
+            "Autocomplete should trigger for /h"
+        );
+    }
+
+    #[test]
+    fn test_check_autocomplete_no_trigger_on_just_slash() {
+        let mut ed = make_editor();
+        ed.set_slash_commands(vec!["help".into()]);
+
+        // Just / alone should NOT trigger autocomplete (no prefix to match)
+        ed.editor.set_text("/");
+        ed.check_autocomplete();
+        assert!(
+            !ed.editor.autocomplete_active,
+            "Autocomplete should not trigger for just /"
+        );
+    }
+
+    #[test]
+    fn test_check_autocomplete_no_trigger_on_normal_text() {
+        let mut ed = make_editor();
+        ed.set_slash_commands(vec!["help".into()]);
+
+        ed.editor.set_text("hello world");
+        ed.check_autocomplete();
+        assert!(
+            !ed.editor.autocomplete_active,
+            "Autocomplete should not trigger for normal text"
+        );
+    }
+
+    #[test]
+    fn test_check_autocomplete_filters_suggestions() {
+        let mut ed = make_editor();
+        ed.set_slash_commands(vec!["help".into(), "history".into(), "model".into()]);
+
+        // /h should match both help and history
+        ed.editor.set_text("/h");
+        ed.check_autocomplete();
+        assert!(ed.editor.autocomplete_active);
+
+        // /his should match only history
+        ed.editor.set_text("/his");
+        ed.check_autocomplete();
+        assert!(ed.editor.autocomplete_active);
+    }
+
+    #[test]
+    fn test_check_autocomplete_no_match_shows_nothing() {
+        let mut ed = make_editor();
+        ed.set_slash_commands(vec!["help".into()]);
+
+        // /z matches nothing — autocomplete stays inactive
+        ed.editor.set_text("/z");
+        ed.check_autocomplete();
+        assert!(
+            !ed.editor.autocomplete_active,
+            "Autocomplete should not show when no matches"
+        );
+    }
+
+    #[test]
+    fn test_check_autocomplete_does_not_override_existing() {
+        let mut ed = make_editor();
+        ed.set_slash_commands(vec!["help".into()]);
+
+        // Manually activate autocomplete
+        ed.editor.set_text("/h");
+        let suggestions = ed.get_autocomplete_suggestions();
+        ed.editor.set_autocomplete(suggestions);
+        assert!(ed.editor.autocomplete_active);
+
+        // check_autocomplete should not interfere
+        ed.editor.set_text("/x");
+        ed.check_autocomplete();
+        // The suggestion list may update, but active remains true
+        // (the on_change callback doesn't reset it; handle_input checks
+        // autocomplete_active first and skips if already active)
+    }
+
+    #[test]
+    fn test_typing_slash_triggers_autocomplete_via_handle_input() {
+        let mut ed = make_editor();
+        ed.set_slash_commands(vec!["help".into()]);
+
+        // Type / followed by h — should trigger autocomplete
+        ed.handle_input(&char_key('/'));
+        ed.handle_input(&char_key('h'));
+
+        assert!(
+            ed.editor.autocomplete_active,
+            "Typing /h should trigger autocomplete"
+        );
+    }
+
+    #[test]
+    fn test_ctrl_shift_c_returns_compact_toggle() {
+        let mut ed = make_editor();
+        let action = ed.handle_input(&ctrl_shift('c'));
+        assert!(matches!(action, InputAction::CompactToggle));
+    }
+
+    #[test]
+    fn test_alt_up_returns_dequeue() {
+        let mut ed = make_editor();
+        let action = ed.handle_input(&alt_key(KeyCode::Up));
+        assert!(matches!(action, InputAction::Dequeue));
     }
 
     #[test]
@@ -451,8 +733,6 @@ mod tests {
         let mut ed = make_editor();
         ed.editor.set_text("typing...");
         let action = ed.handle_input(&up());
-        // Up with text in a multi-line editor is editor navigation
-        // (on single line, first press goes to start of line, second goes to history)
         assert!(matches!(action, InputAction::Handled));
     }
 
@@ -525,15 +805,6 @@ mod tests {
         assert_eq!(ed.editor.get_text(), "hello");
     }
 
-    #[test]
-    fn test_ctrl_z_delegates_to_editor() {
-        let mut ed = make_editor();
-        ed.editor.set_text("hello");
-        let action = ed.handle_input(&ctrl('z'));
-        // Ctrl+Z isn't intercepted by ChatEditor, delegated to Editor
-        assert!(matches!(action, InputAction::Handled));
-    }
-
     // ── History integration with ChatEditor ──
 
     #[test]
@@ -555,16 +826,24 @@ mod tests {
         let variants = vec![
             format!("{:?}", InputAction::Handled),
             format!("{:?}", InputAction::Escape),
-            format!("{:?}", InputAction::Interrupt),
+            format!("{:?}", InputAction::Clear),
             format!("{:?}", InputAction::Exit),
+            format!("{:?}", InputAction::Suspend),
+            format!("{:?}", InputAction::ThinkingCycle),
             format!("{:?}", InputAction::ModelSelector),
+            format!("{:?}", InputAction::ModelCycleForward),
+            format!("{:?}", InputAction::ModelCycleBackward),
             format!("{:?}", InputAction::ToggleThinking),
-            format!("{:?}", InputAction::ToggleCollapse),
+            format!("{:?}", InputAction::ToolsExpand),
+            format!("{:?}", InputAction::EditorExternal),
             format!("{:?}", InputAction::Help),
             format!("{:?}", InputAction::Submit("x".into())),
             format!("{:?}", InputAction::RecallHistory(1)),
             format!("{:?}", InputAction::PageUp),
             format!("{:?}", InputAction::PageDown),
+            format!("{:?}", InputAction::FollowUp("x".into())),
+            format!("{:?}", InputAction::CompactToggle),
+            format!("{:?}", InputAction::Dequeue),
         ];
         for v in &variants {
             assert!(!v.is_empty(), "Debug output should not be empty");
