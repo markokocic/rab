@@ -10,10 +10,10 @@ All 6 phases of the pi-tui alignment are implemented. 429 tests pass. 27 modules
 - **Autocomplete**: `AutocompleteProvider` trait, `CombinedAutocompleteProvider` (slash commands + file paths)
 - **Overlays**: HelpOverlay, ModelSelector via `TUI.show_overlay()`
 
-### TUI low-priority deferred items
-- [x] migrate app loop to `TerminalTrait` — `ProcessTerminal` + `TerminalTrait` replacing legacy `Terminal`
-- [x] color scheme notifications (OSC 2031) — `set_color_scheme_notifications()` on trait and struct
-- [ ] write logging (`PI_TUI_WRITE_LOG`) — optional
+### TUI — ✅ complete (write logging is optional debug tooling)
+- [x] App loop uses `ProcessTerminal` + `TerminalTrait` (no direct crossterm)
+- [x] Color scheme notifications (OSC 2031)
+- [ ] Write logging (`PI_TUI_WRITE_LOG`) — optional, defer
 
 ## tools
 - [ ] check tool execution modes in pi, parallel, sequence, ... and compare with rab
