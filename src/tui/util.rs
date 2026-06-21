@@ -1091,3 +1091,37 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn test_wrap_user_text_does_not_introduce_duplicates() {
+        let t1 = "ghhh jjj jkkk  jrjrnr jrnr rkr rrkr rmrrkrr k   ghhh jjj jkkk  jrjrnr jrnr rkr rrkr rmrrkrr k";
+        let t2 = "rkrnrr kr k";
+
+        // The original input has the same 45-char substring twice separated by triple space.
+        // This is NOT a wrapping bug — the input legitimately has the duplicate.
+        // This test verifies that wrap_text_with_ansi does not INTRODUCE extra duplicates
+        // beyond what the input already contains.
+
+        // Count occurrences of each substring in the original
+        fn count_occurrences(text: &str, pattern: &str) -> usize {
+            text.matches(pattern).count()
+        }
+
+        let pattern = "ghhh jjj jkkk  jrjrnr jrnr rkr rrkr rmrrkrr k";
+        let original_count = count_occurrences(t1, pattern);
+        assert_eq!(original_count, 2, "Input should have 2 occurrences of pattern");
+
+        for width in [40, 50, 60, 80, 100] {
+            let wrapped = wrap_text_with_ansi(t1, width);
+            // Count how many times the pattern appears in the wrapped output
+            let wrapped_count: usize = wrapped.iter().map(|line| count_occurrences(line, pattern)).sum();
+            // The wrapped output should have at most the same number of occurrences as the input
+            assert!(
+                wrapped_count <= original_count,
+                "Width {}: wrapped has {} occurrences, input has {}",
+                width,
+                wrapped_count,
+                original_count
+            );
+        }
+    }

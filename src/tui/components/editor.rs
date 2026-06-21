@@ -2332,4 +2332,114 @@ mod tests {
             "Should start with original content"
         );
     }
+
+    // ── Render duplication tests ──
+
+    #[test]
+    fn test_multiline_render_no_duplicate_content() {
+        let mut editor = Editor::new(EditorTheme::default(), EditorOptions::default());
+        // Simulate: type "hello", add newline, type "world"
+        editor.set_text("hello");
+        editor.add_newline();
+        editor.insert_character("w");
+        editor.insert_character("o");
+        editor.insert_character("r");
+        editor.insert_character("l");
+        editor.insert_character("d");
+        assert_eq!(editor.get_text(), "hello\nworld");
+
+        // Render at various widths
+        for width in [20, 40, 80] {
+            let rendered = editor.render(width);
+
+            // Collect content lines (skip border lines)
+            let content_lines: Vec<&str> = rendered
+                .iter()
+                .filter(|l| !l.contains('─'))
+                .map(|l| l.trim())
+                .collect();
+
+            // Check total content lines count matches expected (2: "hello" + "world")
+            assert!(
+                content_lines.len() >= 2,
+                "Width {}: expected >= 2 content lines, got {}: {:?}",
+                width,
+                content_lines.len(),
+                rendered
+            );
+
+            // Check no duplicates among non-empty content lines
+            let mut seen = std::collections::HashSet::new();
+            for line in &content_lines {
+                if !line.is_empty() {
+                    let plain = line.replace("\x1b_pi:c\x07", "").to_string();
+                    if !seen.insert(plain.clone()) {
+                        panic!(
+                            "Width {}: duplicate content line '{}' in {:?}",
+                            width, line, rendered
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_editor_add_newline_adds_one_visual_line() {
+        let mut editor = Editor::new(EditorTheme::default(), EditorOptions::default());
+        editor.set_text("hello");
+
+        let before = editor.render(80).len();
+        editor.add_newline();
+        let after = editor.render(80).len();
+
+        assert_eq!(
+            after, before + 1,
+            "Adding newline should increase rendered line count by exactly 1. before={}, after={}",
+            before, after
+        );
+    }
+
+    #[test]
+    fn test_layout_text_no_extra_empty_visual_line() {
+        // layout_text should not produce an extra empty visual line
+        // when transitioning from empty to single-line content.
+        let lines: Vec<String> = vec![String::new()];
+        let vl = layout_text(&lines, 80, 0, 0);
+        assert_eq!(vl.len(), 1, "Empty text should have 1 visual line");
+        assert!(vl[0].has_cursor);
+
+        let lines = vec!["hello".to_string()];
+        let vl = layout_text(&lines, 80, 0, 5);
+        assert_eq!(vl.len(), 1, "Single line should have 1 visual line");
+        assert!(vl[0].has_cursor);
+
+        let lines = vec!["hello".to_string(), "".to_string()];
+        let vl = layout_text(&lines, 80, 0, 5);
+        assert_eq!(
+            vl.len(),
+            2,
+            "Two lines (one empty) should have 2 visual lines"
+        );
+        // Cursor is on line 0 ("hello"), so first visual line has cursor
+        assert!(vl[0].has_cursor);
+        assert!(!vl[1].has_cursor);
+
+        let lines = vec!["hello".to_string(), "".to_string()];
+        let vl = layout_text(&lines, 80, 1, 0);
+        assert_eq!(vl.len(), 2);
+        // Cursor is on line 1 (empty), so second visual line has cursor
+        assert!(!vl[0].has_cursor);
+        assert!(vl[1].has_cursor);
+
+        let lines = vec!["".to_string(), "hello".to_string()];
+        let vl = layout_text(&lines, 80, 1, 5);
+        assert_eq!(
+            vl.len(),
+            2,
+            "Two lines (one empty first) should have 2 visual lines"
+        );
+        assert!(!vl[0].has_cursor);
+        assert!(vl[1].has_cursor);
+    }
 }
