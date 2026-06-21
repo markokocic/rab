@@ -29,6 +29,7 @@ pub struct AutocompleteSuggestions {
 }
 
 /// A slash command definition.
+#[derive(Clone)]
 pub struct SlashCommand {
     pub name: String,
     pub description: Option<String>,

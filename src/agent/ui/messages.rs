@@ -169,33 +169,6 @@ pub fn render_messages(
                     }
                 }
             }
-            DisplayMsg::ToolCall { name, args } => {
-                let mut msg_box = crate::tui::components::r#box::TuiBox::new(
-                    1,
-                    1,
-                    Some(std::boxed::Box::new(move |s: &str| -> String {
-                        crate::agent::ui::theme::current_theme().bg("toolPendingBg", s)
-                    })),
-                );
-                let truncated = if args.len() > 80 {
-                    format!("{}…", &args[..80])
-                } else {
-                    args.clone()
-                };
-                let styled_name = theme.fg("toolTitle", &theme.bold(name));
-                let content = if truncated.is_empty() || truncated == "{}" {
-                    styled_name
-                } else {
-                    format!("{}  {}", styled_name, theme.fg("muted", &truncated))
-                };
-                let text_content = if content.is_empty() {
-                    " ".into()
-                } else {
-                    content
-                };
-                msg_box.add_child(std::boxed::Box::new(TuiText::new(text_content, 0, 0, None)));
-                lines.extend(msg_box.render(width));
-            }
             DisplayMsg::ToolResult {
                 content,
                 compact,
@@ -268,6 +241,94 @@ pub fn render_messages(
                     BashStatus::Error(msg) => bash.set_error(msg.clone()),
                 }
                 lines.extend(bash.render(width));
+            }
+            DisplayMsg::ToolCall { name, args } => {
+                // For bash tool calls, render as "$ command" (matching pi's formatBashCall)
+                if name == "bash" {
+                    if let Ok(val) = serde_json::from_str::<serde_json::Value>(args) {
+                        if let Some(cmd) = val.get("command").and_then(|v| v.as_str()) {
+                            let timeout = val.get("timeout").and_then(|v| v.as_i64());
+                            let timeout_suffix = timeout
+                                .map(|t| theme.fg("muted", &format!(" (timeout {}s)", t)))
+                                .unwrap_or_default();
+                            let content = format!(
+                                "{}{}",
+                                theme.fg("toolTitle", &theme.bold(&format!("$ {}", cmd))),
+                                timeout_suffix
+                            );
+                            let mut msg_box = crate::tui::components::r#box::TuiBox::new(
+                                1,
+                                1,
+                                Some(std::boxed::Box::new(move |s: &str| -> String {
+                                    crate::agent::ui::theme::current_theme().bg("toolPendingBg", s)
+                                })),
+                            );
+                            msg_box
+                                .add_child(std::boxed::Box::new(TuiText::new(content, 0, 0, None)));
+                            lines.extend(msg_box.render(width));
+                        } else {
+                            // Fallback to generic rendering if command field missing
+                            let mut msg_box = crate::tui::components::r#box::TuiBox::new(
+                                1,
+                                1,
+                                Some(std::boxed::Box::new(move |s: &str| -> String {
+                                    crate::agent::ui::theme::current_theme().bg("toolPendingBg", s)
+                                })),
+                            );
+                            let styled_name = theme.fg("toolTitle", &theme.bold(name));
+                            msg_box.add_child(std::boxed::Box::new(TuiText::new(
+                                styled_name,
+                                0,
+                                0,
+                                None,
+                            )));
+                            lines.extend(msg_box.render(width));
+                        }
+                    } else {
+                        // Fallback to generic rendering if args not valid JSON
+                        let mut msg_box = crate::tui::components::r#box::TuiBox::new(
+                            1,
+                            1,
+                            Some(std::boxed::Box::new(move |s: &str| -> String {
+                                crate::agent::ui::theme::current_theme().bg("toolPendingBg", s)
+                            })),
+                        );
+                        let styled_name = theme.fg("toolTitle", &theme.bold(name));
+                        msg_box.add_child(std::boxed::Box::new(TuiText::new(
+                            styled_name,
+                            0,
+                            0,
+                            None,
+                        )));
+                        lines.extend(msg_box.render(width));
+                    }
+                } else {
+                    let mut msg_box = crate::tui::components::r#box::TuiBox::new(
+                        1,
+                        1,
+                        Some(std::boxed::Box::new(move |s: &str| -> String {
+                            crate::agent::ui::theme::current_theme().bg("toolPendingBg", s)
+                        })),
+                    );
+                    let truncated = if args.len() > 80 {
+                        format!("{}…", &args[..80])
+                    } else {
+                        args.clone()
+                    };
+                    let styled_name = theme.fg("toolTitle", &theme.bold(name));
+                    let content = if truncated.is_empty() || truncated == "{}" {
+                        styled_name
+                    } else {
+                        format!("{}  {}", styled_name, theme.fg("muted", &truncated))
+                    };
+                    let text_content = if content.is_empty() {
+                        " ".into()
+                    } else {
+                        content
+                    };
+                    msg_box.add_child(std::boxed::Box::new(TuiText::new(text_content, 0, 0, None)));
+                    lines.extend(msg_box.render(width));
+                }
             }
             DisplayMsg::Info(text) => {
                 for line in text.lines() {
@@ -438,18 +499,63 @@ mod tests {
     }
 
     #[test]
-    fn test_bash_command_error_render() {
+    fn test_bash_tool_call_render() {
         crate::agent::ui::theme::init_theme(Some("dark"), false);
         let theme = current_theme();
-        let msgs = vec![DisplayMsg::BashCommand {
-            command: "false".into(),
-            output_lines: vec![],
-            status: BashStatus::Complete { exit_code: 1 },
-            expanded: false,
+        let msgs = vec![DisplayMsg::ToolCall {
+            name: "bash".into(),
+            args: r#"{"command":"ls -la","timeout":30}"#.into(),
         }];
         let lines = render_messages(&msgs, 80, false, false, &theme);
         let all = lines.join("\n");
-        assert!(all.contains("false"), "Should show command");
-        assert!(all.contains("exit 1"), "Should show exit code");
+        assert!(all.contains("$ ls -la"), "Should show $ command");
+        assert!(all.contains("timeout 30s"), "Should show timeout");
+        assert!(!all.contains("bash"), "Should not show tool name");
+        assert!(!all.contains("command"), "Should not show JSON keys");
+    }
+
+    #[test]
+    fn test_bash_tool_call_render_no_timeout() {
+        crate::agent::ui::theme::init_theme(Some("dark"), false);
+        let theme = current_theme();
+        let msgs = vec![DisplayMsg::ToolCall {
+            name: "bash".into(),
+            args: r#"{"command":"echo hello"}"#.into(),
+        }];
+        let lines = render_messages(&msgs, 80, false, false, &theme);
+        let all = lines.join("\n");
+        assert!(all.contains("$ echo hello"), "Should show $ command");
+        assert!(
+            !all.contains("timeout"),
+            "Should not show timeout when absent"
+        );
+        assert!(!all.contains("bash"), "Should not show tool name");
+    }
+
+    #[test]
+    fn test_bash_tool_call_render_invalid_args_fallback() {
+        crate::agent::ui::theme::init_theme(Some("dark"), false);
+        let theme = current_theme();
+        let msgs = vec![DisplayMsg::ToolCall {
+            name: "bash".into(),
+            args: "not-json".into(),
+        }];
+        let lines = render_messages(&msgs, 80, false, false, &theme);
+        let all = lines.join("\n");
+        assert!(all.contains("bash"), "Should show tool name as fallback");
+    }
+
+    #[test]
+    fn test_non_bash_tool_call_unaffected() {
+        crate::agent::ui::theme::init_theme(Some("dark"), false);
+        let theme = current_theme();
+        let msgs = vec![DisplayMsg::ToolCall {
+            name: "read".into(),
+            args: r#"{"file_path":"foo.txt"}"#.into(),
+        }];
+        let lines = render_messages(&msgs, 80, false, false, &theme);
+        let all = lines.join("\n");
+        assert!(all.contains("read"), "Should show tool name for non-bash");
+        assert!(all.contains("file_path"), "Should show args for non-bash");
     }
 }

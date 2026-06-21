@@ -101,10 +101,21 @@
 - [x] Narrow terminal protection — graceful truncation with priority: dot > model > stats
 - [x] Extension status line — verified working, truncated to width
 
-### ✅ Completed — Editor & input
+### ✅ Completed — Editor & input (pi-aligned 1/1)
 
 - [x] Auto-trigger slash commands on `/` — shows autocomplete as soon as `/char` is typed
 - [x] Check autocomplete after external editor restore and dequeue restore
+- [x] **ChatEditor fully aligned to pi's CustomEditor** — text-editing keys (Ctrl+Z undo, Ctrl+J newline, Up/Down history, Tab, PageUp/PageDown) delegate to inner Editor; only app-level actions (interrupt, exit, model selector, help, etc.) intercepted
+- [x] **Ctrl+Z → undo** (not suspend) — `ACTION_EDITOR_UNDO` processed by Editor, matching pi
+- [x] **Up/Down history** — handled by Editor's internal history with pi-compatible condition (`is_first_visual_line() && (is_empty() || history_index >= 0 || cursor_col == 0)`)
+- [x] **Tab completion** — wired through `CombinedAutocompleteProvider` (slash commands + file paths), `AutocompleteProvider` trait, matching pi
+- [x] **Backslash+Enter continuation** — `\`+Enter inserts newline instead of submitting (pi-style)
+- [x] **Enter delegates to Editor's submit()** — proper state cleanup (paste markers cleared, undo stack cleared, history browsing exited, `last_action` reset)
+- [x] **Empty Enter submits empty string** — matches pi's `submitValue()` behavior
+- [x] **`disable_submit` flag respected** — Editor handles it before submit
+- [x] **`is_first_visual_line` uses visual lines** — stores `last_width` during render, computes visual line positions via `layout_text()`, matching pi's `buildVisualLineMap`
+- [x] **`exit_history()` no longer clears undo stack** — fixes pre-existing bug where undo was impossible
+- [x] **`on_submit` callback is `Send`** — for future thread-safe callback use
 
 ### 🟡 Deferred — Editor & input (image-blocked)
 

@@ -14,6 +14,7 @@ Reference: `~/src/cvstree/pi/` (TypeScript, same architecture).
 | Settings, auth, keybindings | ✅ |
 | Skills (loading, prompt formatting, `/skill:name`) | ✅ |
 | App UI (ChatEditor, Messages, Footer, ModelSelector, Help) | ✅ |
+| **ChatEditor → pi's CustomEditor alignment** | ✅ Ctrl+Z undo, Up/Down history via Editor, Tab via AutocompleteProvider, Enter via Editor's submit(), backslash continuation, visual-line-based history trigger, proper state cleanup on submit |
 
 ## Phase 1 — Remaining
 

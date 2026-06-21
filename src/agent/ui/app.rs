@@ -100,9 +100,6 @@ pub struct App {
     /// Agent abort handle for Ctrl+C.
     agent_abort: Option<tokio::task::AbortHandle>,
 
-    /// History navigation.
-    history_index: Option<usize>,
-
     /// Session persistence.
     session: Option<SessionManager>,
 
@@ -131,6 +128,16 @@ pub struct App {
 
     /// Settings reference for persisting toggle changes.
     settings: crate::agent::settings::Settings,
+
+    // ── Message rendering cache (avoids re-rendering messages every frame) ──
+    /// Rendered message lines from last `render_messages()` call.
+    cached_message_lines: Option<Vec<String>>,
+    /// Number of messages when cache was built (`.len()`).
+    cached_msg_count: usize,
+    /// Display settings snapshot when cache was built.
+    cached_msg_settings: (bool, bool), // (hide_thinking, collapse_tool_output)
+    /// Terminal width when cache was built.
+    cached_msg_width: usize,
 }
 
 impl App {
@@ -214,7 +221,6 @@ impl App {
             should_quit: false,
             last_usage: None,
             agent_abort: None,
-            history_index: None,
             session: Some(session),
             footer,
             working: WorkingIndicator::new(),
@@ -225,6 +231,11 @@ impl App {
             settings: config.settings,
             auto_compact: true,
             status_text: None,
+
+            cached_message_lines: None,
+            cached_msg_count: 0,
+            cached_msg_settings: (config.hide_thinking, config.collapse_tool_output),
+            cached_msg_width: 0,
         }
     }
 }
@@ -245,6 +256,9 @@ pub async fn run(config: AppConfig, session: SessionManager) -> anyhow::Result<(
     term.set_color_scheme_notifications(&mut stdout, true)?;
 
     let mut tui = TUI::new();
+    // Disable clear_on_shrink to avoid full redraws during streaming
+    // (content grows/shrinks frequently as pending text is flushed).
+    tui.set_clear_on_shrink(false);
     let mut app = App::new(config, session);
 
     // Cache terminal dimensions to avoid expensive syscall on every frame.
@@ -255,12 +269,12 @@ pub async fn run(config: AppConfig, session: SessionManager) -> anyhow::Result<(
 
     loop {
         // Poll for events (pi-style: process input before rendering)
+        // Reduced poll frequency: 16ms active (~60fps), 50ms idle — terminal UI
+        // doesn't benefit from >60fps and lower frequency saves CPU/battery.
         let timeout = if dirty || app.is_streaming || app.working.active {
-            // Shorter timeout when we have pending work or animation
-            Duration::from_millis(8)
+            Duration::from_millis(16)
         } else {
-            // Longer timeout when idle — reduces CPU usage
-            Duration::from_millis(32)
+            Duration::from_millis(50)
         };
 
         if let Some(key) = terminal::poll_key_event(Some(timeout))? {
@@ -344,13 +358,28 @@ fn compose_ui(app: &mut App, width: usize, _height: usize) -> Vec<String> {
     lines.push(String::new());
 
     // ── Messages with scroll support ──
-    let rendered = render_messages(
-        &app.messages,
-        width,
-        app.hide_thinking,
-        app.collapse_tool_output,
-        &app.theme,
-    );
+    // Cache: only re-render messages when they change, settings change, or width changes.
+    let current_settings = (app.hide_thinking, app.collapse_tool_output);
+    let cache_valid = app.cached_message_lines.is_some()
+        && app.cached_msg_count == app.messages.len()
+        && app.cached_msg_settings == current_settings
+        && app.cached_msg_width == width;
+
+    if !cache_valid {
+        let rendered = render_messages(
+            &app.messages,
+            width,
+            app.hide_thinking,
+            app.collapse_tool_output,
+            &app.theme,
+        );
+        app.cached_msg_count = app.messages.len();
+        app.cached_msg_settings = current_settings;
+        app.cached_msg_width = width;
+        app.cached_message_lines = Some(rendered);
+    }
+
+    let rendered = app.cached_message_lines.as_ref().unwrap();
 
     // Apply scroll offset: when > 0, skip some of the oldest message lines
     // (effectively scrolling up in the message history).
@@ -469,7 +498,6 @@ fn handle_input(app: &mut App, tui: &mut TUI, key: &KeyEvent) {
                 interrupt_streaming(app);
             } else {
                 app.editor.editor.set_text("");
-                app.history_index = None;
             }
         }
         InputAction::Clear => {
@@ -477,9 +505,6 @@ fn handle_input(app: &mut App, tui: &mut TUI, key: &KeyEvent) {
         }
         InputAction::Exit => {
             app.should_quit = true;
-        }
-        InputAction::Suspend => {
-            handle_suspend(app);
         }
         InputAction::ThinkingCycle => {
             handle_thinking_cycle(app);
@@ -529,15 +554,6 @@ fn handle_input(app: &mut App, tui: &mut TUI, key: &KeyEvent) {
         InputAction::CompactToggle => {
             handle_compact_toggle(app);
         }
-        InputAction::RecallHistory(direction) => {
-            recall_history(app, direction);
-        }
-        InputAction::PageUp => {
-            handle_page_up(app);
-        }
-        InputAction::PageDown => {
-            handle_page_down(app);
-        }
     }
 }
 
@@ -558,17 +574,8 @@ fn handle_clear(app: &mut App) {
         app.should_quit = true;
     } else {
         app.editor.editor.set_text("");
-        app.history_index = None;
         app.status_text = Some("Cleared".into());
     }
-}
-
-/// Handle Ctrl+Z: suspend to background (SIGTSTP).
-fn handle_suspend(app: &mut App) {
-    // We can't truly suspend from Rust in the same way as pi's Node.js,
-    // but we can stop the TUI and let the shell handle the SIGTSTP.
-    // For now, just show a status message.
-    app.status_text = Some("Suspend: Ctrl+Z is forwarded to shell".into());
 }
 
 /// Cycle thinking level: off → low → medium → high → xhigh → off
@@ -721,17 +728,6 @@ fn handle_dequeue(app: &mut App) {
     ));
 }
 
-/// PageUp: scroll chat up (show older messages).
-fn handle_page_up(app: &mut App) {
-    // Increase scroll offset by roughly a page
-    app.scroll_offset = app.scroll_offset.saturating_add(10);
-}
-
-/// PageDown: scroll chat down (show newer messages).
-fn handle_page_down(app: &mut App) {
-    app.scroll_offset = app.scroll_offset.saturating_sub(10);
-}
-
 /// Toggle auto-compact indicator (Ctrl+Shift+C).
 fn handle_compact_toggle(app: &mut App) {
     app.auto_compact = !app.auto_compact;
@@ -778,7 +774,6 @@ fn show_help_overlay(app: &mut App, tui: &mut TUI) {
 /// Submit or queue a user message. When streaming, queues instead of spawning
 /// a concurrent agent loop (matching pi's behavior).
 fn submit_message(app: &mut App, message: String) {
-    app.history_index = None;
     app.scroll_offset = 0;
     let trimmed = message.trim().to_string();
 
@@ -1092,48 +1087,6 @@ fn collect_tool_defs(app: &App) -> Vec<ToolDef> {
         }
     }
     defs
-}
-
-/// Recall history from previous user messages.
-fn recall_history(app: &mut App, direction: isize) {
-    let user_messages: Vec<String> = app
-        .conversation
-        .iter()
-        .filter_map(|m| {
-            if m.role == crate::agent::types::Role::User && !m.content.is_empty() {
-                Some(m.content.clone())
-            } else {
-                None
-            }
-        })
-        .collect();
-
-    if user_messages.is_empty() {
-        return;
-    }
-
-    let len = user_messages.len();
-    let current = app.history_index.unwrap_or(len);
-
-    let new_index = if direction < 0 {
-        if current == 0 {
-            return;
-        }
-        current.saturating_sub(1)
-    } else {
-        if current >= len {
-            return;
-        }
-        current + 1
-    };
-
-    if new_index >= len {
-        app.editor.editor.set_text("");
-        app.history_index = None;
-    } else {
-        app.editor.editor.set_text(&user_messages[new_index]);
-        app.history_index = Some(new_index);
-    }
 }
 
 /// Parse a ! or !! bang command from input.
@@ -2120,19 +2073,6 @@ mod tests {
     }
 
     #[test]
-    fn test_handle_page_up_increases_scroll_offset() {
-        let tmp = tempdir().unwrap();
-        let cwd = tmp.path().to_path_buf();
-        let session = SessionManager::in_memory(&cwd);
-        let config = make_config(cwd.clone());
-        let mut app = App::new(config, session);
-
-        app.scroll_offset = 0;
-        handle_page_up(&mut app);
-        assert!(app.scroll_offset > 0, "scroll_offset should increase");
-    }
-
-    #[test]
     fn test_handle_compact_toggle_toggles_flag() {
         let tmp = tempdir().unwrap();
         let cwd = tmp.path().to_path_buf();
@@ -2146,19 +2086,6 @@ mod tests {
 
         handle_compact_toggle(&mut app);
         assert!(app.auto_compact, "Should toggle back on");
-    }
-
-    #[test]
-    fn test_handle_page_down_decreases_scroll_offset() {
-        let tmp = tempdir().unwrap();
-        let cwd = tmp.path().to_path_buf();
-        let session = SessionManager::in_memory(&cwd);
-        let config = make_config(cwd.clone());
-        let mut app = App::new(config, session);
-
-        app.scroll_offset = 20;
-        handle_page_down(&mut app);
-        assert!(app.scroll_offset < 20, "scroll_offset should decrease");
     }
 
     #[test]

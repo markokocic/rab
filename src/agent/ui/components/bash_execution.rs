@@ -1,6 +1,6 @@
 use crate::tui::Component;
 use crate::tui::components::loader::Loader;
-use crate::tui::util::visible_width;
+use crate::tui::util::wrap_text_with_ansi;
 
 /// Maximum lines of output to keep for LLM context truncation (matching pi's DEFAULT_MAX_LINES).
 const DEFAULT_MAX_LINES: usize = 1000;
@@ -234,13 +234,12 @@ impl Component for BashExecution {
 
         let hidden_line_count = available_lines.len().saturating_sub(preview_lines.len());
 
-        // ── Output ──
+        // ── Output (wrapping each line like pi's Text component does) ──
         if !preview_lines.is_empty() {
-            // Render each line with muted color
-            // Pi uses truncateToVisualLines for width-aware truncation
             for line in &preview_lines {
                 let styled = theme.fg("toolOutput", line);
-                lines.push(simple_truncate_line(&styled, width));
+                let wrapped = wrap_text_with_ansi(&styled, width);
+                lines.extend(wrapped);
             }
         }
 
@@ -316,47 +315,6 @@ impl Component for BashExecution {
 
 /// Simple truncation for output lines: if a line's visible width exceeds the terminal width,
 /// truncate it. This is a simplified version of pi's truncateToVisualLines.
-fn simple_truncate_line(text: &str, width: usize) -> String {
-    let vw = visible_width(text);
-    if vw <= width {
-        text.to_string()
-    } else {
-        // Truncate to fit within width, adding ellipsis
-        let mut result = String::new();
-        let mut current_width = 0;
-        let ellipsis = "\u{2026}"; // …
-        let ellipsis_width = 1; // … is width 1
-
-        let target = width.saturating_sub(ellipsis_width);
-
-        for ch in text.chars() {
-            // Check if this is part of an ANSI escape sequence
-            let ch_width = if ch == '\x1b' {
-                0 // Will be handled below
-            } else {
-                unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0)
-            };
-
-            if ch == '\x1b' {
-                // ANSI codes don't add visible width, skip the whole sequence
-                let _start = text.find(ch).unwrap_or(0);
-                result.push(ch);
-                continue;
-            }
-
-            if current_width + ch_width > target {
-                result.push_str(ellipsis);
-                break;
-            }
-
-            result.push(ch);
-            current_width += ch_width;
-        }
-
-        result
-    }
-}
-
 /// Strip ANSI escape codes from a string.
 fn strip_ansi(s: &str) -> String {
     let mut result = String::with_capacity(s.len());

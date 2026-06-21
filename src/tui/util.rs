@@ -661,8 +661,11 @@ impl AnsiState {
             return;
         }
 
-        for param in inner.split(';') {
-            let Ok(parsed) = param.parse::<u8>() else {
+        let params: Vec<&str> = inner.split(';').collect();
+        let mut i = 0;
+        while i < params.len() {
+            let Ok(parsed) = params[i].parse::<u8>() else {
+                i += 1;
                 continue;
             };
             match parsed {
@@ -676,12 +679,49 @@ impl AnsiState {
                 4 => self.underline = true,
                 22 => self.bold = false,
                 24 => self.underline = false,
-                30..=37 | 90..=97 => self.fg_color = Some(parsed.to_string()),
-                40..=47 | 100..=107 => self.bg_color = Some(parsed.to_string()),
+                30..=37 | 90..=97 => {
+                    self.fg_color = Some(parsed.to_string());
+                }
+                40..=47 | 100..=107 => {
+                    self.bg_color = Some(parsed.to_string());
+                }
+                38 => {
+                    // Extended foreground color: 38;5;N or 38;2;R;G;B
+                    if i + 1 < params.len() {
+                        match params[i + 1] {
+                            "5" if i + 2 < params.len() => {
+                                self.fg_color = Some(params[i..=i + 2].join(";"));
+                                i += 2;
+                            }
+                            "2" if i + 4 < params.len() => {
+                                self.fg_color = Some(params[i..=i + 4].join(";"));
+                                i += 4;
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                48 => {
+                    // Extended background color: 48;5;N or 48;2;R;G;B
+                    if i + 1 < params.len() {
+                        match params[i + 1] {
+                            "5" if i + 2 < params.len() => {
+                                self.bg_color = Some(params[i..=i + 2].join(";"));
+                                i += 2;
+                            }
+                            "2" if i + 4 < params.len() => {
+                                self.bg_color = Some(params[i..=i + 4].join(";"));
+                                i += 4;
+                            }
+                            _ => {}
+                        }
+                    }
+                }
                 39 => self.fg_color = None,
                 49 => self.bg_color = None,
                 _ => {}
             }
+            i += 1;
         }
     }
 

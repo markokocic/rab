@@ -88,8 +88,9 @@ pub struct Editor {
     history_index: i32,
     history_draft: Option<EditorSnapshot>,
     preferred_col: Option<usize>,
+    last_width: std::cell::Cell<usize>,
     last_action: Option<String>,
-    pub on_submit: Option<Box<dyn FnMut(String)>>,
+    pub on_submit: Option<Box<dyn FnMut(String) + Send>>,
     pub on_change: Option<Box<dyn FnMut(&str)>>,
     pub disable_submit: bool,
     pub border_color: Box<dyn Fn(&str) -> String>,
@@ -103,6 +104,9 @@ pub struct Editor {
     // Pi-style paste markers (large pastes stored, marker inserted in place)
     pastes: HashMap<u32, String>,
     paste_counter: u32,
+
+    /// True after submit() is called, reset when checked.
+    pub just_submitted: bool,
 
     // Pi-style autocomplete state (uses SelectList)
     autocomplete_list: Option<SelectList>,
@@ -133,6 +137,7 @@ impl Editor {
             history_index: -1,
             history_draft: None,
             preferred_col: None,
+            last_width: std::cell::Cell::new(80),
             last_action: None,
             on_submit: None,
             on_change: None,
@@ -143,6 +148,7 @@ impl Editor {
             autocomplete_provider: None,
             pastes: HashMap::new(),
             paste_counter: 0,
+            just_submitted: false,
             jump_mode: None,
         }
     }
@@ -364,12 +370,57 @@ impl Editor {
         }
     }
 
-    fn try_trigger_autocomplete(&mut self) {
+    /// Get the autocomplete prefix for the current cursor position.
+    fn get_autocomplete_prefix(&self) -> String {
+        let line = self
+            .lines
+            .get(self.cursor_line)
+            .map(|l| l.as_str())
+            .unwrap_or("");
+        let before = &line[..self.cursor_col.min(line.len())];
+        // Find the last token boundary
+        if before.starts_with('/') && !before.contains(' ') {
+            before.to_string()
+        } else if let Some(pos) = before.rfind(['@', '#']) {
+            before[pos..].to_string()
+        } else if let Some(pos) = before.rfind(|c: char| c.is_whitespace()) {
+            before[pos + 1..].to_string()
+        } else {
+            before.to_string()
+        }
+    }
+
+    pub fn try_trigger_autocomplete(&mut self) {
         let Some(ref provider) = self.autocomplete_provider else {
             return;
         };
         if let Some(suggestions) =
             provider.get_suggestions(&self.lines, self.cursor_line, self.cursor_col, false)
+        {
+            let items: Vec<SelectItem> = suggestions
+                .items
+                .into_iter()
+                .map(|item| {
+                    let mut si = SelectItem::new(item.value, item.label);
+                    if let Some(desc) = item.description {
+                        si = si.with_description(desc);
+                    }
+                    si
+                })
+                .collect();
+            if !items.is_empty() {
+                self.set_autocomplete(items);
+            }
+        }
+    }
+
+    /// Force-trigger autocomplete (for Tab key, pi-style).
+    fn try_trigger_autocomplete_force(&mut self) {
+        let Some(ref provider) = self.autocomplete_provider else {
+            return;
+        };
+        if let Some(suggestions) =
+            provider.get_suggestions(&self.lines, self.cursor_line, self.cursor_col, true)
         {
             let items: Vec<SelectItem> = suggestions
                 .items
@@ -663,7 +714,6 @@ impl Editor {
     fn exit_history(&mut self) {
         self.history_index = -1;
         self.history_draft = None;
-        self.undo_stack.clear();
         self.last_action = None;
     }
 
@@ -807,6 +857,7 @@ impl Editor {
         self.undo_stack.clear();
         self.last_action = None;
         self.preferred_col = None;
+        self.just_submitted = true;
         self.exit_history();
         if let Some(ref mut cb) = self.on_submit {
             cb(result);
@@ -828,11 +879,23 @@ impl Editor {
     }
 
     fn is_first_visual_line(&self) -> bool {
-        self.cursor_line == 0
+        let width = self.last_width.get();
+        let visual_lines = layout_text(&self.lines, width, self.cursor_line, self.cursor_col);
+        let current = visual_lines
+            .iter()
+            .position(|vl| vl.has_cursor)
+            .unwrap_or(0);
+        current == 0
     }
 
     fn is_last_visual_line(&self) -> bool {
-        self.cursor_line >= self.lines.len().saturating_sub(1)
+        let width = self.last_width.get();
+        let visual_lines = layout_text(&self.lines, width, self.cursor_line, self.cursor_col);
+        let current = visual_lines
+            .iter()
+            .position(|vl| vl.has_cursor)
+            .unwrap_or(0);
+        current >= visual_lines.len().saturating_sub(1)
     }
 }
 
@@ -848,6 +911,7 @@ impl Component for Editor {
             1
         };
         let layout_width = content_width.max(1);
+        self.last_width.set(layout_width);
 
         let horizontal = "─";
         let left_pad = " ".repeat(pad_x);
@@ -992,7 +1056,27 @@ impl Component for Editor {
             }
             if kb.matches(key, ACTION_SELECT_CONFIRM) || kb.matches(key, ACTION_INPUT_TAB) {
                 if let Some(val) = list.selected_item().map(|i| i.value.clone()) {
-                    self.set_text(&format!("/{} ", val));
+                    // Use provider to apply completion (pi-style), fallback to set_text
+                    if let Some(ref provider) = self.autocomplete_provider {
+                        let prefix = self.get_autocomplete_prefix();
+                        let item = crate::tui::autocomplete::AutocompleteItem {
+                            value: val.clone(),
+                            label: val.clone(),
+                            description: None,
+                        };
+                        let (new_lines, new_line, new_col) = provider.apply_completion(
+                            &self.lines,
+                            self.cursor_line,
+                            self.cursor_col,
+                            &item,
+                            &prefix,
+                        );
+                        self.lines = new_lines;
+                        self.cursor_line = new_line;
+                        self.cursor_col = new_col;
+                    } else {
+                        self.set_text(&format!("/{} ", val));
+                    }
                 }
                 self.clear_autocomplete();
                 return true;
@@ -1002,6 +1086,12 @@ impl Component for Editor {
                 return true;
             }
             self.clear_autocomplete();
+        }
+
+        // ── Tab: trigger autocomplete via provider (pi-style) ──
+        if kb.matches(key, ACTION_INPUT_TAB) && self.autocomplete_provider.is_some() {
+            self.try_trigger_autocomplete_force();
+            return true;
         }
 
         // ── Enter / Submit ──
@@ -1148,7 +1238,6 @@ impl Component for Editor {
 
         // ── Undo ──
         if kb.matches(key, ACTION_EDITOR_UNDO) {
-            self.exit_history();
             self.last_action = None;
             self.undo();
             self.notify_change();
