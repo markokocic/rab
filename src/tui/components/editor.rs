@@ -178,7 +178,7 @@ impl Editor {
             no_match: Box::new(|s| s.to_string()),
             hint: Box::new(|s| s.to_string()),
         };
-        let mut list = SelectList::new(items, 5, theme);
+        let mut list = SelectList::new(items, 5, theme, None);
         list.set_selected_index(0);
         self.autocomplete_list = Some(list);
         self.autocomplete_active = true;

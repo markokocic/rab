@@ -1,30 +1,26 @@
+use crate::tui::components::loader::Loader;
+use crate::tui::keybindings::{get_keybindings, ACTION_SELECT_CANCEL};
 use crate::tui::Component;
-use crate::tui::components::Loader;
 
 /// Loader with escape-to-cancel functionality.
-/// Shows a cancel hint and supports AbortSignal-like cancellation.
+/// Port of pi's `packages/tui/src/components/cancellable-loader.ts`.
 pub struct CancellableLoader {
     loader: Loader,
     cancelled: bool,
-    cancel_hint: String,
+    pub on_abort: Option<Box<dyn FnMut()>>,
 }
 
 impl CancellableLoader {
-    pub fn new() -> Self {
+    pub fn new(
+        spinner_color_fn: Box<dyn Fn(&str) -> String>,
+        message_color_fn: Box<dyn Fn(&str) -> String>,
+        message: impl Into<String>,
+    ) -> Self {
         Self {
-            loader: Loader::new(),
+            loader: Loader::new(spinner_color_fn, message_color_fn, message),
             cancelled: false,
-            cancel_hint: "Esc to cancel".to_string(),
+            on_abort: None,
         }
-    }
-
-    pub fn with_message(mut self, message: impl Into<String>) -> Self {
-        self.loader.set_message(message);
-        self
-    }
-
-    pub fn set_cancel_hint(&mut self, hint: impl Into<String>) {
-        self.cancel_hint = hint.into();
     }
 
     pub fn start(&mut self) {
@@ -35,42 +31,36 @@ impl CancellableLoader {
         self.loader.stop();
     }
 
+    /// Stop the animation and clean up. Matches pi's `dispose()`.
+    pub fn dispose(&mut self) {
+        self.loader.stop();
+    }
+
     pub fn is_cancelled(&self) -> bool {
         self.cancelled
     }
 
-    pub fn tick(&mut self) {
-        self.loader.tick();
+    pub fn tick(&mut self) -> bool {
+        self.loader.tick()
     }
 
     pub fn set_message(&mut self, message: impl Into<String>) {
         self.loader.set_message(message);
     }
-
-    pub fn set_frames(&mut self, frames: Vec<String>) {
-        self.loader.set_frames(frames);
-    }
-}
-
-impl Default for CancellableLoader {
-    fn default() -> Self {
-        Self::new()
-    }
 }
 
 impl Component for CancellableLoader {
     fn render(&self, width: usize) -> Vec<String> {
-        let mut lines = self.loader.render(width);
-        if !self.cancelled {
-            lines.push(self.cancel_hint.clone());
-        }
-        lines
+        self.loader.render(width)
     }
 
     fn handle_input(&mut self, key: &crossterm::event::KeyEvent) -> bool {
-        let kb = crate::tui::keybindings::get_keybindings();
-        if kb.matches(key, crate::tui::keybindings::ACTION_SELECT_CANCEL) {
+        let kb = get_keybindings();
+        if kb.matches(key, ACTION_SELECT_CANCEL) {
             self.cancelled = true;
+            if let Some(ref mut cb) = self.on_abort {
+                cb();
+            }
             return true;
         }
         false
@@ -78,5 +68,37 @@ impl Component for CancellableLoader {
 
     fn invalidate(&mut self) {
         self.loader.invalidate();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    #[test]
+    fn test_cancel_on_escape() {
+        let mut cl = CancellableLoader::new(
+            Box::new(|s| s.to_string()),
+            Box::new(|s| s.to_string()),
+            "Working...",
+        );
+        let escape = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
+        assert!(!cl.is_cancelled());
+        cl.handle_input(&escape);
+        assert!(cl.is_cancelled());
+    }
+
+    #[test]
+    fn test_dispose_stops() {
+        let mut cl = CancellableLoader::new(
+            Box::new(|s| s.to_string()),
+            Box::new(|s| s.to_string()),
+            "Working...",
+        );
+        cl.start();
+        cl.dispose();
+        // After dispose, tick should not advance
+        assert!(!cl.tick());
     }
 }

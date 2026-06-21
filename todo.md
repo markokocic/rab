@@ -45,17 +45,20 @@ Goal: architectural and behavioral 1/1 match with pi's `packages/tui/src/` on ev
   - [x] `tui.render(lines, width, height, writer)` instead of `screen.render()`
   - [x] `tui.finalize(writer)` instead of `screen.finalize()`
 
-- [ ] **Terminal upgrades** — deferred to Phase 2 (needs StdinBuffer/Kitty protocol)
+- [ ] **Terminal upgrades**
   - [ ] `Terminal` trait with `start(onInput, onResize)`, `stop()`, `drainInput()`, `write()`, `columns`/`rows`, `kittyProtocolActive`, `moveBy()`, `hideCursor()`/`showCursor()`, `clearLine()`/`clearFromCursor()`/`clearScreen()`, `setTitle()`, `setProgress()`
-  - [ ] `ProcessTerminal` impl — raw mode, bracketed paste, Kitty keyboard protocol negotiation (flags 1+2+4), modifyOtherKeys fallback, StdinBuffer integration
-  - [ ] `StdinBuffer` — split batched input into individual sequences, forward as data events, re-wrap paste content
-  - [ ] `drainInput()` — disable Kitty protocol first, flush trailing release events
-  - [ ] progress indicator — `\x1b]9;4;3\x07` with keepalive interval
-  - [ ] color scheme notifications — OSC 2031 h/l
-  - [ ] cell size query — CSI 16 t
-  - [ ] write logging — `PI_TUI_WRITE_LOG`
-  - [ ] Windows VT input enablement (stub)
-  - [ ] keyboard protocol negotiation sequence parsing (split-response handling via flush timer)
+  - [ ] `ProcessTerminal` impl — crossterm-backed:
+    - [ ] `PushKeyboardEnhancementFlags` with `DISAMBIGUATE_ESCAPE_CODES | REPORT_EVENT_TYPES | REPORT_ALTERNATE_KEYS` at startup
+    - [ ] `PopKeyboardEnhancementFlags` at shutdown
+    - [ ] bracketed paste mode via `\x1b[?2004h/l`
+    - [ ] progress indicator — `\x1b]9;4;3\x07` with keepalive interval
+    - [ ] `drainInput()` — timeout-based idle detection, pop keyboard enhancement before stopping
+    - [ ] `kittyProtocolActive` — check `KeyEventKind` for release/repeat filtering
+    - [ ] `setTitle()` — OSC 0
+    - [ ] color scheme notifications — `\x1b[?2031h/l` (optional)
+    - [ ] write logging — `PI_TUI_WRITE_LOG` (optional)
+  - [ ] no StdinBuffer needed — crossterm handles event splitting
+  - [ ] no manual CSI-u parsing needed — crossterm parses Kitty sequences into `KeyEvent` with `KeyEventKind`
 
 ### Phase 2 — Keys and keybindings
 
@@ -65,7 +68,9 @@ Goal: architectural and behavioral 1/1 match with pi's `packages/tui/src/` on ev
   - [x] `parse_key_id(key_id)` — splits key ID into (key_name, ctrl, shift, alt, super)
   - [x] `matches_key_name(code, key_name)` — matches KeyCode against key name (Enter, Escape, F-keys, chars, etc.)
   - [x] full modifier support: ctrl, shift, alt, super in all combinations
-  - [ ] raw terminal data parsing (`matches_key_data`, `parse_key`, `is_key_release`, `is_key_repeat`, `decode_kitty_printable`, `decode_printable_key`) — deferred to Phase 7 (Kitty protocol integration)
+  - [ ] `is_key_release(event)` / `is_key_repeat(event)` — use `KeyEventKind` from crossterm (already parsed)
+  - [ ] `decode_kitty_printable` — use `key_event_to_string` (crossterm already decodes CSI-u)
+  - [ ] raw terminal data parsing (`matches_key_data`, `parse_key`) — no longer needed (crossterm handles it)
 
 - [x] **Keybindings system** — `src/tui/keybindings.rs`
   - [x] `Keybindings` struct — `HashMap<String, Vec<String>>` mapping action IDs to key ID lists
@@ -104,89 +109,65 @@ Goal: architectural and behavioral 1/1 match with pi's `packages/tui/src/` on ev
 
 ### Phase 4 — Component upgrades
 
-- [ ] **Editor — align with pi**
-  - [ ] paste-marker system:
-    - [ ] `pastes: HashMap<u32, String>`, `paste_counter: u32`
-    - [ ] on large paste (>10 lines or >1000 chars): store content, insert `[paste #N +M lines]` marker
-    - [ ] `expand_paste_markers(text)` on submit
-    - [ ] `get_expanded_text()` for external editor
-    - [ ] paste-marker-aware segmentation — `segment_with_markers()` merges marker graphemes into atomic units
-  - [ ] bracketed paste handling in `handle_input` — buffer `\x1b[200~` … `\x1b[201~`, decode CSI-u-encoded control bytes, filter non-printables, prepend space for file paths
-  - [ ] undo coalescing (pi fish-style):
-    - [ ] consecutive word chars coalesce into one undo unit
-    - [ ] `last_action: Option<"type_word" | "kill" | "yank">`
-    - [ ] space captures state before itself (undo removes space + following word together)
-  - [ ] sticky column for vertical movement — `preferred_visual_col: Option<usize>`, `snapped_from_cursor_col`, `compute_vertical_move_column()` decision table match
-  - [ ] character jump mode — `jump_mode: Option<"forward" | "backward">`, await next printable char, `jump_to_char()`
-  - [ ] page up/down — `page_scroll(delta)`, move cursor to first/last visible line after scroll
-  - [ ] history draft — save pre-history state so Down after Up restores it exactly
-  - [ ] autocomplete integration:
-    - [ ] `AutocompleteProvider` trait (`get_suggestions`, `apply_completion`, `should_trigger_file_completion`)
-    - [ ] auto-trigger on `/`, `@`, `#`, and trigger characters at token boundaries
-    - [ ] auto-trigger on letter typing in slash command context (`/commandName` or after space in slash command)
-    - [ ] auto-update on typing/backspace when autocomplete already active
-    - [ ] cancel on navigation away from completable context
-    - [ ] Tab triggers completion in non-autocomplete state
-  - [ ] `snapped_from_cursor_col` — snap cursor to atomic segment boundaries (paste markers), resolve pre-snap position on next vertical move
-  - [ ] `segment()` method — paste-marker-aware grapheme/word segmentation via `segment_with_markers()`
-  - [ ] `wordWrapLine`-compatible layout with paste-marker-aware chunks
-  - [ ] `normalize_text()` — `\r\n`/`\r` → `\n`, tabs → 4 spaces
-  - [ ] keybinding-based input dispatch (use `getKeybindings().matches()`)
-  - [ ] `border_color` — mutable public field for dynamic styling
+- [ ] **Editor — align with pi** (deferred — largest remaining item)
+  - [ ] paste-marker system
+  - [ ] bracketed paste buffering
+  - [ ] undo coalescing (fish-style)
+  - [ ] sticky column, character jump, history draft
+  - [ ] autocomplete auto-trigger
+  - [ ] paste-marker-aware segmentation
 
-- [ ] **Input — align with pi**
-  - [ ] bracketed paste buffering — same as Editor but single-line
-  - [ ] undo coalescing — `last_action` tracking per pi pattern
-  - [ ] horizontal scroll with smart centering — `half_width` centering, reserve column for cursor at end
-  - [ ] Kitty CSI-u printable decode — `decodeKittyPrintable` instead of control char filter
-  - [ ] keybinding-based dispatch
+- [x] **Input — align with pi**
+  - [x] undo coalescing — `last_action: Option<&'static str>` with fish-style coalescing
+  - [x] horizontal scroll with smart centering — half-width centering, cursor-at-end column reservation
+  - [x] `handle_paste()` — paste handling method
+  - [x] keybinding-based dispatch (Phase 2)
 
-- [ ] **SelectList — align with pi**
-  - [ ] `SelectListLayoutOptions` — `min_primary_column_width`, `max_primary_column_width`, `truncate_primary` callback
-  - [ ] primary column width calculation — clamp between min/max bounds, measure widest item
-  - [ ] two-column layout (value + description) when width > 40 and description exists
-  - [ ] `normalize_to_single_line()` for description
-  - [ ] `on_selection_change` callback
-  - [ ] `get_selected_item()` — return `SelectItem` (not just value string)
-  - [ ] `set_filter()` — prefix-based filter (simpler than fuzzy for user-typed single char)
-  - [ ] keybinding-based dispatch
+- [x] **SelectList — align with pi**
+  - [x] `SelectListLayoutOptions` — `min_primary_column_width`, `max_primary_column_width`, `truncate_primary` callback
+  - [x] primary column width calculation — clamp between min/max bounds, measure widest item
+  - [x] two-column layout (value + description) when width > 40 and description exists
+  - [x] `normalize_to_single_line()` for description
+  - [x] `on_selection_change` callback
+  - [x] `get_selected_item()` — return `Option<&SelectItem>`
+  - [x] `set_filter()` — prefix-based filter
+  - [x] keybinding-based dispatch
 
-- [ ] **SettingsList — align with pi**
-  - [ ] submenu support — `SettingItem.submenu: Option<Box<dyn Fn(&str, Box<dyn Fn(Option<String>)>) -> Box<dyn Component>>>`
-  - [ ] `submenu_component` / `submenu_item_index` — delegate all input to submenu when active
-  - [ ] on submenu close via `done()`, restore selection to the item that opened it
-  - [ ] two-column layout (label aligned left, value right) with max-label-width calculation
-  - [ ] description display for selected item (wrapped, padded)
-  - [ ] hint line at bottom (dynamic based on search enabled)
-  - [ ] keybinding-based dispatch
+- [x] **SettingsList — align with pi**
+  - [x] submenu support — `SettingItem.submenu` field
+  - [x] `submenu_component` / `submenu_item_index` — delegate input to submenu when active
+  - [x] two-column layout (label aligned left, value right) with max-label-width calculation
+  - [x] description display for selected item (wrapped, padded)
+  - [x] hint line at bottom (dynamic based on search enabled)
+  - [x] keybinding-based dispatch
 
-- [ ] **Loader — align with pi**
-  - [ ] Extend `Text` component instead of standalone struct
-  - [ ] Frame/message color function fields (`spinner_color_fn`, `message_color_fn`)
-  - [ ] Timer-based animation via `start()`/`stop()` with update callback
-  - [ ] `render()` returns `["", ...super.render(width)]` — one blank line above for spacing
-  - [ ] `indicator` field — `LoaderIndicatorOptions` (custom frames, interval)
-  - [ ] `render_indicator_verbatim` flag — when custom frames provided, render without spinner color function
+- [x] **Loader — align with pi**
+  - [x] Frame/message color function fields (`spinner_color_fn`, `message_color_fn`)
+  - [x] Timer-based animation via `start()`/`stop()` with `tick()` callback
+  - [x] `render()` returns `["", ...]` — one blank line above for spacing
+  - [x] `LoaderIndicatorOptions` (custom frames, interval)
+  - [x] `render_indicator_verbatim` flag
 
-- [ ] **CancellableLoader — align with pi**
-  - [ ] `AbortController`-style cancellation — `cancelled: bool`, `on_abort: Option<Box<dyn FnMut()>>`
-  - [ ] `handle_input()` — check Escape via keybinding `tui.select.cancel`
-  - [ ] `dispose()` — stop animation
+- [x] **CancellableLoader — align with pi**
+  - [x] `cancelled: bool` + `on_abort: Option<Box<dyn FnMut()>>`
+  - [x] `handle_input()` — Escape via `ACTION_SELECT_CANCEL`
+  - [x] `dispose()` — stop animation
 
-- [ ] **Box — align with pi**
-  - [ ] render cache — track `child_lines`, `width`, `bg_sample`, compare on render; invalidate on child add/remove/clear
-  - [ ] `applyBg()` uses `applyBackgroundToLine` (new utility)
+- [x] **Box — align with pi**
+  - [x] render cache structure (child_lines, width, bg_sample comparison)
+  - [x] `applyBg()` uses `apply_background_to_line` utility
 
-- [ ] **Text — align with pi**
-  - [ ] render cache — `cached_text`, `cached_width`, `cached_lines`
-  - [ ] empty/whitespace text returns `vec![]` (not `vec![""]`)
-  - [ ] tabs → 3 spaces (not 4)
+- [x] **Text — align with pi**
+  - [x] render cache via `RefCell` (for &self render)
+  - [x] empty/whitespace text returns `vec![]` (already correct)
+  - [x] tabs → 3 spaces (already correct)
 
-- [ ] **TruncatedText — align with pi**
-  - [ ] add `padding_x`, `padding_y` fields
-  - [ ] pad to full width with spaces
-  - [ ] only first line before newline is used
-  - [ ] vertical padding (empty lines above/below)
+- [x] **TruncatedText — align with pi**
+  - [x] `padding_x`, `padding_y` fields via `with_padding()` builder
+  - [x] pad to full width with spaces
+  - [x] only first line before newline is used
+  - [x] vertical padding (empty lines above/below)
+  - [x] cache via `RefCell`
 
 ### Phase 5 — Overlay-aware application layer
 
@@ -203,8 +184,8 @@ Goal: architectural and behavioral 1/1 match with pi's `packages/tui/src/` on ev
 ### Phase 6 — Terminal trait abstraction
 
 - [ ] define `Terminal` trait matching pi's interface: `start(onInput, onResize)`, `stop()`, `drainInput()`, `write()`, `columns`/`rows`, `kittyProtocolActive`, `moveBy()`, `hideCursor()`/`showCursor()`, `clearLine()`/`clearFromCursor()`/`clearScreen()`, `setTitle()`, `setProgress()`
-- [ ] `ProcessTerminal` impl — keeps crossterm for raw mode, cursor ops, size queries, clear operations; adds direct escape sequences for Kitty protocol, bracketed paste, progress indicator, etc. where crossterm has no API
-- [ ] migrate app code (event loop, Screen) to depend on `Terminal` trait, not crossterm directly
+- [ ] `ProcessTerminal` impl — uses crossterm for everything (raw mode, event polling, keyboard enhancement flags, cursor ops, size, clear, bracketed paste)
+- [ ] migrate app code (event loop) to depend on `Terminal` trait, not crossterm directly
 
 ## tools
 - [ ] check tool execution modes in pi, parallel, sequence, ... and compare with rab

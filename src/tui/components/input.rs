@@ -1,5 +1,3 @@
-#![allow(clippy::type_complexity)]
-
 use crate::tui::component::Component;
 use crate::tui::focusable::{CURSOR_MARKER, Focusable};
 use crate::tui::keys::key_event_to_string;
@@ -21,19 +19,27 @@ use unicode_segmentation::UnicodeSegmentation;
 
 /// Single-line text input component.
 ///
-/// Supports Emacs-style cursor movement and kill ring operations.
-/// Renders with `> prompt text█padding...` layout.
+/// Supports Emacs-style cursor movement and kill ring operations,
+/// bracketed paste, and undo coalescing (pi fish-style).
 pub struct Input {
     value: String,
-    cursor: usize, // byte offset into value
+    cursor: usize,
     prompt: String,
     kill_ring: KillRing,
     undo_stack: UndoStack<String>,
     focused: bool,
-    scroll_offset: usize,
     on_submit: Option<Box<dyn FnMut(String)>>,
     on_escape: Option<Box<dyn FnMut()>>,
     on_change: Option<Box<dyn FnMut(&str)>>,
+
+    // Undo coalescing (pi fish-style)
+    last_action: Option<&'static str>,
+
+    // Bracketed paste buffering (reserved for future Event::Paste wiring)
+    #[allow(dead_code)]
+    paste_buffer: String,
+    #[allow(dead_code)]
+    is_in_paste: bool,
 }
 
 impl Input {
@@ -45,10 +51,12 @@ impl Input {
             kill_ring: KillRing::new(),
             undo_stack: UndoStack::new(),
             focused: false,
-            scroll_offset: 0,
             on_submit: None,
             on_escape: None,
             on_change: None,
+            last_action: None,
+            paste_buffer: String::new(),
+            is_in_paste: false,
         }
     }
 
@@ -62,10 +70,10 @@ impl Input {
     }
 
     pub fn set_value(&mut self, value: &str) {
+        self.last_action = None;
         self.save_undo();
         self.value = value.to_string();
         self.cursor = self.value.len();
-        self.scroll_offset = 0;
         if let Some(ref mut cb) = self.on_change {
             cb(&self.value);
         }
@@ -87,19 +95,54 @@ impl Input {
         self.undo_stack.push(&self.value);
     }
 
+    // ── Undo coalescing (pi fish-style) ──
+
+    fn maybe_push_undo(&mut self, char: &str) {
+        use crate::tui::util::is_whitespace_char;
+        // Consecutive word chars coalesce into one undo unit
+        // Space captures state before itself (so undo removes space + following word together)
+        if is_whitespace_char(char) || self.last_action != Some("type-word") {
+            self.save_undo();
+        }
+        self.last_action = Some("type-word");
+    }
+
+    // ── Text insertion ──
+
     fn insert_text(&mut self, text: &str) {
-        self.save_undo();
+        self.maybe_push_undo(text);
         self.value.insert_str(self.cursor, text);
         self.cursor += text.len();
-        self.scroll_offset = 0;
     }
+
+    // ── Bracketed paste ──
+
+    fn handle_paste(&mut self, pasted_text: &str) {
+        self.last_action = None;
+        self.save_undo();
+
+        let clean = pasted_text
+            .replace('\r', "")
+            .replace('\n', "")
+            .replace('\t', "    ");
+
+        self.value = format!(
+            "{}{}{}",
+            &self.value[..self.cursor],
+            clean,
+            &self.value[self.cursor..]
+        );
+        self.cursor += clean.len();
+    }
+
+    // ── Deletion ──
 
     fn delete_before_cursor(&mut self) {
         if self.cursor == 0 {
             return;
         }
+        self.last_action = None;
         self.save_undo();
-        // Delete one grapheme before cursor
         let graphemes: Vec<(usize, &str)> = self.value.grapheme_indices(true).collect();
         for &(idx, g) in graphemes.iter().rev() {
             if idx < self.cursor {
@@ -111,13 +154,13 @@ impl Input {
                 }
             }
         }
-        self.scroll_offset = 0;
     }
 
     fn delete_after_cursor(&mut self) {
         if self.cursor >= self.value.len() {
             return;
         }
+        self.last_action = None;
         self.save_undo();
         let graphemes: Vec<(usize, &str)> = self.value.grapheme_indices(true).collect();
         for &(idx, g) in &graphemes {
@@ -126,10 +169,12 @@ impl Input {
                 break;
             }
         }
-        self.scroll_offset = 0;
     }
 
+    // ── Cursor movement ──
+
     fn move_cursor_left(&mut self) {
+        self.last_action = None;
         if self.cursor == 0 {
             return;
         }
@@ -146,6 +191,7 @@ impl Input {
     }
 
     fn move_cursor_right(&mut self) {
+        self.last_action = None;
         if self.cursor >= self.value.len() {
             return;
         }
@@ -155,12 +201,16 @@ impl Input {
     }
 
     fn move_to_start(&mut self) {
+        self.last_action = None;
         self.cursor = 0;
     }
 
     fn move_to_end(&mut self) {
+        self.last_action = None;
         self.cursor = self.value.len();
     }
+
+    // ── Kill operations ──
 
     fn kill_word_backward(&mut self) {
         let new_cursor = find_word_backward(&self.value, self.cursor);
@@ -202,6 +252,8 @@ impl Input {
         }
     }
 
+    // ── Yank ──
+
     fn yank(&mut self) {
         let text = self.kill_ring.peek().map(|s| s.to_string());
         if let Some(text) = text {
@@ -213,8 +265,6 @@ impl Input {
 
     fn yank_pop(&mut self) {
         self.kill_ring.rotate();
-        // Undo previous yank and insert new one
-        // Simplified: just pop undo and yank again
         let text = self.kill_ring.peek().map(|s| s.to_string());
         if let Some(prev) = self.undo_stack.pop()
             && let Some(text) = text
@@ -229,6 +279,7 @@ impl Input {
         if let Some(prev) = self.undo_stack.pop() {
             self.value = prev;
             self.cursor = self.value.len().min(self.cursor);
+            self.last_action = None;
         }
     }
 }
@@ -242,37 +293,40 @@ impl Component for Input {
             return vec![self.prompt.clone()];
         }
 
-        // Calculate visible window of text
-        let _text_width = visible_width(&self.value);
-
-        // Adjust scroll to keep cursor visible
+        let total_width = visible_width(&self.value);
         let cursor_text_width = visible_width(&self.value[..self.cursor]);
-        let mut scroll = self.scroll_offset;
 
-        if cursor_text_width < scroll {
-            scroll = cursor_text_width;
-        } else if cursor_text_width >= scroll + avail {
-            scroll = cursor_text_width.saturating_sub(avail) + 1;
-        }
+        // Pi-style smart horizontal scroll: center cursor in half-width window
+        let scroll = if total_width < avail {
+            0
+        } else if self.cursor == self.value.len() {
+            // Cursor at end: show end of text
+            total_width.saturating_sub(avail).saturating_sub(1)
+        } else {
+            // Pi: center cursor in half-width window
+            let half = avail / 2;
+            if cursor_text_width < half {
+                0
+            } else if cursor_text_width > total_width.saturating_sub(half) {
+                total_width.saturating_sub(avail)
+            } else {
+                cursor_text_width.saturating_sub(half)
+            }
+        };
 
         // Slice visible portion
         let visible = slice_by_column(&self.value, scroll, avail);
         let vis_width = visible_width(&visible);
-
-        // Calculate cursor position in visible text
         let cursor_visible_pos = cursor_text_width.saturating_sub(scroll);
 
         // Build the line with cursor highlighting
         let mut line = self.prompt.clone();
 
         if self.focused && cursor_visible_pos < vis_width {
-            // Split at cursor position
             let before = slice_by_column(&visible, 0, cursor_visible_pos);
             let at_cursor = slice_by_column(&visible, cursor_visible_pos, 1);
             let after = slice_by_column(&visible, cursor_visible_pos + 1, avail);
 
-            // Emit cursor marker before the fake cursor for IME positioning
-            // But only if the cursor position is within bounds
             line.push_str(CURSOR_MARKER);
             line.push_str(&before);
             line.push_str("\x1b[7m");
@@ -284,14 +338,12 @@ impl Component for Input {
             line.push_str("\x1b[27m");
             line.push_str(&after);
         } else if self.focused && cursor_visible_pos >= vis_width && vis_width < avail {
-            // Cursor at end, past visible content
             line.push_str(CURSOR_MARKER);
             line.push_str(&visible);
             line.push_str("\x1b[7m \x1b[27m");
         } else {
             line.push_str(&visible);
             if self.focused {
-                // Cursor at end
                 line.push_str(CURSOR_MARKER);
             }
         }
@@ -323,7 +375,7 @@ impl Component for Input {
             if let Some(ref mut cb) = self.on_submit {
                 let value = std::mem::take(&mut self.value);
                 self.cursor = 0;
-                self.scroll_offset = 0;
+                self.last_action = None;
                 cb(value);
             }
             return true;
@@ -372,7 +424,6 @@ impl Component for Input {
             return true;
         }
 
-        // ── Kill operations ──
         if kb.matches(key, ACTION_EDITOR_DELETE_WORD_BACKWARD) {
             self.kill_word_backward();
             if let Some(ref mut cb) = self.on_change {
@@ -429,7 +480,6 @@ impl Component for Input {
             return true;
         }
 
-        // ── Word movement ──
         if kb.matches(key, ACTION_EDITOR_CURSOR_WORD_LEFT) {
             self.cursor = find_word_backward(&self.value, self.cursor);
             return true;
@@ -513,7 +563,6 @@ mod tests {
     fn test_kill_to_end() {
         let mut input = Input::new();
         input.insert_text("hello world");
-        // Move cursor to after "hello"
         for _ in 0..6 {
             input.move_cursor_left();
         }
@@ -536,5 +585,30 @@ mod tests {
         let lines = input.render(20);
         assert_eq!(lines.len(), 1);
         assert!(lines[0].contains("test"));
+    }
+
+    #[test]
+    fn test_undo_coalescing() {
+        let mut input = Input::new();
+        input.insert_text("h");
+        input.insert_text("e");
+        input.insert_text(" ");
+        input.insert_text("w");
+        assert_eq!(input.get_value(), "he w");
+        // Undo once reverts to before space ("he w" → "he").
+        input.undo();
+        assert_eq!(input.get_value(), "he");
+        // Undo again reverts to before everything ("he" → "")
+        input.undo();
+        assert_eq!(input.get_value(), "");
+    }
+
+    #[test]
+    fn test_paste_handling() {
+        let mut input = Input::new();
+        input.handle_paste("hello\nworld");
+        // Newlines should be stripped in paste
+        assert_eq!(input.get_value(), "helloworld");
+        assert_eq!(input.cursor, 10);
     }
 }

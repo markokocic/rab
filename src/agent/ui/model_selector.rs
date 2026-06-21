@@ -35,7 +35,7 @@ impl ModelSelector {
         };
 
         let max_visible = models.len().clamp(5, 20);
-        let mut select_list = SelectList::new(items, max_visible, list_theme);
+        let mut select_list = SelectList::new(items, max_visible, list_theme, None);
         select_list = select_list.with_search();
 
         // Set initial selection
