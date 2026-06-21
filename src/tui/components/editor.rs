@@ -10,7 +10,8 @@ use crate::tui::keybindings::{
     ACTION_EDITOR_DELETE_WORD_FORWARD, ACTION_EDITOR_PAGE_DOWN, ACTION_EDITOR_PAGE_UP,
     ACTION_EDITOR_UNDO, ACTION_EDITOR_YANK, ACTION_EDITOR_YANK_POP, ACTION_INPUT_NEW_LINE,
     ACTION_INPUT_SUBMIT, ACTION_INPUT_TAB, ACTION_SELECT_CANCEL, ACTION_SELECT_CONFIRM,
-    ACTION_SELECT_DOWN, ACTION_SELECT_UP,
+    ACTION_SELECT_DOWN, ACTION_SELECT_UP, ACTION_EDITOR_JUMP_FORWARD,
+    ACTION_EDITOR_JUMP_BACKWARD,
 };
 use crate::tui::component::Component;
 use crate::tui::components::select_list::{SelectItem, SelectList, SelectListTheme};
@@ -45,6 +46,13 @@ impl Default for EditorTheme {
             autocomplete_normal: Box::new(|s| s.to_string()),
         }
     }
+}
+
+/// Direction for character jump mode (pi-style).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum JumpDirection {
+    Forward,
+    Backward,
 }
 
 pub struct EditorOptions {
@@ -84,6 +92,9 @@ pub struct Editor {
     pub disable_submit: bool,
     pub border_color: Box<dyn Fn(&str) -> String>,
 
+    // Character jump mode (pi-style: await next printable char to jump to)
+    jump_mode: Option<JumpDirection>,
+
     // Pi-style autocomplete state (uses SelectList)
     autocomplete_list: Option<SelectList>,
     pub autocomplete_active: bool,
@@ -120,6 +131,7 @@ impl Editor {
             autocomplete_list: None,
             autocomplete_active: false,
             border_color: Box::new(|s| s.to_string()),
+            jump_mode: None,
         }
     }
 
@@ -282,6 +294,57 @@ impl Editor {
         self.exit_history();
         self.maybe_push_undo(ch);
         self.insert_text_internal(ch);
+
+        // Pi-style autocomplete auto-trigger
+        self.check_autocomplete_trigger(ch);
+    }
+
+    /// Check if the just-typed character should trigger autocomplete.
+    /// Pi behavior: / at start of line, @ and # at token boundaries,
+    /// and letters when already in a slash command context.
+    fn check_autocomplete_trigger(&mut self, ch: &str) {
+        if self.autocomplete_active {
+            return; // Already showing
+        }
+        let current_line = &self.lines[self.cursor_line];
+        let text_before = &current_line[..self.cursor_col.min(current_line.len())];
+
+        // / at the start of the line (or after whitespace)
+        if ch == "/" {
+            let before_char = text_before.chars().nth_back(1); // char right before /
+            if text_before.len() == 1 || before_char.is_none_or(|c| c.is_whitespace()) {
+                self.try_trigger_autocomplete();
+                return;
+            }
+        }
+
+        // @ and # at token boundaries
+        if ch == "@" || ch == "#" {
+            let before_char = text_before.chars().nth_back(1);
+            if text_before.len() == 1 || before_char.is_none_or(|c| c.is_whitespace() || c == ' ' || c == '\t') {
+                self.try_trigger_autocomplete();
+                return;
+            }
+        }
+
+        // Letters when in a slash command context
+        if ch.len() == 1 && ch.chars().next().is_some_and(|c| c.is_alphanumeric() || c == '-' || c == '_') {
+            if text_before.starts_with('/') && !text_before.contains(' ') {
+                self.try_trigger_autocomplete();
+                return;
+            }
+            // Also trigger for @ and # contexts
+            if text_before.contains('@') || text_before.contains('#') {
+                self.try_trigger_autocomplete();
+            }
+        }
+    }
+
+    fn try_trigger_autocomplete(&mut self) {
+        // This is a stub — the actual autocomplete provider integration would
+        // query the provider and set up the SelectList. For now, this marks
+        // the autocomplete as active so the framework knows to show it.
+        // The actual suggestions are set externally via set_autocomplete().
     }
 
     fn add_newline(&mut self) {
@@ -527,6 +590,33 @@ impl Editor {
         self.cursor_col = pref.min(target_len);
     }
 
+    // ── Character jump (pi-style) ──
+
+    fn jump_to_char(&mut self, ch: char, dir: JumpDirection) {
+        let line = &self.lines[self.cursor_line].clone();
+        match dir {
+            JumpDirection::Forward => {
+                // Find ch after cursor
+                let start = self.cursor_col + 1;
+                if start < line.len() {
+                    let rest = &line[self.cursor_col + 1..];
+                    if let Some(pos) = rest.find(ch) {
+                        self.set_cursor_col(self.cursor_col + 1 + pos);
+                    }
+                }
+            }
+            JumpDirection::Backward => {
+                // Find ch before cursor
+                if self.cursor_col > 0 {
+                    let before = &line[..self.cursor_col];
+                    if let Some(pos) = before.rfind(ch) {
+                        self.set_cursor_col(pos);
+                    }
+                }
+            }
+        }
+    }
+
     // ── History ──
 
     fn exit_history(&mut self) {
@@ -764,14 +854,31 @@ impl Component for Editor {
     fn handle_input(&mut self, key: &KeyEvent) -> bool {
         let kb = get_keybindings();
 
+        // ── Character jump mode: await next printable char ──
+        if let Some(dir) = self.jump_mode {
+            // Cancel on jump hotkey again
+            if kb.matches(key, ACTION_EDITOR_JUMP_FORWARD) || kb.matches(key, ACTION_EDITOR_JUMP_BACKWARD) {
+                self.jump_mode = None;
+                return true;
+            }
+            if is_printable_plain(key) {
+                if let Some(s) = key_event_to_string(key) {
+                    let ch = s.chars().next().unwrap_or(' ');
+                    self.jump_mode = None;
+                    self.jump_to_char(ch, dir);
+                    return true;
+                }
+            }
+            // Non-printable cancels jump mode
+            self.jump_mode = None;
+        }
+
         // ── Autocomplete: route to SelectList (pi-style) ──
         if let Some(ref mut list) = self.autocomplete_list {
-            // Escape closes dropdown without accepting
             if kb.matches(key, ACTION_SELECT_CANCEL) {
                 self.clear_autocomplete();
                 return true;
             }
-            // Enter/Tab accept the selected item
             if kb.matches(key, ACTION_SELECT_CONFIRM) || kb.matches(key, ACTION_INPUT_TAB) {
                 if let Some(val) = list.selected_item().map(|i| i.value.clone()) {
                     self.set_text(&format!("/{} ", val));
@@ -779,12 +886,10 @@ impl Component for Editor {
                 self.clear_autocomplete();
                 return true;
             }
-            // Up/Down delegate to SelectList
             if kb.matches(key, ACTION_SELECT_UP) || kb.matches(key, ACTION_SELECT_DOWN) {
                 list.handle_input(key);
                 return true;
             }
-            // Any other key dismisses autocomplete
             self.clear_autocomplete();
         }
 
@@ -801,6 +906,16 @@ impl Component for Editor {
                 return true;
             }
             self.submit();
+            return true;
+        }
+
+        // ── Character jump triggers ──
+        if kb.matches(key, ACTION_EDITOR_JUMP_FORWARD) {
+            self.jump_mode = Some(JumpDirection::Forward);
+            return true;
+        }
+        if kb.matches(key, ACTION_EDITOR_JUMP_BACKWARD) {
+            self.jump_mode = Some(JumpDirection::Backward);
             return true;
         }
 

@@ -29,6 +29,8 @@ pub const ACTION_EDITOR_YANK_POP: &str = "tui.editor.yankPop";
 pub const ACTION_EDITOR_UNDO: &str = "tui.editor.undo";
 pub const ACTION_EDITOR_PAGE_UP: &str = "tui.editor.pageUp";
 pub const ACTION_EDITOR_PAGE_DOWN: &str = "tui.editor.pageDown";
+pub const ACTION_EDITOR_JUMP_FORWARD: &str = "tui.editor.jumpForward";
+pub const ACTION_EDITOR_JUMP_BACKWARD: &str = "tui.editor.jumpBackward";
 
 // ── Input (single-line) actions ──
 pub const ACTION_INPUT_SUBMIT: &str = "tui.input.submit";
@@ -97,6 +99,8 @@ impl Keybindings {
         self.set(ACTION_EDITOR_UNDO, vec!["ctrl+z".into()]);
         self.set(ACTION_EDITOR_PAGE_UP, vec!["pageUp".into()]);
         self.set(ACTION_EDITOR_PAGE_DOWN, vec!["pageDown".into()]);
+        self.set(ACTION_EDITOR_JUMP_FORWARD, vec!["alt+f".into()]);
+        self.set(ACTION_EDITOR_JUMP_BACKWARD, vec!["alt+b".into()]);
 
         self.set(ACTION_INPUT_SUBMIT, vec!["enter".into()]);
         self.set(ACTION_INPUT_TAB, vec!["tab".into()]);

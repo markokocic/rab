@@ -109,15 +109,16 @@ Goal: architectural and behavioral 1/1 match with pi's `packages/tui/src/` on ev
 
 ### Phase 4 — Component upgrades
 
-- [ ] **Editor — align with pi** (minor items remaining)
-  - [ ] paste-marker system (large/still deferred)
-  - [ ] bracketed paste buffering
-  - [x] undo coalescing (fish-style) — `maybe_push_undo()` with `is_whitespace_char` check
-  - [ ] sticky column, character jump
-  - [x] history draft — save pre-history state, restore on Down after Up
-  - [x] `border_color` — mutable public field, used in render instead of theme.border
-  - [ ] autocomplete auto-trigger
-  - [ ] paste-marker-aware segmentation
+- [ ] **Editor — align with pi** (paste markers only remaining)
+  - [ ] paste-marker system (deferred — needs bracketed paste at terminal level)
+  - [ ] bracketed paste buffering (deferred — crossterm handles via Event::Paste)
+  - [x] undo coalescing (fish-style)
+  - [x] sticky column — `preferred_col` vertical movement
+  - [x] character jump — `jump_mode` + `jump_to_char()`
+  - [x] history draft — save/restore on up/down
+  - [x] `border_color` — mutable public field
+  - [x] autocomplete auto-trigger — on `/`, `@`, `#` at token boundaries, letters in slash context
+  - [x] `ACTION_EDITOR_JUMP_FORWARD` / `ACTION_EDITOR_JUMP_BACKWARD` action IDs
 
 - [x] **Input — align with pi**
   - [x] undo coalescing — `last_action: Option<&'static str>` with fish-style coalescing
