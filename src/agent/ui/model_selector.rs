@@ -70,16 +70,16 @@ impl Component for ModelSelector {
     }
 
     fn handle_input(&mut self, key: &crossterm::event::KeyEvent) -> bool {
-        use crate::tui::keys::{Key, matches_key};
+        let kb = crate::tui::keybindings::get_keybindings();
 
-        if matches_key(key, &Key::Enter) {
+        if kb.matches(key, crate::tui::keybindings::ACTION_SELECT_CONFIRM) {
             if let Some(item) = self.select_list.selected_item() {
                 self.selected_model = Some(item.value.clone());
             }
             return true;
         }
 
-        if matches_key(key, &Key::Escape) {
+        if kb.matches(key, crate::tui::keybindings::ACTION_SELECT_CANCEL) {
             self.selected_model = None;
             return true;
         }

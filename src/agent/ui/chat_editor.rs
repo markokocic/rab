@@ -1,10 +1,16 @@
-use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::event::KeyEvent;
 
+use crate::tui::keybindings::{
+    get_keybindings, ACTION_APP_ESCAPE, ACTION_APP_EXIT, ACTION_APP_HELP,
+    ACTION_APP_HISTORY_DOWN, ACTION_APP_HISTORY_UP, ACTION_APP_INTERRUPT,
+    ACTION_APP_MODEL_SELECTOR, ACTION_APP_TOGGLE_COLLAPSE, ACTION_APP_TOGGLE_THINKING,
+    ACTION_EDITOR_PAGE_DOWN, ACTION_EDITOR_PAGE_UP, ACTION_INPUT_NEW_LINE,
+    ACTION_INPUT_SUBMIT, ACTION_INPUT_TAB, ACTION_SELECT_CANCEL,
+};
 use crate::tui::Component;
 use crate::tui::Theme;
 use crate::tui::components::Editor;
 use crate::tui::components::editor::{EditorOptions, EditorTheme};
-use crate::tui::keys::{Key, matches_key};
 
 /// Actions that ChatEditor can signal to the app layer.
 /// Mirrors pi's CustomEditor approach: the editor handles its own text keys
@@ -128,8 +134,10 @@ impl ChatEditor {
     /// This keeps app-level side effects (aborting agent, opening overlays, etc.)
     /// in the app layer while keeping text-editing logic in the Editor component.
     pub fn handle_input(&mut self, key: &KeyEvent) -> InputAction {
+        let kb = get_keybindings();
+
         // ── Escape: close autocomplete first if active, else signal app ──
-        if matches_key(key, &Key::Escape) {
+        if kb.matches(key, ACTION_SELECT_CANCEL) || kb.matches(key, ACTION_APP_ESCAPE) {
             if self.editor.autocomplete_active {
                 self.editor.clear_autocomplete();
                 return InputAction::Handled;
@@ -138,37 +146,37 @@ impl ChatEditor {
         }
 
         // ── Ctrl+C: interrupt or clear ──
-        if matches_key(key, &Key::Ctrl('c')) {
+        if kb.matches(key, ACTION_APP_INTERRUPT) {
             return InputAction::Interrupt;
         }
 
         // ── Ctrl+D: exit when editor is empty (mirrors pi's app.exit) ──
-        if matches_key(key, &Key::Ctrl('d')) && self.editor.get_text().is_empty() {
+        if kb.matches(key, ACTION_APP_EXIT) && self.editor.get_text().is_empty() {
             return InputAction::Exit;
         }
 
         // ── Ctrl+L: model selector ──
-        if matches_key(key, &Key::Ctrl('l')) {
+        if kb.matches(key, ACTION_APP_MODEL_SELECTOR) {
             return InputAction::ModelSelector;
         }
 
         // ── Ctrl+T: toggle thinking visibility ──
-        if matches_key(key, &Key::Ctrl('t')) {
+        if kb.matches(key, ACTION_APP_TOGGLE_THINKING) {
             return InputAction::ToggleThinking;
         }
 
         // ── Ctrl+O: toggle tool output collapse ──
-        if matches_key(key, &Key::Ctrl('o')) {
+        if kb.matches(key, ACTION_APP_TOGGLE_COLLAPSE) {
             return InputAction::ToggleCollapse;
         }
 
         // ── F1: help overlay ──
-        if key.code == KeyCode::F(1) {
+        if kb.matches(key, ACTION_APP_HELP) {
             return InputAction::Help;
         }
 
         // ── Tab: trigger slash-command autocomplete (pi-style) ──
-        if matches_key(key, &Key::Tab) && !self.editor.autocomplete_active {
+        if kb.matches(key, ACTION_INPUT_TAB) && !self.editor.autocomplete_active {
             let text = self.editor.get_text();
             if text.starts_with('/') {
                 let suggestions = self.get_autocomplete_suggestions();
@@ -178,7 +186,7 @@ impl ChatEditor {
         }
 
         // ── Enter: submit ──
-        if matches_key(key, &Key::Enter) {
+        if kb.matches(key, ACTION_INPUT_SUBMIT) {
             let text = self.editor.get_text();
             if !text.trim().is_empty() {
                 self.editor.add_to_history(&text);
@@ -189,26 +197,26 @@ impl ChatEditor {
         }
 
         // ── Ctrl+J: insert literal newline ──
-        if matches_key(key, &Key::Ctrl('j')) {
+        if kb.matches(key, ACTION_INPUT_NEW_LINE) {
             self.editor.insert_text_at_cursor("\n");
             return InputAction::Handled;
         }
 
         // ── Up/Down: recall history (only when autocomplete is not active) ──
         if !self.editor.autocomplete_active {
-            if matches_key(key, &Key::Up) && self.editor.get_text().is_empty() {
+            if kb.matches(key, ACTION_APP_HISTORY_UP) && self.editor.get_text().is_empty() {
                 return InputAction::RecallHistory(-1);
             }
-            if matches_key(key, &Key::Down) && self.editor.get_text().is_empty() {
+            if kb.matches(key, ACTION_APP_HISTORY_DOWN) && self.editor.get_text().is_empty() {
                 return InputAction::RecallHistory(1);
             }
         }
 
         // ── PageUp/PageDown: scroll ──
-        if matches_key(key, &Key::PageUp) {
+        if kb.matches(key, ACTION_EDITOR_PAGE_UP) {
             return InputAction::PageUp;
         }
-        if matches_key(key, &Key::PageDown) {
+        if kb.matches(key, ACTION_EDITOR_PAGE_DOWN) {
             return InputAction::PageDown;
         }
 

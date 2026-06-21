@@ -1,9 +1,21 @@
 #![allow(clippy::type_complexity)]
 
+use crate::tui::keybindings::{
+    get_keybindings, ACTION_EDITOR_CURSOR_DOWN, ACTION_EDITOR_CURSOR_LEFT,
+    ACTION_EDITOR_CURSOR_LINE_END, ACTION_EDITOR_CURSOR_LINE_START,
+    ACTION_EDITOR_CURSOR_RIGHT, ACTION_EDITOR_CURSOR_UP, ACTION_EDITOR_CURSOR_WORD_LEFT,
+    ACTION_EDITOR_CURSOR_WORD_RIGHT, ACTION_EDITOR_DELETE_CHAR_BACKWARD,
+    ACTION_EDITOR_DELETE_CHAR_FORWARD, ACTION_EDITOR_DELETE_TO_LINE_END,
+    ACTION_EDITOR_DELETE_TO_LINE_START, ACTION_EDITOR_DELETE_WORD_BACKWARD,
+    ACTION_EDITOR_DELETE_WORD_FORWARD, ACTION_EDITOR_PAGE_DOWN, ACTION_EDITOR_PAGE_UP,
+    ACTION_EDITOR_UNDO, ACTION_EDITOR_YANK, ACTION_EDITOR_YANK_POP, ACTION_INPUT_NEW_LINE,
+    ACTION_INPUT_SUBMIT, ACTION_INPUT_TAB, ACTION_SELECT_CANCEL, ACTION_SELECT_CONFIRM,
+    ACTION_SELECT_DOWN, ACTION_SELECT_UP,
+};
 use crate::tui::component::Component;
 use crate::tui::components::select_list::{SelectItem, SelectList, SelectListTheme};
 use crate::tui::focusable::{CURSOR_MARKER, Focusable};
-use crate::tui::keys::{Key, key_event_to_string, matches_key};
+use crate::tui::keys::key_event_to_string;
 use crate::tui::kill_ring::KillRing;
 use crate::tui::undo_stack::UndoStack;
 use crate::tui::util::{visible_width, visual_col_to_byte_offset, wrap_text_with_ansi};
@@ -713,15 +725,17 @@ impl Component for Editor {
     }
 
     fn handle_input(&mut self, key: &KeyEvent) -> bool {
+        let kb = get_keybindings();
+
         // ── Autocomplete: route to SelectList (pi-style) ──
         if let Some(ref mut list) = self.autocomplete_list {
             // Escape closes dropdown without accepting
-            if matches_key(key, &Key::Escape) {
+            if kb.matches(key, ACTION_SELECT_CANCEL) {
                 self.clear_autocomplete();
                 return true;
             }
             // Enter/Tab accept the selected item
-            if matches_key(key, &Key::Enter) || matches_key(key, &Key::Tab) {
+            if kb.matches(key, ACTION_SELECT_CONFIRM) || kb.matches(key, ACTION_INPUT_TAB) {
                 if let Some(val) = list.selected_item().map(|i| i.value.clone()) {
                     self.set_text(&format!("/{} ", val));
                 }
@@ -729,7 +743,7 @@ impl Component for Editor {
                 return true;
             }
             // Up/Down delegate to SelectList
-            if matches_key(key, &Key::Up) || matches_key(key, &Key::Down) {
+            if kb.matches(key, ACTION_SELECT_UP) || kb.matches(key, ACTION_SELECT_DOWN) {
                 list.handle_input(key);
                 return true;
             }
@@ -738,7 +752,7 @@ impl Component for Editor {
         }
 
         // ── Enter / Submit ──
-        if matches_key(key, &Key::Enter) {
+        if kb.matches(key, ACTION_INPUT_SUBMIT) {
             if self.disable_submit {
                 self.add_newline();
                 return true;
@@ -762,25 +776,25 @@ impl Component for Editor {
         }
 
         // ── Basic movement ──
-        if matches_key(key, &Key::Left) || matches_key(key, &Key::Ctrl('b')) {
+        if kb.matches(key, ACTION_EDITOR_CURSOR_LEFT) {
             self.move_left();
             return true;
         }
-        if matches_key(key, &Key::Right) || matches_key(key, &Key::Ctrl('f')) {
+        if kb.matches(key, ACTION_EDITOR_CURSOR_RIGHT) {
             self.move_right();
             return true;
         }
-        if matches_key(key, &Key::Home) || matches_key(key, &Key::Ctrl('a')) {
+        if kb.matches(key, ACTION_EDITOR_CURSOR_LINE_START) {
             self.move_to_line_start();
             return true;
         }
-        if matches_key(key, &Key::End) || matches_key(key, &Key::Ctrl('e')) {
+        if kb.matches(key, ACTION_EDITOR_CURSOR_LINE_END) {
             self.move_to_line_end();
             return true;
         }
 
         // ── Up/Down with history ──
-        if matches_key(key, &Key::Up) {
+        if kb.matches(key, ACTION_EDITOR_CURSOR_UP) {
             if self.is_first_visual_line()
                 && (self.is_empty() || self.history_index >= 0 || self.cursor_col == 0)
             {
@@ -792,7 +806,7 @@ impl Component for Editor {
             }
             return true;
         }
-        if matches_key(key, &Key::Down) {
+        if kb.matches(key, ACTION_EDITOR_CURSOR_DOWN) {
             if self.history_index >= 0 && self.is_last_visual_line() {
                 self.recall_newer();
             } else if self.is_last_visual_line() {
@@ -804,17 +818,17 @@ impl Component for Editor {
         }
 
         // ── Page scroll ──
-        if matches_key(key, &Key::PageUp) {
+        if kb.matches(key, ACTION_EDITOR_PAGE_UP) {
             self.page_up();
             return true;
         }
-        if matches_key(key, &Key::PageDown) {
+        if kb.matches(key, ACTION_EDITOR_PAGE_DOWN) {
             self.page_down();
             return true;
         }
 
         // ── Word movement ──
-        if matches_key(key, &Key::CtrlLeft) || matches_key(key, &Key::Alt('b')) {
+        if kb.matches(key, ACTION_EDITOR_CURSOR_WORD_LEFT) {
             let line = &self.lines[self.cursor_line];
             if self.cursor_col > 0 {
                 let c = find_word_backward(line, self.cursor_col);
@@ -822,23 +836,7 @@ impl Component for Editor {
             }
             return true;
         }
-        if matches_key(key, &Key::CtrlRight) || matches_key(key, &Key::Alt('f')) {
-            let line = &self.lines[self.cursor_line];
-            if self.cursor_col < line.len() {
-                let c = find_word_forward(line, self.cursor_col);
-                self.set_cursor_col(c);
-            }
-            return true;
-        }
-        if matches_key(key, &Key::AltLeft) {
-            let line = &self.lines[self.cursor_line];
-            if self.cursor_col > 0 {
-                let c = find_word_backward(line, self.cursor_col);
-                self.set_cursor_col(c);
-            }
-            return true;
-        }
-        if matches_key(key, &Key::AltRight) {
+        if kb.matches(key, ACTION_EDITOR_CURSOR_WORD_RIGHT) {
             let line = &self.lines[self.cursor_line];
             if self.cursor_col < line.len() {
                 let c = find_word_forward(line, self.cursor_col);
@@ -848,45 +846,45 @@ impl Component for Editor {
         }
 
         // ── Deletion ──
-        if matches_key(key, &Key::Backspace) || matches_key(key, &Key::Ctrl('h')) {
+        if kb.matches(key, ACTION_EDITOR_DELETE_CHAR_BACKWARD) {
             self.backspace();
             return true;
         }
-        if matches_key(key, &Key::Delete) || matches_key(key, &Key::Ctrl('d')) {
+        if kb.matches(key, ACTION_EDITOR_DELETE_CHAR_FORWARD) {
             self.delete_forward();
             return true;
         }
 
         // ── Kill operations ──
-        if matches_key(key, &Key::Ctrl('w')) {
+        if kb.matches(key, ACTION_EDITOR_DELETE_WORD_BACKWARD) {
             self.delete_word_backward();
             return true;
         }
-        if matches_key(key, &Key::Alt('d')) {
+        if kb.matches(key, ACTION_EDITOR_DELETE_WORD_FORWARD) {
             self.delete_word_forward();
             return true;
         }
-        if matches_key(key, &Key::Ctrl('u')) {
+        if kb.matches(key, ACTION_EDITOR_DELETE_TO_LINE_START) {
             self.delete_to_line_start();
             return true;
         }
-        if matches_key(key, &Key::Ctrl('k')) {
+        if kb.matches(key, ACTION_EDITOR_DELETE_TO_LINE_END) {
             self.delete_to_line_end();
             return true;
         }
 
         // ── Yank ──
-        if matches_key(key, &Key::Ctrl('y')) {
+        if kb.matches(key, ACTION_EDITOR_YANK) {
             self.yank();
             return true;
         }
-        if matches_key(key, &Key::Alt('y')) {
+        if kb.matches(key, ACTION_EDITOR_YANK_POP) {
             self.yank_pop();
             return true;
         }
 
         // ── Undo ──
-        if matches_key(key, &Key::Ctrl('z')) {
+        if kb.matches(key, ACTION_EDITOR_UNDO) {
             self.exit_history();
             self.last_action = None;
             self.undo();
@@ -895,13 +893,13 @@ impl Component for Editor {
         }
 
         // ── Ctrl+J = newline ──
-        if matches_key(key, &Key::Ctrl('j')) {
+        if kb.matches(key, ACTION_INPUT_NEW_LINE) {
             self.add_newline();
             return true;
         }
 
         // ── Escape — let parent handle ──
-        if matches_key(key, &Key::Escape) {
+        if kb.matches(key, ACTION_SELECT_CANCEL) {
             return false;
         }
 

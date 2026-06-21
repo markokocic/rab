@@ -59,27 +59,31 @@ Goal: architectural and behavioral 1/1 match with pi's `packages/tui/src/` on ev
 
 ### Phase 2 — Keys and keybindings
 
-- [ ] **Keys — extend to match pi**
-  - [ ] `KeyId` — replace enum with string-based identifiers (e.g. `"ctrl+c"`, `"shift+enter"`)
-  - [ ] `matchesKey(data, key_id)` — parse raw terminal data directly (not via crossterm `KeyEvent`):
-    - [ ] Kitty CSI-u sequences: `\x1b[<codepoint>;<mod>:<event>u`, alternate keys, functional key equivalents
-    - [ ] modifyOtherKeys: `\x1b[27;<mod>;<codepoint>~`
-    - [ ] legacy sequences: arrows, home/end, F-keys, application mode (SS3)
-    - [ ] raw control characters: `Ctrl+letter` = `code & 0x1f`, `Alt+letter` = `ESC letter`, etc.
-  - [ ] `isKeyRelease(data)` / `isKeyRepeat(data)` — Kitty flag 2 event type detection
-  - [ ] `parseKey(data)` → `KeyId` — reverse mapping from raw sequence to canonical identifier
-  - [ ] `decodeKittyPrintable(data)` — extract printable character from non-Shift-modified CSI-u
-  - [ ] `decodePrintableKey(data)` — combines Kitty + modifyOtherKeys printable decoding
-  - [ ] full modifier support: `super` key, all `ctrl+shift+alt`, `ctrl+super`, etc. combinations
-  - [ ] `Key` helper — named constants + type-safe builders (matching pi's `Key.ctrl("c")` pattern)
+- [x] **Keys — string-based key IDs** — `src/tui/keys.rs`
+  - [x] `key_event_to_id(event)` — converts `crossterm::KeyEvent` to pi-compatible key ID string (`"ctrl+c"`, `"shift+enter"`, `"alt+left"`, etc.)
+  - [x] `match_key_id(event, key_id)` — matches a KeyEvent against a key ID string with relaxed modifier handling
+  - [x] `parse_key_id(key_id)` — splits key ID into (key_name, ctrl, shift, alt, super)
+  - [x] `matches_key_name(code, key_name)` — matches KeyCode against key name (Enter, Escape, F-keys, chars, etc.)
+  - [x] full modifier support: ctrl, shift, alt, super in all combinations
+  - [ ] raw terminal data parsing (`matches_key_data`, `parse_key`, `is_key_release`, `is_key_repeat`, `decode_kitty_printable`, `decode_printable_key`) — deferred to Phase 7 (Kitty protocol integration)
 
-- [ ] **Keybindings system**
-  - [ ] `KeybindingDefinition` — action → list of key IDs (`tui.editor.undo` → `["ctrl+z"]`)
-  - [ ] `Keybindings` — map of action → resolved key IDs
-  - [ ] `KeybindingsManager` — load from config, merge with defaults, detect conflicts
-  - [ ] `getKeybindings()` / `setKeybindings()` — global accessors
-  - [ ] `TUI_KEYBINDINGS` — default definitions: `tui.editor.*`, `tui.input.*`, `tui.select.*`, `tui.editor.cursorUp/Down/Left/Right`, `tui.editor.delete*`, `tui.editor.yank*`, `tui.editor.undo`, `tui.input.submit`, `tui.input.tab`, `tui.input.newLine`, `tui.input.copy`, `tui.select.confirm/cancel/up/down`
-  - [ ] migrate all components from hardcoded `matches_key(&Key::X)` to `kb.matches(data, "action.id")`
+- [x] **Keybindings system** — `src/tui/keybindings.rs`
+  - [x] `Keybindings` struct — `HashMap<String, Vec<String>>` mapping action IDs to key ID lists
+  - [x] `Keybindings::matches(event, action_id)` — checks if event matches any bound key
+  - [x] `Keybindings::with_defaults()` — pi-compatible default bindings
+  - [x] `get_keybindings()` / `init_keybindings(kb)` — global `OnceLock` accessor
+  - [x] `Keybindings::load()` / `save()` — JSON persistence
+  - [x] action ID constants: `ACTION_EDITOR_*`, `ACTION_INPUT_*`, `ACTION_SELECT_*`, `ACTION_APP_*` (27 actions total)
+  - [x] default bindings: 27 actions with ~40 key assignments
+
+- [x] **Migration complete** — all components use `get_keybindings().matches(event, action_id)`:
+  - [x] `editor.rs` — Editor (movement, deletion, yank, undo, page, escape, autocomplete)
+  - [x] `input.rs` — Input (movement, deletion, yank, undo, submit, escape)
+  - [x] `select_list.rs` — SelectList (up/down, confirm, cancel, search backspace)
+  - [x] `settings_list.rs` — SettingsList (up/down, confirm, cancel, search toggle)
+  - [x] `cancellable_loader.rs` — CancellableLoader (escape = cancel)
+  - [x] `chat_editor.rs` — ChatEditor (escape, interrupt, exit, model, thinking, collapse, help, tab, submit, newline, history, page)
+  - [x] `model_selector.rs` — ModelSelector (confirm, cancel)
 
 ### Phase 3 — Utility upgrades
 

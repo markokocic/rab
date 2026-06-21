@@ -2,6 +2,7 @@ pub mod component;
 pub mod container;
 pub mod focusable;
 pub mod fuzzy;
+pub mod keybindings;
 pub mod keys;
 pub mod kill_ring;
 pub mod overlay;
@@ -19,7 +20,20 @@ pub use component::Component;
 pub use container::Container;
 pub use focusable::{CURSOR_MARKER, Focusable};
 pub use fuzzy::{FuzzyMatch, fuzzy_filter, fuzzy_match};
-pub use keys::{Key, matches_key};
+pub use keybindings::{
+    get_keybindings, init_keybindings, Keybindings, ACTION_EDITOR_CURSOR_DOWN,
+    ACTION_EDITOR_CURSOR_LEFT, ACTION_EDITOR_CURSOR_LINE_END,
+    ACTION_EDITOR_CURSOR_LINE_START, ACTION_EDITOR_CURSOR_RIGHT,
+    ACTION_EDITOR_CURSOR_UP, ACTION_EDITOR_CURSOR_WORD_LEFT,
+    ACTION_EDITOR_CURSOR_WORD_RIGHT, ACTION_EDITOR_DELETE_CHAR_BACKWARD,
+    ACTION_EDITOR_DELETE_CHAR_FORWARD, ACTION_EDITOR_DELETE_TO_LINE_END,
+    ACTION_EDITOR_DELETE_TO_LINE_START, ACTION_EDITOR_DELETE_WORD_BACKWARD,
+    ACTION_EDITOR_DELETE_WORD_FORWARD, ACTION_EDITOR_PAGE_DOWN, ACTION_EDITOR_PAGE_UP,
+    ACTION_EDITOR_UNDO, ACTION_EDITOR_YANK, ACTION_EDITOR_YANK_POP, ACTION_INPUT_COPY,
+    ACTION_INPUT_NEW_LINE, ACTION_INPUT_SUBMIT, ACTION_INPUT_TAB, ACTION_SELECT_CANCEL,
+    ACTION_SELECT_CONFIRM, ACTION_SELECT_DOWN, ACTION_SELECT_UP,
+};
+pub use keys::{match_key_id, Key, matches_key};
 pub use overlay::{
     OverlayAnchor, OverlayEntry, OverlayLayout, OverlayMargin, OverlayOptions, SizeValue,
 };

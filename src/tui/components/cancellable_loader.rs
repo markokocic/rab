@@ -68,8 +68,8 @@ impl Component for CancellableLoader {
     }
 
     fn handle_input(&mut self, key: &crossterm::event::KeyEvent) -> bool {
-        use crate::tui::keys::{Key, matches_key};
-        if matches_key(key, &Key::Escape) {
+        let kb = crate::tui::keybindings::get_keybindings();
+        if kb.matches(key, crate::tui::keybindings::ACTION_SELECT_CANCEL) {
             self.cancelled = true;
             return true;
         }

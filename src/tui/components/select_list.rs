@@ -1,6 +1,9 @@
 use crate::tui::component::Component;
 use crate::tui::fuzzy::fuzzy_filter;
-use crate::tui::keys::{Key, matches_key};
+use crate::tui::keybindings::{
+    get_keybindings, ACTION_SELECT_CANCEL, ACTION_SELECT_CONFIRM, ACTION_SELECT_DOWN,
+    ACTION_SELECT_UP,
+};
 use crate::tui::util::truncate_to_width;
 use crossterm::event::KeyEvent;
 
@@ -238,17 +241,19 @@ impl Component for SelectList {
     }
 
     fn handle_input(&mut self, key: &KeyEvent) -> bool {
-        if matches_key(key, &Key::Up) {
+        let kb = get_keybindings();
+
+        if kb.matches(key, ACTION_SELECT_UP) {
             self.move_up();
             return true;
         }
 
-        if matches_key(key, &Key::Down) {
+        if kb.matches(key, ACTION_SELECT_DOWN) {
             self.move_down();
             return true;
         }
 
-        if matches_key(key, &Key::Enter) {
+        if kb.matches(key, ACTION_SELECT_CONFIRM) {
             let value = self.selected_item().map(|item| item.value.clone());
             if let Some(value) = value
                 && let Some(ref mut cb) = self.on_select
@@ -258,7 +263,7 @@ impl Component for SelectList {
             return true;
         }
 
-        if matches_key(key, &Key::Escape) {
+        if kb.matches(key, ACTION_SELECT_CANCEL) {
             if let Some(ref mut cb) = self.on_cancel {
                 cb();
             }
@@ -278,7 +283,7 @@ impl Component for SelectList {
                 return true;
             }
 
-            if matches_key(key, &Key::Backspace) {
+            if kb.matches(key, crate::tui::keybindings::ACTION_EDITOR_DELETE_CHAR_BACKWARD) {
                 self.search_query.pop();
                 self.apply_search();
                 return true;

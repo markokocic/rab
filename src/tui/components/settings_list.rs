@@ -3,7 +3,10 @@
 use crate::tui::component::Component;
 use crate::tui::components::input::Input;
 use crate::tui::fuzzy::fuzzy_filter;
-use crate::tui::keys::{Key, matches_key};
+use crate::tui::keybindings::{
+    get_keybindings, ACTION_SELECT_CANCEL, ACTION_SELECT_CONFIRM, ACTION_SELECT_DOWN,
+    ACTION_SELECT_UP,
+};
 use crate::tui::util::{truncate_to_width, wrap_text_with_ansi};
 use crossterm::event::KeyEvent;
 
@@ -247,9 +250,11 @@ impl Component for SettingsList {
     }
 
     fn handle_input(&mut self, key: &KeyEvent) -> bool {
+        let kb = get_keybindings();
+
         // Search input handling
         if self.search_active {
-            if matches_key(key, &Key::Down) || matches_key(key, &Key::Up) {
+            if kb.matches(key, ACTION_SELECT_DOWN) || kb.matches(key, ACTION_SELECT_UP) {
                 // Move focus from search to list
                 self.search_active = false;
                 return self.handle_input(key);
@@ -259,22 +264,22 @@ impl Component for SettingsList {
             return true;
         }
 
-        if matches_key(key, &Key::Up) {
+        if kb.matches(key, ACTION_SELECT_UP) {
             self.move_up();
             return true;
         }
 
-        if matches_key(key, &Key::Down) {
+        if kb.matches(key, ACTION_SELECT_DOWN) {
             self.move_down();
             return true;
         }
 
-        if matches_key(key, &Key::Enter) || matches_key(key, &Key::Space) {
+        if kb.matches(key, ACTION_SELECT_CONFIRM) || matches!(key.code, crossterm::event::KeyCode::Char(' ')) {
             self.cycle_value();
             return true;
         }
 
-        if matches_key(key, &Key::Escape) {
+        if kb.matches(key, ACTION_SELECT_CANCEL) {
             if let Some(ref mut cb) = self.on_cancel {
                 cb();
             }
@@ -284,9 +289,7 @@ impl Component for SettingsList {
         // If search is enabled, any printable char activates search
         if self.enable_search
             && let crossterm::event::KeyCode::Char(_) = key.code
-            && !key
-                .modifiers
-                .contains(crossterm::event::KeyModifiers::CONTROL)
+            && !key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL)
             && !key.modifiers.contains(crossterm::event::KeyModifiers::ALT)
         {
             self.search_active = true;

@@ -2,7 +2,16 @@
 
 use crate::tui::component::Component;
 use crate::tui::focusable::{CURSOR_MARKER, Focusable};
-use crate::tui::keys::{Key, is_printable, key_event_to_string, matches_key};
+use crate::tui::keys::key_event_to_string;
+use crate::tui::keybindings::{
+    get_keybindings, ACTION_EDITOR_CURSOR_LINE_END, ACTION_EDITOR_CURSOR_LINE_START,
+    ACTION_EDITOR_CURSOR_LEFT, ACTION_EDITOR_CURSOR_RIGHT, ACTION_EDITOR_CURSOR_WORD_LEFT,
+    ACTION_EDITOR_CURSOR_WORD_RIGHT, ACTION_EDITOR_DELETE_CHAR_BACKWARD,
+    ACTION_EDITOR_DELETE_CHAR_FORWARD, ACTION_EDITOR_DELETE_TO_LINE_END,
+    ACTION_EDITOR_DELETE_TO_LINE_START, ACTION_EDITOR_DELETE_WORD_BACKWARD,
+    ACTION_EDITOR_DELETE_WORD_FORWARD, ACTION_EDITOR_UNDO, ACTION_EDITOR_YANK,
+    ACTION_EDITOR_YANK_POP, ACTION_INPUT_SUBMIT, ACTION_SELECT_CANCEL,
+};
 use crate::tui::kill_ring::KillRing;
 use crate::tui::undo_stack::UndoStack;
 use crate::tui::util::{slice_by_column, visible_width};
@@ -297,8 +306,10 @@ impl Component for Input {
     }
 
     fn handle_input(&mut self, key: &KeyEvent) -> bool {
+        let kb = get_keybindings();
+
         // Printable characters
-        if is_printable(key)
+        if crate::tui::keys::is_printable(key)
             && let Some(s) = key_event_to_string(key)
         {
             self.insert_text(&s);
@@ -308,7 +319,7 @@ impl Component for Input {
             return true;
         }
 
-        if matches_key(key, &Key::Enter) {
+        if kb.matches(key, ACTION_INPUT_SUBMIT) {
             if let Some(ref mut cb) = self.on_submit {
                 let value = std::mem::take(&mut self.value);
                 self.cursor = 0;
@@ -318,14 +329,14 @@ impl Component for Input {
             return true;
         }
 
-        if matches_key(key, &Key::Escape) {
+        if kb.matches(key, ACTION_SELECT_CANCEL) {
             if let Some(ref mut cb) = self.on_escape {
                 cb();
             }
             return true;
         }
 
-        if matches_key(key, &Key::Backspace) {
+        if kb.matches(key, ACTION_EDITOR_DELETE_CHAR_BACKWARD) {
             self.delete_before_cursor();
             if let Some(ref mut cb) = self.on_change {
                 cb(&self.value);
@@ -333,7 +344,7 @@ impl Component for Input {
             return true;
         }
 
-        if matches_key(key, &Key::Delete) {
+        if kb.matches(key, ACTION_EDITOR_DELETE_CHAR_FORWARD) {
             self.delete_after_cursor();
             if let Some(ref mut cb) = self.on_change {
                 cb(&self.value);
@@ -341,48 +352,28 @@ impl Component for Input {
             return true;
         }
 
-        if matches_key(key, &Key::Left) {
+        if kb.matches(key, ACTION_EDITOR_CURSOR_LEFT) {
             self.move_cursor_left();
             return true;
         }
 
-        if matches_key(key, &Key::Right) {
+        if kb.matches(key, ACTION_EDITOR_CURSOR_RIGHT) {
             self.move_cursor_right();
             return true;
         }
 
-        if matches_key(key, &Key::Home) {
+        if kb.matches(key, ACTION_EDITOR_CURSOR_LINE_START) {
             self.move_to_start();
             return true;
         }
 
-        if matches_key(key, &Key::End) {
+        if kb.matches(key, ACTION_EDITOR_CURSOR_LINE_END) {
             self.move_to_end();
             return true;
         }
 
-        // Ctrl+key combinations
-        if matches_key(key, &Key::Ctrl('b')) {
-            self.move_cursor_left();
-            return true;
-        }
-
-        if matches_key(key, &Key::Ctrl('f')) {
-            self.move_cursor_right();
-            return true;
-        }
-
-        if matches_key(key, &Key::Ctrl('a')) {
-            self.move_to_start();
-            return true;
-        }
-
-        if matches_key(key, &Key::Ctrl('e')) {
-            self.move_to_end();
-            return true;
-        }
-
-        if matches_key(key, &Key::Ctrl('w')) {
+        // ── Kill operations ──
+        if kb.matches(key, ACTION_EDITOR_DELETE_WORD_BACKWARD) {
             self.kill_word_backward();
             if let Some(ref mut cb) = self.on_change {
                 cb(&self.value);
@@ -390,7 +381,7 @@ impl Component for Input {
             return true;
         }
 
-        if matches_key(key, &Key::Ctrl('u')) {
+        if kb.matches(key, ACTION_EDITOR_DELETE_TO_LINE_START) {
             self.kill_to_start();
             if let Some(ref mut cb) = self.on_change {
                 cb(&self.value);
@@ -398,7 +389,7 @@ impl Component for Input {
             return true;
         }
 
-        if matches_key(key, &Key::Ctrl('k')) {
+        if kb.matches(key, ACTION_EDITOR_DELETE_TO_LINE_END) {
             self.kill_to_end();
             if let Some(ref mut cb) = self.on_change {
                 cb(&self.value);
@@ -406,7 +397,7 @@ impl Component for Input {
             return true;
         }
 
-        if matches_key(key, &Key::Ctrl('y')) {
+        if kb.matches(key, ACTION_EDITOR_YANK) {
             self.yank();
             if let Some(ref mut cb) = self.on_change {
                 cb(&self.value);
@@ -414,7 +405,7 @@ impl Component for Input {
             return true;
         }
 
-        if matches_key(key, &Key::Alt('y')) {
+        if kb.matches(key, ACTION_EDITOR_YANK_POP) {
             self.yank_pop();
             if let Some(ref mut cb) = self.on_change {
                 cb(&self.value);
@@ -422,7 +413,7 @@ impl Component for Input {
             return true;
         }
 
-        if matches_key(key, &Key::Ctrl('z')) {
+        if kb.matches(key, ACTION_EDITOR_UNDO) {
             self.undo();
             if let Some(ref mut cb) = self.on_change {
                 cb(&self.value);
@@ -430,7 +421,7 @@ impl Component for Input {
             return true;
         }
 
-        if matches_key(key, &Key::Alt('d')) {
+        if kb.matches(key, ACTION_EDITOR_DELETE_WORD_FORWARD) {
             self.kill_word_forward();
             if let Some(ref mut cb) = self.on_change {
                 cb(&self.value);
@@ -438,13 +429,13 @@ impl Component for Input {
             return true;
         }
 
-        // Ctrl+Left / Ctrl+Right for word movement
-        if matches_key(key, &Key::CtrlLeft) {
+        // ── Word movement ──
+        if kb.matches(key, ACTION_EDITOR_CURSOR_WORD_LEFT) {
             self.cursor = find_word_backward(&self.value, self.cursor);
             return true;
         }
 
-        if matches_key(key, &Key::CtrlRight) {
+        if kb.matches(key, ACTION_EDITOR_CURSOR_WORD_RIGHT) {
             self.cursor = find_word_forward(&self.value, self.cursor);
             return true;
         }
