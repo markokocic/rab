@@ -90,18 +90,16 @@ fn spawn_bash_command(
     }
 }
 
-/// Format the final bash execution result matching pi's bashExecutionToText.
+/// Format the final bash execution result, matching pi's bash tool output format.
 ///
-/// Format:
-///   Ran `command`
-///   ```text
-///   output
-///   ```
-///   (or (no output) if empty)
-///   (if non-zero exit) Command exited with code N
-///   (if truncated) [Output truncated. Full output: path]
+/// Pi's bash tool (LLM-called) returns raw output, not the `bashExecutionToText` format.
+/// - Non-empty output → raw output (no Ran prefix, no backtick fences)
+/// - Empty output → "(no output)"
+/// - Truncated → raw output + `\n\n[Showing lines X-Y of Z... Full output: path]`
+/// - Non-zero exit → returned as Err with output + `\n\nCommand exited with code N`
+/// - Cancelled → returned as Err with output + `\n\nCommand aborted`
 fn finish_bash_execution(
-    command: &str,
+    _command: &str,
     combined: &str,
     exit_code: i32,
     cancelled: bool,
@@ -111,23 +109,14 @@ fn finish_bash_execution(
     // Apply tail truncation (pi-style: keep last N lines/bytes)
     let trunc = truncate_tail(combined, DEFAULT_MAX_LINES, DEFAULT_MAX_BYTES);
 
-    let mut result_text = format!("Ran `{}`\n", command);
-
-    // Output in code block (or (no output) if empty)
-    if !trunc.content.is_empty() {
-        result_text.push_str(&format!("```\n{}\n```", trunc.content));
+    // Build output text: raw output or (no output)
+    let mut result_text = if trunc.content.is_empty() {
+        "(no output)".to_string()
     } else {
-        result_text.push_str("(no output)");
-    }
+        trunc.content.clone()
+    };
 
-    // Status suffix (matching pi order: cancelled overrides exit code)
-    if cancelled {
-        result_text.push_str("\n\n(command cancelled)");
-    } else if exit_code != 0 {
-        result_text.push_str(&format!("\n\nCommand exited with code {}", exit_code));
-    }
-
-    // Truncation notice (matching pi)
+    // Truncation notice (matching pi: appended to text, not in details)
     if trunc.truncated {
         let tmp_dir = std::env::temp_dir().join("rab-bash");
         let _ = std::fs::create_dir_all(&tmp_dir);
@@ -138,22 +127,72 @@ fn finish_bash_execution(
             None
         };
 
-        if let Some(ref path) = saved {
-            result_text.push_str(&format!(
-                "\n\n[Output truncated. Full output: {}]",
-                path.display()
-            ));
+        let start_line = trunc.total_lines - trunc.output_lines + 1;
+        let end_line = trunc.total_lines;
+
+        let notice = if trunc.truncated_by == "lines" {
+            format!(
+                "\n\n[Showing lines {}-{} of {}. Full output: {}]",
+                start_line,
+                end_line,
+                trunc.total_lines,
+                saved
+                    .as_ref()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_default()
+            )
         } else {
-            result_text.push_str("\n\n[Output truncated.]");
-        }
+            format!(
+                "\n\n[Showing lines {}-{} of {} ({} limit). Full output: {}]",
+                start_line,
+                end_line,
+                trunc.total_lines,
+                format_size(DEFAULT_MAX_BYTES),
+                saved
+                    .as_ref()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_default()
+            )
+        };
+        result_text.push_str(&notice);
     }
 
-    // Send final update
+    // Send final update (before error conversion, so UI shows the output)
     if let Some(ref tx) = on_update {
         let _ = tx.send(ToolOutput::ok(result_text.clone()));
     }
 
+    // Error cases: return as Err with output + status (matching pi)
+    if cancelled {
+        let err_msg = if result_text.is_empty() || result_text == "(no output)" {
+            "Command aborted".to_string()
+        } else {
+            format!("{}\n\nCommand aborted", result_text)
+        };
+        return Err(anyhow::anyhow!("{}", err_msg));
+    }
+
+    if exit_code != 0 {
+        let err_msg = if result_text.is_empty() || result_text == "(no output)" {
+            format!("Command exited with code {}", exit_code)
+        } else {
+            format!("{}\n\nCommand exited with code {}", result_text, exit_code)
+        };
+        return Err(anyhow::anyhow!("{}", err_msg));
+    }
+
     Ok(ToolOutput::ok(result_text))
+}
+
+/// Format bytes as a human-readable size string, matching pi's format.
+fn format_size(bytes: usize) -> String {
+    if bytes < 1024 {
+        format!("{}B", bytes)
+    } else if bytes < 1024 * 1024 {
+        format!("{:.1}KB", bytes as f64 / 1024.0)
+    } else {
+        format!("{:.1}MB", bytes as f64 / (1024.0 * 1024.0))
+    }
 }
 
 /// Truncation result for tail-based truncation (keep last N lines/bytes).
@@ -566,40 +605,34 @@ mod tests {
     #[tokio::test]
     async fn exit_code_nonzero() {
         let tool = make_tool();
-        let output = tool
+        let result = tool
             .execute(
                 "id".into(),
                 serde_json::json!({"command": "exit 42"}),
                 Cancel::new(),
                 None,
             )
-            .await
-            .unwrap();
-        assert!(
-            output.content.contains("exited with code 42"),
-            "got: {}",
-            output.content
-        );
+            .await;
+        assert!(result.is_err(), "non-zero exit should return error");
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("exited with code 42"), "got: {}", err);
     }
 
     #[tokio::test]
     async fn exit_code_with_output() {
         let tool = make_tool();
-        let output = tool
+        let result = tool
             .execute(
                 "id".into(),
                 serde_json::json!({"command": "echo before && exit 1"}),
                 Cancel::new(),
                 None,
             )
-            .await
-            .unwrap();
-        assert!(output.content.contains("before"), "got: {}", output.content);
-        assert!(
-            output.content.contains("exited with code 1"),
-            "got: {}",
-            output.content
-        );
+            .await;
+        assert!(result.is_err(), "non-zero exit should return error");
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("before"), "got: {}", err);
+        assert!(err.contains("exited with code 1"), "got: {}", err);
     }
 
     #[tokio::test]
@@ -823,7 +856,7 @@ mod tests {
             .await
             .unwrap();
         assert!(
-            output.content.contains("Output truncated"),
+            output.content.contains("Showing lines"),
             "got: {}",
             output.content
         );

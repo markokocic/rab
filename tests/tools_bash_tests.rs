@@ -72,16 +72,17 @@ async fn returns_error_on_nonzero_exit() {
     let tools = ext.tools();
     let tool = &tools[0];
 
-    let output = tool
+    let result = tool
         .execute(
             "id".into(),
             serde_json::json!({"command": "exit 1"}),
             Cancel::new(),
             None,
         )
-        .await
-        .unwrap();
-    assert!(output.content.contains("exit code") || output.content.contains("exit"));
+        .await;
+    assert!(result.is_err(), "non-zero exit should return error");
+    let err = result.unwrap_err().to_string();
+    assert!(err.contains("exit code") || err.contains("exit"));
 }
 
 #[tokio::test]
