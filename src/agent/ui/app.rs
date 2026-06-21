@@ -777,6 +777,11 @@ fn submit_message(app: &mut App, message: String) {
     app.scroll_offset = 0;
     let trimmed = message.trim().to_string();
 
+    // Don't submit empty messages (pi-style)
+    if trimmed.is_empty() {
+        return;
+    }
+
     // Handle /skill:name [args] expansion (pi-style: before command dispatch)
     if trimmed.starts_with("/skill:") {
         let expanded = crate::agent::skills::expand_skill_command(&trimmed, &app.skills);
