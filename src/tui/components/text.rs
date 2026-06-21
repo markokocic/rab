@@ -111,7 +111,7 @@ mod tests {
     fn test_basic_render() {
         let text = Text::new("hello", 1, 0, None);
         let lines = text.render(20);
-        assert!(lines.len() > 0);
+        assert!(!lines.is_empty());
         assert!(lines[0].contains("hello"));
     }
 

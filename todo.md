@@ -4,7 +4,7 @@
 - [ ] check tool execution modes in pi, parallel, sequence, ... and compare with rab
 
 ## chat editor
-- [ ] check if pi have separate editor and chat editor components. Where are they defined Does rab do the same?
+- [x] check if pi have separate editor and chat editor components. Where are they defined Does rab do the same? — rab mirrors pi: `Editor` (core tui) + `ChatEditor` (app wrapper, key dispatch via `InputAction` enum)
 - [ ] file autocomplete
 
 ## Slash command autocomplete

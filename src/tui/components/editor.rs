@@ -1382,7 +1382,7 @@ mod tests {
         editor.cursor_col = text.len();
         let vl = layout_text(&editor.lines, 10, editor.cursor_line, editor.cursor_col);
         assert!(
-            vl.last().map_or(false, |v| v.has_cursor),
+            vl.last().is_some_and(|v| v.has_cursor),
             "Cursor at end should be in last visual line"
         );
     }

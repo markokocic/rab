@@ -320,10 +320,6 @@ pub fn fmt_tokens(count: f64) -> String {
 mod tests {
     use super::*;
 
-    fn setup_theme() {
-        crate::agent::ui::theme::init_theme(Some("dark"), false);
-    }
-
     fn current_theme() -> crate::agent::ui::theme::RabTheme {
         crate::agent::ui::theme::current_theme().clone()
     }

@@ -225,8 +225,7 @@ mod tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     fn make_editor() -> ChatEditor {
-        let theme = NoopTheme::default();
-        ChatEditor::new(&theme, std::env::temp_dir().into())
+        ChatEditor::new(&NoopTheme, std::env::temp_dir())
     }
 
     fn char_key(c: char) -> KeyEvent {

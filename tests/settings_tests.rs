@@ -11,6 +11,12 @@ fn read_file(path: &std::path::Path) -> String {
     std::fs::read_to_string(path).unwrap()
 }
 
+/// Extract --model value from CLI args (matches main.rs logic).
+fn resolve_model_override(args: &[&str]) -> Option<String> {
+    let pos = args.iter().position(|a| a == &"--model")?;
+    args.get(pos + 1).map(|s| s.to_string())
+}
+
 fn tmp_dir() -> std::path::PathBuf {
     let d = std::env::temp_dir().join(format!("rab-test-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&d).unwrap();
@@ -205,9 +211,12 @@ fn save_writes_hide_thinking_block() {
     let global = tmp.join("global.json");
     write_file(&global, r#"{}"#);
 
-    let mut s = Settings::default();
-    s.hide_thinking = Some(true);
-    s.save_to(global.clone()).unwrap();
+    Settings {
+        hide_thinking: Some(true),
+        ..Default::default()
+    }
+    .save_to(global.clone())
+    .unwrap();
 
     let content = read_file(&global);
     assert!(content.contains(r#"hideThinkingBlock"#));
@@ -220,9 +229,12 @@ fn save_writes_collapse_tool_output() {
     let global = tmp.join("global.json");
     write_file(&global, r#"{}"#);
 
-    let mut s = Settings::default();
-    s.collapse_tool_output = Some(true);
-    s.save_to(global.clone()).unwrap();
+    Settings {
+        collapse_tool_output: Some(true),
+        ..Default::default()
+    }
+    .save_to(global.clone())
+    .unwrap();
 
     let content = read_file(&global);
     assert!(content.contains(r#"collapseToolOutput"#));
@@ -276,9 +288,12 @@ fn model_save_persists_default_model() {
     let global = tmp.join("global.json");
     write_file(&global, r#"{}"#);
 
-    let mut s = Settings::default();
-    s.default_model = Some("deepseek-v4-pro".into());
-    s.save_to(global.clone()).unwrap();
+    Settings {
+        default_model: Some("deepseek-v4-pro".into()),
+        ..Default::default()
+    }
+    .save_to(global.clone())
+    .unwrap();
 
     let content = read_file(&global);
     assert!(content.contains(r#"defaultModel"#));
@@ -290,9 +305,12 @@ fn model_save_roundtrip() {
     let tmp = tmp_dir();
     let global = tmp.join("global.json");
 
-    let mut s = Settings::default();
-    s.default_model = Some("deepseek-v4-flash".into());
-    s.save_to(global.clone()).unwrap();
+    Settings {
+        default_model: Some("deepseek-v4-flash".into()),
+        ..Default::default()
+    }
+    .save_to(global.clone())
+    .unwrap();
 
     let loaded = Settings::load_from(global, &tmp).unwrap();
     assert_eq!(loaded.model(), "deepseek-v4-flash");
@@ -306,8 +324,9 @@ fn model_override_takes_precedence_over_settings() {
     write_file(&global, r#"{"defaultModel": "deepseek-v4-flash"}"#);
 
     let settings = Settings::load_from(global.clone(), &tmp).unwrap();
-    let model_override: Option<String> = Some("deepseek-v4-pro".into());
-    let model = model_override.unwrap_or_else(|| settings.model().to_string());
+    // Simulate CLI arg: --model=deepseek-v4-pro overrides settings
+    let model = resolve_model_override(&["--model", "deepseek-v4-pro"])
+        .unwrap_or_else(|| settings.model().to_string());
 
     assert_eq!(model, "deepseek-v4-pro");
     // Settings still has the original value
@@ -321,8 +340,7 @@ fn model_loads_from_settings_when_no_override() {
     write_file(&global, r#"{"defaultModel": "deepseek-v4-pro"}"#);
 
     let settings = Settings::load_from(global.clone(), &tmp).unwrap();
-    let model_override: Option<String> = None;
-    let model = model_override.unwrap_or_else(|| settings.model().to_string());
+    let model = settings.model().to_string();
 
     assert_eq!(model, "deepseek-v4-pro");
 }

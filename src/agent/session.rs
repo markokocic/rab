@@ -1111,7 +1111,7 @@ mod tests {
         match parsed {
             SessionEntry::CustomMessage(e) => {
                 assert_eq!(e.custom_type, "my_extension");
-                assert_eq!(e.display, true);
+                assert!(e.display);
             }
             _ => panic!("Expected CustomMessage variant"),
         }
@@ -1891,7 +1891,7 @@ mod tests {
         let mut content = std::fs::read_to_string(&file_path).unwrap();
         content.push_str("this is garbage\n");
         content.push_str("{incomplete json\n");
-        content.push_str("\n"); // blank line
+        content.push('\n'); // blank line
         std::fs::write(&file_path, &content).unwrap();
 
         // Open — valid entries should be loaded, garbage skipped
