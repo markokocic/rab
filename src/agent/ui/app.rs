@@ -8,10 +8,9 @@ use crate::agent::provider::{Provider, ToolDef};
 use crate::agent::session::SessionManager;
 use crate::agent::types::{AgentMessage, Usage};
 use crate::agent::ui::chat_editor::{ChatEditor, InputAction};
-use crate::agent::ui::footer::Footer;
-use crate::agent::ui::help::HelpOverlay;
-use crate::agent::ui::messages::{DisplayMsg, render_messages, session_messages_to_display};
 use crate::agent::ui::model_selector::ModelSelector;
+use crate::agent::ui::footer::Footer;
+use crate::agent::ui::messages::{DisplayMsg, render_messages, session_messages_to_display};
 use crate::agent::ui::theme::RabTheme;
 use crate::agent::ui::working::WorkingIndicator;
 use crate::agent::{AgentEvent, LoopConfig, run_agent_loop};
@@ -82,12 +81,6 @@ pub struct App {
     hide_thinking: bool,
     collapse_tool_output: bool,
 
-    /// Overlay states.
-    show_help: bool,
-    help_overlay: HelpOverlay,
-    show_model_selector: bool,
-    model_selector: Option<ModelSelector>,
-
     /// Exit flag.
     should_quit: bool,
 
@@ -148,9 +141,6 @@ impl App {
         footer.set_git_branch(config.git_branch.clone());
         footer.set_model(&config.model);
 
-        let mut help_overlay = HelpOverlay::new(&theme);
-        help_overlay.set_commands(commands.clone());
-
         // Load session messages
         let context = session.build_session_context();
         let history_messages = context.messages.clone();
@@ -204,10 +194,7 @@ impl App {
             pending_thinking: None,
             hide_thinking: config.hide_thinking,
             collapse_tool_output: config.collapse_tool_output,
-            show_help: false,
-            help_overlay,
-            show_model_selector: false,
-            model_selector: None,
+
             should_quit: false,
             last_usage: None,
             agent_abort: None,
@@ -261,7 +248,7 @@ pub async fn run(config: AppConfig, session: SessionManager) -> anyhow::Result<(
         if let Some(key) = terminal::poll_key_event(Some(timeout))? {
             // TUI overlay routing first (overlays get first crack at input)
             if !tui.route_input(&key) {
-                handle_input(&mut app, &key);
+                handle_input(&mut app, &mut tui, &key);
             }
             dirty = true;
         }
@@ -317,17 +304,8 @@ pub async fn run(config: AppConfig, session: SessionManager) -> anyhow::Result<(
 fn compose_ui(app: &mut App, width: usize, _height: usize) -> Vec<String> {
     let mut lines = Vec::new();
 
-    if app.show_help {
-        lines.extend(app.help_overlay.render(width));
-        return lines;
-    }
-
-    if app.show_model_selector {
-        if let Some(ref ms) = app.model_selector {
-            lines.extend(ms.render(width));
-        }
-        return lines;
-    }
+    // Note: overlays (help, model selector) are now handled via TUI.show_overlay().
+    // compose_ui always returns base content; TUI composites overlays on top.
 
     // ── Header (pi-style: logo + keybinding hints at top) ──
     let header = format!(
@@ -438,30 +416,16 @@ fn compose_ui(app: &mut App, width: usize, _height: usize) -> Vec<String> {
 
 /// Handle keyboard input. Mirrors pi's InteractiveMode key dispatch:
 ///
-/// 1. Overlay handling (help, model selector) — checked first, consumes all keys
+/// 1. Overlays handled via TUI.route_input — checked first in event loop
 /// 2. ChatEditor::handle_input checks app-level keys and returns InputAction
 /// 3. App.rs matches on InputAction to perform side effects
 ///
 /// This keeps text-editing logic in the Editor component (via ChatEditor)
 /// and app-level side effects (aborting agents, toggling settings, etc.) here.
-fn handle_input(app: &mut App, key: &KeyEvent) {
-    // ── Overlay handling ──
-    if app.show_help {
-        app.show_help = false;
-        return;
-    }
-
-    if app.show_model_selector {
-        if let Some(ref mut ms) = app.model_selector {
-            ms.handle_input(key);
-            if let Some(ref model) = ms.selected_model {
-                app.model = model.clone();
-                app.footer.set_model(model);
-                app.status_text = Some(format!("Model: {}", model.replace("opencode_go::", "")));
-            }
-            app.show_model_selector = false;
-            app.model_selector = None;
-        }
+fn handle_input(app: &mut App, tui: &mut TUI, key: &KeyEvent) {
+    // ── Check if any TUI overlay is active (help, model selector, etc.) ──
+    if tui.has_overlays() {
+        tui.pop_overlay();
         return;
     }
 
@@ -487,7 +451,7 @@ fn handle_input(app: &mut App, key: &KeyEvent) {
             app.should_quit = true;
         }
         InputAction::ModelSelector => {
-            open_model_selector(app);
+            open_model_selector(app, tui);
         }
         InputAction::ToggleThinking => {
             app.hide_thinking = !app.hide_thinking;
@@ -521,7 +485,7 @@ fn handle_input(app: &mut App, key: &KeyEvent) {
                 }));
         }
         InputAction::Help => {
-            app.show_help = true;
+            show_help_overlay(app, tui);
         }
         InputAction::Submit(text) => {
             submit_message(app, text);
@@ -554,11 +518,17 @@ fn interrupt_streaming(app: &mut App) {
 }
 
 /// Open the model selector overlay.
-fn open_model_selector(app: &mut App) {
+fn open_model_selector(app: &mut App, tui: &mut TUI) {
     let models = app.available_models.clone();
     let current = app.model.clone();
-    app.model_selector = Some(ModelSelector::new(models, &current, &app.theme));
-    app.show_model_selector = true;
+    let selector = ModelSelector::new(models, &current, &app.theme);
+    tui.show_overlay(Box::new(selector), Default::default());
+}
+
+fn show_help_overlay(app: &mut App, tui: &mut TUI) {
+    let mut overlay = crate::agent::ui::help::HelpOverlay::new(&app.theme);
+    overlay.set_commands(app.commands.clone());
+    tui.show_overlay(Box::new(overlay), Default::default());
 }
 
 /// Submit or queue a user message. When streaming, queues instead of spawning
@@ -579,8 +549,9 @@ fn submit_message(app: &mut App, message: String) {
         return;
     }
 
-    // Handle /commands
+    // Handle /commands (need TUI from app for overlays)
     if trimmed.starts_with('/') {
+        // If TUI was stored on App, we'd use it here. For now, just handle basic commands.
         handle_slash_command(app, &trimmed);
         return;
     }
@@ -641,6 +612,8 @@ fn start_agent_loop(app: &mut App, message: String) {
 
 /// Handle slash commands.
 fn handle_slash_command(app: &mut App, input: &str) {
+    // Detect terminal size for overlay-like rendering
+    let (cols, _rows) = crossterm::terminal::size().unwrap_or((80, 24));
     let (cmd_name, args) = match input.split_once(' ') {
         Some((cmd, rest)) => (cmd.trim_start_matches('/'), rest),
         None => (input.trim_start_matches('/'), ""),
@@ -650,14 +623,21 @@ fn handle_slash_command(app: &mut App, input: &str) {
     if cmd_name == "model" || cmd_name.starts_with("mod") && args.is_empty() {
         let models = app.available_models.clone();
         let current = app.model.clone();
-        app.model_selector = Some(ModelSelector::new(models, &current, &app.theme));
-        app.show_model_selector = true;
+        let selector = ModelSelector::new(models, &current, &app.theme);
+        let lines = selector.render(cols as usize);
+        // Render the model selector inline (not as overlay from here)
+        // This is a stopgap until slash commands get TUI access
+        for line in lines {
+            app.messages.push(DisplayMsg::Info(line));
+        }
         return;
     }
 
     // /help
     if cmd_name == "help" || cmd_name == "h" {
-        app.show_help = true;
+        app.messages.push(DisplayMsg::Info(
+            "Help: Press F1 for keyboard shortcuts.".into(),
+        ));
         return;
     }
 
@@ -1397,8 +1377,10 @@ mod tests {
         app.is_streaming = true;
 
         // Simulate Ctrl+C
+        let mut test_tui = crate::tui::TUI::new();
         handle_input(
             &mut app,
+            &mut test_tui,
             &KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
         );
 

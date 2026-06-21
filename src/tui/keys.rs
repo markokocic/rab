@@ -1,4 +1,4 @@
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 // =============================================================================
 // Key ID string helpers — pi-compatible string-based key identifiers
@@ -211,6 +211,26 @@ fn matches_key_name(code: &KeyCode, key_name: &str) -> bool {
             c.eq_ignore_ascii_case(&key_char)
         }
         _ => false,
+    }
+}
+
+/// Check if a key event is a release event (Kitty keyboard protocol flag 2).
+pub fn is_key_release(event: &KeyEvent) -> bool {
+    event.kind == KeyEventKind::Release
+}
+
+/// Check if a key event is a repeat event (Kitty keyboard protocol flag 2).
+pub fn is_key_repeat(event: &KeyEvent) -> bool {
+    event.kind == KeyEventKind::Repeat
+}
+
+/// Decode a printable character from a key event.
+/// Since crossterm already decodes CSI-u sequences, this is equivalent to
+/// `key_event_to_string` for printable characters.
+pub fn decode_kitty_printable(event: &KeyEvent) -> Option<String> {
+    match event.code {
+        KeyCode::Char(c) if !event.modifiers.contains(KeyModifiers::CONTROL) && !event.modifiers.contains(KeyModifiers::ALT) => Some(c.to_string()),
+        _ => None,
     }
 }
 

@@ -11,6 +11,8 @@ use rab::builtin::{
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use rab::tui::keybindings::{init_keybindings, Keybindings};
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cwd = std::env::current_dir()?;
@@ -89,6 +91,18 @@ async fn main() -> anyhow::Result<()> {
     let settings = Settings::load(&cwd)?;
     let model = model_override.unwrap_or_else(|| settings.model().to_string());
     let auth = rab::auth::AuthStorage::load()?;
+
+    // Load custom keybindings from ~/.rab/keybindings.json, merging with defaults
+    let mut keybindings = Keybindings::with_defaults();
+    if let Some(home) = directories::BaseDirs::new().map(|d| d.home_dir().join(".rab").join("keybindings.json")) {
+        if home.exists() {
+            match Keybindings::load(&home) {
+                Ok(custom) => keybindings.merge(custom),
+                Err(e) => eprintln!("Warning: failed to load keybindings: {}", e),
+            }
+        }
+    }
+    init_keybindings(keybindings);
 
     // Session management
     let session_dir = session_dir_override.map(std::path::PathBuf::from);

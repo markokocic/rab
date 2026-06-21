@@ -33,7 +33,7 @@ pub use keybindings::{
     ACTION_INPUT_NEW_LINE, ACTION_INPUT_SUBMIT, ACTION_INPUT_TAB, ACTION_SELECT_CANCEL,
     ACTION_SELECT_CONFIRM, ACTION_SELECT_DOWN, ACTION_SELECT_UP,
 };
-pub use keys::{match_key_id, Key, matches_key};
+pub use keys::{decode_kitty_printable, is_key_release, is_key_repeat, match_key_id, Key, matches_key};
 pub use overlay::{
     OverlayAnchor, OverlayEntry, OverlayLayout, OverlayMargin, OverlayOptions, SizeValue,
 };

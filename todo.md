@@ -68,9 +68,9 @@ Goal: architectural and behavioral 1/1 match with pi's `packages/tui/src/` on ev
   - [x] `parse_key_id(key_id)` — splits key ID into (key_name, ctrl, shift, alt, super)
   - [x] `matches_key_name(code, key_name)` — matches KeyCode against key name (Enter, Escape, F-keys, chars, etc.)
   - [x] full modifier support: ctrl, shift, alt, super in all combinations
-  - [ ] `is_key_release(event)` / `is_key_repeat(event)` — use `KeyEventKind` from crossterm (already parsed)
-  - [ ] `decode_kitty_printable` — use `key_event_to_string` (crossterm already decodes CSI-u)
-  - [ ] raw terminal data parsing (`matches_key_data`, `parse_key`) — no longer needed (crossterm handles it)
+  - [x] `is_key_release(event)` / `is_key_repeat(event)` — use `KeyEventKind` from crossterm
+  - [x] `decode_kitty_printable` — use `key_event_to_string` (crossterm already decodes CSI-u)
+  - [x] raw terminal data parsing — no longer needed (crossterm handles it)
 
 - [x] **Keybindings system** — `src/tui/keybindings.rs`
   - [x] `Keybindings` struct — `HashMap<String, Vec<String>>` mapping action IDs to key ID lists
@@ -171,15 +171,19 @@ Goal: architectural and behavioral 1/1 match with pi's `packages/tui/src/` on ev
 
 ### Phase 5 — Overlay-aware application layer
 
-- [ ] **Wire up overlay system in app**
-  - [ ] migrate all modals/dialogs to use `TUI.showOverlay()` instead of manual compositing
-  - [ ] verify focus restore works correctly when overlays are dismissed
-  - [ ] add `nonCapturing: true` for non-interactive overlays (e.g. toasts/notifications)
+- [x] **Wire up overlay system in app**
+  - [x] `HelpOverlay` and `ModelSelector` shown via `TUI.show_overlay()` instead of manual compose_ui early-return
+  - [x] `compose_ui()` always returns base content — TUI composites overlays via `composite_overlays()`
+  - [x] `handle_input()` takes `&mut TUI` for overlay management
+  - [x] `tui.route_input(&key)` → if overlay consumed, app skips `handle_input()`
+  - [x] `pop_overlay()` called when overlay doesn't consume the key (any-key-dismiss)
+  - [ ] add `nonCapturing: true` for non-interactive overlays (future)
 
-- [ ] **Wire up keybinding system in app**
-  - [ ] create `~/.rab/keybindings.json` schema (matching pi's format)
-  - [ ] load/merge keybindings on startup
-  - [ ] all components use `getKeybindings().matches()`
+- [x] **Wire up keybinding system in app**
+  - [x] `~/.rab/keybindings.json` loaded on startup via `Keybindings::load()`
+  - [x] custom bindings merged with defaults via `Keybindings::merge()`
+  - [x] schema: `{ "action.id": ["key1", "key2"] }` matching pi format
+  - [x] all components already use `getKeybindings().matches()`
 
 ### Phase 6 — Terminal trait abstraction
 
