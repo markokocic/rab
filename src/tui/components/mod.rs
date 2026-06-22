@@ -1,5 +1,6 @@
 pub mod r#box;
 pub mod cancellable_loader;
+pub mod diff;
 pub mod dynamic_lines;
 pub mod editor;
 pub mod input;

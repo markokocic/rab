@@ -1265,7 +1265,33 @@ fn handle_agent_event(app: &mut App, event: AgentEvent) {
             if let Some(weak) = app.pending_tools.remove(&id) {
                 // Update existing ToolExecComponent
                 if let Some(comp) = weak.upgrade() {
-                    comp.borrow_mut().set_result(&content, is_error);
+                    // For edit tool results, apply diff rendering
+                    if name == "edit" {
+                        // Extract diff from ```diff ... ``` block
+                        if let Some(start) = content.find("```diff\n") {
+                            let after_marker = &content[start + 8..];
+                            if let Some(end) = after_marker.find("```") {
+                                let diff_text = &after_marker[..end];
+                                let has_diff = diff_text.lines().any(|l| {
+                                    l.starts_with('-') || l.starts_with('+') || l.starts_with(' ')
+                                });
+                                if has_diff {
+                                    let rendered =
+                                        crate::tui::components::diff::render_diff(diff_text);
+                                    let styled_diff = rendered.join("\n");
+                                    comp.borrow_mut().set_result(&styled_diff, is_error);
+                                } else {
+                                    comp.borrow_mut().set_result(&content, is_error);
+                                }
+                            } else {
+                                comp.borrow_mut().set_result(&content, is_error);
+                            }
+                        } else {
+                            comp.borrow_mut().set_result(&content, is_error);
+                        }
+                    } else {
+                        comp.borrow_mut().set_result(&content, is_error);
+                    };
                 }
             } else if name == "bash" {
                 // Bash result without preceding ToolCall (e.g. from bang command):
