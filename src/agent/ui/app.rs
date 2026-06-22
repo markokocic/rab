@@ -27,7 +27,9 @@ use crossterm::event::KeyEvent;
 use tokio::sync::mpsc;
 
 /// Thinking level cycle order (matching pi's thinking level enum).
-const THINKING_LEVELS: &[&str] = &["off", "low", "medium", "high", "xhigh"];
+/// Thinking level cycle order. Cycles from highest to lowest so the first
+/// press from the default (xhigh) goes to "high" (a step down), not to "off".
+const THINKING_LEVELS: &[&str] = &["xhigh", "high", "medium", "low", "off"];
 
 /// Configuration for the UI app.
 pub struct AppConfig {
@@ -2489,16 +2491,16 @@ mod tests {
         app.thinking_level = Some("off".into());
 
         handle_thinking_cycle(&mut app);
-        assert_eq!(app.thinking_level.as_deref(), Some("low"));
-
-        handle_thinking_cycle(&mut app);
-        assert_eq!(app.thinking_level.as_deref(), Some("medium"));
+        assert_eq!(app.thinking_level.as_deref(), Some("xhigh"));
 
         handle_thinking_cycle(&mut app);
         assert_eq!(app.thinking_level.as_deref(), Some("high"));
 
         handle_thinking_cycle(&mut app);
-        assert_eq!(app.thinking_level.as_deref(), Some("xhigh"));
+        assert_eq!(app.thinking_level.as_deref(), Some("medium"));
+
+        handle_thinking_cycle(&mut app);
+        assert_eq!(app.thinking_level.as_deref(), Some("low"));
 
         handle_thinking_cycle(&mut app);
         assert_eq!(app.thinking_level.as_deref(), Some("off"));
