@@ -433,7 +433,7 @@ impl AgentTool for BashTool {
                 ));
             }
 
-            // Send streaming update
+            // Send streaming update (1s tick interval, matching pi)
             if let Some(ref tx) = on_update {
                 let out = combined.lock().await;
                 if !out.is_empty() {
@@ -464,8 +464,8 @@ impl AgentTool for BashTool {
                     );
                 }
                 Ok(None) => {
-                    // Still running, poll again soon
-                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    // Still running, poll again soon (1s tick, matching pi)
+                    tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
                 }
                 Err(_) => {
                     read_task.await.ok();
