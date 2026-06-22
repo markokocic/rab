@@ -69,7 +69,7 @@ impl AgentTool for WriteTool {
     }
 
     fn renderer(&self) -> Option<Box<dyn ToolRenderer>> {
-        Some(Box::new(WriteRenderer {}))
+        Some(Box::new(WriteRenderer::new()))
     }
 
     async fn execute(
@@ -142,7 +142,102 @@ impl AgentTool for WriteTool {
 
 /// Tool renderer for the `write` tool.
 /// Shows the file path and a content preview in the call, empty result on success.
-struct WriteRenderer {}
+/// Includes incremental caching for syntax-highlighted content.
+struct WriteRenderer {
+    /// Cache state using RwLock for thread safety.
+    cache: std::sync::RwLock<WriteCache>,
+}
+
+struct WriteCache {
+    /// Cache key: (content_hash, expanded, preview_lines_count)
+    key: Option<(u64, bool, usize)>,
+    /// Cached highlighted lines (without the leading \n prefix)
+    lines: Vec<String>,
+    /// Cached remaining count
+    remaining: usize,
+}
+
+impl WriteRenderer {
+    fn new() -> Self {
+        Self {
+            cache: std::sync::RwLock::new(WriteCache {
+                key: None,
+                lines: Vec::new(),
+                remaining: 0,
+            }),
+        }
+    }
+
+    /// Compute a hash of the content for cache invalidation.
+    fn content_hash(content: &str) -> u64 {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut hasher = DefaultHasher::new();
+        content.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    /// Get or compute highlighted lines, using cache when possible.
+    fn get_highlighted_lines(
+        &self,
+        content: &str,
+        path: &str,
+        expanded: bool,
+    ) -> (Vec<String>, usize) {
+        let hash = Self::content_hash(content);
+        let max_preview = if expanded { usize::MAX } else { 5 };
+        let content_lines: Vec<&str> = content.lines().collect();
+        let preview_count = content_lines.len().min(max_preview);
+        let remaining = content_lines.len().saturating_sub(preview_count);
+
+        let key = (hash, expanded, preview_count);
+
+        // Check cache (read lock)
+        {
+            let cache = self.cache.read().unwrap();
+            if let Some(ref cached_key) = cache.key
+                && *cached_key == key
+                && !cache.lines.is_empty()
+            {
+                return (cache.lines.clone(), cache.remaining);
+            }
+        }
+
+        // Compute highlighted lines
+        let display: Vec<&str> = content_lines.iter().copied().take(preview_count).collect();
+        let lang = if !path.is_empty() {
+            crate::tui::components::path_to_language(path)
+        } else {
+            None
+        };
+
+        let mut highlighted = Vec::new();
+
+        #[cfg(feature = "syntect")]
+        if let Some(lang) = lang {
+            let text = display.join("\n");
+            let hl = crate::tui::components::highlight_code(&text, Some(lang));
+            if !hl.is_empty() {
+                highlighted = hl;
+            }
+        }
+
+        // Fallback: no highlighting
+        if highlighted.is_empty() {
+            highlighted = display.iter().map(|l| l.to_string()).collect();
+        }
+
+        // Update cache (write lock)
+        {
+            let mut cache = self.cache.write().unwrap();
+            cache.key = Some(key);
+            cache.lines = highlighted.clone();
+            cache.remaining = remaining;
+        }
+
+        (highlighted, remaining)
+    }
+}
 
 impl ToolRenderer for WriteRenderer {
     fn render_call(
@@ -180,38 +275,8 @@ impl ToolRenderer for WriteRenderer {
 
         // Show content preview (first few lines) when not expanded
         if !content.is_empty() {
-            let max_preview = if ctx.expanded { usize::MAX } else { 5 };
-            let content_lines: Vec<&str> = content.lines().collect();
-            let display: Vec<&str> = content_lines.iter().copied().take(max_preview).collect();
-            let remaining = content_lines.len().saturating_sub(display.len());
+            let (display, remaining) = self.get_highlighted_lines(content, path, ctx.expanded);
 
-            // Syntax highlight if possible
-            let lang = if !path.is_empty() {
-                crate::tui::components::path_to_language(path)
-            } else {
-                None
-            };
-
-            #[cfg(feature = "syntect")]
-            if let Some(lang) = lang {
-                let text = display.join("\n");
-                let hl = crate::tui::components::highlight_code(&text, Some(lang));
-                if !hl.is_empty() {
-                    for line in hl {
-                        lines.push(format!("\n{}", theme.fg("toolOutput", &line)));
-                    }
-                } else {
-                    for line in &display {
-                        lines.push(format!("\n{}", theme.fg("toolOutput", line)));
-                    }
-                }
-            } else {
-                for line in &display {
-                    lines.push(format!("\n{}", theme.fg("toolOutput", line)));
-                }
-            }
-
-            #[cfg(not(feature = "syntect"))]
             for line in &display {
                 lines.push(format!("\n{}", theme.fg("toolOutput", line)));
             }
@@ -222,7 +287,7 @@ impl ToolRenderer for WriteRenderer {
                     &format!(
                         "... ({} more lines, {} total, {} to expand)",
                         remaining,
-                        content_lines.len(),
+                        content.lines().count(),
                         ctx.expand_key
                     ),
                 ));
