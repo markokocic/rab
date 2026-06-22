@@ -973,7 +973,26 @@ fn start_agent_loop(app: &mut App, message: String) {
     app.pending_text = None;
     app.pending_thinking = None;
 
+    // Ensure AgentEnd is always emitted, even on panic inside the spawned task.
+    // Without this, is_streaming would remain true forever, blocking new submissions.
     let handle = tokio::spawn(async move {
+        // Drop guard sends AgentEnd on scope exit (normal, error, or panic)
+        struct Guard<'a> {
+            tx: &'a mpsc::UnboundedSender<AgentEvent>,
+            sent: bool,
+        }
+        impl Drop for Guard<'_> {
+            fn drop(&mut self) {
+                if !self.sent {
+                    let _ = self.tx.send(AgentEvent::AgentEnd { messages: vec![] });
+                }
+            }
+        }
+        let mut guard = Guard {
+            tx: &tx,
+            sent: false,
+        };
+
         let config = LoopConfig {
             model: model.clone(),
             system_prompt,
@@ -987,17 +1006,22 @@ fn start_agent_loop(app: &mut App, message: String) {
         };
 
         let prompt = AgentMessage::user(message);
-        if let Err(e) = run_agent_loop(vec![prompt], history, &config, &*provider, &mut emit).await
-        {
-            // Emit error so app resets streaming state
-            emit(AgentEvent::ToolResult {
-                id: String::new(),
-                name: "error".into(),
-                content: format!("Error: {:#}", e),
-                compact: None,
-                is_error: true,
-            });
-            emit(AgentEvent::AgentEnd { messages: vec![] });
+        match run_agent_loop(vec![prompt], history, &config, &*provider, &mut emit).await {
+            Ok(_) => {
+                // AgentEnd already sent by run_agent_loop on success
+                guard.sent = true;
+            }
+            Err(e) => {
+                emit(AgentEvent::ToolResult {
+                    id: String::new(),
+                    name: "error".into(),
+                    content: format!("Error: {:#}", e),
+                    compact: None,
+                    is_error: true,
+                });
+                emit(AgentEvent::AgentEnd { messages: vec![] });
+                guard.sent = true;
+            }
         }
     });
     app.agent_abort = Some(handle.abort_handle());
@@ -1071,6 +1095,22 @@ fn handle_bang_command(app: &mut App, command: String) {
     app.footer.borrow_mut().set_streaming(true);
 
     let handle = tokio::spawn(async move {
+        struct Guard<'a> {
+            tx: &'a mpsc::UnboundedSender<AgentEvent>,
+            sent: bool,
+        }
+        impl Drop for Guard<'_> {
+            fn drop(&mut self) {
+                if !self.sent {
+                    let _ = self.tx.send(AgentEvent::AgentEnd { messages: vec![] });
+                }
+            }
+        }
+        let mut guard = Guard {
+            tx: &tx,
+            sent: false,
+        };
+
         let started = std::time::Instant::now();
         let mut child = match tokio::process::Command::new("sh")
             .arg("-c")
@@ -1093,6 +1133,7 @@ fn handle_bang_command(app: &mut App, command: String) {
                     compact: None,
                     is_error: true,
                 });
+                guard.sent = true;
                 let _ = tx.send(AgentEvent::AgentEnd { messages: vec![] });
                 return;
             }
@@ -1171,6 +1212,7 @@ fn handle_bang_command(app: &mut App, command: String) {
             compact: None,
             is_error,
         });
+        guard.sent = true;
         let _ = tx.send(AgentEvent::AgentEnd { messages: vec![] });
     });
     app.agent_abort = Some(handle.abort_handle());

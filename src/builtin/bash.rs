@@ -367,36 +367,34 @@ impl AgentTool for BashTool {
             let mut stderr_buf = vec![0u8; 4096];
             let mut stdout_reader = stdout_pipe;
             let mut stderr_reader = stderr_pipe;
+            let mut stdout_done = false;
+            let mut stderr_done = false;
             loop {
                 tokio::select! {
-                    result = stdout_reader.read(&mut stdout_buf) => {
+                    result = stdout_reader.read(&mut stdout_buf), if !stdout_done => {
                         match result {
-                            Ok(0) => break, // EOF on stdout
+                            Ok(0) => stdout_done = true,
                             Ok(n) => {
                                 let mut out = combined_clone.lock().await;
                                 out.push_str(&String::from_utf8_lossy(&stdout_buf[..n]));
                             }
-                            Err(_) => break,
+                            Err(_) => stdout_done = true,
                         }
                     }
-                    result = stderr_reader.read(&mut stderr_buf) => {
+                    result = stderr_reader.read(&mut stderr_buf), if !stderr_done => {
                         match result {
-                            Ok(0) => {}
+                            Ok(0) => stderr_done = true,
                             Ok(n) => {
                                 let mut out = combined_clone.lock().await;
                                 out.push_str(&String::from_utf8_lossy(&stderr_buf[..n]));
                             }
-                            Err(_) => {}
+                            Err(_) => stderr_done = true,
                         }
                     }
                 }
-            }
-            // Drain remaining stderr
-            let mut remaining = Vec::new();
-            let _ = stderr_reader.read_to_end(&mut remaining).await;
-            if !remaining.is_empty() {
-                let mut out = combined_clone.lock().await;
-                out.push_str(&String::from_utf8_lossy(&remaining));
+                if stdout_done && stderr_done {
+                    break;
+                }
             }
         });
 
