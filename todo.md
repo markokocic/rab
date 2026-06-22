@@ -1,4 +1,4 @@
-# Pi vs Rab — Message Rendering ✅ All Gaps Closed
+# Pi vs Rab - Message Rendering ✅ All Gaps Closed
 
 This document tracked gaps between pi's message rendering and rab's implementation.
 **All gaps have been closed.** Rab's rendering pipeline matches pi's architecture 1:1.
@@ -9,16 +9,16 @@ This document tracked gaps between pi's message rendering and rab's implementati
 TUI.render()
   └── root Container:
       ├── HeaderComponent (logo + expandable keybinding hints)
-      ├── chat_container (RefContainer — all messages as Components)
+      ├── chat_container (RefContainer - all messages as Components)
       │   ├── UserMessageComponent (Box + userMessageBg + markdown + OSC133)
       │   ├── RcRefCellComponent (streaming assistant message, updated in-place)
       │   │   └── AssistantMessageComponent (markdown + thinking blocks)
       │   ├── ToolExecComponent (bg transitions: pending→success/error)
-      │   │   ├── Per-tool formatting: read (docs/resource labels, syntax)
-      │   │   │                            bash ($ command, timeout, duration)
-      │   │   │                            write, edit (diff with intra-line highlight)
-      │   │   │                            ls (path + limit)
-      │   │   └── Truncation preview + syntax highlighting (read)
+      │   │   ├── Per-tool formatting via ToolRenderer: read (docs/resource labels, syntax)
+      │   │   │                                              bash ($ command, timeout, duration, truncation)
+      │   │   │                                              write (path + content preview, empty on success)
+      │   │   │                                              edit (renderShell: self, diff rendering)
+      │   │   └── Live duration from started_at for all tool calls
       │   ├── BashExecutionComponent (borders, spinner, streaming output)
       │   ├── InfoMessageComponent (dim text)
       │   └── ...
@@ -35,15 +35,15 @@ TUI.render()
 | Shared ownership | `RcRefCellComponent`, `RefContainer`, `RcToolExec` |
 | Streaming updates | `Weak<RefCell<AssistantMessageComponent>>` for in-place text/thinking |
 | Expand/collapse | `set_expanded()` on `Component` trait, global toggle via `handle_tools_expand()` |
-| Editor border color | `update_border_color()` — thinking level (`thinkingOff`..`thinkingXhigh`) or `bashMode` |
-| Spacers | `chat_add()` helper — adds `Spacer(1)` before each component when non-empty |
+| Editor border color | `update_border_color()` - thinking level (`thinkingOff`..`thinkingXhigh`) or `bashMode` |
+| Spacers | `chat_add()` helper - adds `Spacer(1)` before each component when non-empty |
 | OSC133 zones | `UserMessageComponent` + `AssistantMessageComponent` emit them in `render()` |
-| Per-tool formatting | `format_tool_call_header()` — bash (`$ command`), read (compact docs/resource), write, edit, ls |
-| Diff rendering | `render_diff()` — unified diff, colored +/lines, intra-line character-level inverse |
+| Per-tool formatting | `format_tool_call_header()` - bash (`$ command`), read (compact docs/resource), write, edit, ls |
+| Diff rendering | `render_diff()` - unified diff, colored +/lines, intra-line character-level inverse |
 | Syntax highlighting | syntect enabled by default, `highlight_code()` + `path_to_language()` |
-| Bash streaming | `AgentEvent::ToolProgress` — tokio async reads, progressive component updates |
+| Bash streaming | `AgentEvent::ToolProgress` - tokio async reads, progressive component updates |
 | Duration display | "Elapsed X.Xs" / "Took X.Xs" in BashExecutionComponent |
-| Error/abort | `AgentEvent::Aborted` — inline error text in streaming component |
+| Error/abort | `AgentEvent::Aborted` - inline error text in streaming component |
 | Write success | No output text, just bg transition (pending→success) |
 | Git branch | `refresh_git_branch()` on each `AgentStart` |
 | codeBlockIndent | Already in `MarkdownTheme` (default `"  "`) |
