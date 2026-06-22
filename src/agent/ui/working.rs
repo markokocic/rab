@@ -31,7 +31,7 @@ impl Default for IndicatorOptions {
     }
 }
 
-/// Loader shown during agent streaming — a spinner + message.
+/// Loader shown during agent streaming - a spinner + message.
 /// Mirrors pi's `Loader` component (spinner + "Working..." message).
 pub struct WorkingIndicator {
     options: IndicatorOptions,
@@ -104,7 +104,15 @@ impl Component for WorkingIndicator {
             return vec![];
         }
         let frame = &self.options.frames[self.frame % self.options.frames.len()];
-        let text = self.theme.accent(frame);
-        vec![text]
+        // Matches pi's Loader::updateDisplay(): colored spinner + space + colored message
+        // pi uses accent for spinner, muted for message.
+        // pi's Text paddingX=1 adds one space on each side.
+        let line = format!(
+            " {} {} ",
+            self.theme.accent(frame),
+            self.theme.muted(&self.message)
+        );
+        // pi's Loader.render() prepends a blank line: ["", " ⠋ Working... "]
+        vec![String::new(), line]
     }
 }

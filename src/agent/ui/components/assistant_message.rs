@@ -99,7 +99,7 @@ impl Component for AssistantMessageComponent {
             }
             if self.hide_thinking {
                 let theme = current_theme();
-                let label = theme.italic(&theme.fg("thinkingText", " Thinking…"));
+                let label = theme.italic(&theme.fg("thinkingText", " Thinking... "));
                 lines.push(label);
             } else {
                 let theme = current_theme();

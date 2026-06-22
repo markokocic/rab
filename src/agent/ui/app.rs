@@ -489,9 +489,9 @@ fn compose_ui(app: &mut App, width: usize) {
     {
         if app.hide_thinking {
             let content = format!(
-                " {}",
+                " {} ",
                 app.theme
-                    .italic(&app.theme.fg("thinking_text", " Thinking…"))
+                    .italic(&app.theme.fg("thinking_text", "Thinking..."))
             );
             let padded = crate::agent::ui::messages::pad_to_width(&content, width);
             pending_lines.push(app.theme.bg("thinking_bg", &padded));
@@ -532,15 +532,10 @@ fn compose_ui(app: &mut App, width: usize) {
     }
     app.queued_section.set_lines(queued_lines);
 
-    // ── Spacer/status line before editor ──
+    // ── Working indicator (pi-style: blank line + spinner before editor) ──
     let mut working_lines = Vec::new();
     let wl = app.working.render(width);
-    if !wl.is_empty() {
-        working_lines.extend(wl);
-    } else {
-        // Ensure at least one blank line before editor
-        working_lines.push(String::new());
-    }
+    working_lines.extend(wl);
     app.working_section.set_lines(working_lines);
 }
 
@@ -1206,21 +1201,21 @@ fn format_tool_call_header(name: &str, args: &serde_json::Value) -> String {
             let is_resource = path.ends_with("AGENTS.md") || path.ends_with("CLAUDE.md");
             if is_docs {
                 format!(
-                    "{} {} {}",
+                    "{} {}{}",
                     theme.fg("toolTitle", &theme.bold("read docs")),
                     path_disp,
                     range
                 )
             } else if is_resource {
                 format!(
-                    "{} {} {}",
+                    "{} {}{}",
                     theme.fg("toolTitle", &theme.bold("read resource")),
                     path_disp,
                     range
                 )
             } else {
                 format!(
-                    "{} {} {}",
+                    "{} {}{}",
                     theme.fg("toolTitle", &theme.bold("read")),
                     path_disp,
                     range
