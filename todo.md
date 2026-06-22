@@ -58,3 +58,30 @@ These are feature gaps in the agent/tool functionality, not rendering:
 - **Hook pipeline** (before/after tool call)
 - **Extensions**: follow pi's extension system
 - **MCP adapter**
+
+## Image system gaps (7)
+
+| # | Gap | Status |
+|---|-----|--------|
+| C4 | TUI `Image` component (Kitty + iTerm2 + fallback) | ❌ Open |
+| C5 | Terminal capabilities detection (`getCapabilities()`) | ❌ Open |
+| C6 | Cell dimension tracking for pixel-accurate sizing | ❌ Open |
+| C7 | Image resize utility | ❌ Open |
+| C8 | Image convert utility | ❌ Open |
+| C9 | Clipboard image paste | ❌ Open |
+| C10 | Show images selector UI | ❌ Open |
+
+## UI component gaps (10)
+
+| # | Gap | Status |
+|---|-----|--------|
+| C11 | Visual truncate utility | ✅ `tui::visual_truncate.rs` |
+| C12 | Session selector + search | ❌ Open |
+| C13 | Theme selector overlay | ❌ Open |
+| C14 | Thinking level selector | ❌ Open |
+| C15 | Extension editor / input / selector | ❌ Open |
+| C16 | Config / settings selector | ❌ Open |
+| C17 | Model selector improvements | ❌ Open |
+| C18 | OAuth login dialog | ❌ Open |
+| C19 | Trust selector | ❌ Open |
+| C20 | First-time setup | ❌ Open |

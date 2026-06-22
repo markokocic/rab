@@ -25,8 +25,37 @@ Reference: `~/src/cvstree/pi/` (TypeScript, same architecture).
 | Hook pipeline (`before_tool_call`, `after_tool_call`) | medium |
 | Steering / follow-up queues | medium |
 | `~/.rab/models.json` | medium |
+| Image system (7 gaps, see below) | medium |
+| UI components (10 gaps, see below) | medium |
 | Tool execution modes (sequential) | low |
 | `rab plugin new` scaffold | low |
+
+## Image system gaps (7)
+
+| # | Gap | Est. |
+|---|-----|------|
+| C4 | TUI `Image` component (Kitty + iTerm2 + fallback) | medium |
+| C5 | Terminal capabilities detection (`getCapabilities()`) | small |
+| C6 | Cell dimension tracking for pixel-accurate sizing | small |
+| C7 | Image resize utility | medium |
+| C8 | Image convert utility | small |
+| C9 | Clipboard image paste | medium |
+| C10 | Show images selector UI | medium |
+
+## UI component gaps (10)
+
+| # | Gap | Est. |
+|---|-----|------|
+| C12 | Session selector (`session-selector.ts` + search) | medium |
+| C13 | Theme selector overlay | medium |
+| C14 | Thinking level selector | small |
+| C15 | Extension editor / input / selector | large |
+| C16 | Config / settings selector | medium |
+| C17 | Model selector improvements | medium |
+| C18 | OAuth login dialog | medium |
+| C19 | Trust selector | small |
+| C20 | First-time setup | medium |
+| Slash commands (14 missing) | medium |
 
 ## Phase 2 — Extensions & plugins
 
@@ -57,6 +86,19 @@ Reference: `~/src/cvstree/pi/` (TypeScript, same architecture).
 | Write success hides output | ✅ Only bg transition, no text |
 | Git branch refresh | ✅ on AgentStart |
 | Theme completeness | ✅ All 44 color tokens from pi, all 9 syntax colors |
+
+### Tool rendering (8 gaps, all closed)
+
+| # | Gap | Solution |
+|---|-----|----------|
+| 1 | Image support (Kitty protocol) | `tui::image.rs` — data URL encoding, Kitty sequences, is_image_line detection |
+| 2 | Visual-line-aware truncation | `tui::visual_truncate.rs` — `truncate_to_visual_lines()` shared utility |
+| 3 | Progressive arg rendering | `ToolCallArgsUpdate` event + `set_args()` with dirty tracking |
+| 4 | lastComponent caching | `RenderCache` with `state_hash()` key |
+| 5 | invalidate() per row | `dirty` flag on all setters, `Component` trait methods |
+| 6 | Write incremental caching | `RwLock<WriteCache>` with content hash key |
+| 7 | Edit diff preview | Compact old/new preview in `EditRenderer::render_call()` |
+| 8 | grep/find/ls renderers | Command detection in `BashRenderer` |
 
 ### Other
 
@@ -106,7 +148,8 @@ See `todo.md` for detailed task list. Major deferred areas:
 | Hook pipeline (`before_tool_call`, `after_tool_call`) | medium |
 | Steering / follow-up queues | medium |
 | `~/.rab/models.json` | medium |
-| Image support (multimodal) | medium |
+| Image system (7 gaps) | medium | See plan.md above for details |
+| UI components (10 gaps) | medium | See plan.md above for details |
 | Tool execution modes (sequential) | low |
 | Slash commands (14 missing) | medium | See todo.md for full list, 8/22 implemented |
 | `rab plugin new` scaffold | low |

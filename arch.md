@@ -8,13 +8,17 @@ lets it act on your codebase.
 
 | pi (`packages/`) | rab equivalent | Status |
 |---|---|---|
-| `pi-tui` (terminal UI, components, editor) | `src/tui/` + `src/agent/ui/` | ✅ **1/1 complete** — 27 modules, 429 tests. Direct Rust port on crossterm. See [`tui.md`](tui.md). |
+| `pi-tui` (terminal UI, components, editor) | `src/tui/` + `src/agent/ui/` | ✅ **1/1 complete** — 29 modules, 632 tests. Direct Rust port on crossterm. See [`tui.md`](tui.md). |
 | `pi-agent-core` (agent loop, session, compaction, skills) | `src/agent/` | ✅ loop, session, skills done. ⬜ compaction not implemented. |
 | `coding-agent` (CLI, extensions, tools, settings, commands) | `cli.rs`, `builtin/`, `settings.rs`, `commands.rs` | ✅ tools, settings, auth, CLI done. ⬜ models.json, hooks, steering. |
 | `pi-ai` (providers, streaming) | `Provider` trait + `adapter/genai.rs` | ⬜ needs multi-backend support (currently OpenCode Go only) |
 | `coding-agent/modes/interactive/theme/` | `src/agent/ui/theme.rs` | ✅ JSON theme system with resolution, fallback, detection |
 | `coding-agent/resource-loader.ts` | `src/agent/context_files.rs` | ✅ AGENTS.md/CLAUDE.md discovery |
 | `coding-agent/skills.ts` | `src/agent/skills.rs` | ✅ Skill loading, frontmatter, prompt formatting |
+| `tui/src/components/image.ts` | `src/tui/image.rs` | ✅ Basic Kitty protocol image support |
+| `tui/src/terminal-image.ts` | `src/tui/image.rs` (partial) | ⬜ Missing: capabilities detection, iTerm2, cell dimensions |
+| `coding-agent/utils/image-resize.ts` | — | ⬜ Not implemented |
+| `coding-agent/utils/clipboard-image.ts` | — | ⬜ Not implemented |
 | MCP extensions | `pi-mcp-adapter` (planned) | ⬜ Phase 2 |
 | Config files | `~/.rab/` | ✅ Same schema as pi |
 
@@ -762,7 +766,7 @@ Same crate - no separate abstraction layer needed.
 
 ## TUI (`src/tui/` + `src/agent/ui/`) — ✅ COMPLETE
 
-The TUI library is a 1/1 port of pi's `@earendil-works/pi-tui` (27 modules, 429 tests).
+The TUI library is a 1/1 port of pi's `@earendil-works/pi-tui` (29 modules, 632 tests).
 See [`tui.md`](tui.md) for the full design.
 
 **Core**: Component trait, Container, Focusable, Screen diff renderer, overlay system (show/hide/composite), cursor marker extraction, hardware cursor positioning, synchronized output.
@@ -778,6 +782,9 @@ See [`tui.md`](tui.md) for the full design.
 - SettingsList (submenu support, two-column layout, description wrapping, search)
 - Loader / CancellableLoader (color functions, timer-based animation, abort support)
 - Box (render cache), Text/TruncatedText (RefCell cache), Spacer
+- Image (Kitty protocol image rendering, data URL detection)
+- Diff (unified diff with colored +/lines and intra-line character-level inverse)
+- VisualTruncate (shared `truncate_to_visual_lines()` utility)
 
 **Autocomplete**: AutocompleteProvider trait, CombinedAutocompleteProvider (slash commands + file path completion via read_dir)
 
