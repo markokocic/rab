@@ -95,8 +95,6 @@ impl HeaderComponent {
             ));
             lines.push(raw_key_hint("drop files", "to attach"));
 
-            lines.push(String::new());
-            lines.push(theme.fg("dim", "Pi can explain its features — just ask."));
             lines
         } else {
             // Compact: single-line key hints joined by " · " (matching pi's compactInstructions)
@@ -121,14 +119,7 @@ impl HeaderComponent {
                 ),
             );
 
-            vec![
-                logo,
-                compact_line,
-                String::new(),
-                compact_onboarding,
-                String::new(),
-                theme.fg("dim", "Pi can explain its features — just ask."),
-            ]
+            vec![logo, compact_line, String::new(), compact_onboarding]
         }
     }
 }
