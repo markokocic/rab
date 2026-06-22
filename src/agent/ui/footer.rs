@@ -169,8 +169,9 @@ impl crate::tui::Component for Footer {
             .model
             .strip_prefix("opencode_go::")
             .unwrap_or(&self.model);
+        // Show thinking level in parentheses next to model when not "off"
         let right_side = match &self.thinking_level {
-            Some(level) if level != "off" => format!("{} • {}", model_display, level),
+            Some(level) if level != "off" => format!("{} ({})", model_display, level),
             _ => model_display.to_string(),
         };
 
