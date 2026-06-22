@@ -593,70 +593,13 @@ fn shorten_path(path: &str) -> String {
 
 /// Format a keybinding action as a concise key hint string.
 fn format_key_hint(action_id: &str) -> String {
+    // Pi-style key formatting: returns the raw key ID string (e.g. "ctrl+o")
+    // rather than Emacs-style notation ("C-o"). Matches pi's keyText().
     let keys = keybindings::get_keybindings().get_keys(action_id);
     if keys.is_empty() {
         return String::new();
     }
-    let key = &keys[0];
-    let parts: Vec<&str> = key.split('+').collect();
-    if parts.len() > 1 {
-        let mods: Vec<String> = parts[..parts.len() - 1]
-            .iter()
-            .map(|p| match *p {
-                "ctrl" => "C-".to_string(),
-                "alt" => "M-".to_string(),
-                "shift" => "S-".to_string(),
-                "super" => "Super-".to_string(),
-                other => format!("{}-", other),
-            })
-            .collect();
-        let key_part = parts.last().unwrap();
-        let key_display = format_single_key(key_part);
-        let result: String = mods.join("");
-        result + &key_display
-    } else {
-        format_single_key(key.as_str())
-    }
-}
-
-fn format_single_key(key: &str) -> String {
-    match key {
-        "enter" => "Enter".to_string(),
-        "escape" | "esc" => "Esc".to_string(),
-        "tab" => "Tab".to_string(),
-        "backspace" | "bs" => "BS".to_string(),
-        "space" => "Space".to_string(),
-        "pageUp" => "PgUp".to_string(),
-        "pageDown" => "PgDn".to_string(),
-        "home" => "Home".to_string(),
-        "end" => "End".to_string(),
-        "delete" | "del" => "Del".to_string(),
-        "insert" | "ins" => "Ins".to_string(),
-        "up" => "Up".to_string(),
-        "down" => "Down".to_string(),
-        "left" => "Left".to_string(),
-        "right" => "Right".to_string(),
-        "f1" => "F1".to_string(),
-        "f2" => "F2".to_string(),
-        "f3" => "F3".to_string(),
-        "f4" => "F4".to_string(),
-        "f5" => "F5".to_string(),
-        "f6" => "F6".to_string(),
-        "f7" => "F7".to_string(),
-        "f8" => "F8".to_string(),
-        "f9" => "F9".to_string(),
-        "f10" => "F10".to_string(),
-        "f11" => "F11".to_string(),
-        "f12" => "F12".to_string(),
-        other => {
-            let first = other
-                .chars()
-                .next()
-                .map(|c| c.to_uppercase().to_string())
-                .unwrap_or_default();
-            first + &other[1..]
-        }
-    }
+    keys[0].clone()
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -739,8 +682,8 @@ impl Component for BashResult {
                 )
             } else {
                 format!(
-                    "\x1b[0m{}... {} earlier lines, {}({}) to expand\x1b[39m",
-                    dim_ansi, hidden_line_count, dim_ansi, expand_key,
+                    "\x1b[0m{}... ({} earlier lines, {} to expand)\x1b[39m",
+                    dim_ansi, hidden_line_count, expand_key,
                 )
             };
             let truncated = truncate_to_width(&hint, width, "...", false);

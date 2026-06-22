@@ -745,7 +745,7 @@ impl ToolRenderer for BashRenderer {
                 theme.fg(
                     "muted",
                     &format!(
-                        "... {} earlier lines, ({}) to expand",
+                        "... ({} earlier lines, {} to expand)",
                         hidden_line_count, ctx.expand_key
                     ),
                 )

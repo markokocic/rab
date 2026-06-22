@@ -75,11 +75,9 @@ impl AssistantMessageComponent {
 }
 
 impl Component for AssistantMessageComponent {
-    fn set_expanded(&mut self, expanded: bool) {
-        // Toggle between showing thinking content or collapsed label
-        self.hide_thinking = !expanded;
-        self.invalidate();
-    }
+    // No-op: expand/collapse is controlled separately via set_hide_thinking.
+    // Pi keeps app.thinking.toggle (Ctrl+T) and app.tools.expand (Ctrl+O)
+    // as independent concerns — tool expansion must not affect thinking visibility.
 
     fn render(&self, width: usize) -> Vec<String> {
         let cached = self.cached_lines.borrow();

@@ -82,13 +82,13 @@ pub fn truncate_preview<'a>(
     truncate_to_visual_lines(lines, width, max_visual_lines)
 }
 
-/// Format a hint about hidden lines for display.
-/// Returns e.g. `"... 12 earlier lines, (C-O) to expand"`.
+/// Format a hint about hidden lines for display (matching pi's format).
+/// Returns e.g. `"... (12 earlier lines, ctrl+o to expand)"`.
 pub fn format_hidden_hint(hidden: usize, expand_key: &str) -> String {
     if expand_key.is_empty() {
         format!("... {} earlier lines", hidden)
     } else {
-        format!("... {} earlier lines, ({}) to expand", hidden, expand_key)
+        format!("... ({} earlier lines, {} to expand)", hidden, expand_key)
     }
 }
 
