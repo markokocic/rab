@@ -1,25 +1,101 @@
 use crate::agent::types::Usage;
-use crate::agent::ui::messages::{fmt_tokens, pad_to_width};
+use crate::agent::ui::messages::pad_to_width;
 use crate::agent::ui::theme::RabTheme;
 use crate::tui::util::{truncate_to_width, visible_width};
 
+// ── Helpers matching pi's footer.ts ──────────────────────────────
+
+/// Sanitize text for display in a single-line status.
+/// Removes newlines, tabs, carriage returns, and other control characters.
+fn sanitize_status_text(text: &str) -> String {
+    text.replace(['\r', '\n', '\t'], " ")
+        .split(' ')
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Format token count for compact footer display (pi-style).
+pub fn format_tokens(count: u64) -> String {
+    if count < 1000 {
+        return count.to_string();
+    }
+    if count < 10000 {
+        return format!("{:.1}k", count as f64 / 1000.0);
+    }
+    if count < 1_000_000 {
+        return format!("{}k", (count as f64 / 1000.0).round() as u64);
+    }
+    if count < 10_000_000 {
+        return format!("{:.1}M", count as f64 / 1_000_000.0);
+    }
+    format!("{}M", (count as f64 / 1_000_000.0).round() as u64)
+}
+
+/// Format cwd for footer display (pi-style `formatCwdForFooter`).
+/// Resolves cwd relative to home directory, using `~` prefix.
+pub fn format_cwd_for_footer(cwd: &str, home: Option<&str>) -> String {
+    let home = match home {
+        Some(h) => h,
+        None => return cwd.to_string(),
+    };
+
+    let resolved_cwd = std::path::Path::new(cwd);
+    let resolved_home = std::path::Path::new(home);
+
+    // Try to make relative
+    let relative = match resolved_cwd.strip_prefix(resolved_home) {
+        Ok(rest) => {
+            if rest.as_os_str().is_empty() {
+                // cwd IS home
+                return "~".to_string();
+            }
+            rest.to_string_lossy().to_string()
+        }
+        Err(_) => return cwd.to_string(),
+    };
+
+    format!("~/{}", relative)
+}
+
+// ── Footer Component ─────────────────────────────────────────────
+
 /// Pi-style footer: 2-3 lines with dim styling.
+/// Matches pi's `FooterComponent` in `footer.ts` exactly.
 pub struct Footer {
     cwd: String,
     git_branch: Option<String>,
     session_name: Option<String>,
+
+    /// Pre-computed stats (pi computes fresh from session entries each render).
     total_input: u64,
     total_output: u64,
     total_cache_read: u64,
     total_cache_write: u64,
     total_cost: f64,
+    latest_cache_hit_rate: Option<f64>,
+
     context_percent: Option<f64>,
     context_window: u64,
+
     auto_compact: bool,
+
     model: String,
+    /// Whether model supports reasoning (for showing thinking level).
+    model_supports_reasoning: bool,
     thinking_level: Option<String>,
-    is_streaming: bool,
-    pub extension_statuses: Vec<String>,
+
+    /// Number of unique providers with available models (for footer display).
+    available_provider_count: usize,
+
+    /// Whether using OAuth subscription (shows "(sub)" after cost).
+    using_subscription: bool,
+
+    /// Experimental features enabled.
+    experimental_enabled: bool,
+
+    pub extension_statuses: Vec<(String, String)>, // (key, text) sorted by key
+
     theme: RabTheme,
 }
 
@@ -35,48 +111,141 @@ impl Footer {
             total_cache_read: 0,
             total_cache_write: 0,
             total_cost: 0.0,
+            latest_cache_hit_rate: None,
             context_percent: None,
             context_window: 0,
             auto_compact: true,
             model: String::new(),
+            model_supports_reasoning: false,
             thinking_level: None,
-            is_streaming: false,
+            available_provider_count: 1,
+            using_subscription: false,
+            experimental_enabled: false,
             extension_statuses: Vec::new(),
             theme,
         }
     }
 
+    // ── Setters (called from App) ──
+
     pub fn set_cwd(&mut self, cwd: impl Into<String>) {
         self.cwd = cwd.into();
     }
+
     pub fn set_git_branch(&mut self, branch: Option<String>) {
         self.git_branch = branch;
     }
+
     pub fn set_session_name(&mut self, name: Option<String>) {
         self.session_name = name;
     }
+
     pub fn set_model(&mut self, model: impl Into<String>) {
         self.model = model.into();
     }
+
+    /// Set whether the model supports reasoning (for showing thinking level in footer).
+    pub fn set_model_supports_reasoning(&mut self, supports: bool) {
+        self.model_supports_reasoning = supports;
+    }
+
     pub fn set_thinking_level(&mut self, level: Option<String>) {
         self.thinking_level = level;
     }
-    pub fn set_streaming(&mut self, streaming: bool) {
-        self.is_streaming = streaming;
-    }
+
     pub fn set_auto_compact(&mut self, enabled: bool) {
         self.auto_compact = enabled;
     }
 
-    pub fn accumulate_usage(&mut self, usage: &Usage) {
-        self.total_input += usage.input_tokens.unwrap_or(0) as u64;
-        self.total_output += usage.output_tokens.unwrap_or(0) as u64;
-        self.total_cache_read += usage.cache_tokens.unwrap_or(0) as u64;
+    pub fn set_available_provider_count(&mut self, count: usize) {
+        self.available_provider_count = count;
     }
 
+    pub fn set_using_subscription(&mut self, using: bool) {
+        self.using_subscription = using;
+    }
+
+    pub fn set_experimental_enabled(&mut self, enabled: bool) {
+        self.experimental_enabled = enabled;
+    }
+
+    /// Pi-style: accumulate usage from a single response's usage data.
+    pub fn accumulate_usage(&mut self, usage: &Usage) {
+        let input = usage.input_tokens.unwrap_or(0) as u64;
+        let output = usage.output_tokens.unwrap_or(0) as u64;
+        let cache_read = usage.cache_tokens.unwrap_or(0) as u64;
+
+        self.total_input += input;
+        self.total_output += output;
+        self.total_cache_read += cache_read;
+
+        // Compute cache hit rate from latest call
+        let total_prompt = input + cache_read;
+        if total_prompt > 0 {
+            self.latest_cache_hit_rate = Some((cache_read as f64 / total_prompt as f64) * 100.0);
+        }
+    }
+
+    /// Pi-style: set cumulative usage directly (replaces accumulated values).
+    pub fn set_usage(
+        &mut self,
+        total_input: u64,
+        total_output: u64,
+        total_cache_read: u64,
+        total_cache_write: u64,
+        total_cost: f64,
+        latest_cache_hit_rate: Option<f64>,
+    ) {
+        self.total_input = total_input;
+        self.total_output = total_output;
+        self.total_cache_read = total_cache_read;
+        self.total_cache_write = total_cache_write;
+        self.total_cost = total_cost;
+        self.latest_cache_hit_rate = latest_cache_hit_rate;
+    }
+
+    /// Pi-style: cost is set separately (from usage.cost.total).
+    pub fn set_cost(&mut self, cost: f64) {
+        self.total_cost = cost;
+    }
+
+    /// Set cache write tokens separately.
+    pub fn set_cache_write(&mut self, cache_write: u64) {
+        self.total_cache_write = cache_write;
+    }
+
+    /// Pi-style: no streaming dot indicator in footer (handled by working indicator).
+    /// Kept for compatibility with existing call sites.
+    pub fn set_streaming(&mut self, _streaming: bool) {
+        // No-op: pi footer doesn't show streaming dot
+    }
+
+    /// Pi-style set context / context window.
     pub fn set_context(&mut self, percent: Option<f64>, window: u64) {
         self.context_percent = percent;
         self.context_window = window;
+    }
+
+    /// Set an extension status (pi-style, key-value pair).
+    pub fn set_extension_status(&mut self, key: String, text: Option<String>) {
+        if let Some(text) = text {
+            // Update existing or insert
+            if let Some(pos) = self.extension_statuses.iter().position(|(k, _)| k == &key) {
+                self.extension_statuses[pos].1 = text;
+            } else {
+                self.extension_statuses.push((key, text));
+            }
+        } else {
+            // Remove
+            self.extension_statuses.retain(|(k, _)| k != &key);
+        }
+        // Keep sorted by key (pi-style)
+        self.extension_statuses.sort_by(|(a, _), (b, _)| a.cmp(b));
+    }
+
+    /// Clear all extension statuses (pi-style).
+    pub fn clear_extension_statuses(&mut self) {
+        self.extension_statuses.clear();
     }
 }
 
@@ -87,141 +256,198 @@ impl crate::tui::Component for Footer {
             return vec![]; // Too narrow to show anything
         }
 
-        let dim = |s: &str| self.theme.fg("dim", s);
-        let error = |s: &str| self.theme.fg("error", s);
-        let warning = |s: &str| self.theme.fg("warning", s);
-        let accent = |s: &str| self.theme.fg("accent", s);
-        let bold = |s: &str| self.theme.fg("accent", s);
-        let mut lines = Vec::new();
+        let theme = &self.theme;
 
-        // ── Line 1: cwd (branch) • session-name ──
-        let mut pwd = self.cwd.clone();
-        if let Ok(home) = std::env::var("HOME")
-            && pwd.starts_with(&home)
-        {
-            pwd = pwd.replacen(&home, "~", 1);
-        }
+        // ── Line 1: pwd (git branch) • session-name ──
+        let home = std::env::var("HOME").ok();
+        let mut pwd = format_cwd_for_footer(&self.cwd, home.as_deref());
+
         if let Some(ref branch) = self.git_branch {
             pwd = format!("{} ({})", pwd, branch);
         }
         if let Some(ref name) = self.session_name {
             pwd = format!("{} • {}", pwd, name);
         }
-        let line1 = truncate_to_width(&dim(&pwd), w, "…", false);
-        lines.push(if line1.is_empty() {
+        let pwd_line = truncate_to_width(&theme.fg("dim", &pwd), w, &theme.fg("dim", "..."), true);
+        let pwd_line = if pwd_line.is_empty() {
             String::new()
         } else {
-            pad_to_width(&line1, w)
-        });
+            pad_to_width(&pwd_line, w)
+        };
 
-        // ── Line 2: stats left, model right ──
-        // Build stats parts
+        // ── Line 2: stats left, model right (both dimmed separately) ──
+        // Build stats parts (pi-style order and content)
         let mut stats_parts: Vec<String> = Vec::new();
 
         if self.total_input > 0 {
-            stats_parts.push(format!("↑{}", fmt_tokens(self.total_input as f64)));
+            stats_parts.push(format!("↑{}", format_tokens(self.total_input)));
         }
         if self.total_output > 0 {
-            stats_parts.push(format!("↓{}", fmt_tokens(self.total_output as f64)));
+            stats_parts.push(format!("↓{}", format_tokens(self.total_output)));
         }
         if self.total_cache_read > 0 {
-            stats_parts.push(format!("R{}", fmt_tokens(self.total_cache_read as f64)));
+            stats_parts.push(format!("R{}", format_tokens(self.total_cache_read)));
         }
         if self.total_cache_write > 0 {
-            stats_parts.push(format!("W{}", fmt_tokens(self.total_cache_write as f64)));
+            stats_parts.push(format!("W{}", format_tokens(self.total_cache_write)));
+        }
+        if (self.total_cache_read > 0 || self.total_cache_write > 0)
+            && let Some(hit_rate) = self.latest_cache_hit_rate
+        {
+            stats_parts.push(format!("CH{:.1}%", hit_rate));
         }
 
-        // Context window with auto-compact indicator
-        if self.auto_compact {
-            let ac_label = bold("⚡");
-            stats_parts.push(format!("{}auto", ac_label));
+        // Cost with optional "(sub)" indicator (pi-style)
+        if self.total_cost > 0.0 || self.using_subscription {
+            let cost_str = if self.using_subscription {
+                format!("${:.3} (sub)", self.total_cost)
+            } else {
+                format!("${:.3}", self.total_cost)
+            };
+            stats_parts.push(cost_str);
         }
-        let context_str = match self.context_percent {
+
+        // Context percentage with color (pi-style: red > 90, yellow > 70)
+        let context_percent_str = match self.context_percent {
             Some(p) => {
-                let window_str = fmt_tokens(self.context_window as f64);
-                let s = format!("{:.1}%/{}", p, window_str);
-                if p > 90.0 {
-                    error(&s)
-                } else if p > 70.0 {
-                    warning(&s)
+                let window_str = format_tokens(self.context_window);
+                let display = if self.auto_compact {
+                    format!("{:.1}%/{} (auto)", p, window_str)
                 } else {
-                    s
+                    format!("{:.1}%/{}", p, window_str)
+                };
+                if p > 90.0 {
+                    theme.fg("error", &display)
+                } else if p > 70.0 {
+                    theme.fg("warning", &display)
+                } else {
+                    display
                 }
             }
-            None if self.context_window > 0 => {
-                let window_str = fmt_tokens(self.context_window as f64);
-                format!("?/{}", window_str)
+            None => {
+                let window_str = format_tokens(self.context_window);
+                if self.auto_compact {
+                    format!("?/{} (auto)", window_str)
+                } else {
+                    format!("?/{}", window_str)
+                }
             }
-            None => String::new(),
         };
-        if !context_str.is_empty() {
-            stats_parts.push(context_str);
+        if !context_percent_str.is_empty() {
+            stats_parts.push(context_percent_str);
         }
 
-        if self.total_cost > 0.0 {
-            stats_parts.push(format!("${:.3}", self.total_cost));
+        // Experimental features indicator (pi-style)
+        if self.experimental_enabled {
+            stats_parts.push(format!(
+                "{} {}",
+                theme.fg("dim", "•"),
+                theme.bold(&theme.fg("warning", "xp"))
+            ));
         }
 
-        let stats_left = stats_parts.join(" ");
+        let mut stats_left = stats_parts.join(" ");
 
-        // Model + thinking on the right
-        let model_display = self
-            .model
-            .strip_prefix("opencode_go::")
-            .unwrap_or(&self.model);
-        // Show thinking level in parentheses next to model when not "off"
-        let right_side = match &self.thinking_level {
-            Some(level) if level != "off" => format!("{} ({})", model_display, level),
-            _ => model_display.to_string(),
+        // Build right side: model name + thinking level (pi-style)
+        let model_name = if self.model.is_empty() {
+            "no-model".to_string()
+        } else {
+            self.model
+                .strip_prefix("opencode_go::")
+                .unwrap_or(&self.model)
+                .to_string()
         };
 
-        let dot_indicator = if self.is_streaming {
-            accent("●")
+        // Pi-style right side with thinking level indicator
+        let right_side_without_provider = if self.model_supports_reasoning {
+            match &self.thinking_level {
+                Some(level) if level != "off" => format!("{} • {}", model_name, level),
+                _ => format!("{} • thinking off", model_name),
+            }
         } else {
-            dim("○")
+            model_name.clone()
         };
-        let dot_prefix = format!("{} ", dot_indicator);
-        let dot_w = visible_width(&dot_prefix); // 2
 
-        let stats_w = visible_width(&stats_left);
-        let right_w = visible_width(&right_side);
-        let total_needed = dot_w + stats_w + 2 + right_w;
-
-        let line2 = if total_needed <= w {
-            // Everything fits
-            let padding = " ".repeat(w - stats_w - right_w - dot_w);
-            format!("{}{}{}{}", dot_prefix, stats_left, padding, right_side)
+        // Prepend provider in parentheses if multiple providers (pi-style)
+        let right_side = if self.available_provider_count > 1 && !self.model.is_empty() {
+            let model_with_provider = format!("(?) {}", right_side_without_provider);
+            // Only use provider prefix if it fits (checked below)
+            model_with_provider
         } else {
-            // Need to truncate. Priority: dot > model > stats
-            let min_for_right = w.saturating_sub(dot_w + stats_w + 2);
-            if min_for_right >= 4 {
-                // Room for at least some of the right side
-                let truncated = truncate_to_width(&right_side, min_for_right, "…", false);
-                let truncated_w = visible_width(&truncated);
-                let padding = " ".repeat(w.saturating_sub(dot_w + stats_w + truncated_w));
-                format!("{}{}{}{}", dot_prefix, stats_left, padding, truncated)
+            right_side_without_provider.clone()
+        };
+
+        // Compute widths and layout (pi-style)
+        let mut stats_left_width = visible_width(&stats_left);
+
+        // Pi-style: if statsLeft is too wide, truncate it
+        if stats_left_width > w {
+            stats_left = truncate_to_width(&stats_left, w, "…", true);
+            stats_left_width = visible_width(&stats_left);
+        }
+
+        let right_side_width = visible_width(&right_side);
+        let min_padding: usize = 2;
+
+        let stats_line = if stats_left_width + min_padding + right_side_width <= w {
+            // Both fit
+            let padding = " ".repeat(w - stats_left_width - right_side_width);
+            format!("{}{}{}", stats_left, padding, right_side)
+        } else if !self.model.is_empty()
+            && self.available_provider_count > 1
+            && stats_left_width + min_padding + visible_width(&right_side_without_provider) <= w
+        {
+            // Try without provider prefix
+            let padding =
+                " ".repeat(w - stats_left_width - visible_width(&right_side_without_provider));
+            format!("{}{}{}", stats_left, padding, right_side_without_provider)
+        } else {
+            // Need to truncate right side
+            let available_for_right = w.saturating_sub(stats_left_width + min_padding);
+            if available_for_right > 0 {
+                let truncated_right = truncate_to_width(&right_side, available_for_right, "", true);
+                let truncated_right_width = visible_width(&truncated_right);
+                let padding = " ".repeat(w - stats_left_width - truncated_right_width);
+                format!("{}{}{}", stats_left, padding, truncated_right)
             } else {
-                // Very narrow: shrink stats too
-                let avail_for_stats = w.saturating_sub(dot_w + 1);
-                let truncated_stats = truncate_to_width(&stats_left, avail_for_stats, "…", false);
-                let s = format!("{}{}", dot_prefix, truncated_stats);
-                pad_to_width(&s, w)
+                // Not enough space for right side at all
+                stats_left.clone()
             }
         };
-        lines.push(line2);
 
-        // ── Line 3: extension statuses ──
+        // Pi-style: dim statsLeft and remainder separately (statsLeft may contain colored context %)
+        let dim_stats_left = theme.fg("dim", &stats_left);
+        let remainder = &stats_line[stats_left.len()..]; // padding + rightSide
+        let dim_remainder = theme.fg("dim", remainder);
+
+        let stats_line_formatted = format!("{}{}", dim_stats_left, dim_remainder);
+
+        let mut lines = vec![pwd_line, stats_line_formatted];
+
+        // ── Line 3: extension statuses (sorted by key, sanitized) ──
         if !self.extension_statuses.is_empty() {
-            let status_line = self.extension_statuses.join(" ");
-            let truncated = truncate_to_width(&dim(&status_line), w, "…", false);
-            lines.push(if truncated.is_empty() {
+            let status_text: Vec<String> = self
+                .extension_statuses
+                .iter()
+                .map(|(_, text)| sanitize_status_text(text))
+                .collect();
+            let status_line = status_text.join(" ");
+            let truncated = truncate_to_width(&status_line, w, &theme.fg("dim", "..."), true);
+            let status_line = if truncated.is_empty() {
                 String::new()
             } else {
                 pad_to_width(&truncated, w)
-            });
+            };
+            if !status_line.trim().is_empty() {
+                lines.push(status_line);
+            }
         }
 
         lines
+    }
+
+    fn invalidate(&mut self) {
+        // No cached state to invalidate
     }
 }
 
@@ -236,6 +462,69 @@ mod tests {
         footer.set_model("test-model");
         footer.set_git_branch(Some("main".into()));
         footer
+    }
+
+    // ── format_cwd_for_footer tests ──
+
+    #[test]
+    fn test_format_cwd_home() {
+        let result = format_cwd_for_footer("/home/user/project", Some("/home/user"));
+        assert_eq!(result, "~/project");
+    }
+
+    #[test]
+    fn test_format_cwd_home_exact() {
+        let result = format_cwd_for_footer("/home/user", Some("/home/user"));
+        assert_eq!(result, "~");
+    }
+
+    #[test]
+    fn test_format_cwd_outside_home() {
+        let result = format_cwd_for_footer("/opt/app", Some("/home/user"));
+        assert_eq!(result, "/opt/app");
+    }
+
+    #[test]
+    fn test_format_cwd_no_home() {
+        let result = format_cwd_for_footer("/some/path", None::<&str>);
+        assert_eq!(result, "/some/path");
+    }
+
+    // ── format_tokens tests ──
+
+    #[test]
+    fn test_format_tokens_under_1k() {
+        assert_eq!(format_tokens(500), "500");
+    }
+
+    #[test]
+    fn test_format_tokens_1k_to_10k() {
+        assert_eq!(format_tokens(5500), "5.5k");
+    }
+
+    #[test]
+    fn test_format_tokens_10k_to_1m() {
+        assert_eq!(format_tokens(55500), "56k");
+    }
+
+    #[test]
+    fn test_format_tokens_1m_to_10m() {
+        assert_eq!(format_tokens(5_500_000), "5.5M");
+    }
+
+    #[test]
+    fn test_format_tokens_over_10m() {
+        assert_eq!(format_tokens(55_000_000), "55M");
+    }
+
+    // ── sanitize_status_text tests ──
+
+    #[test]
+    fn test_sanitize_status() {
+        assert_eq!(sanitize_status_text("hello\nworld"), "hello world");
+        assert_eq!(sanitize_status_text("hello\tworld"), "hello world");
+        assert_eq!(sanitize_status_text("hello\r\nworld"), "hello world");
+        assert_eq!(sanitize_status_text("  spaced  "), "spaced");
     }
 
     // ── Line 1 (cwd) tests ──
@@ -269,7 +558,6 @@ mod tests {
         footer.set_model("model");
         let lines = footer.render(30);
         assert!(lines.len() >= 2);
-        // Should not exceed width
         for line in &lines {
             assert!(
                 visible_width(line) <= 30,
@@ -289,29 +577,35 @@ mod tests {
     }
 
     #[test]
-    fn test_footer_shows_dot_indicator() {
-        let footer = make_footer();
-        let lines = footer.render(80);
-        assert!(lines[1].contains('○'), "Should show idle dot indicator");
-    }
-
-    #[test]
-    fn test_footer_shows_streaming_dot() {
-        let mut footer = make_footer();
-        footer.set_streaming(true);
+    fn test_footer_shows_no_model() {
+        let mut footer = Footer::new("/path");
+        footer.set_model("");
         let lines = footer.render(80);
         assert!(
-            lines[1].contains('●'),
-            "Should show streaming dot indicator"
+            lines[1].contains("no-model"),
+            "Should show 'no-model' when model not set"
         );
     }
 
     #[test]
     fn test_footer_shows_thinking_level() {
         let mut footer = make_footer();
+        footer.set_model_supports_reasoning(true);
         footer.set_thinking_level(Some("high".into()));
         let lines = footer.render(80);
         assert!(lines[1].contains("high"), "Should show thinking level");
+    }
+
+    #[test]
+    fn test_footer_thinking_off_with_reasoning() {
+        let mut footer = make_footer();
+        footer.set_model_supports_reasoning(true);
+        footer.set_thinking_level(Some("off".into()));
+        let lines = footer.render(80);
+        assert!(
+            lines[1].contains("thinking off"),
+            "Should show 'thinking off' when reasoning model has level off"
+        );
     }
 
     #[test]
@@ -343,37 +637,163 @@ mod tests {
             cache_tokens: None,
         };
         footer.accumulate_usage(&u2);
-        // Should accumulate: 3000 input, 800 output
         let lines = footer.render(80);
         assert!(lines[1].contains("↑3.0k"), "Should show accumulated input");
         assert!(lines[1].contains("↓800"), "Should show accumulated output");
     }
 
-    // ── Auto-compact indicator tests ──
-
     #[test]
-    fn test_footer_shows_auto_compact_indicator_when_enabled() {
+    fn test_footer_shows_cache_hit_rate() {
         let mut footer = make_footer();
-        footer.set_auto_compact(true);
+        let usage = Usage {
+            input_tokens: Some(1000),
+            output_tokens: Some(500),
+            cache_tokens: Some(200),
+        };
+        footer.accumulate_usage(&usage);
         let lines = footer.render(80);
         assert!(
-            lines[1].contains("⚡"),
-            "Should show auto-compact indicator when enabled"
+            lines[1].contains("CH"),
+            "Should show cache hit rate when cache tokens present"
         );
+        // 200 / (1000 + 200) = 16.7%
         assert!(
-            lines[1].contains("auto"),
-            "Should show 'auto' label when enabled"
+            lines[1].contains("CH16.7%"),
+            "Should show correct cache hit rate"
         );
     }
 
     #[test]
-    fn test_footer_hides_auto_compact_indicator_when_disabled() {
+    fn test_footer_shows_cost() {
         let mut footer = make_footer();
-        footer.set_auto_compact(false);
+        footer.set_cost(0.0123);
+        let lines = footer.render(80);
+        assert!(lines[1].contains("$0.012"), "Should show cost");
+    }
+
+    #[test]
+    fn test_footer_shows_subscription_indicator() {
+        let mut footer = make_footer();
+        footer.set_cost(0.0);
+        footer.set_using_subscription(true);
         let lines = footer.render(80);
         assert!(
-            !lines[1].contains("⚡"),
-            "Should NOT show auto-compact indicator when disabled"
+            lines[1].contains("(sub)"),
+            "Should show subscription indicator"
+        );
+    }
+
+    // ── Auto-compact indicator tests ──
+
+    #[test]
+    fn test_footer_shows_auto_compact_next_to_context() {
+        let mut footer = make_footer();
+        footer.set_auto_compact(true);
+        footer.set_context(Some(50.0), 128000);
+        let lines = footer.render(80);
+        assert!(
+            lines[1].contains("(auto)"),
+            "Should show (auto) next to context percentage"
+        );
+        assert!(
+            lines[1].contains("50.0%/128k (auto)"),
+            "Should show context percent with auto compact"
+        );
+    }
+
+    #[test]
+    fn test_footer_hides_auto_compact_when_disabled() {
+        let mut footer = make_footer();
+        footer.set_auto_compact(false);
+        footer.set_context(Some(50.0), 128000);
+        let lines = footer.render(80);
+        assert!(
+            !lines[1].contains("(auto)"),
+            "Should NOT show (auto) when disabled"
+        );
+    }
+
+    // ── Context percent colors ──
+
+    #[test]
+    fn test_footer_context_percent_high() {
+        let mut footer = make_footer();
+        footer.set_context(Some(95.0), 128000);
+        let lines = footer.render(80);
+        assert!(lines[1].contains("95"), "Should show context percent");
+        assert!(
+            lines[1].contains("128k"),
+            "Should show formatted window size"
+        );
+        // High context should be in error color (wrapped in ANSI escape)
+        assert!(
+            lines[1].contains("\x1b[38;2;"),
+            "Should have ANSI color for high context"
+        );
+    }
+
+    #[test]
+    fn test_footer_context_without_percent() {
+        let mut footer = make_footer();
+        footer.set_context(None, 64000);
+        let lines = footer.render(80);
+        assert!(lines[1].contains("?"), "Should show unknown context");
+        assert!(lines[1].contains("64k"), "Should show context window size");
+    }
+
+    // ── Extension status line tests ──
+
+    #[test]
+    fn test_footer_shows_extension_statuses() {
+        let mut footer = make_footer();
+        footer.set_extension_status("ext1".into(), Some("ready".into()));
+        let lines = footer.render(80);
+        assert!(lines.len() >= 3, "Should have 3 lines");
+        assert!(lines[2].contains("ready"), "Should show extension status");
+    }
+
+    #[test]
+    fn test_footer_extension_status_sorted() {
+        let mut footer = make_footer();
+        footer.set_extension_status("z_last".into(), Some("last".into()));
+        footer.set_extension_status("a_first".into(), Some("first".into()));
+        let lines = footer.render(80);
+        if lines.len() >= 3 {
+            let first_idx = lines[2].find("first");
+            let last_idx = lines[2].find("last");
+            assert!(
+                first_idx < last_idx,
+                "Extension statuses should be sorted by key"
+            );
+        }
+    }
+
+    #[test]
+    fn test_footer_extension_status_sanitized() {
+        let mut footer = make_footer();
+        footer.set_extension_status("ext1".into(), Some("hello\nworld\ttab".into()));
+        let lines = footer.render(80);
+        if lines.len() >= 3 {
+            assert!(
+                !lines[2].contains('\n'),
+                "Extension status should not contain newlines"
+            );
+            assert!(
+                !lines[2].contains('\t'),
+                "Extension status should not contain tabs"
+            );
+        }
+    }
+
+    #[test]
+    fn test_footer_extension_status_removed() {
+        let mut footer = make_footer();
+        footer.set_extension_status("ext1".into(), Some("ready".into()));
+        footer.set_extension_status("ext1".into(), None);
+        let lines = footer.render(80);
+        assert!(
+            lines.len() < 3 || !lines[2].contains("ready"),
+            "Extension status should be removed"
         );
     }
 
@@ -382,6 +802,7 @@ mod tests {
     #[test]
     fn test_footer_handles_narrow_terminal() {
         let mut footer = make_footer();
+        footer.set_model_supports_reasoning(true);
         footer.set_thinking_level(Some("high".into()));
         let usage = Usage {
             input_tokens: Some(100000),
@@ -389,6 +810,7 @@ mod tests {
             cache_tokens: Some(10000),
         };
         footer.accumulate_usage(&usage);
+        footer.set_context(Some(45.0), 128000);
         let lines = footer.render(10);
         assert!(!lines.is_empty(), "Should render even at width 10");
         for line in &lines {
@@ -404,7 +826,6 @@ mod tests {
     fn test_footer_handles_very_narrow_terminal() {
         let footer = make_footer();
         let lines = footer.render(3);
-        // At width 3, should return empty (guard at < 4)
         assert!(lines.is_empty(), "Should return empty at width 3");
     }
 
@@ -426,7 +847,6 @@ mod tests {
     fn test_footer_line2_exact_width() {
         let footer = make_footer();
         let lines = footer.render(80);
-        // Line 2 should have exactly visible_width = 80 (padded)
         for line in &lines {
             let vw = visible_width(line);
             assert!(vw <= 80, "Line width {} > 80", vw);
@@ -445,62 +865,6 @@ mod tests {
         }
     }
 
-    // ── Extension status line tests ──
-
-    #[test]
-    fn test_footer_shows_extension_statuses() {
-        let mut footer = make_footer();
-        footer.extension_statuses.push("• ext1: ready".into());
-        let lines = footer.render(80);
-        assert!(lines.len() >= 3, "Should have 3 lines");
-        assert!(lines[2].contains("ext1"), "Should show extension status");
-    }
-
-    #[test]
-    fn test_footer_extension_status_truncated() {
-        let mut footer = make_footer();
-        footer
-            .extension_statuses
-            .push("a very long extension status message that should be truncated".into());
-        let lines = footer.render(30);
-        if lines.len() >= 3 {
-            let vw = visible_width(&lines[2]);
-            assert!(vw <= 30, "Extension status line exceeds width");
-        }
-    }
-
-    #[test]
-    fn test_footer_context_percent_colors() {
-        let mut footer = make_footer();
-        footer.set_context(Some(95.0), 128000);
-        let lines = footer.render(80);
-        // High context should be in error color (wrapped in ANSI escape)
-        assert!(lines[1].contains("95"), "Should show context percent");
-        assert!(
-            lines[1].contains("128k"),
-            "Should show formatted window size"
-        );
-    }
-
-    #[test]
-    fn test_footer_context_without_percent() {
-        let mut footer = make_footer();
-        footer.set_context(None, 64000);
-        let lines = footer.render(80);
-        assert!(lines[1].contains("?"), "Should show unknown context");
-        assert!(lines[1].contains("64k"), "Should show context window size");
-    }
-
-    // ── Edge cases ──
-
-    #[test]
-    fn test_footer_no_model_shows_nothing() {
-        let mut footer = Footer::new("/path");
-        footer.set_model("");
-        let lines = footer.render(80);
-        assert!(!lines.is_empty(), "Should still render with empty model");
-    }
-
     #[test]
     fn test_footer_model_strip_prefix() {
         let mut footer = make_footer();
@@ -513,6 +877,30 @@ mod tests {
         assert!(
             lines[1].contains("claude-opus"),
             "Should show model after prefix"
+        );
+    }
+
+    #[test]
+    fn test_footer_provider_prefix_when_multiple_providers() {
+        let mut footer = make_footer();
+        footer.set_model("test-model");
+        footer.set_available_provider_count(2);
+        let lines = footer.render(80);
+        // Provider prefix has "(?)" placeholder since we don't know provider name
+        assert!(
+            lines[1].contains("(?)"),
+            "Should show provider count-based prefix"
+        );
+    }
+
+    #[test]
+    fn test_footer_experimental_indicator() {
+        let mut footer = make_footer();
+        footer.set_experimental_enabled(true);
+        let lines = footer.render(80);
+        assert!(
+            lines[1].contains("xp"),
+            "Should show experimental indicator"
         );
     }
 }

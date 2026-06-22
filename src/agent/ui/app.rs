@@ -42,6 +42,8 @@ pub struct AppConfig {
     pub context_files: Vec<String>,
     /// Skills loaded for the session (used for /skill:name expansion).
     pub skills: Vec<crate::agent::Skill>,
+    /// Whether the current model supports reasoning (for showing thinking level in footer).
+    pub model_supports_reasoning: bool,
 }
 
 /// Main application state.
@@ -160,6 +162,8 @@ impl App {
         let mut footer = Footer::new(config.cwd.to_string_lossy().to_string());
         footer.set_git_branch(config.git_branch.clone());
         footer.set_model(&config.model);
+        footer.set_model_supports_reasoning(config.model_supports_reasoning);
+        footer.set_thinking_level(config.thinking_level.clone());
 
         // Load session messages
         let context = session.build_session_context();
@@ -269,7 +273,7 @@ pub async fn run(config: AppConfig, session: SessionManager) -> anyhow::Result<(
 
     loop {
         // Poll for events (pi-style: process input before rendering)
-        // Reduced poll frequency: 16ms active (~60fps), 50ms idle — terminal UI
+        // Reduced poll frequency: 16ms active (~60fps), 50ms idle - terminal UI
         // doesn't benefit from >60fps and lower frequency saves CPU/battery.
         let timeout = if dirty || app.is_streaming || app.working.active {
             Duration::from_millis(16)
@@ -298,7 +302,7 @@ pub async fn run(config: AppConfig, session: SessionManager) -> anyhow::Result<(
             rows = h;
         }
 
-        // Tick the working indicator — sets dirty when spinner advances
+        // Tick the working indicator - sets dirty when spinner advances
         if app.working.tick() {
             dirty = true;
         }
@@ -339,22 +343,9 @@ fn compose_ui(app: &mut App, width: usize, _height: usize) -> Vec<String> {
     // Note: overlays (help, model selector) are now handled via TUI.show_overlay().
     // compose_ui always returns base content; TUI composites overlays on top.
 
-    // ── Header (pi-style: logo + keybinding hints at top) ──
-    let header = format!(
-        "{} {}",
-        app.theme.bold(&app.theme.fg("accent", "rab")),
-        app.theme.fg(
-            "dim",
-            &format!("· model {}", app.model.replace("opencode_go::", ""))
-        )
-    );
-    lines.push(header);
-
-    let hints = app.theme.fg(
-        "dim",
-        "Enter submit · Ctrl+J · Esc clear · Ctrl+C · Ctrl+D · ↑↓ · F1 help · Ctrl+L model",
-    );
-    lines.push(format!(" {}", hints));
+    // ── Header (pi-style: logo only) ──
+    // Model info, thinking level, token stats are shown in the footer.
+    lines.push(app.theme.bold(&app.theme.fg("accent", "rab")));
     lines.push(String::new());
 
     // ── Messages with scroll support ──
@@ -476,7 +467,7 @@ fn compose_ui(app: &mut App, width: usize, _height: usize) -> Vec<String> {
 
 /// Handle keyboard input. Mirrors pi's InteractiveMode key dispatch:
 ///
-/// 1. Overlays handled via TUI.route_input — checked first in event loop
+/// 1. Overlays handled via TUI.route_input - checked first in event loop
 /// 2. ChatEditor::handle_input checks app-level keys and returns InputAction
 /// 3. App.rs matches on InputAction to perform side effects
 ///
@@ -615,6 +606,8 @@ fn handle_model_cycle(app: &mut App, dir: isize) {
 
     app.model = app.available_models[next_idx].clone();
     app.footer.set_model(&app.model);
+    // All rab models support reasoning (deepseek-v4-flash, deepseek-v4-pro).
+    app.footer.set_model_supports_reasoning(true);
     app.status_text = Some(format!("Model: {}", app.model));
 }
 
@@ -702,9 +695,9 @@ fn handle_follow_up(app: &mut App, text: String) {
     // If streaming, queue the message
     if app.is_streaming {
         app.queued_messages.push(text.clone());
-        app.status_text = Some("Message queued — will send when current response finishes".into());
+        app.status_text = Some("Message queued - will send when current response finishes".into());
     } else {
-        // Not streaming — submit immediately
+        // Not streaming - submit immediately
         submit_message(app, text);
     }
 }
@@ -1163,6 +1156,7 @@ mod tests {
             settings: crate::agent::settings::Settings::default(),
             context_files: vec![],
             skills: vec![],
+            model_supports_reasoning: true,
         };
 
         let mut app = App::new(config, session);
@@ -1208,17 +1202,8 @@ mod tests {
         let mut lines = Vec::new();
 
         // Header (matches compose_ui)
-        let header = format!(
-            "{} {}",
-            theme.bold(&theme.fg("accent", "rab")),
-            theme.fg(
-                "dim",
-                &format!("· model {}", app.model.replace("opencode_go::", ""))
-            )
-        );
-        lines.push(header);
-        let hints = theme.fg("dim", "hint");
-        lines.push(format!(" {}", hints));
+        // Model info, thinking level, token stats are shown in the footer.
+        lines.push(theme.bold(&theme.fg("accent", "rab")));
         lines.push(String::new());
 
         let rendered = render_messages(
@@ -1318,6 +1303,7 @@ mod tests {
             settings: crate::agent::settings::Settings::default(),
             context_files: vec![],
             skills: vec![],
+            model_supports_reasoning: true,
         };
 
         let mut app = App::new(config, session);
@@ -1362,6 +1348,7 @@ mod tests {
             settings: crate::agent::settings::Settings::default(),
             context_files: vec![],
             skills: vec![],
+            model_supports_reasoning: true,
         };
 
         let mut app = App::new(config, session);
@@ -1400,6 +1387,7 @@ mod tests {
             settings: crate::agent::settings::Settings::default(),
             context_files: vec![],
             skills: vec![],
+            model_supports_reasoning: true,
         };
 
         let mut app = App::new(config, session);
@@ -1446,6 +1434,7 @@ mod tests {
             settings: crate::agent::settings::Settings::default(),
             context_files: vec![],
             skills: vec![],
+            model_supports_reasoning: true,
         };
 
         let mut app = App::new(config, session);
@@ -1482,6 +1471,7 @@ mod tests {
             settings: crate::agent::settings::Settings::default(),
             context_files: vec![],
             skills: vec![],
+            model_supports_reasoning: true,
         };
 
         let mut app = App::new(config, session);
@@ -1518,6 +1508,7 @@ mod tests {
             settings: crate::agent::settings::Settings::default(),
             context_files: vec![],
             skills: vec![],
+            model_supports_reasoning: true,
         };
 
         let mut app = App::new(config, session);
@@ -1554,6 +1545,7 @@ mod tests {
             settings: crate::agent::settings::Settings::default(),
             context_files: vec![],
             skills: vec![],
+            model_supports_reasoning: true,
         };
 
         let mut app = App::new(config, session);
@@ -1594,6 +1586,7 @@ mod tests {
             settings: crate::agent::settings::Settings::default(),
             context_files: vec![],
             skills: vec![],
+            model_supports_reasoning: true,
         };
 
         let mut app = App::new(config, session);
@@ -1679,6 +1672,7 @@ mod tests {
             settings: crate::agent::settings::Settings::default(),
             context_files: vec![],
             skills: vec![],
+            model_supports_reasoning: true,
         };
 
         let mut app = App::new(config, session);
@@ -1730,6 +1724,7 @@ mod tests {
             settings: crate::agent::settings::Settings::default(),
             context_files: vec![],
             skills: vec![],
+            model_supports_reasoning: true,
         };
 
         let mut app = App::new(config, session);
@@ -1781,6 +1776,7 @@ mod tests {
             settings: crate::agent::settings::Settings::default(),
             context_files: vec![],
             skills: vec![],
+            model_supports_reasoning: true,
         };
 
         let mut app = App::new(config, session);
@@ -1848,6 +1844,7 @@ mod tests {
             settings: crate::agent::settings::Settings::default(),
             context_files: vec![],
             skills: vec![],
+            model_supports_reasoning: true,
         };
 
         let mut app = App::new(config, session);
@@ -1950,6 +1947,7 @@ mod tests {
         let config = AppConfig {
             available_models: vec!["model".into()],
             model: "model".into(),
+            model_supports_reasoning: true,
             ..make_config(cwd.clone())
         };
         let mut app = App::new(config, session);
@@ -1981,6 +1979,7 @@ mod tests {
         let config = AppConfig {
             available_models: vec!["A".into(), "B".into(), "C".into()],
             model: "A".into(),
+            model_supports_reasoning: true,
             ..make_config(cwd.clone())
         };
         let mut app = App::new(config, session);
@@ -2003,6 +2002,7 @@ mod tests {
         let config = AppConfig {
             available_models: vec!["A".into(), "B".into(), "C".into()],
             model: "A".into(),
+            model_supports_reasoning: true,
             ..make_config(cwd.clone())
         };
         let mut app = App::new(config, session);
@@ -2171,6 +2171,7 @@ mod tests {
             settings: crate::agent::settings::Settings::default(),
             context_files: vec![],
             skills: vec![],
+            model_supports_reasoning: false,
         }
     }
 }

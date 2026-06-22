@@ -229,6 +229,7 @@ async fn main() -> anyhow::Result<()> {
             settings,
             context_files: context_file_names,
             skills,
+            model_supports_reasoning: true,
         };
         ui::run(config, session).await
     } else {

@@ -1,262 +1,231 @@
-## Built-in tool rendering - match pi 1/1
+# Pi vs Rab — Message Rendering Gap Analysis
 
-### Per-tool call rendering (renderCall)
-
-Each tool should have a custom renderCall matching pi's format, instead of the current generic name+args display.
-
-| Tool | pi format | rab (current) |
-|------|-----------|---------------|
-| **read** | `bold("read") + accent(path) + warning(":start-end")` - compact mode: `"read docs label"`, `"read resource label"`, `"[skill] label"` | `bold("read") + "  " + {truncated JSON args}` |
-| **bash** | `bold("$ command") + muted(timeout)` | ✅ already done |
-| **edit** | `bold("edit") + accent(path)` - with `renderShell: "self"` + inline diff preview | `bold("edit") + "  " + {truncated JSON args}` |
-| **write** | `bold("write") + accent(path) + dim(" (N lines)")` | `bold("write") + "  " + {truncated JSON args}` |
-| **grep** | `bold("grep") + accent("/pattern/") + toolOutput(" in path") + optional glob/limit` | `bold("grep") + "  " + {truncated JSON args}` |
-| **find** | `bold("find") + accent(pattern) + toolOutput(" in path") + optional limit` | `bold("find") + "  " + {truncated JSON args}` |
-| **ls** | `bold("ls") + accent(path) + optional limit` | `bold("ls") + "  " + {truncated JSON args}` |
-
-### Per-tool result rendering (renderResult)
-
-Each tool should format its result matching pi's visual style.
-
-| Tool | pi format | rab (current) |
-|------|-----------|---------------|
-| **read** | Syntax-highlighted code + `"N more lines (to expand)"` + truncation warnings | Just raw content |
-| **bash** | Output preview (5 lines collapsed) + `"Elapsed/Took X.Xs"` + expand hint + truncation | Just raw content (no timing) |
-| **edit** | Unified diff (additions green, removals red) | Just raw content |
-| **write** | Syntax-highlighted preview | Just raw content |
-| **grep** | Output lines (15 collapsed) + `"N more lines (to expand)"` + truncation warnings | Just raw content |
-| **find** | File list (20 collapsed) + `"N more lines (to expand)"` + truncation warnings | Just raw content |
-| **ls** | Directory listing (20 collapsed) + `"N more lines (to expand)"` + truncation warnings | Just raw content |
-
-### ⚠️ Implementation strategy
-
-- [ ] **Phase 1**: Add `DisplayMsg` variants for each tool call with structured args (path, pattern, etc.) so rendering can extract fields instead of raw JSON
-- [ ] **Phase 2**: Add `DisplayMsg` variants for each tool result with structured details (truncation, diff, timing)
-- [ ] **Phase 3**: Implement per-tool `renderCall` formatting in `render_messages()` - match pi's `toolTitle` bold name + `accent` path/pattern + `toolOutput`/`warning` decorations
-- [ ] **Phase 4**: Implement per-tool `renderResult` formatting - syntax highlighting for read/write, diff for edit, output preview with expand hint + truncation warnings for all
-- [ ] **Phase 5**: Support `renderShell: "self"` for edit tool - edit renders its own Box with inline diff preview, no outer Box
-- [ ] **Phase 6**: Align BashExecution component - add timing info (`Elapsed`/`Took X.Xs`), keybinding hints (`keyHint`), width-aware visual truncation (`truncateToVisualLines` instead of simple wrap)
-
-### TuiBox cache fix
-
-- [ ] Fix `TuiBox` render cache - currently has cache fields but `render(&self)` can't write to them. Use `RefCell` or switch to interior mutability pattern.
+This document catalogs all gaps between pi's message rendering and rab's current implementation. The goal is 1:1 parity.
 
 ---
 
-## Markdown rendering - planned
+## 1. Message Types — DisplayMsg Enum
 
-### Approach
-- **Parser**: `pulldown-cmark` - fast, zero-copy, event-based iterator, used by cargo doc
-- **Syntax highlighting**: `syntect` - same engine as bat/delta/broot, ~250 grammars, ~1 MiB binary cost
+### Missing Message Types
 
-### New: `src/tui/components/markdown.rs`
-- `Markdown` component impl (analogous to pi's `packages/tui/src/components/markdown.ts`)
-  - Parses with pulldown-cmark event iterator
-  - Two-phase: (1) render tokens → styled ANSI lines, (2) wrap + pad + bg
-  - Style reapplication: emit parent style prefix after inline resets (matching pi)
-  - Cache rendered output by text+width
-- `MarkdownTheme` struct with `Arc<dyn Fn(&str) -> String>` fields for each element type (heading, link, code, etc.)
-- `DefaultTextStyle` - base fg color + decorations (bold/italic/etc.)
-- `MarkdownOptions` - `preserve_ordered_list_markers`
-- `get_markdown_theme()` factory in `src/agent/ui/theme.rs` using RabTheme colors + syntect
+| Pi Type | Pi Component / Style | Rab Status |
+|---------|---------------------|------------|
+| **CustomMessage** | Purple bg (`customMessageBg`), `[customType]` label in `customMessageLabel`, body in `customMessageText`, optional custom renderer | ❌ Missing entirely |
+| **CompactionSummaryMessage** | Same purple bg, collapsible, `[compaction]` label, token count, summary text | ❌ Missing entirely |
+| **BranchSummaryMessage** | Same purple bg, collapsible, `[branch]` label, summary text | ❌ Missing entirely |
+| **SkillInvocationMessage** | Same purple bg, collapsible, `[skill]` label, skill name + content | ❌ Missing entirely |
+| **BashExecution** (standalone `!` command) | Border with `bashMode` color, `$ command` header, spinner, expand/collapse preview, exit code, cancellation, truncation warnings | ❌ Missing entirely (different from bash tool calls) |
 
-### Supported elements (1/1 with pi)
-- **Block**: headings (h1-h6), paragraphs, fenced code blocks (with syntax highlighting), lists (ordered/unordered, nested, task items), blockquotes (nested block tokens, "│ " prefix), tables (width-aware column sizing, cell wrapping, box-drawing borders), horizontal rules, HTML (plain text)
-- **Inline**: bold, italic, codespan, links (OSC 8 hyperlinks where supported, else inline URL), strikethrough, line breaks
+### Existing Message Types — Gaps
 
-### Integration in `src/agent/ui/messages.rs`
-| Current message type | New rendering |
-|---|---|
-| `DisplayMsg::User` | `Box(1,1, userMessageBg)` → `Markdown(0,0, mdTheme, {color: userMessageText})` |
-| `DisplayMsg::AssistantText` | `Markdown(1,0, mdTheme)` - no bg, left padding only |
-| `DisplayMsg::Thinking` | `Markdown(1,0, mdTheme, {color: thinkingText, italic: true})` |
-
-### Phases
-
-- [x] **Phase 1**: Core Markdown component with pulldown-cmark ✅
-- [x] **Phase 2**: Theme integration ✅
-- [x] **Phase 3**: Syntax highlighting with syntect (optional feature gate) ✅
-- [x] **Phase 4**: Integrate into messages.rs ✅
-- [x] **Phase 5**: Tables ✅
-- [x] **Phase 6**: Tests ✅
+| Pi Type | Pi Rendering Detail | Rab Gap |
+|---------|-------------------|---------|
+| **UserMessage** | `Box` with `userMessageBg` background, markdown in `userMessageText` color, `preserveOrderedListMarkers` option, OSC133 zones | ✅ Mostly matched. Check OSC133 compatibility |
+| **AssistantText** | `Markdown` component with `MarkdownTheme`, no background, paddingY=0, OSC133 zones | ✅ Mostly matched. Check OSC133 |
+| **Thinking** (expanded) | `Markdown` in `thinkingText` color + italic, rendered inside `Box` with `thinking_bg` | ⚠️ Rab uses `thinking_bg` (derived) but pi uses inline `Markdown` with per-block style overrides. Rab puts content in Box; pi puts Markdown without Box but applies italic+color |
+| **Thinking** (hidden) | Single line: `italic(fg("thinkingText", label))`, no background | ⚠️ Rab uses `thinking_bg` background on hidden label; pi does NOT use background for hidden thinking |
+| **ToolCall** | Per-tool custom renderer via `renderCall()` — different for read, write, edit, bash, ls | ❌ Generic rendering only |
+| **ToolResult** | Per-tool custom renderer via `renderResult()` — changes bg color based on `isPartial`, `isError`, has expand/collapse | ❌ Generic rendering only |
 
 ---
 
-## Chat/UX gaps vs pi
+## 2. Per-Tool Rendering
 
-### ✅ Completed - Missing app actions (all 10 implemented)
+### read tool
 
-| Action | Key | Status |
-|--------|-----|--------|
-| `app.clear` | Ctrl+C | ✅ Clear editor, double-press exits |
-| `app.suspend` | Ctrl+Z | ✅ Forwarded to shell |
-| `app.thinking.cycle` | Shift+Tab | ✅ Cycles: off → low → medium → high → xhigh |
-| `app.model.cycleForward` | Ctrl+P | ✅ Cycles forward through available models |
-| `app.model.cycleBackward` | Shift+Ctrl+P | ✅ Cycles backward through available models |
-| `app.tools.expand` | Ctrl+O | ✅ Toggles all tool output expansion |
-| `app.editor.external` | Ctrl+G | ✅ Opens $VISUAL/$EDITOR, restores content on exit |
-| `app.message.followUp` | Alt+Enter | ✅ Queues message while streaming |
-| `app.message.dequeue` | Alt+Up | ✅ Restores queued messages to editor |
-| `app.thinking.toggle` | Ctrl+T | ✅ Keep existing toggle thinking visibility |
+| Aspect | Pi | Rab |
+|--------|----|-----|
+| Compact labels | `read docs docs/README.md`, `read skill my-skill`, `read resource to/AGENTS.md` with `dim` expand hint | ❌ Not rendered to UI (compact label returned in ToolOutput but not rendered with proper styling) |
+| Syntax highlighting | Full syntax highlight with theme colors | ❌ Not rendered |
+| Line range | `path:1-50` in `warning` color after path | ❌ Not rendered |
+| Result content | Syntax-highlighted lines, trimmed trailing empties, truncation notices | ❌ Shown as plain text |
+| Expand/collapse | "X more lines" with key hint | ❌ Not implemented |
 
-### ✅ Completed - Message rendering polish
+### write tool
 
-| Item | Status |
-|------|--------|
-| Tool output expand/collapse (BashExecution) | ✅ Preview truncation, first N lines when collapsed |
-| Visual truncation of long output lines | ✅ Each line capped at 200 chars |
-| Expand/collapse toggle (Ctrl+O) | ✅ Toggles all tool outputs |
-| OSC 133 zone markers | ✅ Already present in messages.rs |
+| Aspect | Pi | Rab |
+|--------|----|-----|
+| Syntax highlighting | Full incremental syntax highlighting during streaming | ❌ Not implemented |
+| Line count | Shows total lines, preview lines | ❌ Not rendered |
+| Result (success) | No output (green bg transition) | ❌ Not implemented |
+| Expand/collapse | "X more lines" with key hint | ❌ Not implemented |
 
-### ✅ Completed - Chat scrolling
+### edit tool
 
-| Item | Status |
-|------|--------|
-| PageUp | ✅ Scroll up (increase scroll_offset) |
-| PageDown | ✅ Scroll down (decrease scroll_offset) |
-| Scroll indicator | ✅ "↑ N more" shown when scrolled |
-| Reset on submit | ✅ scroll_offset reset to 0 on new message |
+| Aspect | Pi | Rab |
+|--------|----|-----|
+| Diff preview | Async computed diff with `renderShell: "self"`, shown inline while waiting for execution | ❌ Not implemented |
+| Intra-line diff | Word-level diff with inverse highlighting on changed tokens | ❌ Not implemented |
+| Color | Added lines in `toolDiffAdded`, removed in `toolDiffRemoved`, context in `toolDiffContext` | ❌ Not implemented |
+| Status bg | Pending → success (green) → error (red) bg transition | ❌ Not implemented |
 
+### bash tool
 
-### 🟡 Missing - Slash commands (14 of 22 pi built-ins not implemented)
+| Aspect | Pi | Rab |
+|--------|----|-----|
+| Tool call display | `$ command` with `toolTitle` + bold, timeout suffix in `muted` | ❌ Renders as generic tool call |
+| Streaming output | Preview truncation (last 5 lines when collapsed), elapsed timer updates every 1s | ❌ Not rendered to UI during streaming |
+| Result display | Syntax-highlighted (no), output in `toolOutput` color, preview truncation with width-aware visual truncation | ❌ Generic rendering |
+| Duration | "Took 2.3s" or "Elapsed 5.1s" during streaming | ❌ Not rendered |
+| Truncation warnings | Full output path, truncated line/byte counts | ❌ Not rendered |
 
-#### Priority: high (core UX parity)
-- [ ] `/settings` - Open settings menu/overlay
-- [ ] `/export` - Export session (HTML default, or specify path: .html/.jsonl)
-- [ ] `/import` - Import and resume a session from a JSONL file
-- [ ] `/copy` - Copy last assistant message to clipboard
-- [ ] `/compact` - Manually compact the session context
-- [ ] `/changelog` - Show changelog entries overlay
+### ls tool
 
-#### Priority: medium
-- [ ] `/scoped-models` - Enable/disable models for Ctrl+P cycling
-- [ ] `/fork` - Create a new fork from a previous user message
-- [ ] `/clone` - Duplicate the current session at the current position
-- [ ] `/trust` - Save project trust decision for future sessions
-- [ ] `/login` - Configure provider authentication (→ login-dialog overlay)
-- [ ] `/logout` - Remove provider authentication
-
-#### Priority: low
-- [ ] `/share` - Share session as a secret GitHub gist
-- [ ] `/tree` - Navigate session tree (→ session-selector overlay)
-
-### 🟡 Deferred - Session management (complex, needs more architecture)
-
-- [ ] `app.session.new` - Start a new session (→ `/new` exists, needs app action)
-- [ ] `app.session.tree` - Open session tree selector (→ `/tree`)
-- [ ] `app.session.fork` - Fork current session (→ `/fork`)
-- [ ] `app.session.resume` - Resume a session (→ `/resume` exists)
-- [ ] `app.session.toggleNamedFilter` - Toggle named session filter
-
-### 🟡 Deferred - Image support (complex, scoped out)
-
-- [ ] `app.clipboard.pasteImage` - Paste clipboard image as attachment
-- [ ] Image support in multimodal payload
-
-### 🟡 Deferred - Overlays (all missing)
-
-- [ ] `config-selector` - pick from stored configs
-- [ ] `theme-selector` - pick theme
-- [ ] `session-selector` - tree view of sessions
-- [ ] `first-time-setup` - guided setup on first run
-- [ ] `changelog` - what's new since last version
-- [ ] `login-dialog` - OAuth login
-- [ ] `oauth-selector` - pick OAuth provider
-
-### ✅ Completed - Footer improvements
-
-- [x] Auto-compact toggle (`app.compact.toggle`, Ctrl+Shift+C) with styled ⚡ indicator
-- [x] Narrow terminal protection - graceful truncation with priority: dot > model > stats
-- [x] Extension status line - verified working, truncated to width
-
-### ✅ Completed - Editor & input (pi-aligned 1/1)
-
-- [x] Auto-trigger slash commands on `/` - shows autocomplete as soon as `/char` is typed
-- [x] Check autocomplete after external editor restore and dequeue restore
-- [x] **ChatEditor fully aligned to pi's CustomEditor** - text-editing keys (Ctrl+Z undo, Ctrl+J newline, Up/Down history, Tab, PageUp/PageDown) delegate to inner Editor; only app-level actions (interrupt, exit, model selector, help, etc.) intercepted
-- [x] **Ctrl+Z → undo** (not suspend) - `ACTION_EDITOR_UNDO` processed by Editor, matching pi
-- [x] **Up/Down history** - handled by Editor's internal history with pi-compatible condition (`is_first_visual_line() && (is_empty() || history_index >= 0 || cursor_col == 0)`)
-- [x] **Tab completion** - wired through `CombinedAutocompleteProvider` (slash commands + file paths), `AutocompleteProvider` trait, matching pi
-- [x] **Backslash+Enter continuation** - `\`+Enter inserts newline instead of submitting (pi-style)
-- [x] **Enter delegates to Editor's submit()** - proper state cleanup (paste markers cleared, undo stack cleared, history browsing exited, `last_action` reset)
-- [x] **Empty Enter submits empty string** - matches pi's `submitValue()` behavior
-- [x] **`disable_submit` flag respected** - Editor handles it before submit
-- [x] **`is_first_visual_line` uses visual lines** - stores `last_width` during render, computes visual line positions via `layout_text()`, matching pi's `buildVisualLineMap`
-- [x] **`exit_history()` no longer clears undo stack** - fixes pre-existing bug where undo was impossible
-- [x] **`on_submit` callback is `Send`** - for future thread-safe callback use
-
-### 🟡 Deferred - Editor & input (image-blocked)
-
-- [ ] Paste image from clipboard (blocked on image support)
-
-### 🟡 Deferred - Other
-
-- [ ] Suspend/resume (Ctrl+Z → `kill -CONT`) - needs TTY save/restore
-- [ ] Debug key (Shift+Ctrl+D)
-- [ ] Keybinding hints in header (dynamic, based on context)
-- [ ] Proper chat scrolling with viewport management (terminal natural scrolling)
-
-### 🐛 Bugs
-
-- [ ] File autocomplete skips `/` for files in folders (e.g. `src/` shows files without `src/` prefix). Fix: implement relative path building matching pi's logic — when prefix ends with `/`, concatenate directly; when prefix contains `/`, use dirname.
-- [ ] Ctrl+T (thinking toggle) and Ctrl+O (tools expand) state doesn't persist across sessions
-- [ ] Slow rendering and typing for long chats
-- [x] Duplicate line in editor when typing line longer than screen width
-  - Fixed: visual column tracking in `layout_text` (byte-pos → visual-col),
-    Screen `hardware_cursor_row` sync after TUI cursor repositioning,
-    comprehensive regression tests added
-
-
+| Aspect | Pi | Rab |
+|--------|----|-----|
+| Call display | `ls path` with `toolTitle` + bold, optional `(limit N)` | ❌ Not implemented |
+| Result display | `toolOutput` color, preview truncation, entry limit warning | ❌ Not implemented |
 
 ---
 
-## tools
-- [ ] check tool execution modes in pi, parallel, sequence, ... and compare with rab
+## 3. Rendering Features
+
+### OSC133 Terminal Zones
+
+Pi wraps user and assistant messages with `\x1b]133;A\x07` (start) and `\x1b]133;B\x07\x1b]133;C\x07` (end) sequences for terminal selection integration (iTerm2, Kitty, etc.).
+
+**Rab**: ✅ Matched in `messages.rs` for User and AssistantText DisplayMsgs. Check that BashExecution, ToolCall, ToolResult, Thinking also need them (pi only applies to user + assistant).
+
+### Thinking Block — Hide/Show Toggle
+
+Pi toggles between:
+- **Visible**: Markdown in `thinkingText` + italic, optional background
+- **Hidden**: Single line `italic(fg("thinkingText", label))` (no background)
+
+**Rab**: Uses `thinking_bg` background on the hidden label — pi does NOT. Rab needs to match pi's exact hidden style.
+
+### Tool Expand/Collapse
+
+Pi has a global `toolOutputExpanded` toggle (keybinding `app.tools.expand`) that:
+1. Toggles all `Expandable` components in the chat
+2. Changes the header between compact/expanded states
+3. Affects tool call renderers (`options.expanded`)
+4. Persists to settings
+5. Affects read/write/edit/bash/ls preview lengths
+6. Affects diff preview display
+
+**Rab**: Has `collapse_tool_output` / `tools_expanded` but doesn't propagate to component-level expand/collapse. No per-component expandable interface.
+
+### Editor Border Color
+
+Pi sets editor border color to:
+- `thinkingOff`..`thinkingXhigh` based on current thinking level
+- `bashMode` color when editor starts with `!`
+
+**Rab**: ❌ Not implemented. Editor border is always default color.
+
+### Status Line Deduplication
+
+Pi's `showStatus()`:
+- Checks if the last two children are a Spacer + a status Text
+- If so, **mutates** the last Text instead of appending
+- This prevents consecutive status messages from accumulating
+
+**Rab**: Has `status_text` field but it's a single text, cleared after each render. Not quite the same — pi tracks pair of (spacer, text) and reuses them.
+
+### Queued Messages Display
+
+Pi renders queued messages between chat and editor as dim text with ◷ prefix and "↳ queued" hint.
+
+**Rab**: ✅ Implemented in `compose_ui`.
+
+### Markdown — codeBlockIndent
+
+Pi passes `codeBlockIndent` from settings through `MarkdownTheme`:
+```typescript
+codeBlockIndent: this.settingsManager.getCodeBlockIndent(),
+```
+
+**Rab**: ❌ Not in `MarkdownTheme`. Need to add.
+
+### Loaded Resources Header
+
+Pi shows an `ExpandableText` header with startup info: logo, keybinding hints, compact/expanded expansion state, "Pi can explain..." onboarding text.
+
+**Rab**: Shows simple "rab" logo header. No keybinding hints, no expansion, no onboarding.
+
+### Loaded Resources Listing
+
+Pi shows loaded context files, skills, prompts, extensions, themes in the chat as collapsible sections.
+
+**Rab**: ❌ Not implemented.
 
 ---
 
-## Agent framework
-- [ ] `adapter/genai.rs` - multiple backends (Anthropic, OpenAI, Google, Ollama)
-- [ ] `compaction.rs` - context window compaction
-- [ ] Hook pipeline - `before_tool_call`, `after_tool_call`, `CancellationToken`
-- [ ] Steering / follow-up queues - runtime message injection
-- [ ] Tool execution modes - sequential mode
-- [ ] `~/.rab/models.json` - custom provider/model definitions
-- [ ] Image support - multimodal payload
-- [ ] `rab plugin new` - scaffold extension crate
+## 4. Missing Theme Colors / Tokens
+
+Pi dark.json has 44 color tokens. Rab's theme covers most but is missing:
+
+| Token | Pi Usage | Rab |
+|-------|----------|-----|
+| `customMessageBg` | Background for custom/compaction/branch/skill messages (#2d2838) | ❌ Missing |
+| `customMessageText` | Text color for custom messages | ❌ Missing |
+| `customMessageLabel` | Label color for `[skill]`, `[compaction]`, `[branch]` (#9575cd) | ❌ Missing |
+| `toolDiffAdded` | Added lines in diff (green) | ❌ Missing |
+| `toolDiffRemoved` | Removed lines in diff (red) | ❌ Missing |
+| `toolDiffContext` | Context lines in diff (gray) | ❌ Missing |
+| `bashMode` | Bash command border color (green) | ❌ Missing |
+| `thinkingOff` | Thinking level border color (darkGray) | ❌ Missing |
+| `thinkingMinimal` | Thinking level border color (#6e6e6e) | ❌ Missing |
+| `thinkingLow` | Thinking level border color (#5f87af) | ❌ Missing |
+| `thinkingMedium` | Thinking level border color (#81a2be) | ❌ Missing |
+| `thinkingHigh` | Thinking level border color (#b294bb) | ❌ Missing |
+| `thinkingXhigh` | Thinking level border color (#d183e8) | ❌ Missing |
+| `syntaxComment` | Syntax highlighting (#6A9955) | ❌ Missing |
+| `syntaxKeyword` | Syntax highlighting (#569CD6) | ❌ Missing |
+| `syntaxFunction` | Syntax highlighting (#DCDCAA) | ❌ Missing |
+| `syntaxVariable` | Syntax highlighting (#9CDCFE) | ❌ Missing |
+| `syntaxString` | Syntax highlighting (#CE9178) | ❌ Missing |
+| `syntaxNumber` | Syntax highlighting (#B5CEA8) | ❌ Missing |
+| `syntaxType` | Syntax highlighting (#4EC9B0) | ❌ Missing |
+| `syntaxOperator` | Syntax highlighting (#D4D4D4) | ❌ Missing |
+| `syntaxPunctuation` | Syntax highlighting (#D4D4D4) | ❌ Missing |
+| `mdCodeBlockBorder` | Code block border color (gray) | ❌ Missing |
+| `borderAccent` | Accent border (cyan) | ❌ Missing (has `border` only) |
+| `mdLinkUrl` | Link URL color (dimGray) | ❌ Missing |
+
+## 5. Streaming Gaps
+
+| Gap | Description |
+|-----|-------------|
+| Progressive assistant message | Pi uses a persistent `StreamingComponent` (AssistantMessageComponent) that gets updated via `message_update` events. Rab flushes text as atomic `AssistantText` blocks, losing ability to update in-place |
+| Pending thinking rendering | Pi renders thinking content with background color during streaming. Rab renders as simple text without background when flushed |
+| Tool execution progress | Pi updates tool execution components via `tool_execution_update` events. Rab's tool results arrive as final results only |
+| Elapsed timer | Pi's bash tool has a 1-second interval timer updating elapsed time during execution. Rab doesn't track elapsed time |
+
+## 6. Architecture Gaps
+
+| Gap | Pi | Rab |
+|-----|----|-----|
+| `Expandable` interface | Components implement `setExpanded(boolean)` for global toggle | ❌ No such interface |
+| `renderShell: "self"` | Edit tool controls its own framing (box, borders) | ❌ Tool renderers can't self-frame |
+| `ToolRenderContext` | Rich context: `args`, `toolCallId`, `cwd`, `executionStarted`, `argsComplete`, `isPartial`, `expanded`, `showImages`, `isError`, `state`, `invalidate()` | ❌ Not available in rab's ToolOutput model |
+| `renderCall()` + `renderResult()` | Each tool provides two render functions returning `Component` objects | ⚠️ Rab has `render_call()` / `render_result()` on `AgentTool` but they return plain strings, not components |
+| Component reuse | Pi reuses `Text` components across renders (passes `lastComponent`), enabling incremental updates (write tool, bash timer) | ❌ Components not reused between renders |
+| Async diff rendering | Edit tool computes diff asynchronously and renders result in-place via `invalidate()` | ❌ Not implemented |
 
 ---
 
-## pi-tui alignment - ✅ COMPLETE
+## Summary Priority
 
-All 6 phases of the pi-tui alignment are implemented. 429 tests pass. 27 modules cover all scoped pi-tui functionality (excluding images, Markdown, and Kitty protocol which were scoped out).
+### High (visible to user, day-to-day interaction)
+1. Per-tool rendering: read (compact labels, syntax), bash (`$ command`, elapsed, timeout), edit (diff preview), write (syntax), ls
+2. Proper tool bg transitions: pending→success(green)→error(red)
+3. Editor border color: thinking level + bash mode
+4. Status line dedup (no accumulation of "Cleared", "Tool output: collapsed", etc.)
+5. Missing theme tokens: `toolDiffAdded/Removed/Context`, `bashMode`, `customMessage*`, thinking level colors, syntax colors
+6. Thinking block expanded/collapsed toggle (hide → label without bg)
 
-- **Core framework**: TUI struct, overlay system, focus management, Screen diff renderer, cursor marker extraction
-- **Terminal**: `TerminalTrait`, `ProcessTerminal`, Kitty keyboard protocol (flags 1+2+4), bracketed paste, progress indicator, `drainInput()`, `setTitle()`
-- **Keys & keybindings**: String-based key IDs, 27 action IDs, JSON config loading, all components migrated
-- **Utilities**: Width caching, `applyBackgroundToLine`, `extractSegments`, `CJK_BREAK_REGEX`, `WordNavigationOptions`, `PUNCTUATION_CHARS`
-- **Components**: Editor (paste markers, undo coalescing, sticky column, character jump, history draft, `border_color`, autocomplete), Input, SelectList, SettingsList, Loader, CancellableLoader, Box, Text, TruncatedText - all 1/1 with pi
-- **Autocomplete**: `AutocompleteProvider` trait, `CombinedAutocompleteProvider` (slash commands + file paths)
-- **Overlays**: HelpOverlay, ModelSelector via `TUI.show_overlay()`
+### Medium (nice-to-have, completeness)
+7. Custom message component (for extensions)
+8. Compaction/branch/skill message components
+9. OSC133 zones on all message types (or ensure they're applied correctly)
+10. Expandable interface with global toggle for all message types
+11. Loaded resources header with expand/collapse
+12. Streaming assistant message progressive updates (not atomic flush)
 
-### TUI - ✅ complete
-- [x] App loop uses `ProcessTerminal` + `TerminalTrait` (no direct crossterm)
-- [x] Color scheme notifications (OSC 2031)
-
----
-
-## ✅ Done
-- [x] System prompt (AGENTS.md/CLAUDE.md, SYSTEM.md, APPEND_SYSTEM.md, project context)
-- [x] Context file discovery
-- [x] Skills loading and `/skill:name` expansion
-- [x] CLI flags (`--no-context-files`, `--system-prompt`, `--append-system-prompt`)
-- [x] Startup resource listing
-- [x] Built-in tools (bash, read, write, edit) - behavioral 1/1 with pi
-- [x] Thinking message rendering with per-level colors
-- [x] **Complete pi-tui alignment** - 27 modules, $\ge$ 429 tests, all 6 phases
-- [x] **Missing app actions (11)** - clear, suspend, thinking cycle, model cycle, tools expand, external editor, follow-up, dequeue, compact toggle
-- [x] **Message rendering polish** - tool output preview truncation, visual line truncation, expand/collapse
-- [x] **Chat scrolling** - PageUp/PageDown, scroll indicator, reset on submit
-- [x] **Footer improvements** - auto-compact toggle, narrow terminal protection, extension status line
-- [x] **Editor & input** - auto-trigger slash autocomplete on `/`
-- [ ] Write logging (`PI_TUI_WRITE_LOG`) - optional, defer
+### Low (polish)
+13. codeBlockIndent in markdown theme
+14. Async edit diff rendering
+15. Elapsed timer during bash execution
+16. Per-component `lastComponent` reuse for incremental updates
