@@ -8,7 +8,7 @@ use std::time::Duration;
 use crate::agent::extension::{AgentTool, Extension};
 use crate::agent::provider::{Provider, ToolDef};
 use crate::agent::session::SessionManager;
-use crate::agent::types::{AgentMessage, Usage};
+use crate::agent::types::{AgentMessage, PendingMessageQueue, QueueMode, ToolExecutionMode, Usage};
 use crate::agent::ui::chat_editor::{ChatEditor, InputAction};
 use crate::agent::ui::components::EditorComponent;
 use crate::agent::ui::components::FooterComponent;
@@ -49,6 +49,8 @@ pub struct AppConfig {
     pub settings: crate::agent::settings::Settings,
     /// Context files (AGENTS.md / CLAUDE.md) loaded for the session.
     pub context_files: Vec<String>,
+    /// Tool execution mode (parallel by default).
+    pub tool_execution: ToolExecutionMode,
     /// Skills loaded for the session (used for /skill:name expansion).
     pub skills: Vec<crate::agent::Skill>,
     /// Whether the current model supports reasoning (for showing thinking level in footer).
@@ -158,8 +160,14 @@ pub struct App {
     /// Extensions.
     extensions: Arc<Vec<Box<dyn Extension>>>,
 
-    /// Messages queued while streaming - submitted when current response finishes.
-    queued_messages: Vec<String>,
+    /// Steering queue: messages delivered after current turn's tool calls finish,
+    /// before the next LLM call. Shared with the agent loop.
+    steering_queue: Arc<std::sync::Mutex<PendingMessageQueue>>,
+    /// Follow-up queue: messages delivered only after the agent has no more
+    /// tool calls (fully idle). Shared with the agent loop.
+    follow_up_queue: Arc<std::sync::Mutex<PendingMessageQueue>>,
+    /// Tool execution mode (parallel by default).
+    tool_execution: ToolExecutionMode,
 
     /// Skills loaded for the session (/skill:name expansion).
     skills: Vec<crate::agent::Skill>,
@@ -299,7 +307,13 @@ impl App {
             working: WorkingIndicator::new(),
             agent_tools: Arc::new(config.agent_tools),
             extensions: Arc::new(config.extensions),
-            queued_messages: Vec::new(),
+            steering_queue: Arc::new(std::sync::Mutex::new(PendingMessageQueue::new(
+                QueueMode::OneAtATime,
+            ))),
+            follow_up_queue: Arc::new(std::sync::Mutex::new(PendingMessageQueue::new(
+                QueueMode::OneAtATime,
+            ))),
+            tool_execution: config.tool_execution,
             skills: config.skills,
             settings: config.settings,
             auto_compact: true,
@@ -545,15 +559,42 @@ fn compose_ui(app: &mut App, width: usize) {
     app.status_section.set_lines(status_lines);
 
     // ── Queued messages (pi-style: shown between chat and editor) ──
+    // Shows both steering and follow-up queue contents.
     let mut queued_lines = Vec::new();
-    if !app.queued_messages.is_empty() {
-        for msg in &app.queued_messages {
-            let line = app.theme.fg("dim", &format!(" ◷ {}", msg));
-            queued_lines.push(crate::agent::ui::messages::pad_to_width(&line, width));
-        }
+    let steer_count = {
+        let q = app.steering_queue.lock().unwrap();
+        q.len()
+    };
+    let follow_count = {
+        let q = app.follow_up_queue.lock().unwrap();
+        q.len()
+    };
+    if steer_count > 0 {
+        let line = app.theme.fg(
+            "dim",
+            &format!(
+                " ◷ {} steer message{} pending",
+                steer_count,
+                if steer_count == 1 { "" } else { "s" }
+            ),
+        );
+        queued_lines.push(crate::agent::ui::messages::pad_to_width(&line, width));
+    }
+    if follow_count > 0 {
+        let line = app.theme.fg(
+            "dim",
+            &format!(
+                " ◷ {} follow-up message{} pending",
+                follow_count,
+                if follow_count == 1 { "" } else { "s" }
+            ),
+        );
+        queued_lines.push(crate::agent::ui::messages::pad_to_width(&line, width));
+    }
+    if steer_count > 0 || follow_count > 0 {
         let hint = app
             .theme
-            .fg("dim", " ↳ queued - will send when current finishes");
+            .fg("dim", " ↳ Esc to abort, Alt+↑ to restore follow-ups");
         queued_lines.push(crate::agent::ui::messages::pad_to_width(&hint, width));
     }
     app.queued_section.set_lines(queued_lines);
@@ -826,12 +867,15 @@ fn handle_editor_external(app: &mut App) {
     }
 }
 
-/// Queue a follow-up message (Alt+Enter).
+/// Queue a follow-up message (Alt+Enter). Pushes to follow-up queue during streaming
+/// (delivered only after agent has no more tool calls). When idle, submits immediately.
 fn handle_follow_up(app: &mut App, text: String) {
-    // If streaming, queue the message
     if app.is_streaming {
-        app.queued_messages.push(text.clone());
-        app.status_text = Some("Message queued - will send when current response finishes".into());
+        app.follow_up_queue
+            .lock()
+            .unwrap()
+            .enqueue(AgentMessage::user(text));
+        app.status_text = Some("Message queued - will send when agent finishes".into());
     } else {
         // Not streaming - submit immediately
         submit_message(app, text);
@@ -839,16 +883,19 @@ fn handle_follow_up(app: &mut App, text: String) {
 }
 
 /// Restore queued messages to editor (Alt+Up).
+/// Restores from the follow-up queue (steering messages are consumed during streaming).
 fn handle_dequeue(app: &mut App) {
-    if app.queued_messages.is_empty() {
+    let mut queue = app.follow_up_queue.lock().unwrap();
+    if queue.is_empty() {
         app.status_text = Some("No queued messages to restore".into());
         return;
     }
 
-    let restored = app.queued_messages.join("\n\n");
-    let count = app.queued_messages.len();
-    app.queued_messages.clear();
-    app.editor.borrow_mut().editor.set_text(&restored);
+    let count = queue.len();
+    let all = queue.drain_all();
+    let restored: Vec<String> = all.iter().map(|m| m.content.clone()).collect();
+    let text = restored.join("\n\n");
+    app.editor.borrow_mut().editor.set_text(&text);
     app.editor.borrow_mut().check_autocomplete();
     app.status_text = Some(format!(
         "Restored {} queued message{}",
@@ -877,11 +924,18 @@ fn interrupt_streaming(app: &mut App) {
     app.working.stop();
     app.footer.borrow_mut().set_streaming(false);
 
-    if !app.queued_messages.is_empty() {
-        let queued = app.queued_messages.join("\n\n");
-        app.editor.borrow_mut().editor.set_text(&queued);
-        app.queued_messages.clear();
+    // Restore follow-up queue messages to editor (steering are mid-stream, not restorable)
+    let mut follow_up = app.follow_up_queue.lock().unwrap();
+    if !follow_up.is_empty() {
+        let all = follow_up.drain_all();
+        let text: Vec<String> = all.iter().map(|m| m.content.clone()).collect();
+        app.editor.borrow_mut().editor.set_text(&text.join("\n\n"));
+        app.queued_section.set_lines(vec![]);
     }
+    drop(follow_up);
+
+    // Also clear steering queue (consumed messages that were queued but not yet processed)
+    app.steering_queue.lock().unwrap().clear();
 
     app.status_text = Some("Interrupted".into());
 }
@@ -900,8 +954,9 @@ fn show_help_overlay(app: &mut App, tui: &mut TUI) {
     tui.show_overlay(Box::new(overlay), Default::default());
 }
 
-/// Submit or queue a user message. When streaming, queues instead of spawning
-/// a concurrent agent loop (matching pi's behavior).
+/// Submit or queue a user message. When streaming, pushes to the steering queue
+/// (delivered after current turn's tool calls finish, before next LLM call).
+/// When idle, starts a new agent loop immediately.
 fn submit_message(app: &mut App, message: String) {
     app.scroll_offset = 0;
     let trimmed = message.trim().to_string();
@@ -922,7 +977,10 @@ fn submit_message(app: &mut App, message: String) {
         );
         app.messages.push(DisplayMsg::User(expanded.clone()));
         if app.is_streaming {
-            app.queued_messages.push(expanded);
+            app.steering_queue
+                .lock()
+                .unwrap()
+                .enqueue(AgentMessage::user(expanded));
             return;
         }
         start_agent_loop(app, expanded);
@@ -953,8 +1011,11 @@ fn submit_message(app: &mut App, message: String) {
     app.messages.push(DisplayMsg::User(trimmed.clone()));
 
     if app.is_streaming {
-        // Queue - will be submitted when current response finishes (pi-style)
-        app.queued_messages.push(trimmed);
+        // Steering: delivered after current turn's tool calls finish, before next LLM call
+        app.steering_queue
+            .lock()
+            .unwrap()
+            .enqueue(AgentMessage::user(trimmed));
         return;
     }
 
@@ -971,6 +1032,9 @@ fn start_agent_loop(app: &mut App, message: String) {
     let history = app.conversation.clone();
     let agent_tools = Arc::clone(&app.agent_tools);
     let extensions = Arc::clone(&app.extensions);
+    let tool_execution = app.tool_execution;
+    let steering_queue = Arc::clone(&app.steering_queue);
+    let follow_up_queue = Arc::clone(&app.follow_up_queue);
 
     app.is_streaming = true;
     app.working.start();
@@ -1004,6 +1068,12 @@ fn start_agent_loop(app: &mut App, message: String) {
             tools,
             agent_tools: &agent_tools,
             extensions: &extensions,
+            tool_execution,
+            steering_queue: Some(&*steering_queue),
+            follow_up_queue: Some(&*follow_up_queue),
+            transform_context: None,
+            prepare_next_turn: None,
+            should_stop_after_turn: None,
         };
 
         let mut emit = |event: AgentEvent| {
@@ -1585,6 +1655,16 @@ fn handle_agent_event(app: &mut App, event: AgentEvent) {
                 }
             }
         }
+        AgentEvent::UserMessage { content } => {
+            // A queued message was injected by the agent loop (from steering or follow-up queue)
+            chat_add(
+                app,
+                std::boxed::Box::new(crate::agent::ui::components::UserMessageComponent::new(
+                    &content,
+                )),
+            );
+            app.messages.push(DisplayMsg::User(content));
+        }
         AgentEvent::Aborted { reason } => {
             // Show abort/error text inline in the streaming component (matches pi)
             if let Some(weak) = app.streaming_component.as_ref().and_then(|w| w.upgrade()) {
@@ -1626,11 +1706,10 @@ fn handle_agent_event(app: &mut App, event: AgentEvent) {
                     .accumulate_usage(last.usage.as_ref().unwrap());
             }
 
-            // Process next queued message (pi-style: batch-submit after current finishes)
-            if !app.queued_messages.is_empty() {
-                let next = app.queued_messages.remove(0);
-                start_agent_loop(app, next);
-            }
+            // Note: follow-up messages are handled internally by the agent loop
+            // (outer loop in run_agent_loop drains the follow-up queue).
+            // Queued messages from when the agent was idle will be submitted
+            // via the normal submit_message path on next user input.
         }
     }
 }
@@ -1791,6 +1870,7 @@ mod tests {
             context_files: vec![],
             skills: vec![],
             model_supports_reasoning: true,
+            tool_execution: ToolExecutionMode::Parallel,
         };
 
         let mut app = App::new(config, session);
@@ -1894,12 +1974,23 @@ mod tests {
         }
 
         // Queued messages - matches compose_ui
-        if !app.queued_messages.is_empty() {
-            for msg in &app.queued_messages {
-                let line = theme.fg("dim", &format!(" ◷ {}", msg));
-                lines.push(crate::agent::ui::messages::pad_to_width(&line, width));
+        let follow_msgs: Vec<String> = {
+            let q = app.follow_up_queue.lock().unwrap();
+            // Drain a copy: lock briefly, clone messages
+            // For the compose_ui test helper, we just read the count
+            if q.is_empty() {
+                vec![]
+            } else {
+                // Show placeholder based on queue count
+                vec![format!("◷ {} follow-up message(s) pending", q.len())]
             }
-            let hint = theme.fg("dim", " ↳ queued - will send when current finishes");
+        };
+        for msg in &follow_msgs {
+            let line = theme.fg("dim", &format!(" {}", msg));
+            lines.push(crate::agent::ui::messages::pad_to_width(&line, width));
+        }
+        if !follow_msgs.is_empty() {
+            let hint = theme.fg("dim", " ↳ queued");
             lines.push(crate::agent::ui::messages::pad_to_width(&hint, width));
         }
 
@@ -1938,20 +2029,21 @@ mod tests {
             context_files: vec![],
             skills: vec![],
             model_supports_reasoning: true,
+            tool_execution: ToolExecutionMode::Parallel,
         };
 
         let mut app = App::new(config, session);
 
         // Simulate streaming in progress
         app.is_streaming = true;
-        app.queued_messages.clear();
+        app.follow_up_queue.lock().unwrap().clear();
 
-        // Submit a message while streaming
+        // Submit a message while streaming (Enter during streaming = steering)
         submit_message(&mut app, "hello".into());
 
         assert!(
-            app.queued_messages.contains(&"hello".to_string()),
-            "Message should be queued when streaming"
+            !app.steering_queue.lock().unwrap().is_empty(),
+            "Message should be in steering queue when streaming"
         );
         assert!(
             app.is_streaming,
@@ -1983,10 +2075,11 @@ mod tests {
             context_files: vec![],
             skills: vec![],
             model_supports_reasoning: true,
+            tool_execution: ToolExecutionMode::Parallel,
         };
 
         let mut app = App::new(config, session);
-        app.queued_messages.clear();
+        app.follow_up_queue.lock().unwrap().clear();
 
         // Submit a message while NOT streaming
         submit_message(&mut app, "hello".into());
@@ -2022,27 +2115,27 @@ mod tests {
             context_files: vec![],
             skills: vec![],
             model_supports_reasoning: true,
+            tool_execution: ToolExecutionMode::Parallel,
         };
 
         let mut app = App::new(config, session);
-        app.queued_messages.push("queued-msg-1".into());
-        app.queued_messages.push("queued-msg-2".into());
+        app.follow_up_queue
+            .lock()
+            .unwrap()
+            .enqueue(AgentMessage::user("queued-msg-1"));
+        app.follow_up_queue
+            .lock()
+            .unwrap()
+            .enqueue(AgentMessage::user("queued-msg-2"));
 
         let lines = compose_ui_test(&mut app, 80);
 
         let all = lines.join("\n");
         assert!(
-            all.contains("queued-msg-1"),
-            "Compose UI should contain queued message 1"
+            all.contains("follow-up"),
+            "Compose UI should show follow-up count"
         );
-        assert!(
-            all.contains("queued-msg-2"),
-            "Compose UI should contain queued message 2"
-        );
-        assert!(
-            all.contains("queued"),
-            "Compose UI should contain 'queued' hint"
-        );
+        assert!(all.contains("2"), "Compose UI should show count of 2");
     }
 
     #[test]
@@ -2069,6 +2162,7 @@ mod tests {
             context_files: vec![],
             skills: vec![],
             model_supports_reasoning: true,
+            tool_execution: ToolExecutionMode::Parallel,
         };
 
         let mut app = App::new(config, session);
@@ -2106,6 +2200,7 @@ mod tests {
             context_files: vec![],
             skills: vec![],
             model_supports_reasoning: true,
+            tool_execution: ToolExecutionMode::Parallel,
         };
 
         let mut app = App::new(config, session);
@@ -2143,6 +2238,7 @@ mod tests {
             context_files: vec![],
             skills: vec![],
             model_supports_reasoning: true,
+            tool_execution: ToolExecutionMode::Parallel,
         };
 
         let mut app = App::new(config, session);
@@ -2157,7 +2253,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_agent_end_processes_queued_messages() {
+    async fn test_agent_end_leaves_follow_up_queue() {
         let tmp = tempdir().unwrap();
         let cwd = tmp.path().to_path_buf();
         let session = SessionManager::in_memory(&cwd);
@@ -2180,20 +2276,23 @@ mod tests {
             context_files: vec![],
             skills: vec![],
             model_supports_reasoning: true,
+            tool_execution: ToolExecutionMode::Parallel,
         };
 
         let mut app = App::new(config, session);
-        app.queued_messages.push("next-msg".into());
+        let msg = AgentMessage::user("next-msg");
+        app.follow_up_queue.lock().unwrap().enqueue(msg.clone());
         app.is_streaming = true;
         app.working.start();
 
-        // Simulate AgentEnd - this will dequeue and start a new loop
+        // AgentEnd no longer processes follow-up queue — the agent loop handles it.
+        // The queue should remain intact.
         handle_agent_event(&mut app, AgentEvent::AgentEnd { messages: vec![] });
 
-        // The queued message should have been dequeued
-        assert!(
-            app.queued_messages.is_empty(),
-            "Queued messages should be dequeued after AgentEnd"
+        assert_eq!(
+            app.follow_up_queue.lock().unwrap().len(),
+            1,
+            "Follow-up queue should NOT be processed by AgentEnd (loop handles it)"
         );
     }
 
@@ -2221,11 +2320,18 @@ mod tests {
             context_files: vec![],
             skills: vec![],
             model_supports_reasoning: true,
+            tool_execution: ToolExecutionMode::Parallel,
         };
 
         let mut app = App::new(config, session);
-        app.queued_messages.push("q1".into());
-        app.queued_messages.push("q2".into());
+        app.follow_up_queue
+            .lock()
+            .unwrap()
+            .enqueue(AgentMessage::user("q1"));
+        app.follow_up_queue
+            .lock()
+            .unwrap()
+            .enqueue(AgentMessage::user("q2"));
         app.is_streaming = true;
 
         // Simulate Ctrl+C
@@ -2237,7 +2343,7 @@ mod tests {
         );
 
         assert!(
-            app.queued_messages.is_empty(),
+            app.follow_up_queue.lock().unwrap().is_empty(),
             "Queued messages should be cleared after interrupt"
         );
         assert!(
@@ -2307,6 +2413,7 @@ mod tests {
             context_files: vec![],
             skills: vec![],
             model_supports_reasoning: true,
+            tool_execution: ToolExecutionMode::Parallel,
         };
 
         let mut app = App::new(config, session);
@@ -2315,21 +2422,23 @@ mod tests {
         let before = compose_ui_test(&mut app, 80);
 
         // Add queued messages
-        app.queued_messages.push("msg1".into());
+        app.follow_up_queue
+            .lock()
+            .unwrap()
+            .enqueue(AgentMessage::user("msg1"));
         let after = compose_ui_test(&mut app, 80);
 
-        // Should have more lines with queued messages
+        // Should have more lines with queued messages (count label and hint)
         assert!(
             after.len() > before.len(),
             "Line count should increase when queued messages are present"
         );
 
-        // Queued messages appear between messages and editor, not at the end.
-        // Search the entire output for the queued message text.
+        // Queued messages appear between messages and editor.
         let after_text = after.join("\n");
         assert!(
-            after_text.contains("msg1"),
-            "Output should contain queued message text"
+            after_text.contains("follow-up"),
+            "Output should contain follow-up queue info"
         );
     }
 
@@ -2359,6 +2468,7 @@ mod tests {
             context_files: vec![],
             skills: vec![],
             model_supports_reasoning: true,
+            tool_execution: ToolExecutionMode::Parallel,
         };
 
         let mut app = App::new(config, session);
@@ -2411,6 +2521,7 @@ mod tests {
             context_files: vec![],
             skills: vec![],
             model_supports_reasoning: true,
+            tool_execution: ToolExecutionMode::Parallel,
         };
 
         let mut app = App::new(config, session);
@@ -2479,6 +2590,7 @@ mod tests {
             context_files: vec![],
             skills: vec![],
             model_supports_reasoning: true,
+            tool_execution: ToolExecutionMode::Parallel,
         };
 
         let mut app = App::new(config, session);
@@ -2526,13 +2638,16 @@ mod tests {
         let config = make_config(cwd.clone());
         let mut app = App::new(config, session);
         app.is_streaming = true;
-        app.queued_messages.push("q".into());
+        app.follow_up_queue
+            .lock()
+            .unwrap()
+            .enqueue(AgentMessage::user("q"));
 
         handle_clear(&mut app);
 
         assert!(!app.is_streaming, "Streaming should be interrupted");
         assert!(
-            app.queued_messages.is_empty(),
+            app.follow_up_queue.lock().unwrap().is_empty(),
             "Queued messages should be restored"
         );
     }
@@ -2582,6 +2697,7 @@ mod tests {
             available_models: vec!["model".into()],
             model: "model".into(),
             model_supports_reasoning: true,
+            tool_execution: ToolExecutionMode::Parallel,
             ..make_config(cwd.clone())
         };
         let mut app = App::new(config, session);
@@ -2614,6 +2730,7 @@ mod tests {
             available_models: vec!["A".into(), "B".into(), "C".into()],
             model: "A".into(),
             model_supports_reasoning: true,
+            tool_execution: ToolExecutionMode::Parallel,
             ..make_config(cwd.clone())
         };
         let mut app = App::new(config, session);
@@ -2637,6 +2754,7 @@ mod tests {
             available_models: vec!["A".into(), "B".into(), "C".into()],
             model: "A".into(),
             model_supports_reasoning: true,
+            tool_execution: ToolExecutionMode::Parallel,
             ..make_config(cwd.clone())
         };
         let mut app = App::new(config, session);
@@ -2684,8 +2802,13 @@ mod tests {
 
         handle_follow_up(&mut app, "follow-up text".into());
 
-        assert_eq!(app.queued_messages.len(), 1);
-        assert_eq!(app.queued_messages[0], "follow-up text");
+        assert_eq!(app.follow_up_queue.lock().unwrap().len(), 1);
+        assert_eq!(
+            app.follow_up_queue.lock().unwrap().drain()[0]
+                .content
+                .clone(),
+            "follow-up text"
+        );
     }
 
     #[test]
@@ -2695,12 +2818,21 @@ mod tests {
         let session = SessionManager::in_memory(&cwd);
         let config = make_config(cwd.clone());
         let mut app = App::new(config, session);
-        app.queued_messages.push("msg1".into());
-        app.queued_messages.push("msg2".into());
+        app.follow_up_queue
+            .lock()
+            .unwrap()
+            .enqueue(AgentMessage::user("msg1"));
+        app.follow_up_queue
+            .lock()
+            .unwrap()
+            .enqueue(AgentMessage::user("msg2"));
 
         handle_dequeue(&mut app);
 
-        assert!(app.queued_messages.is_empty(), "Queues should be empty");
+        assert!(
+            app.follow_up_queue.lock().unwrap().is_empty(),
+            "Queues should be empty"
+        );
         assert!(
             app.editor.borrow().editor.get_text().contains("msg1"),
             "Editor should contain msg1"
@@ -2806,6 +2938,7 @@ mod tests {
             context_files: vec![],
             skills: vec![],
             model_supports_reasoning: false,
+            tool_execution: ToolExecutionMode::Parallel,
         }
     }
 }

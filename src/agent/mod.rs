@@ -11,10 +11,15 @@ pub mod ui;
 
 pub use context_files::{ContextFile, load_context_files};
 pub use extension::{AgentTool, CommandHandler, CommandResult, Extension, SlashCommand};
-pub use r#loop::{AgentEvent, LoopConfig, collect_tool_defs, run_agent_loop};
+pub use r#loop::{
+    AgentEvent, LoopConfig, PrepareNextTurnFn, ShouldStopFn, TransformFn, TurnUpdate,
+    collect_tool_defs, run_agent_loop,
+};
 pub use provider::{Provider, StreamEvent, ToolDef};
 pub use session::SessionManager;
 pub use settings::Settings;
 pub use skills::{LoadSkillsOptions, Skill, format_skills_for_prompt, load_skills};
 pub use system_prompt::{SystemPromptBuilder, ToolSnippet};
-pub use types::{AgentMessage, Role, ToolCall, Usage};
+pub use types::{
+    AgentMessage, PendingMessageQueue, QueueMode, Role, ToolCall, ToolExecutionMode, Usage,
+};

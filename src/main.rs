@@ -230,6 +230,7 @@ async fn main() -> anyhow::Result<()> {
             context_files: context_file_names,
             skills,
             model_supports_reasoning: true,
+            tool_execution: rab::agent::ToolExecutionMode::Parallel,
         };
         ui::run(config, session).await
     } else {
@@ -267,6 +268,12 @@ async fn run_print_mode(
         tools: tool_defs,
         agent_tools: &agent_tools,
         extensions: &extensions,
+        tool_execution: rab::agent::ToolExecutionMode::Parallel,
+        steering_queue: None,
+        follow_up_queue: None,
+        transform_context: None,
+        prepare_next_turn: None,
+        should_stop_after_turn: None,
     };
 
     let prompt = rab::agent::types::AgentMessage::user(&message);
@@ -330,6 +337,14 @@ async fn run_print_mode(
         AgentEvent::AgentStart | AgentEvent::TurnStart | AgentEvent::TurnEnd => {}
         AgentEvent::ToolCallArgsUpdate { .. } => {
             // Progressive args update - no-op in print mode
+        }
+        AgentEvent::UserMessage { ref content } => {
+            // In print mode, show injected queue messages
+            eprintln!(
+                "{} {}",
+                colored::Colorize::dimmed("→"),
+                colored::Colorize::dimmed(content.as_str())
+            );
         }
         AgentEvent::Aborted { ref reason } => {
             eprintln!(

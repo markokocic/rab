@@ -1,6 +1,79 @@
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
+/// Whether the agent executes tool calls in parallel (default) or sequentially.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum ToolExecutionMode {
+    /// Execute all tool calls concurrently after sequential preflight.
+    #[default]
+    Parallel,
+    /// Execute tool calls one at a time in order.
+    Sequential,
+}
+
+/// How queued messages are drained from a pending message queue.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum QueueMode {
+    /// Drain all queued messages at once.
+    All,
+    /// Drain one message at a time.
+    OneAtATime,
+}
+
+/// A pending message queue with a configurable drain mode.
+/// Used for steering (mid-stream) and follow-up (post-agent) message delivery.
+#[derive(Debug)]
+pub struct PendingMessageQueue {
+    messages: Vec<AgentMessage>,
+    mode: QueueMode,
+}
+
+impl PendingMessageQueue {
+    pub fn new(mode: QueueMode) -> Self {
+        Self {
+            messages: Vec::new(),
+            mode,
+        }
+    }
+
+    /// Add a message to the back of the queue.
+    pub fn enqueue(&mut self, msg: AgentMessage) {
+        self.messages.push(msg);
+    }
+
+    /// Drain messages according to the current mode.
+    pub fn drain(&mut self) -> Vec<AgentMessage> {
+        match self.mode {
+            QueueMode::All => self.messages.drain(..).collect(),
+            QueueMode::OneAtATime => {
+                if self.messages.is_empty() {
+                    vec![]
+                } else {
+                    vec![self.messages.remove(0)]
+                }
+            }
+        }
+    }
+
+    /// Drain all messages regardless of mode.
+    /// Used for dequeue operations that need to restore all messages.
+    pub fn drain_all(&mut self) -> Vec<AgentMessage> {
+        self.messages.drain(..).collect()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.messages.is_empty()
+    }
+
+    pub fn len(&self) -> usize {
+        self.messages.len()
+    }
+
+    pub fn clear(&mut self) {
+        self.messages.clear();
+    }
+}
+
 /// Role of a message in the conversation.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

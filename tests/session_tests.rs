@@ -64,6 +64,12 @@ async fn test_agent_loop_with_history() {
         tools: vec![],
         agent_tools: &empty_tools(),
         extensions: &empty_extensions(),
+        tool_execution: Default::default(),
+        steering_queue: None,
+        follow_up_queue: None,
+        transform_context: None,
+        prepare_next_turn: None,
+        should_stop_after_turn: None,
     };
 
     let provider = NoopProvider;
@@ -107,6 +113,12 @@ async fn test_agent_loop_no_history() {
         tools: vec![],
         agent_tools: &empty_tools(),
         extensions: &empty_extensions(),
+        tool_execution: Default::default(),
+        steering_queue: None,
+        follow_up_queue: None,
+        transform_context: None,
+        prepare_next_turn: None,
+        should_stop_after_turn: None,
     };
 
     let provider = NoopProvider;
@@ -422,6 +434,12 @@ async fn test_agent_loop_persists_messages_to_session() {
         tools: vec![],
         agent_tools: &empty_tools(),
         extensions: &empty_extensions(),
+        tool_execution: Default::default(),
+        steering_queue: None,
+        follow_up_queue: None,
+        transform_context: None,
+        prepare_next_turn: None,
+        should_stop_after_turn: None,
     };
 
     let provider = NoopProvider;
@@ -491,6 +509,12 @@ async fn test_agent_loop_persists_with_history() {
         tools: vec![],
         agent_tools: &empty_tools(),
         extensions: &empty_extensions(),
+        tool_execution: Default::default(),
+        steering_queue: None,
+        follow_up_queue: None,
+        transform_context: None,
+        prepare_next_turn: None,
+        should_stop_after_turn: None,
     };
 
     let provider = NoopProvider;

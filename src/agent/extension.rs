@@ -1,5 +1,5 @@
 /// Extension trait - all capability (built-in or user-provided) comes through this.
-use crate::agent::types::ToolCall;
+use crate::agent::types::{ToolCall, ToolExecutionMode};
 use crate::tui::Theme;
 use async_trait::async_trait;
 use std::borrow::Cow;
@@ -131,6 +131,9 @@ pub struct ToolOutput {
     pub compact: Option<String>,
     /// Whether the result is an error.
     pub is_error: bool,
+    /// When true, the agent loop stops after this batch of tool calls
+    /// (no more LLM calls). Pi-compatible: `terminate` on tool results.
+    pub terminate: bool,
 }
 
 impl ToolOutput {
@@ -139,6 +142,7 @@ impl ToolOutput {
             content: content.into(),
             compact: None,
             is_error: false,
+            terminate: false,
         }
     }
 
@@ -147,6 +151,7 @@ impl ToolOutput {
             content: content.into(),
             compact: Some(compact.into()),
             is_error: false,
+            terminate: false,
         }
     }
 
@@ -155,7 +160,15 @@ impl ToolOutput {
             content: message.into(),
             compact: None,
             is_error: true,
+            terminate: false,
         }
+    }
+
+    /// Mark this tool output as terminal — the agent loop will stop after
+    /// this batch of tool calls when ALL tools in the batch return terminate=true.
+    pub fn with_terminate(mut self, terminate: bool) -> Self {
+        self.terminate = terminate;
+        self
     }
 }
 
@@ -224,6 +237,20 @@ pub trait AgentTool: Send + Sync {
     fn parameters(&self) -> serde_json::Value;
     #[allow(dead_code)]
     fn label(&self) -> &str;
+
+    /// Execution mode for this tool. When set to `Sequential`, a batch of tool calls
+    /// containing this tool will execute sequentially (one-at-a-time) even when the
+    /// global config is `Parallel`. Defaults to `Parallel`.
+    fn execution_mode(&self) -> ToolExecutionMode {
+        ToolExecutionMode::Parallel
+    }
+
+    /// Optional argument pre-processing (pi-compatible: `prepareArguments`).
+    /// Called before execution, receives the raw LLM arguments and returns
+    /// (possibly modified) arguments. Default is identity (no transformation).
+    fn prepare_arguments(&self, args: serde_json::Value) -> serde_json::Value {
+        args
+    }
 
     /// Provide a tool-specific renderer for the UI.
     /// When None (the default), ToolExecComponent falls back to generic rendering.
