@@ -5,10 +5,11 @@ use std::time::Instant;
 use crate::agent::extension::{ToolRenderContext, ToolRenderer};
 use crate::agent::ui::theme::{RabTheme, current_theme};
 use crate::tui::Component;
+use crate::tui::component::{RenderCache, RenderCacheKey};
 use crate::tui::components::Text;
 use crate::tui::components::r#box::TuiBox;
 use crate::tui::keybindings::{self, ACTION_APP_TOOLS_EXPAND};
-use crate::tui::util::truncate_to_width;
+use crate::tui::util::{truncate_to_width, visible_width};
 
 /// Maximum preview lines when collapsed (matching pi's collapsible tool result).
 const PREVIEW_LINES: usize = 10;
@@ -43,6 +44,10 @@ pub struct ToolExecComponent {
     cancelled: bool,
     // ── Read-specific (used when no renderer) ──
     file_path: Option<String>,
+    // ── Dirty tracking for efficient re-render ──
+    dirty: bool,
+    // ── Render cache ──
+    cache: Option<RenderCache>,
 }
 
 impl ToolExecComponent {
@@ -67,6 +72,8 @@ impl ToolExecComponent {
             exit_code: None,
             cancelled: false,
             file_path: None,
+            dirty: true,
+            cache: None,
         }
     }
 
@@ -75,47 +82,80 @@ impl ToolExecComponent {
     /// Set the execution start time (for live duration display).
     pub fn set_started_at(&mut self, instant: std::time::Instant) {
         self.started_at = Some(instant);
+        self.mark_dirty();
     }
 
     pub fn set_file_path(&mut self, path: impl Into<String>) {
         self.file_path = Some(path.into());
+        self.mark_dirty();
     }
 
     pub fn set_bash(&mut self, is_bash: bool) {
         self.is_bash = is_bash;
+        self.mark_dirty();
     }
 
     pub fn set_duration_secs(&mut self, secs: f64) {
         self.duration_secs = Some(secs);
+        self.mark_dirty();
     }
 
     pub fn set_truncated(&mut self, truncated: bool, full_output_path: Option<String>) {
         self.was_truncated = truncated;
         self.full_output_path = full_output_path;
+        self.mark_dirty();
     }
 
     pub fn set_exit_code(&mut self, code: i32) {
         self.exit_code = Some(code);
+        self.mark_dirty();
     }
 
     pub fn set_cancelled(&mut self, cancelled: bool) {
         self.cancelled = cancelled;
+        self.mark_dirty();
     }
 
     pub fn set_result(&mut self, output: impl Into<String>, is_error: bool) {
         self.output = Some(output.into());
         self.is_error = is_error;
         self.is_complete = true;
+        self.mark_dirty();
     }
 
     pub fn set_args(&mut self, args: serde_json::Value) {
         self.args = args;
+        self.mark_dirty();
+    }
+
+    /// Mark this component as needing re-render.
+    fn mark_dirty(&mut self) {
+        self.dirty = true;
+        self.cache = None;
+    }
+
+    /// Compute a hash of the current state for cache key.
+    fn state_hash(&self) -> u64 {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut hasher = DefaultHasher::new();
+        self.name.hash(&mut hasher);
+        self.args.to_string().hash(&mut hasher);
+        self.is_error.hash(&mut hasher);
+        self.is_complete.hash(&mut hasher);
+        self.duration_secs.map(|s| s.to_bits()).hash(&mut hasher);
+        self.exit_code.hash(&mut hasher);
+        self.cancelled.hash(&mut hasher);
+        self.was_truncated.hash(&mut hasher);
+        self.output.hash(&mut hasher);
+        hasher.finish()
     }
 }
 
 impl Component for ToolExecComponent {
     fn set_expanded(&mut self, expanded: bool) {
         self.expanded = expanded;
+        self.mark_dirty();
     }
 
     fn render(&self, width: usize) -> Vec<String> {
@@ -130,7 +170,39 @@ impl Component for ToolExecComponent {
         self.render_generic(&theme, width)
     }
 
-    fn invalidate(&mut self) {}
+    fn invalidate(&mut self) {
+        self.mark_dirty();
+    }
+
+    fn is_dirty(&self) -> bool {
+        self.dirty
+    }
+
+    fn clear_dirty(&mut self) {
+        self.dirty = false;
+    }
+
+    fn cache_key(&self, width: usize) -> Option<RenderCacheKey> {
+        // Duration changes every frame while running, so disable cache for active bash
+        let is_active_bash = self.name == "bash" && !self.is_complete && self.started_at.is_some();
+        if is_active_bash {
+            return None;
+        }
+        Some(RenderCacheKey {
+            width,
+            expanded: self.expanded,
+            state_hash: self.state_hash(),
+        })
+    }
+
+    fn get_cached_render(&self) -> Option<&RenderCache> {
+        self.cache.as_ref()
+    }
+
+    fn set_cached_render(&mut self, cache: RenderCache) {
+        self.cache = Some(cache);
+        self.dirty = false;
+    }
 }
 
 impl ToolExecComponent {
@@ -584,18 +656,12 @@ impl Component for BashResult {
             return lines;
         }
 
-        let preview_lines: Vec<&str> = if self.expanded {
-            all_lines.clone()
+        // Use visual-line-aware truncation for preview
+        let (preview_lines, hidden_line_count) = if self.expanded {
+            (all_lines.clone(), 0)
         } else {
-            let len = all_lines.len();
-            if len > BASH_PREVIEW_LINES {
-                all_lines[len - BASH_PREVIEW_LINES..].to_vec()
-            } else {
-                all_lines.clone()
-            }
+            truncate_to_visual_lines(&all_lines, width, BASH_PREVIEW_LINES)
         };
-
-        let hidden_line_count = all_lines.len().saturating_sub(preview_lines.len());
 
         if !self.expanded && hidden_line_count > 0 {
             let hint = if expand_key.is_empty() {
@@ -655,6 +721,67 @@ impl Component for BashResult {
     fn invalidate(&mut self) {}
 }
 
+// ═══════════════════════════════════════════════════════════════════
+// Visual-line-aware truncation for bash preview
+// ═══════════════════════════════════════════════════════════════════
+
+/// Count how many visual lines a logical line occupies at the given width.
+/// Accounts for ANSI escape codes and wide characters.
+fn visual_line_count(line: &str, width: usize) -> usize {
+    if width == 0 {
+        return 1;
+    }
+    let vis = visible_width(line);
+    if vis == 0 {
+        return 1;
+    }
+    vis.div_ceil(width)
+}
+
+/// Select the last `max_visual_lines` visual lines from a list of logical lines.
+/// Returns (selected_logical_lines, hidden_logical_line_count).
+///
+/// This matches pi's truncateToVisualLines behavior: it accounts for lines
+/// that wrap visually, ensuring the preview fits within the terminal height.
+fn truncate_to_visual_lines<'a>(
+    lines: &'a [&'a str],
+    width: usize,
+    max_visual_lines: usize,
+) -> (Vec<&'a str>, usize) {
+    if lines.is_empty() || max_visual_lines == 0 {
+        return (vec![], 0);
+    }
+
+    // Compute visual line count for each logical line
+    let visual_counts: Vec<usize> = lines.iter().map(|l| visual_line_count(l, width)).collect();
+
+    let total_visual: usize = visual_counts.iter().sum();
+
+    // If everything fits, return all lines
+    if total_visual <= max_visual_lines {
+        return (lines.to_vec(), 0);
+    }
+
+    // Walk backwards from the end, accumulating visual lines
+    let mut visual_budget = max_visual_lines;
+    let mut start_idx = lines.len();
+
+    for (i, &vis_count) in visual_counts.iter().enumerate().rev() {
+        if vis_count > visual_budget {
+            // This line partially fits - we can't split logical lines,
+            // so we skip it and show from i+1
+            break;
+        }
+        visual_budget -= vis_count;
+        start_idx = i;
+    }
+
+    let selected = lines[start_idx..].to_vec();
+    let hidden = start_idx;
+
+    (selected, hidden)
+}
+
 fn strip_context_truncation_footer(output: &str) -> String {
     let lines: Vec<&str> = output.lines().collect();
     if lines.len() < 3 {
@@ -700,6 +827,27 @@ impl Component for RcToolExec {
 
     fn invalidate(&mut self) {
         self.0.borrow_mut().invalidate();
+    }
+
+    fn is_dirty(&self) -> bool {
+        self.0.borrow().is_dirty()
+    }
+
+    fn clear_dirty(&mut self) {
+        self.0.borrow_mut().clear_dirty();
+    }
+
+    fn cache_key(&self, width: usize) -> Option<RenderCacheKey> {
+        self.0.borrow().cache_key(width)
+    }
+
+    fn get_cached_render(&self) -> Option<&RenderCache> {
+        // Can't return reference into RefCell - cache is managed by inner component
+        None
+    }
+
+    fn set_cached_render(&mut self, cache: RenderCache) {
+        self.0.borrow_mut().set_cached_render(cache);
     }
 }
 
@@ -799,4 +947,97 @@ impl Component for ToolResultComponent {
         msg_box.render(width)
     }
     fn invalidate(&mut self) {}
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_visual_line_count_ascii() {
+        assert_eq!(visual_line_count("hello", 80), 1);
+        assert_eq!(visual_line_count("", 80), 1);
+    }
+
+    #[test]
+    fn test_visual_line_count_wrapping() {
+        // 100 chars at width 80 = 2 visual lines
+        let line = "a".repeat(100);
+        assert_eq!(visual_line_count(&line, 80), 2);
+
+        // 160 chars at width 80 = 2 visual lines
+        let line = "a".repeat(160);
+        assert_eq!(visual_line_count(&line, 80), 2);
+
+        // 161 chars at width 80 = 3 visual lines
+        let line = "a".repeat(161);
+        assert_eq!(visual_line_count(&line, 80), 3);
+    }
+
+    #[test]
+    fn test_visual_line_count_zero_width() {
+        assert_eq!(visual_line_count("hello", 0), 1);
+    }
+
+    #[test]
+    fn test_truncate_to_visual_lines_no_truncation() {
+        let lines = vec!["short", "also short"];
+        let (selected, hidden) = truncate_to_visual_lines(&lines, 80, 10);
+        assert_eq!(selected.len(), 2);
+        assert_eq!(hidden, 0);
+    }
+
+    #[test]
+    fn test_truncate_to_visual_lines_with_wrapping() {
+        // Create lines that wrap: each is 100 chars at width 80 = 2 visual lines each
+        let line1 = "a".repeat(100);
+        let line2 = "b".repeat(100);
+        let line3 = "c".repeat(100);
+        let lines = vec![line1.as_str(), line2.as_str(), line3.as_str()];
+
+        // 3 lines × 2 visual lines each = 6 visual lines total
+        // Request only 4 visual lines -> should show last 2 logical lines (4 visual)
+        let (selected, hidden) = truncate_to_visual_lines(&lines, 80, 4);
+        assert_eq!(selected.len(), 2);
+        assert_eq!(hidden, 1);
+        assert_eq!(selected[0], line2.as_str());
+        assert_eq!(selected[1], line3.as_str());
+    }
+
+    #[test]
+    fn test_truncate_to_visual_lines_exact_fit() {
+        // 2 lines × 2 visual lines = 4 visual lines, request 4
+        let line1 = "a".repeat(100);
+        let line2 = "b".repeat(100);
+        let lines = vec![line1.as_str(), line2.as_str()];
+
+        let (selected, hidden) = truncate_to_visual_lines(&lines, 80, 4);
+        assert_eq!(selected.len(), 2);
+        assert_eq!(hidden, 0);
+    }
+
+    #[test]
+    fn test_truncate_to_visual_lines_empty() {
+        let lines: Vec<&str> = vec![];
+        let (selected, hidden) = truncate_to_visual_lines(&lines, 80, 5);
+        assert!(selected.is_empty());
+        assert_eq!(hidden, 0);
+    }
+
+    #[test]
+    fn test_truncate_to_visual_lines_mixed_widths() {
+        // Mix of short (1 visual) and long (2 visual) lines
+        let short1 = "short";
+        let long = "x".repeat(100); // 2 visual lines
+        let short2 = "also short";
+        let lines = vec![short1, long.as_str(), short2];
+
+        // Total: 1 + 2 + 1 = 4 visual lines
+        // Request 3 visual lines -> should skip short1 (1 visual) and show long + short2 (3 visual)
+        let (selected, hidden) = truncate_to_visual_lines(&lines, 80, 3);
+        assert_eq!(selected.len(), 2);
+        assert_eq!(hidden, 1);
+        assert_eq!(selected[0], long.as_str());
+        assert_eq!(selected[1], short2);
+    }
 }

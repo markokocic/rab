@@ -1,5 +1,26 @@
 use crossterm::event::KeyEvent;
 
+/// Key for render caching — components return this to indicate when cache is valid.
+/// Two renders with the same cache key produce identical output.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RenderCacheKey {
+    /// Viewport width.
+    pub width: usize,
+    /// Whether expanded (for collapsible components).
+    pub expanded: bool,
+    /// Additional state hash (tool name, args hash, etc.).
+    pub state_hash: u64,
+}
+
+/// Cached render output.
+#[derive(Debug, Clone)]
+pub struct RenderCache {
+    /// The cache key used to generate this output.
+    pub key: RenderCacheKey,
+    /// Rendered lines.
+    pub lines: Vec<String>,
+}
+
 /// Every renderable UI element.
 pub trait Component {
     /// Render to lines for the given viewport width.
@@ -11,8 +32,32 @@ pub trait Component {
         false
     }
 
-    /// Clear cached render state. Called on theme changes or resize.
+    /// Mark this component as needing re-render.
+    /// Called when internal state changes (output received, expanded toggled, etc.).
     fn invalidate(&mut self) {}
+
+    /// Check if this component needs re-render.
+    /// Default: always re-render (conservative).
+    fn is_dirty(&self) -> bool {
+        true
+    }
+
+    /// Clear dirty flag after successful render.
+    fn clear_dirty(&mut self) {}
+
+    /// Get the cache key for this component's current state.
+    /// Return None to disable caching (always re-render).
+    fn cache_key(&self, _width: usize) -> Option<RenderCacheKey> {
+        None
+    }
+
+    /// Get cached render output, if available and valid.
+    fn get_cached_render(&self) -> Option<&RenderCache> {
+        None
+    }
+
+    /// Store render output in cache.
+    fn set_cached_render(&mut self, _cache: RenderCache) {}
 
     /// Whether this component wants focus (for IME cursor positioning).
     fn is_focusable(&self) -> bool {

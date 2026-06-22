@@ -1,6 +1,7 @@
 use crate::agent::extension::{AgentTool, Cancel, Extension, ToolOutput};
 use crate::agent::extension::{ToolRenderContext, ToolRenderer};
 use crate::tui::Theme;
+use crate::tui::util::visible_width;
 use anyhow::Context;
 use async_trait::async_trait;
 use std::borrow::Cow;
@@ -488,6 +489,249 @@ impl AgentTool for BashTool {
 /// Formats call headers with `$ command` and result with tail-based preview.
 struct BashRenderer;
 
+// ── Command detection for better headers ────────────────────────
+
+/// Try to extract a meaningful description from a command string.
+/// Returns (command_name, description) if recognized.
+fn parse_command(cmd: &str) -> Option<(&'static str, Option<String>)> {
+    let trimmed = cmd.trim();
+
+    // Skip leading env vars (VAR=value) and cd commands
+    let effective = {
+        let mut rest = trimmed;
+        loop {
+            // Check for VAR=value pattern
+            if let Some(eq_pos) = rest.find('=') {
+                let var_name = &rest[..eq_pos];
+                // Valid env var name: only alphanumeric and underscore
+                if !var_name.is_empty() && var_name.chars().all(|c| c.is_alphanumeric() || c == '_')
+                {
+                    // Skip past the value (space-separated or end)
+                    let after_eq = &rest[eq_pos + 1..];
+                    if let Some(space_pos) = after_eq.find(' ') {
+                        rest = after_eq[space_pos + 1..].trim_start();
+                        continue;
+                    } else {
+                        // No space after value - this is just a VAR=value command
+                        rest = "";
+                        break;
+                    }
+                }
+            }
+            break;
+        }
+        rest
+    };
+
+    // ls
+    if effective.starts_with("ls ") || effective == "ls" {
+        let path = extract_ls_path(effective);
+        return Some(("ls", path));
+    }
+
+    // grep
+    if effective.starts_with("grep ") || effective.starts_with("rg ") {
+        let info = extract_grep_info(effective);
+        return Some(("grep", info));
+    }
+
+    // find
+    if effective.starts_with("find ") {
+        let info = extract_find_info(effective);
+        return Some(("find", info));
+    }
+
+    // cat
+    if effective.starts_with("cat ") || effective == "cat" {
+        let path = effective.strip_prefix("cat ").map(|s| s.trim().to_string());
+        return Some(("cat", path));
+    }
+
+    // head/tail
+    if effective.starts_with("head ") || effective.starts_with("tail ") {
+        let (cmd_name, rest) = if effective.starts_with("head") {
+            ("head", effective.strip_prefix("head").unwrap_or(""))
+        } else {
+            ("tail", effective.strip_prefix("tail").unwrap_or(""))
+        };
+        let path = rest.trim();
+        let path_opt = if path.is_empty() {
+            None
+        } else {
+            Some(path.to_string())
+        };
+        return Some((cmd_name, path_opt));
+    }
+
+    // wc
+    if effective.starts_with("wc ") || effective == "wc" {
+        let path = effective.strip_prefix("wc ").map(|s| s.trim().to_string());
+        return Some(("wc", path));
+    }
+
+    None
+}
+
+/// Extract path argument from ls command.
+fn extract_ls_path(cmd: &str) -> Option<String> {
+    // Simple: ls [path]
+    let args = cmd.strip_prefix("ls").unwrap_or("").trim();
+    if args.is_empty() {
+        Some(".".to_string())
+    } else {
+        // Take last non-flag argument
+        args.split_whitespace()
+            .rfind(|a| !a.starts_with('-'))
+            .map(|s| s.to_string())
+    }
+}
+
+/// Extract search info from grep command.
+fn extract_grep_info(cmd: &str) -> Option<String> {
+    let args = cmd
+        .strip_prefix("grep")
+        .or_else(|| cmd.strip_prefix("rg"))
+        .unwrap_or("")
+        .trim();
+    if args.is_empty() {
+        return None;
+    }
+    // Find the pattern (first non-flag argument)
+    let mut pattern = None;
+    let mut files = Vec::new();
+    let mut skip_next = false;
+    for arg in args.split_whitespace() {
+        if skip_next {
+            skip_next = false;
+            continue;
+        }
+        if arg.starts_with('-') {
+            // Flags that take a value
+            if arg == "-n" || arg == "-C" || arg == "-A" || arg == "-B" || arg == "--max-count" {
+                skip_next = true;
+            }
+            continue;
+        }
+        if pattern.is_none() {
+            pattern = Some(arg);
+        } else {
+            files.push(arg);
+        }
+    }
+    let mut desc = String::new();
+    if let Some(p) = pattern {
+        desc.push_str(p);
+    }
+    if !files.is_empty() {
+        desc.push_str(" in ");
+        desc.push_str(&files.join(", "));
+    }
+    if desc.is_empty() { None } else { Some(desc) }
+}
+
+/// Extract search info from find command.
+fn extract_find_info(cmd: &str) -> Option<String> {
+    let args = cmd.strip_prefix("find").unwrap_or("").trim();
+    if args.is_empty() {
+        return Some(".".to_string());
+    }
+    // Find path and name pattern
+    let mut path = None;
+    let mut name = None;
+    let mut skip_next = false;
+    for arg in args.split_whitespace() {
+        if skip_next {
+            skip_next = false;
+            continue;
+        }
+        if arg == "-name" || arg == "-path" || arg == "-type" {
+            skip_next = true;
+            if arg == "-name" {
+                // Next arg is the pattern
+                continue;
+            }
+        }
+        if arg.starts_with('-') {
+            continue;
+        }
+        if path.is_none() {
+            path = Some(arg);
+        }
+    }
+    // Re-parse to get -name value
+    let mut it = args.split_whitespace();
+    while let Some(arg) = it.next() {
+        if arg == "-name" {
+            name = it.next();
+        }
+    }
+    let mut desc = path.unwrap_or(".").to_string();
+    if let Some(n) = name {
+        desc.push_str(&format!(" (name={})", n));
+    }
+    Some(desc)
+}
+
+/// Format a header for recognized commands.
+fn format_command_header(cmd: &str, theme: &dyn Theme) -> Option<String> {
+    let (name, desc) = parse_command(cmd)?;
+    let title = theme.fg("toolTitle", &theme.bold(name));
+    let detail = desc
+        .map(|d| format!(" {}", theme.fg("accent", &d)))
+        .unwrap_or_default();
+    Some(format!("{}{}", title, detail))
+}
+
+// ── Visual-line-aware truncation ────────────────────────────────
+
+/// Count how many visual lines a logical line occupies at the given width.
+fn visual_line_count(line: &str, width: usize) -> usize {
+    if width == 0 {
+        return 1;
+    }
+    let vis = visible_width(line);
+    if vis == 0 {
+        return 1;
+    }
+    vis.div_ceil(width)
+}
+
+/// Select the last `max_visual_lines` visual lines from a list of logical lines.
+/// Returns (selected_logical_lines, hidden_logical_line_count).
+fn truncate_to_visual_lines<'a>(
+    lines: &'a [&'a str],
+    width: usize,
+    max_visual_lines: usize,
+) -> (Vec<&'a str>, usize) {
+    if lines.is_empty() || max_visual_lines == 0 {
+        return (vec![], 0);
+    }
+
+    let visual_counts: Vec<usize> = lines.iter().map(|l| visual_line_count(l, width)).collect();
+
+    let total_visual: usize = visual_counts.iter().sum();
+
+    if total_visual <= max_visual_lines {
+        return (lines.to_vec(), 0);
+    }
+
+    let mut visual_budget = max_visual_lines;
+    let mut start_idx = lines.len();
+
+    for (i, &vis_count) in visual_counts.iter().enumerate().rev() {
+        if vis_count > visual_budget {
+            break;
+        }
+        visual_budget -= vis_count;
+        start_idx = i;
+    }
+
+    let selected = lines[start_idx..].to_vec();
+    let hidden = start_idx;
+
+    (selected, hidden)
+}
+
 impl ToolRenderer for BashRenderer {
     fn render_call(
         &self,
@@ -504,17 +748,23 @@ impl ToolRenderer for BashRenderer {
         let timeout_suffix = timeout
             .map(|t| theme.fg("muted", &format!(" (timeout {}s)", t)))
             .unwrap_or_default();
-        vec![format!(
-            "{}{}",
-            theme.fg("toolTitle", &theme.bold(&format!("$ {}", cmd))),
-            timeout_suffix
-        )]
+
+        // Detect common commands and show them with a nicer header
+        if let Some(header) = format_command_header(cmd, theme) {
+            vec![format!("{}{}", header, timeout_suffix)]
+        } else {
+            vec![format!(
+                "{}{}",
+                theme.fg("toolTitle", &theme.bold(&format!("$ {}", cmd))),
+                timeout_suffix
+            )]
+        }
     }
 
     fn render_result(
         &self,
         content: &str,
-        _width: usize,
+        width: usize,
         theme: &dyn Theme,
         ctx: &ToolRenderContext,
     ) -> Vec<String> {
@@ -528,20 +778,13 @@ impl ToolRenderer for BashRenderer {
             return lines;
         }
 
-        // Tail-based preview (matching pi's BASH_PREVIEW_LINES = 5)
+        // Visual-line-aware truncation (matching pi's truncateToVisualLines)
         let preview_count = 5;
-        let preview_lines: Vec<&str> = if ctx.expanded {
-            all_lines.clone()
+        let (preview_lines, hidden_line_count) = if ctx.expanded {
+            (all_lines.clone(), 0)
         } else {
-            let len = all_lines.len();
-            if len > preview_count {
-                all_lines[len - preview_count..].to_vec()
-            } else {
-                all_lines.clone()
-            }
+            truncate_to_visual_lines(&all_lines, width, preview_count)
         };
-
-        let hidden_line_count = all_lines.len().saturating_sub(preview_lines.len());
 
         if !ctx.expanded && hidden_line_count > 0 {
             let hint = if ctx.expand_key.is_empty() {
@@ -1087,5 +1330,111 @@ mod tests {
         // So byte limit should be hit before line limit
         assert_eq!(result.truncated_by, "bytes");
         assert!(result.output_lines < 2000);
+    }
+}
+
+#[cfg(test)]
+mod command_tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_ls() {
+        let result = parse_command("ls -la src/");
+        assert!(result.is_some());
+        let (name, desc) = result.unwrap();
+        assert_eq!(name, "ls");
+        assert_eq!(desc, Some("src/".to_string()));
+    }
+
+    #[test]
+    fn test_parse_ls_default() {
+        let result = parse_command("ls");
+        assert!(result.is_some());
+        let (name, desc) = result.unwrap();
+        assert_eq!(name, "ls");
+        assert_eq!(desc, Some(".".to_string()));
+    }
+
+    #[test]
+    fn test_parse_grep() {
+        let result = parse_command("grep -r \"pattern\" src/");
+        assert!(result.is_some());
+        let (name, desc) = result.unwrap();
+        assert_eq!(name, "grep");
+        assert!(desc.is_some());
+        let desc = desc.unwrap();
+        assert!(desc.contains("pattern"));
+        assert!(desc.contains("src/"));
+    }
+
+    #[test]
+    fn test_parse_rg() {
+        let result = parse_command("rg pattern src/");
+        assert!(result.is_some());
+        let (name, _) = result.unwrap();
+        assert_eq!(name, "grep");
+    }
+
+    #[test]
+    fn test_parse_find() {
+        let result = parse_command("find . -name \"*.rs\"");
+        assert!(result.is_some());
+        let (name, desc) = result.unwrap();
+        assert_eq!(name, "find");
+        assert!(desc.is_some());
+        let desc = desc.unwrap();
+        assert!(desc.contains("."));
+        assert!(desc.contains("*.rs"));
+    }
+
+    #[test]
+    fn test_parse_cat() {
+        let result = parse_command("cat README.md");
+        assert!(result.is_some());
+        let (name, desc) = result.unwrap();
+        assert_eq!(name, "cat");
+        assert_eq!(desc, Some("README.md".to_string()));
+    }
+
+    #[test]
+    fn test_parse_head() {
+        let result = parse_command("head -20 file.txt");
+        assert!(result.is_some());
+        let (name, desc) = result.unwrap();
+        assert_eq!(name, "head");
+        assert_eq!(desc, Some("-20 file.txt".to_string()));
+    }
+
+    #[test]
+    fn test_parse_tail() {
+        let result = parse_command("tail -f log.txt");
+        assert!(result.is_some());
+        let (name, desc) = result.unwrap();
+        assert_eq!(name, "tail");
+        assert_eq!(desc, Some("-f log.txt".to_string()));
+    }
+
+    #[test]
+    fn test_parse_wc() {
+        let result = parse_command("wc -l file.txt");
+        assert!(result.is_some());
+        let (name, desc) = result.unwrap();
+        assert_eq!(name, "wc");
+        assert_eq!(desc, Some("-l file.txt".to_string()));
+    }
+
+    #[test]
+    fn test_parse_unknown() {
+        let result = parse_command("echo hello");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_parse_with_env() {
+        let result = parse_command("FOO=bar ls src/");
+        assert!(result.is_some());
+        let (name, desc) = result.unwrap();
+        assert_eq!(name, "ls");
+        assert_eq!(desc, Some("src/".to_string()));
     }
 }

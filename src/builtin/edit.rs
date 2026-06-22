@@ -464,6 +464,7 @@ impl AgentTool for EditTool {
 
 /// Tool renderer for the `edit` tool.
 /// Uses `renderShell: "self"` — renders its own framing without colored box.
+/// Shows a preview of what will change in the call header.
 struct EditRenderer;
 
 impl ToolRenderer for EditRenderer {
@@ -474,9 +475,9 @@ impl ToolRenderer for EditRenderer {
     fn render_call(
         &self,
         args: &serde_json::Value,
-        _width: usize,
+        width: usize,
         theme: &dyn Theme,
-        _ctx: &ToolRenderContext,
+        ctx: &ToolRenderContext,
     ) -> Vec<String> {
         let path = args
             .get("file_path")
@@ -493,11 +494,43 @@ impl ToolRenderer for EditRenderer {
         } else {
             theme.fg("accent", &short)
         };
-        vec![format!(
+
+        let mut lines = vec![format!(
             "{} {}",
             theme.fg("toolTitle", &theme.bold("edit")),
             path_disp
-        )]
+        )];
+
+        // Show edit preview when collapsed (compact summary of changes)
+        if !ctx.expanded
+            && let Some(edits) = args.get("edits")
+        {
+            let edits_arr = if let Some(arr) = edits.as_array() {
+                arr.as_slice()
+            } else {
+                static EMPTY: [serde_json::Value; 0] = [];
+                &EMPTY // Can't parse here, skip preview
+            };
+
+            for edit in edits_arr.iter().take(3) {
+                if let (Some(old), new) = (edit.get("oldText"), edit.get("newText"))
+                    && let (Some(old_str), Some(new_str)) =
+                        (old.as_str(), new.and_then(|v| v.as_str()))
+                {
+                    let preview = format_edit_preview(old_str, new_str, width, theme);
+                    lines.push(preview);
+                }
+            }
+
+            if edits_arr.len() > 3 {
+                lines.push(theme.fg(
+                    "muted",
+                    &format!("... and {} more edits", edits_arr.len() - 3),
+                ));
+            }
+        }
+
+        lines
     }
 
     fn render_result(
@@ -526,6 +559,32 @@ impl ToolRenderer for EditRenderer {
             return vec![];
         }
         vec![theme.fg("toolOutput", content)]
+    }
+}
+
+/// Format a compact preview of a single edit operation.
+/// Shows first N chars of oldText → first N chars of newText.
+fn format_edit_preview(old: &str, new: &str, _width: usize, theme: &dyn Theme) -> String {
+    let max_preview = 30;
+    let old_first_line = old.lines().next().unwrap_or("");
+    let new_first_line = new.lines().next().unwrap_or("");
+
+    let old_preview = truncate_simple(old_first_line, max_preview);
+    let new_preview = truncate_simple(new_first_line, max_preview);
+
+    let old_styled = theme.fg("toolDiffRemoved", &format!("-{}", old_preview));
+    let new_styled = theme.fg("toolDiffAdded", &format!("+{}", new_preview));
+    format!("  {} {}", old_styled, new_styled)
+}
+
+/// Truncate a string to max_chars, adding "..." if truncated.
+fn truncate_simple(s: &str, max_chars: usize) -> String {
+    if s.len() <= max_chars {
+        s.to_string()
+    } else if max_chars > 3 {
+        format!("{}...", &s[..max_chars - 3])
+    } else {
+        s[..max_chars].to_string()
     }
 }
 

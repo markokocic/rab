@@ -1381,6 +1381,14 @@ fn handle_agent_event(app: &mut App, event: AgentEvent) {
                 args: args_str,
             });
         }
+        AgentEvent::ToolCallArgsUpdate { id, args } => {
+            // Progressive args update - re-render call header with new args
+            if let Some(weak) = app.pending_tools.get(&id)
+                && let Some(comp) = weak.upgrade()
+            {
+                comp.borrow_mut().set_args(args);
+            }
+        }
         AgentEvent::ToolResult {
             content,
             compact: _,

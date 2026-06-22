@@ -36,6 +36,11 @@ pub enum AgentEvent {
         name: String,
         args: serde_json::Value,
     },
+    /// Progressive args update (pi calls renderCall multiple times).
+    ToolCallArgsUpdate {
+        id: String,
+        args: serde_json::Value,
+    },
     ToolResult {
         id: String,
         name: String,

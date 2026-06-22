@@ -17,7 +17,7 @@ pub mod word_nav;
 
 pub mod components;
 
-pub use component::Component;
+pub use component::{Component, RenderCache, RenderCacheKey};
 pub use container::Container;
 pub use focusable::{CURSOR_MARKER, Focusable};
 pub use fuzzy::{FuzzyMatch, fuzzy_filter, fuzzy_match};

@@ -328,6 +328,9 @@ async fn run_print_mode(
             let _ = std::io::stdout().flush();
         }
         AgentEvent::AgentStart | AgentEvent::TurnStart | AgentEvent::TurnEnd => {}
+        AgentEvent::ToolCallArgsUpdate { .. } => {
+            // Progressive args update - no-op in print mode
+        }
         AgentEvent::Aborted { ref reason } => {
             eprintln!(
                 "{} {}",
