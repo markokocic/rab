@@ -117,6 +117,9 @@ pub struct Editor {
     /// Used instead of recomputing at selection time to avoid mismatches
     /// (e.g. `@src/au` → provider strips `@`, returns prefix `src/au`).
     autocomplete_prefix: String,
+    /// Debounce: minimum time between autocomplete provider calls for @/# triggers.
+    /// Pi uses 20ms for attachment autocomplete, 0ms for slash commands.
+    last_autocomplete_trigger: std::time::Instant,
 }
 
 #[derive(Debug, Clone)]
@@ -151,6 +154,7 @@ impl Editor {
             autocomplete_list: None,
             autocomplete_active: false,
             autocomplete_prefix: String::new(),
+            last_autocomplete_trigger: std::time::Instant::now(),
             border_color: Box::new(|s| s.to_string()),
             autocomplete_provider: None,
             pastes: HashMap::new(),
@@ -240,10 +244,31 @@ impl Editor {
             no_match: Box::new(|s| s.to_string()),
             hint: Box::new(|s| s.to_string()),
         };
+        // Pi-style: pre-select the best matching item (exact match > prefix match)
+        let best = self.best_autocomplete_index(&items);
         let mut list = SelectList::new(items, 5, theme, layout);
-        list.set_selected_index(0);
+        list.set_selected_index(best);
         self.autocomplete_list = Some(list);
         self.autocomplete_active = true;
+    }
+
+    /// Find the best autocomplete item index for the current prefix.
+    /// Returns 0 if no match (same as pi's default).
+    fn best_autocomplete_index(&self, items: &[SelectItem]) -> usize {
+        let prefix = self.autocomplete_prefix.trim_start_matches(['/', '@', '#']);
+        if prefix.is_empty() {
+            return 0;
+        }
+        let mut first_prefix = None;
+        for (i, item) in items.iter().enumerate() {
+            if item.value == prefix {
+                return i; // Exact match always wins
+            }
+            if first_prefix.is_none() && item.value.starts_with(prefix) {
+                first_prefix = Some(i);
+            }
+        }
+        first_prefix.unwrap_or(0)
     }
 
     pub fn clear_autocomplete(&mut self) {
@@ -436,6 +461,27 @@ impl Editor {
         let Some(ref provider) = self.autocomplete_provider else {
             return;
         };
+
+        // Debounce: for non-slash, non-force triggers (attachment @, #),
+        // skip if called within 20ms of the last call. Pi uses 20ms for
+        // attachment autocomplete to avoid flickering during rapid typing.
+        if !force {
+            let line = self
+                .lines
+                .get(self.cursor_line)
+                .map(|l| l.as_str())
+                .unwrap_or("");
+            let before = &line[..self.cursor_col.min(line.len())];
+            let is_slash = before.starts_with('/');
+            if !is_slash && !before.is_empty() {
+                let elapsed = self.last_autocomplete_trigger.elapsed();
+                if elapsed < std::time::Duration::from_millis(20) {
+                    return;
+                }
+            }
+        }
+        self.last_autocomplete_trigger = std::time::Instant::now();
+
         let Some(suggestions) =
             provider.get_suggestions(&self.lines, self.cursor_line, self.cursor_col, force)
         else {
@@ -697,24 +743,43 @@ impl Editor {
             self.push_undo();
             self.cursor_col += text.len();
             self.lines[self.cursor_line].insert_str(self.cursor_col - text.len(), &text);
+            self.last_action = Some("yank".into());
             self.notify_change();
         }
     }
 
     fn yank_pop(&mut self) {
+        // Must be called after yank() — check via last_action
+        if self.last_action.as_deref() != Some("yank") || self.kill_ring.len() <= 1 {
+            return;
+        }
+        // Save current state before modifying (pi-style: pushUndoSnapshot first)
+        self.push_undo();
+
+        // Delete the previously yanked text (still at end of ring before rotation)
+        let prev = self.kill_ring.peek().map(|s| s.to_string());
+        if let Some(ref prev_text) = prev {
+            let line = &self.lines[self.cursor_line].clone();
+            if self.cursor_col >= prev_text.len() {
+                let before = &line[..self.cursor_col - prev_text.len()];
+                let after = &line[self.cursor_col..];
+                self.lines[self.cursor_line] = format!("{}{}", before, after);
+                self.cursor_col -= prev_text.len();
+            }
+        }
+
+        // Rotate the ring: move end to front
         self.kill_ring.rotate();
+
+        // Insert the new most recent entry (now at end after rotation)
         let text = self.kill_ring.peek().map(|s| s.to_string());
-        if let Some(snap) = self.undo_stack.pop() {
-            self.lines = snap.lines;
-            self.cursor_line = snap.cursor_line;
-            self.cursor_col = snap.cursor_col;
+        if let Some(ref new_text) = text {
+            self.cursor_col += new_text.len();
+            self.lines[self.cursor_line].insert_str(self.cursor_col - new_text.len(), new_text);
         }
-        if let Some(text) = text {
-            self.push_undo();
-            self.cursor_col += text.len();
-            self.lines[self.cursor_line].insert_str(self.cursor_col - text.len(), &text);
-            self.notify_change();
-        }
+
+        self.last_action = Some("yank".into());
+        self.notify_change();
     }
 
     // ── Cursor movement ──
@@ -1226,7 +1291,10 @@ impl Component for Editor {
         } else {
             1
         };
-        let layout_width = content_width.max(1);
+        // Pi: with padding, cursor can overflow into it; without, reserve 1 col for cursor.
+        let layout_width = content_width
+            .max(1)
+            .saturating_sub(if pad_x > 0 { 0 } else { 1 });
         self.last_width.set(layout_width);
 
         let horizontal = "─";
@@ -1306,12 +1374,22 @@ impl Component for Editor {
                 (text.clone(), visible_width(text))
             };
 
+            // Pi-style: cursor can overflow into right padding when at end of line
+            let cursor_in_padding = line_width > content_width && pad_x > 0;
             let padding = if line_width < content_width {
                 " ".repeat(content_width - line_width)
             } else {
                 String::new()
             };
-            result.push(format!("{}{}{}{}", left_pad, display, padding, right_pad));
+            let right_pad_used = if cursor_in_padding {
+                &right_pad[1..]
+            } else {
+                &right_pad
+            };
+            result.push(format!(
+                "{}{}{}{}",
+                left_pad, display, padding, right_pad_used
+            ));
         }
 
         // ── Bottom border ──

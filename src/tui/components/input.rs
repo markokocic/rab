@@ -217,9 +217,11 @@ impl Input {
         if new_cursor < self.cursor {
             self.save_undo();
             let killed = self.value[new_cursor..self.cursor].to_string();
-            self.kill_ring.push(&killed, false, false);
+            let accumulate = self.last_action == Some("kill");
+            self.kill_ring.push(&killed, true, accumulate);
             self.value.drain(new_cursor..self.cursor);
             self.cursor = new_cursor;
+            self.last_action = Some("kill");
         }
     }
 
@@ -228,8 +230,10 @@ impl Input {
         if new_cursor > self.cursor {
             self.save_undo();
             let killed = self.value[self.cursor..new_cursor].to_string();
-            self.kill_ring.push(&killed, false, false);
+            let accumulate = self.last_action == Some("kill");
+            self.kill_ring.push(&killed, false, accumulate);
             self.value.drain(self.cursor..new_cursor);
+            self.last_action = Some("kill");
         }
     }
 
@@ -237,9 +241,11 @@ impl Input {
         if self.cursor > 0 {
             self.save_undo();
             let killed = self.value[..self.cursor].to_string();
-            self.kill_ring.push(&killed, false, false);
+            let accumulate = self.last_action == Some("kill");
+            self.kill_ring.push(&killed, true, accumulate);
             self.value.drain(..self.cursor);
             self.cursor = 0;
+            self.last_action = Some("kill");
         }
     }
 
@@ -247,8 +253,10 @@ impl Input {
         if self.cursor < self.value.len() {
             self.save_undo();
             let killed = self.value[self.cursor..].to_string();
-            self.kill_ring.push(&killed, false, false);
+            let accumulate = self.last_action == Some("kill");
+            self.kill_ring.push(&killed, false, accumulate);
             self.value.truncate(self.cursor);
+            self.last_action = Some("kill");
         }
     }
 
@@ -261,17 +269,30 @@ impl Input {
             self.cursor += text.len();
             self.value.insert_str(self.cursor - text.len(), &text);
         }
+        self.last_action = Some("yank");
     }
 
     fn yank_pop(&mut self) {
+        // Must follow yank() — save current state, delete previously yanked
+        // text, rotate ring, insert new entry. Matches pi's yankPop().
+        if self.kill_ring.len() <= 1 {
+            return;
+        }
+        let prev = self.kill_ring.peek().map(|s| s.to_string());
+        if let Some(ref prev_text) = prev {
+            self.save_undo();
+            if self.cursor >= prev_text.len() {
+                let before = self.value[..self.cursor - prev_text.len()].to_string();
+                let after = self.value[self.cursor..].to_string();
+                self.value = format!("{}{}", before, after);
+                self.cursor -= prev_text.len();
+            }
+        }
         self.kill_ring.rotate();
         let text = self.kill_ring.peek().map(|s| s.to_string());
-        if let Some(prev) = self.undo_stack.pop()
-            && let Some(text) = text
-        {
-            self.value = prev;
-            self.cursor += text.len();
-            self.value.insert_str(self.cursor - text.len(), &text);
+        if let Some(ref new_text) = text {
+            self.value.insert_str(self.cursor, new_text);
+            self.cursor += new_text.len();
         }
     }
 
