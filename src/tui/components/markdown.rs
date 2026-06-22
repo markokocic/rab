@@ -731,7 +731,7 @@ impl Markdown {
             }
 
             Tag::TableHead | Tag::TableRow | Tag::TableCell => {
-                // Should be handled by render_table — skip to End
+                // Should be handled by render_table - skip to End
                 let end = tag.to_end();
                 loop {
                     if *pos >= events.len() {
@@ -765,7 +765,7 @@ impl Markdown {
                 Vec::new()
             }
 
-            // Inline tags at block level — render inline
+            // Inline tags at block level - render inline
             Tag::Emphasis
             | Tag::Strong
             | Tag::Strikethrough
@@ -897,7 +897,7 @@ impl Markdown {
                     result.push_str(&(ctx.apply_text)(math));
                 }
 
-                // Footnote reference — render as text
+                // Footnote reference - render as text
                 Event::FootnoteReference(ref_id) => {
                     *pos += 1;
                     result.push_str(&(ctx.apply_text)(&format!("[^{}]", ref_id)));
@@ -1014,7 +1014,7 @@ impl Markdown {
                             }
 
                             Event::Start(Tag::Item) => {
-                                // Next item started — break to outer loop
+                                // Next item started - break to outer loop
                                 break;
                             }
 
@@ -1287,7 +1287,7 @@ impl Markdown {
                 column_widths[i] = natural_widths[i].max(min_word_widths[i]);
             }
         } else {
-            // Need to shrink — start from min widths and distribute remaining space
+            // Need to shrink - start from min widths and distribute remaining space
             let min_total: usize = min_word_widths.iter().sum();
             let extra = available.saturating_sub(min_total);
 
@@ -1325,7 +1325,7 @@ impl Markdown {
                     }
                 }
             } else {
-                // Even min widths don't fit — equal distribution
+                // Even min widths don't fit - equal distribution
                 let base = available / num_cols;
                 let rem = available % num_cols;
                 for (i, cw) in column_widths.iter_mut().enumerate() {
@@ -1555,7 +1555,7 @@ pub fn highlight_code(code: &str, lang: Option<&str>) -> Vec<String> {
         .or_else(|| ts.themes.iter().next().map(|(_, t)| t));
 
     let Some(theme) = theme else {
-        // No themes available — return plain text
+        // No themes available - return plain text
         return code.split('\n').map(|s| s.to_string()).collect();
     };
 
@@ -1566,11 +1566,12 @@ pub fn highlight_code(code: &str, lang: Option<&str>) -> Vec<String> {
         match highlighter.highlight_line(line, ss) {
             Ok(ranges) => {
                 let escaped = as_24_bit_terminal_escaped(&ranges, false);
-                let text = line.trim_end_matches('\n');
-                if escaped.is_empty() {
-                    result.push(text.to_string());
+                // Strip the trailing newline that LinesWithEndings includes
+                let trimmed = escaped.trim_end_matches('\n');
+                if trimmed.is_empty() {
+                    result.push(String::new());
                 } else {
-                    result.push(format!("{}\x1b[0m", escaped));
+                    result.push(format!("{}\x1b[0m", trimmed));
                 }
             }
             Err(_) => {

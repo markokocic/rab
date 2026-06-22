@@ -1,3 +1,5 @@
+use crate::agent::ui::components::AssistantMessageComponent;
+use crate::agent::ui::components::UserMessageComponent;
 use crate::agent::ui::components::bash_execution::{BashExecution, BashStatus};
 use crate::agent::ui::components::info_message::InfoMessageComponent;
 use crate::agent::ui::messages::DisplayMsg;
@@ -14,32 +16,23 @@ pub fn display_msg_to_component(msg: &DisplayMsg) -> Option<std::boxed::Box<dyn 
     // Clone the theme so we can use it in closures without borrow issues
     let theme: RabTheme = current_theme().clone();
     match msg {
-        DisplayMsg::User(text) => {
-            // UserMessageComponent with box+background
-            let bg_ansi = theme.bg_ansi("userMessageBg").to_string();
-            let fg_styled = theme.fg("userMessageText", text);
-            let mut msg_box = TuiBox::new(
-                1,
-                1,
-                Some(std::boxed::Box::new(move |s: &str| -> String {
-                    format!("{}{}\x1b[49m", bg_ansi, s)
-                })),
-            );
-            msg_box.add_child(std::boxed::Box::new(Text::new(fg_styled, 0, 0, None)));
-            Some(std::boxed::Box::new(msg_box))
-        }
+        DisplayMsg::User(text) => Some(std::boxed::Box::new(UserMessageComponent::new(
+            text.clone(),
+        ))),
         DisplayMsg::AssistantText(text) => {
             if text.is_empty() {
                 return None;
             }
-            Some(std::boxed::Box::new(Text::new(text.clone(), 0, 0, None)))
+            Some(std::boxed::Box::new(AssistantMessageComponent::new(
+                text.clone(),
+            )))
         }
         DisplayMsg::Thinking { text, level: _ } => {
             let styled = theme.fg("thinkingText", &theme.italic(text));
             Some(std::boxed::Box::new(Text::new(styled, 0, 0, None)))
         }
         DisplayMsg::ToolCall { name: _, args: _ } => {
-            // ToolCall uses ToolExecutionComponent — skip for initial load
+            // ToolCall uses ToolExecutionComponent - skip for initial load
             None
         }
         DisplayMsg::ToolResult {
