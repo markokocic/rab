@@ -41,11 +41,15 @@ impl AssistantMessageComponent {
 
     pub fn add_thinking(&mut self, text: impl Into<String>, level: Option<String>) {
         let text = text.into();
-        // Merge with the last thinking block if it exists (pi-style: appends to
-        // an ongoing thinking stream instead of creating a new block per chunk).
-        // This avoids rendering multiple " Thinking…" lines when hide_thinking is true.
+        // Some providers (e.g. Ollama) send the FULL accumulated content in each
+        // chunk instead of a delta. Detect this: if the new text starts with the
+        // existing text, it's a full accumulation — replace instead of append.
         if let Some(last) = self.thinking.last_mut() {
-            last.text.push_str(&text);
+            if text.starts_with(&last.text) && !text.is_empty() {
+                last.text = text;
+            } else {
+                last.text.push_str(&text);
+            }
         } else {
             self.thinking.push(ThinkingBlock { text, level });
         }
@@ -53,7 +57,14 @@ impl AssistantMessageComponent {
     }
 
     pub fn append_text(&mut self, delta: &str) {
-        self.text.push_str(delta);
+        // Some providers (e.g. Ollama) send FULL accumulated content in each chunk
+        // instead of a delta. Detect this: if delta starts with existing text,
+        // replace instead of append.
+        if delta.starts_with(&self.text) && !delta.is_empty() {
+            self.text = delta.to_string();
+        } else {
+            self.text.push_str(delta);
+        }
         self.invalidate();
     }
 
