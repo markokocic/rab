@@ -55,4 +55,8 @@ pub trait Provider: Send + Sync {
         messages: &[AgentMessage],
         tools: &[ToolDef],
     ) -> anyhow::Result<Pin<Box<dyn Stream<Item = StreamEvent> + Send>>>;
+
+    /// Update reasoning effort (thinking level) at runtime.
+    /// Default implementation is a no-op for providers that don't support this.
+    fn set_reasoning_effort(&self, _level: Option<&str>) {}
 }

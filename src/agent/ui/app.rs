@@ -133,6 +133,10 @@ pub struct App {
     /// Used to update ToolExecComponent when ToolResult arrives (pi's `pendingTools` Map).
     pending_tools: HashMap<String, Weak<RefCell<crate::agent::ui::components::ToolExecComponent>>>,
 
+    /// Start times for pending tool calls, keyed by tool call ID.
+    /// Used to compute duration for bash and other tools.
+    tool_call_start_times: HashMap<String, std::time::Instant>,
+
     /// Streaming assistant message component (pi's `streamingComponent`).
     /// Created on first TextDelta, updated in-place, cleared on TurnEnd/AgentEnd.
     streaming_component:
@@ -260,6 +264,7 @@ impl App {
             messages,
             chat_container,
             pending_tools: HashMap::new(),
+            tool_call_start_times: HashMap::new(),
             streaming_component: None,
             bash_component: None,
             pending_section: std::rc::Rc::new(crate::tui::components::DynamicLines::new()),
@@ -648,6 +653,8 @@ fn handle_thinking_cycle(app: &mut App) {
         .update_border_color(Some(next), &app.theme as &dyn crate::tui::Theme);
     app.settings.default_thinking_level = Some(next.to_string());
     let _ = app.settings.save();
+    // Update provider's reasoning effort so API calls use the new level
+    app.provider.set_reasoning_effort(Some(next));
     app.status_text = Some(format!("Thinking level: {}", next));
 }
 
@@ -1129,6 +1136,7 @@ pub fn chat_add(app: &mut App, component: std::boxed::Box<dyn Component>) {
 }
 
 /// Format a tool call header matching pi's per-tool renderCall patterns.
+#[allow(dead_code)]
 fn format_tool_call_header(name: &str, args: &serde_json::Value) -> String {
     let theme = crate::agent::ui::theme::current_theme();
     match name {
@@ -1318,21 +1326,44 @@ fn handle_agent_event(app: &mut App, event: AgentEvent) {
             // Clear streaming component so answer text from the next turn creates a new
             // assistant message component (below the tool execution, matching pi).
             app.streaming_component = None;
-            // Format the call header using per-tool formatting (pi's renderCall patterns)
-            let styled = crate::agent::ui::app::format_tool_call_header(&name, &args);
+            // Look up tool renderer from agent tools
+            let renderer = app.agent_tools.iter()
+                .find(|t| t.name() == name)
+                .and_then(|t| t.renderer());
 
-            // Create a combined ToolExecComponent with Rc/Weak for result updates
-            let tool_comp = crate::agent::ui::components::ToolExecComponent::new(&name, styled);
-            let comp = Rc::new(RefCell::new(if name == "read" {
+            // Create a combined ToolExecComponent with renderer, handling per-tool setup
+            let comp = if name == "bash" {
+                Rc::new(RefCell::new(
+                    crate::agent::ui::components::ToolExecComponent::new(
+                        &name,
+                        renderer,
+                        args.clone(),
+                    )
+                ))
+            } else if name == "read" {
                 let path = args
                     .get("file_path")
                     .or_else(|| args.get("path"))
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
-                tool_comp.with_file_path(path.to_string())
+                let mut comp = crate::agent::ui::components::ToolExecComponent::new(
+                    &name,
+                    app.agent_tools.iter()
+                        .find(|t| t.name() == name)
+                        .and_then(|t| t.renderer()),
+                    args.clone(),
+                );
+                comp.set_file_path(path.to_string());
+                Rc::new(RefCell::new(comp))
             } else {
-                tool_comp
-            }));
+                Rc::new(RefCell::new(
+                    crate::agent::ui::components::ToolExecComponent::new(
+                        &name,
+                        renderer,
+                        args.clone(),
+                    )
+                ))
+            };
             app.pending_tools.insert(id.clone(), Rc::downgrade(&comp));
             chat_add(
                 app,
@@ -1380,6 +1411,28 @@ fn handle_agent_event(app: &mut App, event: AgentEvent) {
                         } else {
                             comp.borrow_mut().set_result(&content, is_error);
                         }
+                    } else if name == "bash" {
+                        // Bash tool result: set duration, exit code, truncation info
+                        let comp = weak.upgrade().expect("weak still valid");
+                        let mut comp = comp.borrow_mut();
+                        if let Some(start) = app.tool_call_start_times.remove(&id) {
+                            comp.set_duration_secs(start.elapsed().as_secs_f64());
+                        }
+                        if is_error {
+                            if content.contains("aborted") || content.contains("cancelled") {
+                                comp.set_cancelled(true);
+                            } else if let Some(code) = extract_exit_code(&content) {
+                                comp.set_exit_code(code);
+                            }
+                        } else {
+                            comp.set_exit_code(0);
+                        }
+                        if content.contains("Full output:") {
+                            if let Some(path) = extract_full_output_path(&content) {
+                                comp.set_truncated(true, Some(path));
+                            }
+                        }
+                        comp.set_result(&content, is_error);
                     } else {
                         comp.borrow_mut().set_result(&content, is_error);
                     };
@@ -1566,6 +1619,37 @@ fn parse_bang_command(input: &str) -> Option<(String, bool)> {
     } else {
         None
     }
+}
+
+/// Extract the exit code from a bash error result content.
+/// Looks for patterns like "Command exited with code N".
+fn extract_exit_code(content: &str) -> Option<i32> {
+    if let Some(pos) = content.rfind("exited with code ") {
+        let num_start = pos + "exited with code ".len();
+        let rest = &content[num_start..];
+        let num_str: String = rest
+            .chars()
+            .take_while(|c| c.is_ascii_digit() || *c == '-')
+            .collect();
+        if !num_str.is_empty() {
+            return num_str.parse().ok();
+        }
+    }
+    None
+}
+
+/// Extract the full output path from a bash result content.
+/// Looks for patterns like "Full output: /path/to/file".
+fn extract_full_output_path(content: &str) -> Option<String> {
+    if let Some(pos) = content.rfind("Full output: ") {
+        let path_start = pos + "Full output: ".len();
+        let rest = &content[path_start..];
+        let path: String = rest.chars().take_while(|c| !c.is_whitespace()).collect();
+        if !path.is_empty() {
+            return Some(path);
+        }
+    }
+    None
 }
 
 #[cfg(test)]

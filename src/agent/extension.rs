@@ -1,5 +1,6 @@
 /// Extension trait - all capability (built-in or user-provided) comes through this.
 use crate::agent::types::ToolCall;
+use crate::tui::Theme;
 use async_trait::async_trait;
 use std::borrow::Cow;
 use std::sync::{
@@ -158,6 +159,41 @@ impl ToolOutput {
     }
 }
 
+/// Tool-specific rendering interface (matching pi's renderCall/renderResult pattern).
+/// Each built-in tool implements this to provide its own visual representation.
+pub trait ToolRenderer: Send + Sync {
+    /// Render the tool call header/title.
+    /// Returns ANSI-styled lines for the call portion (inside the colored box shell).
+    fn render_call(
+        &self,
+        args: &serde_json::Value,
+        expanded: bool,
+        args_complete: bool,
+        is_partial: bool,
+        width: usize,
+        theme: &dyn Theme,
+    ) -> Vec<String>;
+
+    /// Render the tool result body.
+    /// Returns lines to display as the result body, or empty vec for no result.
+    /// When empty, only the call portion is shown (e.g. write success).
+    fn render_result(
+        &self,
+        content: &str,
+        is_error: bool,
+        expanded: bool,
+        is_partial: bool,
+        width: usize,
+        theme: &dyn Theme,
+    ) -> Vec<String>;
+
+    /// Whether this tool uses `renderShell: "self"` (controls its own framing).
+    /// When true, ToolExecComponent does NOT wrap the tool in a colored background box.
+    fn render_self(&self) -> bool {
+        false
+    }
+}
+
 /// An LLM-callable tool.
 #[async_trait]
 pub trait AgentTool: Send + Sync {
@@ -167,17 +203,9 @@ pub trait AgentTool: Send + Sync {
     #[allow(dead_code)]
     fn label(&self) -> &str;
 
-    /// Custom rendering for the tool call display.
-    /// Returns ANSI-styled text for the tool call header (name + args).
-    /// When None, a default rendering is used.
-    fn render_call(&self) -> Option<fn(&serde_json::Value) -> String> {
-        None
-    }
-
-    /// Custom rendering for the tool result display.
-    /// Returns ANSI-styled text for the tool result body.
-    /// When None, a default rendering is used.
-    fn render_result(&self) -> Option<fn(&str, bool) -> String> {
+    /// Provide a tool-specific renderer for the UI.
+    /// When None (the default), ToolExecComponent falls back to generic rendering.
+    fn renderer(&self) -> Option<Box<dyn ToolRenderer>> {
         None
     }
 

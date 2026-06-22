@@ -1442,6 +1442,7 @@ dependencies = [
  "genai",
  "libc",
  "pulldown-cmark",
+ "regex",
  "reqwest",
  "rustls",
  "serde",

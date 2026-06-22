@@ -1,60 +1,106 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use crate::agent::ui::theme::current_theme;
+use crate::agent::extension::ToolRenderer;
+use crate::agent::ui::theme::{RabTheme, current_theme};
 use crate::tui::Component;
 use crate::tui::components::Text;
 use crate::tui::components::r#box::TuiBox;
+use crate::tui::keybindings::{self, ACTION_APP_TOOLS_EXPAND};
+use crate::tui::util::truncate_to_width;
 
 /// Maximum preview lines when collapsed (matching pi's collapsible tool result).
 const PREVIEW_LINES: usize = 10;
 
-/// Combined tool execution component — matches pi's `ToolExecutionComponent`.
+/// Preview line limit for bash tools (matching pi's BASH_PREVIEW_LINES).
+const BASH_PREVIEW_LINES: usize = 5;
+
+/// Combined tool execution component - matches pi's `ToolExecutionComponent`.
+///
 /// Renders tool call + result as ONE component with background transitions:
 /// - Pending (call only, no result) → `toolPendingBg`
 /// - Success (call + result, !is_error) → `toolSuccessBg`
 /// - Error (call + result, is_error) → `toolErrorBg`
+///
+/// Delegates actual rendering to the tool-specific ToolRenderer when available.
 pub struct ToolExecComponent {
-    #[allow(dead_code)]
     name: String,
-    header_styled: String,
+    renderer: Option<Box<dyn ToolRenderer>>,
+    args: serde_json::Value,
     output: Option<String>,
     is_error: bool,
     is_complete: bool,
     expanded: bool,
-    /// Optional file path for syntax highlighting (read tool).
+    // ── Bash-specific fields (used when no renderer) ──
+    is_bash: bool,
+    duration_secs: Option<f64>,
+    was_truncated: bool,
+    full_output_path: Option<String>,
+    exit_code: Option<i32>,
+    cancelled: bool,
+    // ── Read-specific (used when no renderer) ──
     file_path: Option<String>,
 }
 
 impl ToolExecComponent {
-    pub fn new(name: impl Into<String>, header_styled: impl Into<String>) -> Self {
+    pub fn new(
+        name: impl Into<String>,
+        renderer: Option<Box<dyn ToolRenderer>>,
+        args: serde_json::Value,
+    ) -> Self {
         Self {
             name: name.into(),
-            header_styled: header_styled.into(),
+            renderer,
+            args,
             output: None,
             is_error: false,
             is_complete: false,
             expanded: false,
+            is_bash: false,
+            duration_secs: None,
+            was_truncated: false,
+            full_output_path: None,
+            exit_code: None,
+            cancelled: false,
             file_path: None,
         }
     }
 
-    /// Set the file path (for syntax highlighting on read results).
+    // ── Legacy setters (used by app.rs for non-renderer paths) ──
+
     pub fn set_file_path(&mut self, path: impl Into<String>) {
         self.file_path = Some(path.into());
     }
 
-    /// Builder-style: set file path and return self.
-    pub fn with_file_path(mut self, path: String) -> Self {
-        self.file_path = Some(path);
-        self
+    pub fn set_bash(&mut self, is_bash: bool) {
+        self.is_bash = is_bash;
     }
 
-    /// Set the result output. Called when ToolResult event arrives.
+    pub fn set_duration_secs(&mut self, secs: f64) {
+        self.duration_secs = Some(secs);
+    }
+
+    pub fn set_truncated(&mut self, truncated: bool, full_output_path: Option<String>) {
+        self.was_truncated = truncated;
+        self.full_output_path = full_output_path;
+    }
+
+    pub fn set_exit_code(&mut self, code: i32) {
+        self.exit_code = Some(code);
+    }
+
+    pub fn set_cancelled(&mut self, cancelled: bool) {
+        self.cancelled = cancelled;
+    }
+
     pub fn set_result(&mut self, output: impl Into<String>, is_error: bool) {
         self.output = Some(output.into());
         self.is_error = is_error;
         self.is_complete = true;
+    }
+
+    pub fn set_args(&mut self, args: serde_json::Value) {
+        self.args = args;
     }
 }
 
@@ -65,6 +111,59 @@ impl Component for ToolExecComponent {
 
     fn render(&self, width: usize) -> Vec<String> {
         let theme = current_theme();
+
+        // If tool has a renderer, delegate to it
+        if let Some(ref renderer) = self.renderer {
+            return self.render_with_renderer(renderer.as_ref(), &theme, width);
+        }
+
+        // ── Generic fallback rendering (no tool-specific renderer) ──
+        self.render_generic(&theme, width)
+    }
+
+    fn invalidate(&mut self) {}
+}
+
+impl ToolExecComponent {
+    /// Render using the tool-specific renderer (pi pattern).
+    fn render_with_renderer(
+        &self,
+        renderer: &dyn ToolRenderer,
+        theme: &RabTheme,
+        width: usize,
+    ) -> Vec<String> {
+        let is_partial = !self.is_complete;
+
+        // For `renderShell: "self"` tools (like edit), no colored box wrapping
+        if renderer.render_self() {
+            let mut lines: Vec<String> = Vec::new();
+            // Spacer above
+            lines.push(String::new());
+
+            let call_lines =
+                renderer.render_call(&self.args, self.expanded, self.is_complete, is_partial, width, theme);
+            if !call_lines.is_empty() {
+                lines.extend(call_lines);
+            }
+
+            // Result body
+            if let Some(ref output) = self.output {
+                let result_lines = renderer.render_result(
+                    output,
+                    self.is_error,
+                    self.expanded,
+                    is_partial,
+                    width,
+                    theme,
+                );
+                if !result_lines.is_empty() {
+                    lines.extend(result_lines);
+                }
+            }
+            return lines;
+        }
+
+        // ── Default shell: colored box wrapping ──
         let bg_key = if !self.is_complete {
             "toolPendingBg"
         } else if self.is_error {
@@ -73,7 +172,7 @@ impl Component for ToolExecComponent {
             "toolSuccessBg"
         };
         let bg_ansi = theme.bg_ansi(bg_key).to_string();
-        drop(theme);
+        let theme_clone = theme.clone();
 
         let mut msg_box = TuiBox::new(
             1,
@@ -83,46 +182,107 @@ impl Component for ToolExecComponent {
             })),
         );
 
-        // Header line: styled tool name + args
-        let header_text = Text::new(self.header_styled.clone(), 0, 0, None);
+        // Call header
+        let call_lines =
+            renderer.render_call(&self.args, self.expanded, self.is_complete, is_partial, width, &theme_clone);
+        let header_text = Text::new(call_lines.join("\n"), 0, 0, None);
         msg_box.add_child(std::boxed::Box::new(header_text));
 
-        // Result output (if complete, and not a write-tool success — pi hides success text for writes)
+        // Result body
+        if let Some(ref output) = self.output {
+            let result_lines = renderer.render_result(
+                output,
+                self.is_error,
+                self.expanded,
+                is_partial,
+                width,
+                &theme_clone,
+            );
+            if !result_lines.is_empty() {
+                let result_text = Text::new(result_lines.join("\n"), 0, 0, None);
+                msg_box.add_child(std::boxed::Box::new(result_text));
+            }
+        }
+
+        msg_box.render(width)
+    }
+
+    /// Generic fallback rendering (no tool-specific renderer).
+    fn render_generic(&self, theme: &RabTheme, width: usize) -> Vec<String> {
+        let bg_key = if !self.is_complete {
+            "toolPendingBg"
+        } else if self.is_error {
+            "toolErrorBg"
+        } else {
+            "toolSuccessBg"
+        };
+        let bg_ansi = theme.bg_ansi(bg_key).to_string();
+
+        let mut msg_box = TuiBox::new(
+            1,
+            1,
+            Some(std::boxed::Box::new(move |s: &str| -> String {
+                format!("{}{}\x1b[49m", bg_ansi, s)
+            })),
+        );
+
+        // ── Header ──
+        let header_styled = format_generic_call_header(&self.name, &self.args, theme);
+        let header_text = Text::new(header_styled, 0, 0, None);
+        msg_box.add_child(std::boxed::Box::new(header_text));
+
+        // ── Result output ──
         let skip_output = self.name == "write" && self.is_complete && !self.is_error;
         if let Some(ref output) = self.output
             && !skip_output
         {
-            let theme = crate::agent::ui::theme::current_theme();
-            let fg_key = if self.is_error { "error" } else { "toolOutput" };
-            let fg_ansi = theme.fg_ansi(fg_key).to_string();
-            drop(theme);
-
-            // Truncate preview when collapsed
-            let display_text = if self.expanded {
-                output.clone()
+            if self.is_bash {
+                msg_box.add_child(std::boxed::Box::new(BashResult::new(
+                    output,
+                    self.is_error,
+                    self.expanded,
+                    self.duration_secs,
+                    self.was_truncated,
+                    self.full_output_path.as_deref(),
+                    self.exit_code,
+                    self.cancelled,
+                    theme,
+                )));
             } else {
-                let lines: Vec<&str> = output.lines().collect();
-                if lines.len() > PREVIEW_LINES {
-                    let preview = lines[..PREVIEW_LINES].join("\n");
-                    format!(
-                        "{}\n... ({} more lines)",
-                        preview,
-                        lines.len() - PREVIEW_LINES
-                    )
-                } else {
-                    output.clone()
-                }
-            };
+                let fg_key = if self.is_error { "error" } else { "toolOutput" };
+                let fg_ansi = theme.fg_ansi(fg_key).to_string();
 
-            // Apply syntax highlighting for read results
-            let styled_lines: Vec<String> = if self.name == "read" && !self.is_error {
-                if let Some(ref path) = self.file_path {
-                    let lang = crate::tui::components::path_to_language(path);
-                    #[cfg(feature = "syntect")]
-                    if lang.is_some() {
-                        let hl = crate::tui::components::highlight_code(&display_text, lang);
-                        if !hl.is_empty() {
-                            hl
+                let display_text = if self.expanded {
+                    output.clone()
+                } else {
+                    let lines: Vec<&str> = output.lines().collect();
+                    if lines.len() > PREVIEW_LINES {
+                        let preview = lines[..PREVIEW_LINES].join("\n");
+                        format!(
+                            "{}\n... ({} more lines)",
+                            preview,
+                            lines.len() - PREVIEW_LINES
+                        )
+                    } else {
+                        output.clone()
+                    }
+                };
+
+                // Apply syntax highlighting for read results
+                let styled_lines: Vec<String> = if self.name == "read" && !self.is_error {
+                    if let Some(ref path) = self.file_path {
+                        let lang = crate::tui::components::path_to_language(path);
+                        #[cfg(feature = "syntect")]
+                        if lang.is_some() {
+                            let hl = crate::tui::components::highlight_code(&display_text, lang);
+                            if !hl.is_empty() {
+                                hl
+                            } else {
+                                display_text
+                                    .lines()
+                                    .map(|line| format!("{}{}\x1b[39m", fg_ansi, line))
+                                    .collect()
+                            }
                         } else {
                             display_text
                                 .lines()
@@ -140,26 +300,372 @@ impl Component for ToolExecComponent {
                         .lines()
                         .map(|line| format!("{}{}\x1b[39m", fg_ansi, line))
                         .collect()
-                }
-            } else {
-                display_text
-                    .lines()
-                    .map(|line| format!("{}{}\x1b[39m", fg_ansi, line))
-                    .collect()
-            };
+                };
 
-            let result_text = Text::new(styled_lines.join("\n"), 0, 0, None);
-            msg_box.add_child(std::boxed::Box::new(result_text));
+                let result_text = Text::new(styled_lines.join("\n"), 0, 0, None);
+                msg_box.add_child(std::boxed::Box::new(result_text));
+            }
         }
 
         msg_box.render(width)
+    }
+}
+
+/// Format a generic tool call header (fallback when no tool-specific renderer).
+fn format_generic_call_header(name: &str, args: &serde_json::Value, theme: &RabTheme) -> String {
+    match name {
+        "bash" => {
+            let cmd = args
+                .get("command")
+                .and_then(|v| v.as_str())
+                .unwrap_or("...");
+            let timeout = args.get("timeout").and_then(|v| v.as_i64());
+            let timeout_suffix = timeout
+                .map(|t| theme.fg("muted", &format!(" (timeout {}s)", t)))
+                .unwrap_or_default();
+            format!(
+                "{}{}",
+                theme.fg("toolTitle", &theme.bold(&format!("$ {}", cmd))),
+                timeout_suffix
+            )
+        }
+        "read" => {
+            let path = args
+                .get("file_path")
+                .or_else(|| args.get("path"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let short = shorten_path(path);
+            let path_disp = if short.is_empty() {
+                String::new()
+            } else {
+                theme.fg("accent", &short)
+            };
+            let range = format_line_range(args, theme);
+            format!(
+                "{} {} {}",
+                theme.fg("toolTitle", &theme.bold("read")),
+                path_disp,
+                range
+            )
+        }
+        "write" => {
+            let path = args
+                .get("file_path")
+                .or_else(|| args.get("path"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let short = shorten_path(path);
+            let path_disp = if short.is_empty() {
+                String::new()
+            } else {
+                theme.fg("accent", &short)
+            };
+            format!(
+                "{} {}",
+                theme.fg("toolTitle", &theme.bold("write")),
+                path_disp
+            )
+        }
+        "edit" => {
+            let path = args
+                .get("file_path")
+                .or_else(|| args.get("path"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let short = shorten_path(path);
+            let path_disp = if short.is_empty() {
+                String::new()
+            } else {
+                theme.fg("accent", &short)
+            };
+            format!(
+                "{} {}",
+                theme.fg("toolTitle", &theme.bold("edit")),
+                path_disp
+            )
+        }
+        "ls" => {
+            let path = args
+                .get("file_path")
+                .or_else(|| args.get("path"))
+                .and_then(|v| v.as_str())
+                .unwrap_or(".");
+            let limit = args.get("limit").and_then(|v| v.as_u64());
+            let short = shorten_path(path);
+            let limit_str = limit.map(|l| format!(" (limit {})", l)).unwrap_or_default();
+            format!(
+                "{} {}{}",
+                theme.fg("toolTitle", &theme.bold("ls")),
+                theme.fg("accent", &short),
+                limit_str
+            )
+        }
+        _ => {
+            let args_str = serde_json::to_string(args).unwrap_or_default();
+            let suffix = if args_str.is_empty() || args_str == "{}" {
+                String::new()
+            } else {
+                format!("  {}", theme.fg("muted", &args_str))
+            };
+            format!("{}{}", theme.fg("toolTitle", &theme.bold(name)), suffix)
+        }
+    }
+}
+
+/// Format line range for read tool (e.g. ":1-10" in warning color).
+fn format_line_range(args: &serde_json::Value, theme: &RabTheme) -> String {
+    let offset = args.get("offset").and_then(|v| v.as_u64()).unwrap_or(0);
+    let limit = args.get("limit").and_then(|v| v.as_u64());
+    if offset == 0 && limit.is_none() {
+        return String::new();
+    }
+    let start = if offset > 0 { offset } else { 1 };
+    let range_str = match limit {
+        Some(l) => format!(":{}-{}", start, start + l - 1),
+        None => format!(":{}", start),
+    };
+    theme.fg("warning", &range_str)
+}
+
+/// Shorten a path (replace home with ~).
+fn shorten_path(path: &str) -> String {
+    if let Ok(home) = std::env::var("HOME") {
+        path.replacen(&home, "~", 1)
+    } else {
+        path.to_string()
+    }
+}
+
+/// Format a keybinding action as a concise key hint string.
+fn format_key_hint(action_id: &str) -> String {
+    let keys = keybindings::get_keybindings().get_keys(action_id);
+    if keys.is_empty() {
+        return String::new();
+    }
+    let key = &keys[0];
+    let parts: Vec<&str> = key.split('+').collect();
+    if parts.len() > 1 {
+        let mods: Vec<String> = parts[..parts.len() - 1]
+            .iter()
+            .map(|p| match *p {
+                "ctrl" => "C-".to_string(),
+                "alt" => "M-".to_string(),
+                "shift" => "S-".to_string(),
+                "super" => "Super-".to_string(),
+                other => format!("{}-", other),
+            })
+            .collect();
+        let key_part = parts.last().unwrap();
+        let key_display = format_single_key(key_part);
+        let result: String = mods.join("");
+        result + &key_display
+    } else {
+        format_single_key(key.as_str())
+    }
+}
+
+fn format_single_key(key: &str) -> String {
+    match key {
+        "enter" => "Enter".to_string(),
+        "escape" | "esc" => "Esc".to_string(),
+        "tab" => "Tab".to_string(),
+        "backspace" | "bs" => "BS".to_string(),
+        "space" => "Space".to_string(),
+        "pageUp" => "PgUp".to_string(),
+        "pageDown" => "PgDn".to_string(),
+        "home" => "Home".to_string(),
+        "end" => "End".to_string(),
+        "delete" | "del" => "Del".to_string(),
+        "insert" | "ins" => "Ins".to_string(),
+        "up" => "Up".to_string(),
+        "down" => "Down".to_string(),
+        "left" => "Left".to_string(),
+        "right" => "Right".to_string(),
+        "f1" => "F1".to_string(),
+        "f2" => "F2".to_string(),
+        "f3" => "F3".to_string(),
+        "f4" => "F4".to_string(),
+        "f5" => "F5".to_string(),
+        "f6" => "F6".to_string(),
+        "f7" => "F7".to_string(),
+        "f8" => "F8".to_string(),
+        "f9" => "F9".to_string(),
+        "f10" => "F10".to_string(),
+        "f11" => "F11".to_string(),
+        "f12" => "F12".to_string(),
+        other => {
+            let first = other
+                .chars()
+                .next()
+                .map(|c| c.to_uppercase().to_string())
+                .unwrap_or_default();
+            first + &other[1..]
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Bash-specific result rendering (legacy fallback when no renderer)
+// ═══════════════════════════════════════════════════════════════════
+
+struct BashResult {
+    output: String,
+    is_error: bool,
+    expanded: bool,
+    duration_secs: Option<f64>,
+    was_truncated: bool,
+    full_output_path: Option<String>,
+    exit_code: Option<i32>,
+    cancelled: bool,
+    theme: RabTheme,
+}
+
+impl BashResult {
+    fn new(
+        output: &str,
+        is_error: bool,
+        expanded: bool,
+        duration_secs: Option<f64>,
+        was_truncated: bool,
+        full_output_path: Option<&str>,
+        exit_code: Option<i32>,
+        cancelled: bool,
+        theme: &RabTheme,
+    ) -> Self {
+        let clean_output = strip_context_truncation_footer(output);
+        Self {
+            output: clean_output,
+            is_error,
+            expanded,
+            duration_secs,
+            was_truncated,
+            full_output_path: full_output_path.map(|s| s.to_string()),
+            exit_code,
+            cancelled,
+            theme: theme.clone(),
+        }
+    }
+}
+
+impl Component for BashResult {
+    fn render(&self, width: usize) -> Vec<String> {
+        let theme = &self.theme;
+        let fg_ansi = if self.is_error {
+            theme.fg_ansi("error")
+        } else {
+            theme.fg_ansi("toolOutput")
+        }
+        .to_string();
+        let dim_ansi = theme.fg_ansi("muted").to_string();
+        let warning_ansi = theme.fg_ansi("warning").to_string();
+        let expand_key = format_key_hint(ACTION_APP_TOOLS_EXPAND);
+
+        let mut lines: Vec<String> = Vec::new();
+
+        let all_lines: Vec<&str> = self.output.split('\n').collect();
+
+        if all_lines.is_empty() || (all_lines.len() == 1 && all_lines[0].is_empty()) {
+            return lines;
+        }
+
+        let preview_lines: Vec<&str> = if self.expanded {
+            all_lines.clone()
+        } else {
+            let len = all_lines.len();
+            if len > BASH_PREVIEW_LINES {
+                all_lines[len - BASH_PREVIEW_LINES..].to_vec()
+            } else {
+                all_lines.clone()
+            }
+        };
+
+        let hidden_line_count = all_lines.len().saturating_sub(preview_lines.len());
+
+        if !self.expanded && hidden_line_count > 0 {
+            let hint = if expand_key.is_empty() {
+                format!(
+                    "\x1b[0m{}... {} earlier lines\x1b[39m",
+                    dim_ansi, hidden_line_count
+                )
+            } else {
+                format!(
+                    "\x1b[0m{}... {} earlier lines, {}({}) to expand\x1b[39m",
+                    dim_ansi, hidden_line_count, dim_ansi, expand_key,
+                )
+            };
+            let truncated = truncate_to_width(&hint, width, "...", false);
+            lines.push(truncated);
+        }
+
+        for line in &preview_lines {
+            let styled = if line.is_empty() {
+                String::new()
+            } else {
+                format!("{}{}\x1b[39m", fg_ansi, line)
+            };
+            let truncated = truncate_to_width(&styled, width, "...", false);
+            lines.push(truncated);
+        }
+
+        let is_complete = self.exit_code.is_some() || self.cancelled;
+        if let Some(secs) = self.duration_secs {
+            let label = if is_complete { "Took" } else { "Elapsed" };
+            let duration_text = format!("{}{} {:.1}s\x1b[39m", dim_ansi, label, secs);
+            lines.push(duration_text);
+        }
+
+        if self.cancelled {
+            lines.push(format!("{} (cancelled)\x1b[39m", warning_ansi));
+        } else if let Some(code) = self.exit_code {
+            if code != 0 {
+                lines.push(format!("{} (exit {})\x1b[39m", warning_ansi, code));
+            }
+        }
+
+        if self.was_truncated {
+            if let Some(ref path) = self.full_output_path {
+                lines.push(format!(
+                    "{}Output truncated. Full output: {}\x1b[39m",
+                    warning_ansi, path
+                ));
+            } else {
+                lines.push(format!("{}Output truncated.\x1b[39m", warning_ansi));
+            }
+        }
+
+        lines
     }
 
     fn invalidate(&mut self) {}
 }
 
-/// A Component wrapper around `Rc<RefCell<ToolExecComponent>>` for shared ownership.
-/// Allows App to hold `Weak<RefCell<ToolExecComponent>>` for result updates.
+fn strip_context_truncation_footer(output: &str) -> String {
+    let lines: Vec<&str> = output.lines().collect();
+    if lines.len() < 3 {
+        return output.to_string();
+    }
+
+    let last = lines.last().map_or("", |v| v).trim();
+    if last.starts_with('[')
+        && (last.contains("Showing lines") || last.contains("Showing last"))
+        && last.contains("Full output:")
+    {
+        let before: Vec<&str> = lines[..lines.len() - 1].to_vec();
+        if !before.is_empty() && before[before.len() - 1].is_empty() {
+            before[..before.len() - 1].join("\n")
+        } else {
+            before.join("\n")
+        }
+    } else {
+        output.to_string()
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Rc wrapper for shared ownership
+// ═══════════════════════════════════════════════════════════════════
+
 pub struct RcToolExec(pub Rc<RefCell<ToolExecComponent>>);
 
 impl Clone for RcToolExec {
@@ -182,9 +688,10 @@ impl Component for RcToolExec {
     }
 }
 
-// ── Keep old types for backward compatibility ──
+// ═══════════════════════════════════════════════════════════════════
+// Backward-compatible old types
+// ═══════════════════════════════════════════════════════════════════
 
-/// Old tool call component — kept for compatibility.
 pub struct ToolCallComponent {
     name: String,
     args: String,
@@ -208,17 +715,16 @@ impl Component for ToolCallComponent {
     fn render(&self, width: usize) -> Vec<String> {
         let theme = current_theme();
         let bg_ansi = theme.bg_ansi("toolPendingBg").to_string();
-        drop(theme);
 
         let mut styled = String::new();
         styled.push_str("\x1b[1m");
-        styled.push_str(current_theme().fg_ansi("toolTitle"));
+        styled.push_str(theme.fg_ansi("toolTitle"));
         styled.push_str(&self.name);
         styled.push_str("\x1b[22m");
 
         if !self.args.is_empty() && self.args != "{}" {
             styled.push_str("  ");
-            styled.push_str(current_theme().fg_ansi("muted"));
+            styled.push_str(theme.fg_ansi("muted"));
             styled.push_str(&self.args);
         }
         styled.push_str("\x1b[39m");
@@ -236,7 +742,6 @@ impl Component for ToolCallComponent {
     fn invalidate(&mut self) {}
 }
 
-/// Old tool result component — kept for compatibility.
 pub struct ToolResultComponent {
     content: String,
     is_error: bool,
@@ -267,7 +772,6 @@ impl Component for ToolResultComponent {
         let fg_key = if self.is_error { "error" } else { "toolOutput" };
         let bg_ansi = theme.bg_ansi(bg_key).to_string();
         let styled = theme.fg(fg_key, &self.content);
-        drop(theme);
 
         let mut msg_box = TuiBox::new(
             1,

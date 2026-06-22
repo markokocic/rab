@@ -9,6 +9,7 @@ use genai::chat::{
 };
 use genai::resolver::{AuthData, AuthResolver};
 use std::pin::Pin;
+use std::sync::RwLock;
 
 /// Build a reqwest::Client that uses webpki-roots (embedded Mozilla CA list)
 /// instead of rustls-platform-verifier, which panics on Android/Termux
@@ -28,7 +29,7 @@ fn build_reqwest_client() -> reqwest::Client {
 pub struct GenaiProvider {
     client: genai::Client,
     model_prefix: String,
-    reasoning_effort: Option<ReasoningEffort>,
+    reasoning_effort: RwLock<Option<ReasoningEffort>>,
 }
 
 impl GenaiProvider {
@@ -66,7 +67,7 @@ impl GenaiProvider {
         Ok(Self {
             client,
             model_prefix: "opencode_go::".into(),
-            reasoning_effort,
+            reasoning_effort: RwLock::new(reasoning_effort),
         })
     }
 
@@ -75,6 +76,16 @@ impl GenaiProvider {
             model.to_string()
         } else {
             format!("{}{}", self.model_prefix, model)
+        }
+    }
+
+    /// Convert a thinking level string to ReasoningEffort.
+    fn thinking_level_to_effort(level: Option<&str>) -> Option<ReasoningEffort> {
+        match level {
+            Some("off" | "none") => None,
+            Some("minimal" | "low") => Some(ReasoningEffort::Low),
+            Some("medium") => Some(ReasoningEffort::Medium),
+            _ => Some(ReasoningEffort::High), // None, xhigh, max, or unknown
         }
     }
 
@@ -146,7 +157,9 @@ impl Provider for GenaiProvider {
             .with_capture_content(true)
             .with_capture_tool_calls(true);
 
-        if let Some(ref effort) = self.reasoning_effort {
+        if let Ok(guard) = self.reasoning_effort.read()
+            && let Some(ref effort) = *guard
+        {
             options = options.with_reasoning_effort(effort.clone());
         }
 
@@ -226,5 +239,12 @@ impl Provider for GenaiProvider {
         };
 
         Ok(Box::pin(stream))
+    }
+
+    fn set_reasoning_effort(&self, level: Option<&str>) {
+        let effort = Self::thinking_level_to_effort(level);
+        if let Ok(mut guard) = self.reasoning_effort.write() {
+            *guard = effort;
+        }
     }
 }
