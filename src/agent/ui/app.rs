@@ -1352,6 +1352,13 @@ fn handle_agent_event(app: &mut App, event: AgentEvent) {
                 is_error,
             });
         }
+        AgentEvent::Aborted { reason } => {
+            // Show abort/error text inline in the streaming component (matches pi)
+            if let Some(weak) = app.streaming_component.as_ref().and_then(|w| w.upgrade()) {
+                let err_text = format!("\n\n**Error:** {}", reason);
+                weak.borrow_mut().append_text(&err_text);
+            }
+        }
         AgentEvent::TurnEnd => {
             flush_all(app);
             // Streaming component is complete — clear reference (text persists in chat)

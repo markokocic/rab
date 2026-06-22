@@ -43,6 +43,10 @@ pub enum AgentEvent {
         compact: Option<String>,
         is_error: bool,
     },
+    /// Stream was aborted or errored. TextDelta/ThinkingDelta may have been sent before.
+    Aborted {
+        reason: String,
+    },
     TurnEnd,
     AgentEnd {
         messages: Vec<AgentMessage>,
@@ -153,6 +157,9 @@ pub async fn run_agent_loop(
                     }
                 }
                 StreamEvent::Error { message } => {
+                    emit(AgentEvent::Aborted {
+                        reason: message.clone(),
+                    });
                     emit(AgentEvent::ToolResult {
                         id: String::new(),
                         name: String::new(),

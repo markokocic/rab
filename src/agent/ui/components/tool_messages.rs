@@ -87,8 +87,11 @@ impl Component for ToolExecComponent {
         let header_text = Text::new(self.header_styled.clone(), 0, 0, None);
         msg_box.add_child(std::boxed::Box::new(header_text));
 
-        // Result output (if complete)
-        if let Some(ref output) = self.output {
+        // Result output (if complete, and not a write-tool success — pi hides success text for writes)
+        let skip_output = self.name == "write" && self.is_complete && !self.is_error;
+        if let Some(ref output) = self.output
+            && !skip_output
+        {
             let theme = crate::agent::ui::theme::current_theme();
             let fg_key = if self.is_error { "error" } else { "toolOutput" };
             let fg_ansi = theme.fg_ansi(fg_key).to_string();

@@ -323,6 +323,13 @@ async fn run_print_mode(
             }
         }
         AgentEvent::AgentStart | AgentEvent::TurnStart | AgentEvent::TurnEnd => {}
+        AgentEvent::Aborted { ref reason } => {
+            eprintln!(
+                "{} {}",
+                colored::Colorize::red("✗"),
+                colored::Colorize::red(reason.as_str())
+            );
+        }
         AgentEvent::AgentEnd { .. } => {
             eprintln!();
         }
