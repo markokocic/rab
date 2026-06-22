@@ -198,6 +198,7 @@ Each tool should format its result matching pi's visual style.
 
 ### 🐛 Bugs
 
+- [ ] File autocomplete skips `/` for files in folders (e.g. `src/` shows files without `src/` prefix). Fix: implement relative path building matching pi's logic — when prefix ends with `/`, concatenate directly; when prefix contains `/`, use dirname.
 - [ ] Ctrl+T (thinking toggle) and Ctrl+O (tools expand) state doesn't persist across sessions
 - [ ] Slow rendering and typing for long chats
 - [x] Duplicate line in editor when typing line longer than screen width

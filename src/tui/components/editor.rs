@@ -111,6 +111,10 @@ pub struct Editor {
     // Pi-style autocomplete state (uses SelectList)
     autocomplete_list: Option<SelectList>,
     pub autocomplete_active: bool,
+    /// The prefix from the provider's last get_suggestions call.
+    /// Used instead of recomputing at selection time to avoid mismatches
+    /// (e.g. `@src/au` → provider strips `@`, returns prefix `src/au`).
+    autocomplete_prefix: String,
 }
 
 #[derive(Debug, Clone)]
@@ -144,6 +148,7 @@ impl Editor {
             disable_submit: false,
             autocomplete_list: None,
             autocomplete_active: false,
+            autocomplete_prefix: String::new(),
             border_color: Box::new(|s| s.to_string()),
             autocomplete_provider: None,
             pastes: HashMap::new(),
@@ -227,6 +232,7 @@ impl Editor {
     pub fn clear_autocomplete(&mut self) {
         self.autocomplete_active = false;
         self.autocomplete_list = None;
+        self.autocomplete_prefix.clear();
     }
 
     /// After cursor movement, re-query autocomplete if active (pi-style).
@@ -456,6 +462,7 @@ impl Editor {
             })
             .collect();
         self.set_autocomplete(select_items);
+        self.autocomplete_prefix = prefix;
     }
 
     pub fn try_trigger_autocomplete(&mut self) {
@@ -1094,7 +1101,11 @@ impl Component for Editor {
                 if let Some(val) = list.selected_item().map(|i| i.value.clone()) {
                     // Use provider to apply completion (pi-style), fallback to set_text
                     if let Some(ref provider) = self.autocomplete_provider {
-                        let prefix = self.get_autocomplete_prefix();
+                        let prefix = if !self.autocomplete_prefix.is_empty() {
+                            self.autocomplete_prefix.clone()
+                        } else {
+                            self.get_autocomplete_prefix()
+                        };
                         let item = crate::tui::autocomplete::AutocompleteItem {
                             value: val.clone(),
                             label: val.clone(),

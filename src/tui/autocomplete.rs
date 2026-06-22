@@ -71,7 +71,7 @@ pub trait AutocompleteProvider {
 }
 
 // =============================================================================
-// CombinedAutocompleteProvider — handles slash commands + file paths
+// CombinedAutocompleteProvider - handles slash commands + file paths
 // =============================================================================
 
 /// Combined provider that handles slash commands and file path completion.
@@ -96,7 +96,7 @@ impl CombinedAutocompleteProvider {
             .filter(|cmd| cmd.name.to_lowercase().starts_with(&lower_prefix))
             .map(|cmd| {
                 let desc = match (&cmd.description, &cmd.argument_hint) {
-                    (Some(d), Some(h)) => Some(format!("{} — {}", h, d)),
+                    (Some(d), Some(h)) => Some(format!("{} - {}", h, d)),
                     (Some(d), None) => Some(d.clone()),
                     (None, Some(h)) => Some(h.clone()),
                     (None, None) => None,
@@ -176,44 +176,57 @@ impl CombinedAutocompleteProvider {
                 let suffix = if is_dir { "/" } else { "" };
 
                 // Build display path relative to base or absolute
-                let display = if prefix.starts_with('/') || prefix.starts_with("~/") {
-                    let base_dir = if prefix.starts_with("~/") {
-                        let _home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-                        if prefix.ends_with('/') {
-                            // Already expanded
-                            expanded.clone()
-                        } else {
-                            let p = Path::new(&expanded);
-                            p.parent()
-                                .map(|p| p.to_string_lossy().to_string())
-                                .unwrap_or("/".into())
-                        }
+                let display = if prefix.starts_with('/') {
+                    // Absolute path: add / separator between base_dir and name
+                    let base_dir = dir.clone();
+                    if base_dir.ends_with('/') {
+                        format!("{}{}{}", base_dir, name, suffix)
                     } else {
-                        dir.clone()
-                    };
-                    if is_dir {
-                        format!("{}{}/", base_dir, name)
-                    } else {
-                        format!("{}{}", base_dir, name)
+                        format!("{}/{}{}", base_dir, name, suffix)
                     }
+                } else if let Some(rel_part) = prefix.strip_prefix("~/") {
+                    // Preserve ~/ format in the result (matching pi's behavior)
+                    let parent_path = Path::new(rel_part)
+                        .parent()
+                        .map(|p| p.to_string_lossy().to_string())
+                        .unwrap_or_default();
+                    let base =
+                        if rel_part.is_empty() || parent_path.is_empty() || parent_path == "." {
+                            "~/".to_string()
+                        } else {
+                            format!("~/{}/", parent_path)
+                        };
+                    format!("{}{}{}", base, name, suffix)
+                } else if prefix == "~" {
+                    // Just ~ — show entries with ~/ prefix (pi-compat)
+                    format!("~/{}{}", name, suffix)
                 } else {
-                    // Relative to cwd
-                    // We need to construct the relative path from base_path
-                    let rel_dir = if prefix.is_empty() || !prefix.contains('/') {
-                        String::new()
-                    } else {
+                    // Relative to cwd - match pi's logic:
+                    // 1. If prefix ends with /, use prefix + name (preserves full path)
+                    // 2. If prefix contains /, use dirname(prefix)/name
+                    // 3. Otherwise, just name
+                    if prefix.ends_with('/') {
+                        format!("{}{}{}", prefix, name, suffix)
+                    } else if prefix.contains('/') {
                         let p = Path::new(prefix);
                         let parent = p
                             .parent()
                             .map(|p| p.to_string_lossy().to_string())
                             .unwrap_or_default();
-                        if parent.is_empty() {
+                        let base = if parent.is_empty() || parent == "." {
                             String::new()
                         } else {
                             format!("{}/", parent)
+                        };
+                        // Preserve ./ prefix if original had it
+                        if prefix.starts_with("./") && !base.starts_with("./") {
+                            format!("./{}{}{}", base, name, suffix)
+                        } else {
+                            format!("{}{}{}", base, name, suffix)
                         }
-                    };
-                    format!("{}{}{}", rel_dir, name, suffix)
+                    } else {
+                        format!("{}{}", name, suffix)
+                    }
                 };
 
                 items.push(AutocompleteItem {
@@ -300,7 +313,7 @@ impl AutocompleteProvider for CombinedAutocompleteProvider {
             }
         }
 
-        // Forced completion (Tab) — try file paths
+        // Forced completion (Tab) - try file paths
         if force && self.should_trigger_file_completion(lines, cursor_line, cursor_col) {
             // Find the last token
             let last_space = text_before.rfind(|c: char| c.is_whitespace());
