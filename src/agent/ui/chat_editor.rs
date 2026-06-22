@@ -196,9 +196,11 @@ impl ChatEditor {
         let text = self.editor.get_text();
         if text.trim_start().starts_with('!') {
             let ansi = theme.fg("bashMode", "").to_string();
-            // Extract just the ANSI prefix (before any text)
+            // Extract just the ANSI prefix (before any text).
+            // Use find('m') to get only the color-set code, not the trailing reset.
+            // theme.fg() returns "\x1b[...m\x1b[39m"; we want "\x1b[...m" only.
             let prefix = if ansi.starts_with('\x1b') {
-                let end = ansi.rfind('m').unwrap_or(ansi.len());
+                let end = ansi.find('m').unwrap_or(ansi.len());
                 ansi[..end + 1].to_string()
             } else {
                 ansi
@@ -218,7 +220,7 @@ impl ChatEditor {
             };
             let ansi = theme.fg(color_name, "").to_string();
             let prefix = if ansi.starts_with('\x1b') {
-                let end = ansi.rfind('m').unwrap_or(ansi.len());
+                let end = ansi.find('m').unwrap_or(ansi.len());
                 ansi[..end + 1].to_string()
             } else {
                 ansi
