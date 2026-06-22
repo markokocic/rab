@@ -169,6 +169,12 @@ pub struct App {
 
     /// Settings reference for persisting toggle changes.
     settings: crate::agent::settings::Settings,
+
+    /// Header component (welcome/onboarding). Stored as Rc<RefCell> so
+    /// handle_tools_expand can toggle its expanded state (matching pi's
+    /// behavior where setToolsExpanded expands both the header and all
+    /// expandable chat children).
+    header: Rc<RefCell<crate::agent::ui::components::HeaderComponent>>,
     // ── Message rendering cache (avoids re-rendering messages every frame) ──
     // Cache fields removed - messages now rendered via Components in chat_container.
 }
@@ -298,6 +304,9 @@ impl App {
             settings: config.settings,
             auto_compact: true,
             status_text: None,
+            header: Rc::new(RefCell::new(
+                crate::agent::ui::components::HeaderComponent::new(),
+            )),
         }
     }
 
@@ -347,7 +356,9 @@ pub async fn run(config: AppConfig, session: SessionManager) -> anyhow::Result<(
     // Set up the component tree in TUI.root (matching pi's TUI.extend(Container))
     // Order: header → chat_container (messages) → pending → status → queued → working → editor → footer
     tui.root.add_child(std::boxed::Box::new(
-        crate::agent::ui::components::HeaderComponent::new(),
+        crate::tui::components::RcRefCellComponent(
+            app.header.clone() as Rc<RefCell<dyn Component>>,
+        ),
     ));
     tui.root
         .add_child(std::boxed::Box::new(app.chat_container.clone()));
@@ -569,6 +580,14 @@ fn handle_input(app: &mut App, tui: &mut TUI, key: &KeyEvent) {
         return;
     }
 
+    // ── Route input to root container children (header, etc.) ──
+    // Root children (header → chat_container → pending → etc.) get a chance
+    // to handle input before the editor. Components that don't consume the
+    // event return false so it flows through to the editor.
+    if tui.root.handle_input(key) {
+        return;
+    }
+
     // ── Dispatch to ChatEditor (mirrors pi's CustomEditor.handleInput) ──
     // Borrow the editor in a let binding so the RefMut drops before we mutate App.
     let action = app.editor.borrow_mut().handle_input(key);
@@ -715,6 +734,10 @@ fn handle_model_cycle(app: &mut App, dir: isize) {
 fn handle_tools_expand(app: &mut App) {
     app.tools_expanded = !app.tools_expanded;
     app.collapse_tool_output = !app.tools_expanded;
+
+    // Expand/collapse header (welcome/onboarding) — matching pi's setToolsExpanded
+    // which expands both the active header and all expandable chat children.
+    app.header.borrow_mut().set_expanded(app.tools_expanded);
 
     // Propagate to all children in chat_container
     let mut chat = app.chat_container.inner.borrow_mut();

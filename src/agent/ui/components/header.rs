@@ -1,6 +1,9 @@
+use crossterm::event::KeyEvent;
+
 use crate::agent::ui::theme::current_theme;
 use crate::tui::Component;
 use crate::tui::keybindings;
+use crate::tui::keybindings::get_keybindings;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -50,12 +53,14 @@ impl HeaderComponent {
     }
 
     fn build_lines(&self, _width: usize) -> Vec<String> {
-        let theme = current_theme();
-        let logo = format!(
-            "{}{}",
-            theme.bold(&theme.fg("accent", "rab")),
-            theme.fg("dim", &format!(" v{}", VERSION)),
-        );
+        let logo = {
+            let theme = current_theme();
+            format!(
+                "{}{}",
+                theme.bold(&theme.fg("accent", "rab")),
+                theme.fg("dim", &format!(" v{}", VERSION)),
+            )
+        };
 
         if self.expanded {
             // Expanded: full keybinding hints (matching pi's expandedInstructions)
@@ -108,16 +113,22 @@ impl HeaderComponent {
                 raw_key_hint("!", "bash"),
                 key_hint("app.tools.expand", "more"),
             ];
-            let separator = theme.fg("muted", " · ");
+            let separator = {
+                let theme = current_theme();
+                theme.fg("muted", " · ")
+            };
             let compact_line = parts.join(&separator);
 
-            let compact_onboarding = theme.fg(
-                "dim",
-                &format!(
-                    "Press {} to show full startup help and loaded resources.",
-                    key_text("app.tools.expand"),
-                ),
-            );
+            let compact_onboarding = {
+                let theme = current_theme();
+                theme.fg(
+                    "dim",
+                    &format!(
+                        "Press {} to show full startup help and loaded resources.",
+                        key_text("app.tools.expand"),
+                    ),
+                )
+            };
 
             vec![logo, compact_line, String::new(), compact_onboarding]
         }
@@ -131,6 +142,24 @@ impl Default for HeaderComponent {
 }
 
 impl Component for HeaderComponent {
+    fn handle_input(&mut self, key: &KeyEvent) -> bool {
+        let kb = get_keybindings();
+        if kb.matches(key, keybindings::ACTION_APP_TOOLS_EXPAND) {
+            self.expanded = !self.expanded;
+            *self.cached_lines.borrow_mut() = None;
+            // Don't consume — let the app-level handler also process Ctrl+O
+            // so tool messages and global state (tools_expanded) stay in sync.
+            return false;
+        }
+        // Escape collapses expanded header
+        if self.expanded && kb.matches(key, keybindings::ACTION_APP_ESCAPE) {
+            self.expanded = false;
+            *self.cached_lines.borrow_mut() = None;
+            return true;
+        }
+        false
+    }
+
     fn set_expanded(&mut self, expanded: bool) {
         self.expanded = expanded;
         *self.cached_lines.borrow_mut() = None;
