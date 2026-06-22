@@ -133,6 +133,11 @@ pub struct App {
     /// Used to update ToolExecComponent when ToolResult arrives (pi's `pendingTools` Map).
     pending_tools: HashMap<String, Weak<RefCell<crate::agent::ui::components::ToolExecComponent>>>,
 
+    /// Streaming assistant message component (pi's `streamingComponent`).
+    /// Created on first TextDelta, updated in-place, cleared on TurnEnd/AgentEnd.
+    streaming_component:
+        Option<Weak<RefCell<crate::agent::ui::components::AssistantMessageComponent>>>,
+
     /// Working indicator.
     working: WorkingIndicator,
 
@@ -252,6 +257,7 @@ impl App {
             messages,
             chat_container,
             pending_tools: HashMap::new(),
+            streaming_component: None,
             pending_section: std::rc::Rc::new(crate::tui::components::DynamicLines::new()),
             status_section: std::rc::Rc::new(crate::tui::components::DynamicLines::new()),
             queued_section: std::rc::Rc::new(crate::tui::components::DynamicLines::new()),
@@ -1210,19 +1216,38 @@ fn handle_agent_event(app: &mut App, event: AgentEvent) {
         }
         AgentEvent::TurnStart => {}
         AgentEvent::TextDelta { delta } => {
-            if let Some(ref mut text) = app.pending_text {
-                text.push_str(&delta);
+            // Progressive streaming: create or update AssistantMessageComponent in-place
+            if let Some(weak) = app.streaming_component.as_ref().and_then(|w| w.upgrade()) {
+                weak.borrow_mut().append_text(&delta);
             } else {
-                flush_thinking(app);
-                app.pending_text = Some(delta);
+                // First text delta — create streaming component
+                use crate::tui::components::rc_ref_cell_component::RcRefCellComponent;
+                let comp = Rc::new(RefCell::new(
+                    crate::agent::ui::components::AssistantMessageComponent::new(&delta),
+                ));
+                if app.hide_thinking {
+                    comp.borrow_mut().set_hide_thinking(true);
+                }
+                app.streaming_component = Some(Rc::downgrade(&comp));
+                chat_add(app, std::boxed::Box::new(RcRefCellComponent(comp)));
             }
         }
         AgentEvent::ThinkingDelta { delta } => {
-            if let Some(ref mut text) = app.pending_thinking {
-                text.push_str(&delta);
+            // Progressive thinking: add thinking block to streaming component
+            if let Some(weak) = app.streaming_component.as_ref().and_then(|w| w.upgrade()) {
+                weak.borrow_mut()
+                    .add_thinking(&delta, app.thinking_level.clone());
             } else {
-                flush_text(app);
-                app.pending_thinking = Some(delta);
+                // First thinking delta without text — create component with just thinking
+                use crate::tui::components::rc_ref_cell_component::RcRefCellComponent;
+                let mut comp = crate::agent::ui::components::AssistantMessageComponent::new("");
+                comp.add_thinking(&delta, app.thinking_level.clone());
+                if app.hide_thinking {
+                    comp.set_hide_thinking(true);
+                }
+                let comp = Rc::new(RefCell::new(comp));
+                app.streaming_component = Some(Rc::downgrade(&comp));
+                chat_add(app, std::boxed::Box::new(RcRefCellComponent(comp)));
             }
         }
         AgentEvent::ToolCall { id, name, args, .. } => {
@@ -1329,9 +1354,12 @@ fn handle_agent_event(app: &mut App, event: AgentEvent) {
         }
         AgentEvent::TurnEnd => {
             flush_all(app);
+            // Streaming component is complete — clear reference (text persists in chat)
+            app.streaming_component = None;
         }
         AgentEvent::AgentEnd { ref messages } => {
             flush_all(app);
+            app.streaming_component = None;
             app.is_streaming = false;
             app.working.stop();
             app.footer.borrow_mut().set_streaming(false);

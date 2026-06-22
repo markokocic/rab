@@ -7,6 +7,7 @@ pub mod input;
 pub mod lines_component;
 pub mod loader;
 pub mod markdown;
+pub mod rc_ref_cell_component;
 pub use markdown::{
     DefaultTextStyle, Markdown, MarkdownOptions, MarkdownTheme, StyleFn, highlight_code,
     path_to_language,
