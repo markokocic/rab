@@ -73,10 +73,10 @@ pub struct App {
     /// Conversation history (AgentMessage).
     conversation: Vec<AgentMessage>,
 
-    /// Rendered display messages (legacy — being migrated to Components).
+    /// Rendered display messages (legacy - being migrated to Components).
     messages: Vec<DisplayMsg>,
 
-    /// Component-based chat area — mirrors pi's `this.chatContainer`.
+    /// Component-based chat area - mirrors pi's `this.chatContainer`.
     /// Components are added here in handle_agent_event instead of pushing to messages.
     pub chat_container: RefContainer,
 
@@ -90,7 +90,7 @@ pub struct App {
     /// Working indicator section.
     pub working_section: std::rc::Rc<crate::tui::components::DynamicLines>,
 
-    /// The chat editor (shared ownership — App mutates, TUI.root renders).
+    /// The chat editor (shared ownership - App mutates, TUI.root renders).
     editor: Rc<RefCell<ChatEditor>>,
 
     /// Agent event channel.
@@ -126,7 +126,7 @@ pub struct App {
     /// Session persistence.
     session: Option<SessionManager>,
 
-    /// Footer (shared ownership — App mutates, TUI.root renders).
+    /// Footer (shared ownership - App mutates, TUI.root renders).
     footer: Rc<RefCell<Footer>>,
 
     /// Pending tool executions keyed by tool call ID.
@@ -138,7 +138,7 @@ pub struct App {
     streaming_component:
         Option<Weak<RefCell<crate::agent::ui::components::AssistantMessageComponent>>>,
 
-    /// Active bash execution component (for bang commands — updated when result arrives).
+    /// Active bash execution component (for bang commands - updated when result arrives).
     bash_component: Option<Weak<RefCell<crate::agent::ui::components::BashExecution>>>,
 
     /// Working indicator.
@@ -164,7 +164,7 @@ pub struct App {
     /// Settings reference for persisting toggle changes.
     settings: crate::agent::settings::Settings,
     // ── Message rendering cache (avoids re-rendering messages every frame) ──
-    // Cache fields removed — messages now rendered via Components in chat_container.
+    // Cache fields removed - messages now rendered via Components in chat_container.
 }
 
 impl App {
@@ -218,7 +218,7 @@ impl App {
             startup_info.push(DisplayMsg::Info(resource_parts.join("  ·  ")));
         }
 
-        // Combine startup info with history (legacy — for session saving / tests)
+        // Combine startup info with history (legacy - for session saving / tests)
         let messages = if startup_info.is_empty() {
             history_display
         } else {
@@ -1283,7 +1283,7 @@ fn handle_agent_event(app: &mut App, event: AgentEvent) {
             if let Some(weak) = app.streaming_component.as_ref().and_then(|w| w.upgrade()) {
                 weak.borrow_mut().append_text(&delta);
             } else {
-                // First text delta — create streaming component
+                // First text delta - create streaming component
                 use crate::tui::components::rc_ref_cell_component::RcRefCellComponent;
                 let comp = Rc::new(RefCell::new(
                     crate::agent::ui::components::AssistantMessageComponent::new(&delta),
@@ -1301,7 +1301,7 @@ fn handle_agent_event(app: &mut App, event: AgentEvent) {
                 weak.borrow_mut()
                     .add_thinking(&delta, app.thinking_level.clone());
             } else {
-                // First thinking delta without text — create component with just thinking
+                // First thinking delta without text - create component with just thinking
                 use crate::tui::components::rc_ref_cell_component::RcRefCellComponent;
                 let mut comp = crate::agent::ui::components::AssistantMessageComponent::new("");
                 comp.add_thinking(&delta, app.thinking_level.clone());
@@ -1315,6 +1315,9 @@ fn handle_agent_event(app: &mut App, event: AgentEvent) {
         }
         AgentEvent::ToolCall { id, name, args, .. } => {
             flush_all(app);
+            // Clear streaming component so answer text from the next turn creates a new
+            // assistant message component (below the tool execution, matching pi).
+            app.streaming_component = None;
             // Format the call header using per-tool formatting (pi's renderCall patterns)
             let styled = crate::agent::ui::app::format_tool_call_header(&name, &args);
 
@@ -1396,7 +1399,7 @@ fn handle_agent_event(app: &mut App, event: AgentEvent) {
                     drop(bash);
                     app.bash_component = None;
                 } else {
-                    // No tracked component — create new BashExecutionComponent
+                    // No tracked component - create new BashExecutionComponent
                     let cmd = content
                         .lines()
                         .next()
@@ -1449,7 +1452,7 @@ fn handle_agent_event(app: &mut App, event: AgentEvent) {
         }
         AgentEvent::TurnEnd => {
             flush_all(app);
-            // Streaming component is complete — clear reference (text persists in chat)
+            // Streaming component is complete - clear reference (text persists in chat)
             app.streaming_component = None;
         }
         AgentEvent::AgentEnd { ref messages } => {
