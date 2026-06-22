@@ -32,6 +32,10 @@ pub trait Component {
         false
     }
 
+    /// Handle a paste event (text from bracketed paste mode).
+    /// Default no-op; override to process pasted content.
+    fn handle_paste(&mut self, _text: &str) {}
+
     /// Mark this component as needing re-render.
     /// Called when internal state changes (output received, expanded toggled, etc.).
     fn invalidate(&mut self) {}

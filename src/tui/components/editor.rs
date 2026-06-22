@@ -188,7 +188,8 @@ impl Editor {
         self.terminal_rows = rows;
     }
 
-    pub fn set_text(&mut self, text: &str) {
+    /// Internal: set text without undo/autocomplete (used by history navigation).
+    fn set_text_internal(&mut self, text: &str) {
         self.lines = if text.is_empty() {
             vec![String::new()]
         } else {
@@ -198,6 +199,18 @@ impl Editor {
         self.cursor_col = self.lines.last().map_or(0, |l| l.len());
         self.scroll_offset = 0;
         self.preferred_col = None;
+    }
+
+    pub fn set_text(&mut self, text: &str) {
+        // Pi: cancel autocomplete, push undo if content differs, then fire onChange
+        self.clear_autocomplete();
+        self.last_action = None;
+        self.exit_history();
+        if self.get_text() != text {
+            self.push_undo();
+        }
+        self.set_text_internal(text);
+        self.notify_change();
     }
 
     pub fn add_to_history(&mut self, text: &str) {
@@ -1059,7 +1072,7 @@ impl Editor {
         }
 
         let text = self.history[idx as usize].clone();
-        self.set_text(&text);
+        self.set_text_internal(&text);
         self.cursor_col = 0; // pi: cursor at start when going older
         self.history_index = idx;
     }
@@ -1078,12 +1091,12 @@ impl Editor {
                 self.cursor_col = draft.cursor_col;
                 self.preferred_col = None;
             } else {
-                self.set_text("");
+                self.set_text_internal("");
             }
             self.history_index = -1;
         } else {
             let text = self.history[idx as usize].clone();
-            self.set_text(&text);
+            self.set_text_internal(&text);
             self.history_index = idx;
         }
     }
@@ -1741,6 +1754,10 @@ impl Component for Editor {
         }
 
         false
+    }
+
+    fn handle_paste(&mut self, text: &str) {
+        Editor::handle_paste(self, text);
     }
 
     fn is_focusable(&self) -> bool {

@@ -514,6 +514,10 @@ impl Component for Input {
         false
     }
 
+    fn handle_paste(&mut self, text: &str) {
+        self.handle_paste(text);
+    }
+
     fn is_focusable(&self) -> bool {
         true
     }

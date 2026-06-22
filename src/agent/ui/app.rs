@@ -399,9 +399,11 @@ pub async fn run(config: AppConfig, session: SessionManager) -> anyhow::Result<(
                     }
                 }
                 terminal::TerminalEvent::Paste(content) => {
-                    // Route paste directly to the editor (pi-style: wrap with
-                    // bracketed paste markers so Editor.handleInput detects them)
-                    app.editor.borrow_mut().editor.handle_paste(&content);
+                    // Route to focused overlay first (e.g. Input in settings),
+                    // fall back to the main Editor.
+                    if !tui.route_paste(&content) {
+                        app.editor.borrow_mut().editor.handle_paste(&content);
+                    }
                 }
                 terminal::TerminalEvent::Resize(w, h) => {
                     // Update editor's terminal height for dynamic max-visible-lines

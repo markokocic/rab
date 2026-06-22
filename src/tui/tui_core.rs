@@ -211,6 +211,19 @@ impl TUI {
         false
     }
 
+    /// Route a paste event to the focused overlay component or root.
+    /// Matches pi's input pipeline where paste is sent to handleInput.
+    pub fn route_paste(&mut self, text: &str) -> bool {
+        if let Some(idx) = self.focused_component
+            && let Some(entry) = self.overlay_stack.get_mut(idx)
+            && !entry.hidden
+        {
+            entry.component.handle_paste(text);
+            return true;
+        }
+        false
+    }
+
     // ── Rendering ──────────────────────────────────────────────────
 
     /// Render the root component tree, composite overlays, then diff-render to screen.
