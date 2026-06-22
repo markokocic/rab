@@ -1,5 +1,6 @@
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::time::Instant;
 
 use crate::agent::extension::{ToolRenderContext, ToolRenderer};
 use crate::agent::ui::theme::{RabTheme, current_theme};
@@ -31,6 +32,8 @@ pub struct ToolExecComponent {
     is_error: bool,
     is_complete: bool,
     expanded: bool,
+    /// When execution started (for live duration display).
+    started_at: Option<Instant>,
     // ── Bash-specific fields (used when no renderer) ──
     is_bash: bool,
     duration_secs: Option<f64>,
@@ -56,6 +59,7 @@ impl ToolExecComponent {
             is_error: false,
             is_complete: false,
             expanded: false,
+            started_at: None,
             is_bash: false,
             duration_secs: None,
             was_truncated: false,
@@ -67,6 +71,11 @@ impl ToolExecComponent {
     }
 
     // ── Legacy setters (used by app.rs for non-renderer paths) ──
+
+    /// Set the execution start time (for live duration display).
+    pub fn set_started_at(&mut self, instant: std::time::Instant) {
+        self.started_at = Some(instant);
+    }
 
     pub fn set_file_path(&mut self, path: impl Into<String>) {
         self.file_path = Some(path.into());
@@ -144,7 +153,9 @@ impl ToolExecComponent {
             is_partial,
             is_error: self.is_error,
             cwd: String::new(),
-            duration_secs: self.duration_secs,
+            duration_secs: self
+                .duration_secs
+                .or_else(|| self.started_at.map(|t| t.elapsed().as_secs_f64())),
             exit_code: self.exit_code,
             cancelled: self.cancelled,
             was_truncated: self.was_truncated,

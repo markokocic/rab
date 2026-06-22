@@ -1335,13 +1335,13 @@ fn handle_agent_event(app: &mut App, event: AgentEvent) {
 
             // Create a combined ToolExecComponent with renderer, handling per-tool setup
             let comp = if name == "bash" {
-                Rc::new(RefCell::new(
-                    crate::agent::ui::components::ToolExecComponent::new(
-                        &name,
-                        renderer,
-                        args.clone(),
-                    ),
-                ))
+                let mut tool = crate::agent::ui::components::ToolExecComponent::new(
+                    &name,
+                    renderer,
+                    args.clone(),
+                );
+                tool.set_started_at(std::time::Instant::now());
+                Rc::new(RefCell::new(tool))
             } else if name == "read" {
                 let path = args
                     .get("file_path")
@@ -1357,15 +1357,16 @@ fn handle_agent_event(app: &mut App, event: AgentEvent) {
                     args.clone(),
                 );
                 comp.set_file_path(path.to_string());
+                comp.set_started_at(std::time::Instant::now());
                 Rc::new(RefCell::new(comp))
             } else {
-                Rc::new(RefCell::new(
-                    crate::agent::ui::components::ToolExecComponent::new(
-                        &name,
-                        renderer,
-                        args.clone(),
-                    ),
-                ))
+                let mut tool = crate::agent::ui::components::ToolExecComponent::new(
+                    &name,
+                    renderer,
+                    args.clone(),
+                );
+                tool.set_started_at(std::time::Instant::now());
+                Rc::new(RefCell::new(tool))
             };
             app.pending_tools.insert(id.clone(), Rc::downgrade(&comp));
             chat_add(
@@ -1390,31 +1391,7 @@ fn handle_agent_event(app: &mut App, event: AgentEvent) {
             if let Some(weak) = app.pending_tools.remove(&id) {
                 // Update existing ToolExecComponent
                 if let Some(comp) = weak.upgrade() {
-                    // For edit tool results, apply diff rendering
-                    if name == "edit" {
-                        // Extract diff from ```diff ... ``` block
-                        if let Some(start) = content.find("```diff\n") {
-                            let after_marker = &content[start + 8..];
-                            if let Some(end) = after_marker.find("```") {
-                                let diff_text = &after_marker[..end];
-                                let has_diff = diff_text.lines().any(|l| {
-                                    l.starts_with('-') || l.starts_with('+') || l.starts_with(' ')
-                                });
-                                if has_diff {
-                                    let rendered =
-                                        crate::tui::components::diff::render_diff(diff_text);
-                                    let styled_diff = rendered.join("\n");
-                                    comp.borrow_mut().set_result(&styled_diff, is_error);
-                                } else {
-                                    comp.borrow_mut().set_result(&content, is_error);
-                                }
-                            } else {
-                                comp.borrow_mut().set_result(&content, is_error);
-                            }
-                        } else {
-                            comp.borrow_mut().set_result(&content, is_error);
-                        }
-                    } else if name == "bash" {
+                    if name == "bash" {
                         // Bash tool result: set duration, exit code, truncation info
                         let comp = weak.upgrade().expect("weak still valid");
                         let mut comp = comp.borrow_mut();
