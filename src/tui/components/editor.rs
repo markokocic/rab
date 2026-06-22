@@ -114,6 +114,7 @@ pub struct Editor {
     // Pi-style autocomplete state (uses SelectList)
     /// Terminal height for dynamic max-visible-lines (pi: 30% of rows, min 5).
     terminal_rows: usize,
+    autocomplete_max_visible: usize,
     autocomplete_list: Option<SelectList>,
     pub autocomplete_active: bool,
     /// The prefix from the provider's last get_suggestions call.
@@ -155,6 +156,7 @@ impl Editor {
             on_change: None,
             disable_submit: false,
             terminal_rows: 24,
+            autocomplete_max_visible: 5,
             autocomplete_list: None,
             autocomplete_active: false,
             autocomplete_prefix: String::new(),
@@ -186,6 +188,14 @@ impl Editor {
     /// dynamically (pi: 30% of rows, min 5).
     pub fn set_terminal_rows(&mut self, rows: usize) {
         self.terminal_rows = rows;
+    }
+
+    pub fn set_padding_x(&mut self, padding: usize) {
+        self.padding_x = padding;
+    }
+
+    pub fn set_autocomplete_max_visible(&mut self, max: usize) {
+        self.autocomplete_max_visible = max.clamp(3, 20);
     }
 
     /// Internal: set text without undo/autocomplete (used by history navigation).
@@ -280,7 +290,7 @@ impl Editor {
         };
         // Pi-style: pre-select the best matching item (exact match > prefix match)
         let best = self.best_autocomplete_index(&items);
-        let mut list = SelectList::new(items, 5, theme, layout);
+        let mut list = SelectList::new(items, self.autocomplete_max_visible, theme, layout);
         list.set_selected_index(best);
         self.autocomplete_list = Some(list);
         self.autocomplete_active = true;
@@ -326,17 +336,19 @@ impl Editor {
         if self.autocomplete_active {
             return; // not dismissed
         }
+        // Pi: check slash command context first (only line 0, starts with /)
+        if self.is_in_slash_command_context() {
+            self.try_trigger_autocomplete();
+            return;
+        }
         let line = self
             .lines
             .get(self.cursor_line)
             .map(|l| l.as_str())
             .unwrap_or("");
         let before = &line[..self.cursor_col.min(line.len())];
-        // Slash command: / followed by letters, no space yet
-        if before.starts_with('/') && !before.contains(' ') {
-            self.try_trigger_autocomplete();
-        } else if before.contains('@') {
-            // Check @ is at token start
+        // Check @/# is at token start
+        if before.contains('@') || before.contains('#') {
             self.try_trigger_autocomplete();
         }
     }
@@ -438,6 +450,40 @@ impl Editor {
     /// Pi behavior: / at start of line, @ and # at token boundaries,
     /// and letters when already in a slash command context.
     /// When autocomplete is already active, re-triggers to update suggestions.
+    /// Pi: slash menu only allowed on the first line of the editor.
+    fn is_slash_menu_allowed(&self) -> bool {
+        self.cursor_line == 0
+    }
+
+    /// Pi: check if cursor is at start of message (for slash command detection).
+    fn is_at_start_of_message(&self) -> bool {
+        if !self.is_slash_menu_allowed() {
+            return false;
+        }
+        let line = self
+            .lines
+            .get(self.cursor_line)
+            .map(|l| l.as_str())
+            .unwrap_or("");
+        let before = &line[..self.cursor_col.min(line.len())];
+        let trimmed = before.trim();
+        trimmed.is_empty() || trimmed == "/"
+    }
+
+    /// Pi: check if cursor is in a slash command context (starts with /, slash menu allowed).
+    fn is_in_slash_command_context(&self) -> bool {
+        if !self.is_slash_menu_allowed() {
+            return false;
+        }
+        let line = self
+            .lines
+            .get(self.cursor_line)
+            .map(|l| l.as_str())
+            .unwrap_or("");
+        let before = &line[..self.cursor_col.min(line.len())];
+        before.trim_start().starts_with('/')
+    }
+
     fn update_autocomplete(&mut self, ch: &str) {
         // If autocomplete is already active, always re-trigger to update
         if self.autocomplete_active {
@@ -447,13 +493,10 @@ impl Editor {
         let current_line = &self.lines[self.cursor_line];
         let text_before = &current_line[..self.cursor_col.min(current_line.len())];
 
-        // / at the start of the line (or after whitespace)
-        if ch == "/" {
-            let before_char = text_before.chars().nth_back(1); // char right before /
-            if text_before.len() == 1 || before_char.is_none_or(|c| c.is_whitespace()) {
-                self.try_trigger_autocomplete();
-                return;
-            }
+        // / at start of message (pi: checks isAtStartOfMessage)
+        if ch == "/" && self.is_at_start_of_message() {
+            self.try_trigger_autocomplete();
+            return;
         }
 
         // @ and # at token boundaries
@@ -467,14 +510,31 @@ impl Editor {
             }
         }
 
-        // Letters when in a slash command context
+        // Provider trigger characters (e.g. custom providers that use +, :, etc.)
+        if let Some(ref provider) = self.autocomplete_provider {
+            for tc in provider.trigger_characters() {
+                if ch.len() == 1 && ch == tc.to_string() && tc != &'/' && tc != &'@' && tc != &'#'
+                // already handled above
+                {
+                    let before_char = text_before.chars().nth_back(1);
+                    if text_before.len() == 1
+                        || before_char.is_none_or(|c| c.is_whitespace() || c == ' ' || c == '\t')
+                    {
+                        self.try_trigger_autocomplete();
+                        return;
+                    }
+                }
+            }
+        }
+
+        // Letters when in a slash command context (pi: only on first line)
         if ch.len() == 1
             && ch
                 .chars()
                 .next()
                 .is_some_and(|c| c.is_alphanumeric() || c == '-' || c == '_')
         {
-            if text_before.starts_with('/') && !text_before.contains(' ') {
+            if self.is_in_slash_command_context() && !text_before.trim_start().contains(' ') {
                 self.try_trigger_autocomplete();
                 return;
             }
@@ -1015,29 +1075,48 @@ impl Editor {
 
     // ── Character jump (pi-style) ──
 
+    /// Jump to the first occurrence of a character in the specified direction.
+    /// Multi-line search (pi-style). Case-sensitive. Skips current cursor position.
     fn jump_to_char(&mut self, ch: char, dir: JumpDirection) {
-        let line = &self.lines[self.cursor_line].clone();
-        match dir {
-            JumpDirection::Forward => {
-                // Find ch after cursor
-                let start = self.cursor_col + 1;
-                if start < line.len() {
-                    let rest = &line[self.cursor_col + 1..];
-                    if let Some(pos) = rest.find(ch) {
-                        self.set_cursor_col(self.cursor_col + 1 + pos);
-                    }
+        let is_forward = dir == JumpDirection::Forward;
+        let lines = &self.lines;
+
+        let start_line = self.cursor_line as isize;
+        let end = if is_forward { lines.len() as isize } else { -1 };
+        let step: isize = if is_forward { 1 } else { -1 };
+
+        let mut line_idx = start_line;
+        while line_idx != end {
+            let line = &lines[line_idx as usize];
+            let is_current = line_idx == start_line;
+            let search_from = if is_current {
+                if is_forward {
+                    self.cursor_col + 1
+                } else {
+                    self.cursor_col.saturating_sub(1)
                 }
+            } else if is_forward {
+                0
+            } else {
+                line.len()
+            };
+
+            let idx = if is_forward {
+                line[search_from..].find(ch).map(|i| search_from + i)
+            } else if search_from > 0 {
+                line[..search_from].rfind(ch)
+            } else {
+                None
+            };
+
+            if let Some(pos) = idx {
+                self.cursor_line = line_idx as usize;
+                self.set_cursor_col(pos);
+                return;
             }
-            JumpDirection::Backward => {
-                // Find ch before cursor
-                if self.cursor_col > 0 {
-                    let before = &line[..self.cursor_col];
-                    if let Some(pos) = before.rfind(ch) {
-                        self.set_cursor_col(pos);
-                    }
-                }
-            }
+            line_idx += step;
         }
+        // No match — cursor stays
     }
 
     // ── History ──
