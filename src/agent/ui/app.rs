@@ -700,7 +700,12 @@ fn handle_thinking_cycle(app: &mut App) {
         .borrow_mut()
         .update_border_color(Some(next), &app.theme as &dyn crate::tui::Theme);
     app.settings.default_thinking_level = Some(next.to_string());
-    let _ = app.settings.save();
+    if let Err(e) = app.settings.save() {
+        app.messages.push(DisplayMsg::Info(format!(
+            "Failed to save thinking setting: {}",
+            e
+        )));
+    }
     // Update provider's reasoning effort so API calls use the new level
     app.provider.set_reasoning_effort(Some(next));
     app.status_text = Some(format!("Thinking level: {}", next));
