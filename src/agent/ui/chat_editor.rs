@@ -357,7 +357,7 @@ impl ChatEditor {
             self.editor.just_submitted = false;
             self.editor.handle_input(key);
             if self.editor.just_submitted {
-                // Editor processed the submit — record history and return text
+                // Editor processed the submit - record history and return text
                 if has_content {
                     self.editor.add_to_history(&text);
                 }
@@ -422,10 +422,6 @@ mod tests {
 
     fn up() -> KeyEvent {
         KeyEvent::new(KeyCode::Up, KeyModifiers::NONE)
-    }
-
-    fn down() -> KeyEvent {
-        KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)
     }
 
     fn page_up() -> KeyEvent {

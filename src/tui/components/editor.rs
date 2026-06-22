@@ -1931,14 +1931,8 @@ mod tests {
     fn up_key() -> KeyEvent {
         KeyEvent::new(KeyCode::Up, KeyModifiers::NONE)
     }
-    fn down_key() -> KeyEvent {
-        KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)
-    }
     fn left_key() -> KeyEvent {
         KeyEvent::new(KeyCode::Left, KeyModifiers::NONE)
-    }
-    fn right_key() -> KeyEvent {
-        KeyEvent::new(KeyCode::Right, KeyModifiers::NONE)
     }
     fn char_key(c: char) -> KeyEvent {
         KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
@@ -1951,9 +1945,6 @@ mod tests {
     }
     fn backspace() -> KeyEvent {
         KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE)
-    }
-    fn tab_key() -> KeyEvent {
-        KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)
     }
 
     #[test]
@@ -2456,7 +2447,6 @@ mod tests {
         assert!(vl[1].has_cursor);
     }
 
-    #[test]
     #[test]
     fn test_wrap_edge_cases_no_empty_lines() {
         // Various edge cases that should NOT produce empty lines.

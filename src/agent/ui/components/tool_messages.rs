@@ -140,8 +140,14 @@ impl ToolExecComponent {
             // Spacer above
             lines.push(String::new());
 
-            let call_lines =
-                renderer.render_call(&self.args, self.expanded, self.is_complete, is_partial, width, theme);
+            let call_lines = renderer.render_call(
+                &self.args,
+                self.expanded,
+                self.is_complete,
+                is_partial,
+                width,
+                theme,
+            );
             if !call_lines.is_empty() {
                 lines.extend(call_lines);
             }
@@ -183,8 +189,14 @@ impl ToolExecComponent {
         );
 
         // Call header
-        let call_lines =
-            renderer.render_call(&self.args, self.expanded, self.is_complete, is_partial, width, &theme_clone);
+        let call_lines = renderer.render_call(
+            &self.args,
+            self.expanded,
+            self.is_complete,
+            is_partial,
+            width,
+            &theme_clone,
+        );
         let header_text = Text::new(call_lines.join("\n"), 0, 0, None);
         msg_box.add_child(std::boxed::Box::new(header_text));
 
@@ -522,6 +534,7 @@ struct BashResult {
 }
 
 impl BashResult {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         output: &str,
         is_error: bool,
@@ -617,10 +630,10 @@ impl Component for BashResult {
 
         if self.cancelled {
             lines.push(format!("{} (cancelled)\x1b[39m", warning_ansi));
-        } else if let Some(code) = self.exit_code {
-            if code != 0 {
-                lines.push(format!("{} (exit {})\x1b[39m", warning_ansi, code));
-            }
+        } else if let Some(code) = self.exit_code
+            && code != 0
+        {
+            lines.push(format!("{} (exit {})\x1b[39m", warning_ansi, code));
         }
 
         if self.was_truncated {

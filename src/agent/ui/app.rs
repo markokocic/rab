@@ -1327,7 +1327,9 @@ fn handle_agent_event(app: &mut App, event: AgentEvent) {
             // assistant message component (below the tool execution, matching pi).
             app.streaming_component = None;
             // Look up tool renderer from agent tools
-            let renderer = app.agent_tools.iter()
+            let renderer = app
+                .agent_tools
+                .iter()
                 .find(|t| t.name() == name)
                 .and_then(|t| t.renderer());
 
@@ -1338,7 +1340,7 @@ fn handle_agent_event(app: &mut App, event: AgentEvent) {
                         &name,
                         renderer,
                         args.clone(),
-                    )
+                    ),
                 ))
             } else if name == "read" {
                 let path = args
@@ -1348,7 +1350,8 @@ fn handle_agent_event(app: &mut App, event: AgentEvent) {
                     .unwrap_or("");
                 let mut comp = crate::agent::ui::components::ToolExecComponent::new(
                     &name,
-                    app.agent_tools.iter()
+                    app.agent_tools
+                        .iter()
                         .find(|t| t.name() == name)
                         .and_then(|t| t.renderer()),
                     args.clone(),
@@ -1361,7 +1364,7 @@ fn handle_agent_event(app: &mut App, event: AgentEvent) {
                         &name,
                         renderer,
                         args.clone(),
-                    )
+                    ),
                 ))
             };
             app.pending_tools.insert(id.clone(), Rc::downgrade(&comp));
@@ -1427,10 +1430,10 @@ fn handle_agent_event(app: &mut App, event: AgentEvent) {
                         } else {
                             comp.set_exit_code(0);
                         }
-                        if content.contains("Full output:") {
-                            if let Some(path) = extract_full_output_path(&content) {
-                                comp.set_truncated(true, Some(path));
-                            }
+                        if content.contains("Full output:")
+                            && let Some(path) = extract_full_output_path(&content)
+                        {
+                            comp.set_truncated(true, Some(path));
                         }
                         comp.set_result(&content, is_error);
                     } else {

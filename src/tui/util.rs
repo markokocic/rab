@@ -1084,10 +1084,10 @@ fn test_wrap_text_with_ansi_no_duplicate_lines() {
     let mut seen = std::collections::HashSet::new();
     for line in &result {
         let trimmed = line.trim().to_string();
-        if !trimmed.is_empty() {
-            if !seen.insert(trimmed.clone()) {
-                panic!("Duplicate line found: '{}'", trimmed);
-            }
+        if !trimmed.is_empty()
+            && !seen.insert(trimmed.clone())
+        {
+            panic!("Duplicate line found: '{}'", trimmed);
         }
     }
 }
@@ -1095,10 +1095,9 @@ fn test_wrap_text_with_ansi_no_duplicate_lines() {
 #[test]
 fn test_wrap_user_text_does_not_introduce_duplicates() {
     let t1 = "ghhh jjj jkkk  jrjrnr jrnr rkr rrkr rmrrkrr k   ghhh jjj jkkk  jrjrnr jrnr rkr rrkr rmrrkrr k";
-    let t2 = "rkrnrr kr k";
 
     // The original input has the same 45-char substring twice separated by triple space.
-    // This is NOT a wrapping bug — the input legitimately has the duplicate.
+    // This is NOT a wrapping bug - the input legitimately has the duplicate.
     // This test verifies that wrap_text_with_ansi does not INTRODUCE extra duplicates
     // beyond what the input already contains.
 
