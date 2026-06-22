@@ -322,6 +322,11 @@ async fn run_print_mode(
                 }
             }
         }
+        AgentEvent::ToolProgress { ref content, .. } => {
+            // Stream output is printed as it arrives
+            print!("{}", content);
+            let _ = std::io::stdout().flush();
+        }
         AgentEvent::AgentStart | AgentEvent::TurnStart | AgentEvent::TurnEnd => {}
         AgentEvent::Aborted { ref reason } => {
             eprintln!(

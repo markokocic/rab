@@ -43,6 +43,11 @@ pub enum AgentEvent {
         compact: Option<String>,
         is_error: bool,
     },
+    /// Intermediate tool execution progress (bash streaming output).
+    ToolProgress {
+        content: String,
+        is_error: bool,
+    },
     /// Stream was aborted or errored. TextDelta/ThinkingDelta may have been sent before.
     Aborted {
         reason: String,

@@ -1013,43 +1013,20 @@ fn handle_bang_command(app: &mut App, command: String) {
 
     let handle = tokio::spawn(async move {
         let started = std::time::Instant::now();
-        let output = tokio::process::Command::new("sh")
+        let mut child = match tokio::process::Command::new("sh")
             .arg("-c")
             .arg(&command)
             .current_dir(&cwd)
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
-            .output()
-            .await;
-
-        let elapsed = started.elapsed();
-
-        match output {
-            Ok(output) => {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                let combined = format!("{}{}", stdout, stderr);
-                let result = if combined.is_empty() {
-                    "(no output)".to_string()
-                } else {
-                    combined.trim().to_string()
-                };
-
-                let _ = tx.send(AgentEvent::ToolResult {
-                    id: String::new(),
-                    name: "bash".into(),
-                    content: format!(
-                        "$ {}\n\n{}\n\n[{}s]",
-                        command,
-                        result,
-                        elapsed.as_secs_f64()
-                    ),
-                    compact: None,
-                    is_error: !output.status.success(),
-                });
-                let _ = tx.send(AgentEvent::AgentEnd { messages: vec![] });
-            }
+            .spawn()
+        {
+            Ok(c) => c,
             Err(e) => {
+                let _ = tx.send(AgentEvent::ToolProgress {
+                    content: format!("Failed to spawn: {}", e),
+                    is_error: true,
+                });
                 let _ = tx.send(AgentEvent::ToolResult {
                     id: String::new(),
                     name: "bash".into(),
@@ -1058,8 +1035,84 @@ fn handle_bang_command(app: &mut App, command: String) {
                     is_error: true,
                 });
                 let _ = tx.send(AgentEvent::AgentEnd { messages: vec![] });
+                return;
+            }
+        };
+
+        let mut all_output = String::new();
+        // Stream stdout and stderr concurrently using tokio async reads
+        use tokio::io::AsyncReadExt;
+        let mut stdio = child.stdout.take().unwrap();
+        let mut stderr = child.stderr.take().unwrap();
+        let mut buf1 = [0u8; 4096];
+        let mut buf2 = [0u8; 4096];
+        let mut stdout_done = false;
+        let mut stderr_done = false;
+
+        loop {
+            tokio::select! {
+                result = stdio.read(&mut buf1), if !stdout_done => {
+                    match result {
+                        Ok(0) => stdout_done = true,
+                        Ok(n) => {
+                            if let Ok(text) = std::str::from_utf8(&buf1[..n]) {
+                                all_output.push_str(text);
+                                let _ = tx.send(AgentEvent::ToolProgress {
+                                    content: text.to_string(),
+                                    is_error: false,
+                                });
+                            }
+                        }
+                        Err(_) => stdout_done = true,
+                    }
+                }
+                result = stderr.read(&mut buf2), if !stderr_done => {
+                    match result {
+                        Ok(0) => stderr_done = true,
+                        Ok(n) => {
+                            if let Ok(text) = std::str::from_utf8(&buf2[..n]) {
+                                all_output.push_str(text);
+                                let _ = tx.send(AgentEvent::ToolProgress {
+                                    content: text.to_string(),
+                                    is_error: false,
+                                });
+                            }
+                        }
+                        Err(_) => stderr_done = true,
+                    }
+                }
+            }
+            if stdout_done && stderr_done {
+                break;
             }
         }
+
+        // Wait for process to finish
+        let status = child.wait().await;
+        let elapsed = started.elapsed();
+        let is_error = match &status {
+            Ok(s) => !s.success(),
+            Err(_) => true,
+        };
+        let result = if all_output.trim().is_empty() {
+            "(no output)".to_string()
+        } else {
+            all_output.trim().to_string()
+        };
+
+        let _ = tx.send(AgentEvent::ToolResult {
+            id: String::new(),
+            name: "bash".into(),
+            content: format!(
+                "$ {}\n\n{}\n\n[{}s]",
+                command,
+                result,
+                elapsed.as_secs_f64()
+            ),
+            compact: None,
+            is_error,
+        });
+        let _ = tx.send(AgentEvent::AgentEnd { messages: vec![] });
     });
     app.agent_abort = Some(handle.abort_handle());
 }
@@ -1376,6 +1429,16 @@ fn handle_agent_event(app: &mut App, event: AgentEvent) {
                 compact: None,
                 is_error,
             });
+        }
+        AgentEvent::ToolProgress { content, is_error } => {
+            // Stream partial bash output to the tracked bash component
+            if let Some(weak) = app.bash_component.as_ref().and_then(|w| w.upgrade()) {
+                let mut bash = weak.borrow_mut();
+                bash.append_chunk(&content);
+                if is_error {
+                    bash.set_error(content);
+                }
+            }
         }
         AgentEvent::Aborted { reason } => {
             // Show abort/error text inline in the streaming component (matches pi)
