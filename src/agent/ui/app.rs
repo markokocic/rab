@@ -433,6 +433,21 @@ pub async fn run(config: AppConfig, session: SessionManager) -> anyhow::Result<(
             dirty = true;
         }
 
+        // Tick active tool timers (bash elapsed display, matching pi's setInterval(1000))
+        let mut tools_to_remove: Vec<String> = Vec::new();
+        for (id, weak) in app.pending_tools.iter() {
+            if let Some(comp) = weak.upgrade() {
+                if comp.borrow_mut().tick_timer() {
+                    dirty = true;
+                }
+            } else {
+                tools_to_remove.push(id.clone());
+            }
+        }
+        for id in tools_to_remove {
+            app.pending_tools.remove(&id);
+        }
+
         // Compose and render only when state has changed
         if dirty {
             // Update section components from compose_ui
@@ -1348,6 +1363,7 @@ fn handle_agent_event(app: &mut App, event: AgentEvent) {
                 .and_then(|t| t.renderer());
 
             // Create a combined ToolExecComponent with renderer, handling per-tool setup
+            let started_at = std::time::Instant::now();
             let comp = if name == "bash" {
                 let mut tool = crate::agent::ui::components::ToolExecComponent::new(
                     &name,
@@ -1383,6 +1399,7 @@ fn handle_agent_event(app: &mut App, event: AgentEvent) {
                 Rc::new(RefCell::new(tool))
             };
             app.pending_tools.insert(id.clone(), Rc::downgrade(&comp));
+            app.tool_call_start_times.insert(id.clone(), started_at);
             chat_add(
                 app,
                 std::boxed::Box::new(crate::agent::ui::components::RcToolExec(comp)),
@@ -1418,7 +1435,7 @@ fn handle_agent_event(app: &mut App, event: AgentEvent) {
                         let comp = weak.upgrade().expect("weak still valid");
                         let mut comp = comp.borrow_mut();
                         if let Some(start) = app.tool_call_start_times.remove(&id) {
-                            comp.set_duration_secs(start.elapsed().as_secs_f64());
+                            comp.set_final_duration(start.elapsed().as_secs_f64());
                         }
                         if is_error {
                             if content.contains("aborted") || content.contains("cancelled") {

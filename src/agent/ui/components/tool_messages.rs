@@ -35,9 +35,13 @@ pub struct ToolExecComponent {
     expanded: bool,
     /// When execution started (for live duration display).
     started_at: Option<Instant>,
+    /// Final duration in seconds, captured when the tool completes.
+    /// While running, duration is computed at render time from `started_at` (pi pattern).
+    final_duration: Option<f64>,
+    /// Tracks when to next invalidate for re-render (1s tick, matching pi's setInterval).
+    last_timer_tick: Option<Instant>,
     // ── Bash-specific fields (used when no renderer) ──
     is_bash: bool,
-    duration_secs: Option<f64>,
     was_truncated: bool,
     full_output_path: Option<String>,
     exit_code: Option<i32>,
@@ -65,8 +69,9 @@ impl ToolExecComponent {
             is_complete: false,
             expanded: false,
             started_at: None,
+            final_duration: None,
+            last_timer_tick: None,
             is_bash: false,
-            duration_secs: None,
             was_truncated: false,
             full_output_path: None,
             exit_code: None,
@@ -82,6 +87,8 @@ impl ToolExecComponent {
     /// Set the execution start time (for live duration display).
     pub fn set_started_at(&mut self, instant: std::time::Instant) {
         self.started_at = Some(instant);
+        // Initialize invalidation timer so first tick fires after ~1s
+        self.last_timer_tick = Some(instant);
         self.mark_dirty();
     }
 
@@ -95,8 +102,10 @@ impl ToolExecComponent {
         self.mark_dirty();
     }
 
-    pub fn set_duration_secs(&mut self, secs: f64) {
-        self.duration_secs = Some(secs);
+    /// Set the final duration in seconds (used when the tool completes, e.g. bash).
+    /// Freezes the timer at this exact value (no more live computation).
+    pub fn set_final_duration(&mut self, secs: f64) {
+        self.final_duration = Some(secs);
         self.mark_dirty();
     }
 
@@ -120,6 +129,13 @@ impl ToolExecComponent {
         self.output = Some(output.into());
         self.is_error = is_error;
         self.is_complete = true;
+        // Capture final duration from started_at if not explicitly set via set_final_duration
+        // (covers non-bash tools and fast commands that complete before any render).
+        if self.final_duration.is_none()
+            && let Some(start) = self.started_at
+        {
+            self.final_duration = Some(start.elapsed().as_secs_f64());
+        }
         self.mark_dirty();
     }
 
@@ -134,6 +150,36 @@ impl ToolExecComponent {
         self.cache = None;
     }
 
+    /// Returns the current duration for display.
+    /// - If completed: returns `final_duration` (frozen at completion).
+    /// - If running: computes live elapsed time from `started_at` (pi pattern).
+    fn live_duration(&self) -> Option<f64> {
+        if let Some(dur) = self.final_duration {
+            return Some(dur);
+        }
+        self.started_at.map(|t| t.elapsed().as_secs_f64())
+    }
+
+    /// Tick the timer: marks dirty every 1s to trigger re-render.
+    /// Matches pi's `setInterval(() => context.invalidate(), 1000)` in renderResult.
+    /// Duration is computed at render time via `live_duration()`, not stored here.
+    /// Returns true if this tick caused a re-render (caller should update dirty).
+    pub fn tick_timer(&mut self) -> bool {
+        if self.is_complete || self.started_at.is_none() {
+            return false;
+        }
+        let now = Instant::now();
+        let should_invalidate = self
+            .last_timer_tick
+            .is_none_or(|last| now.duration_since(last) >= std::time::Duration::from_secs(1));
+        if should_invalidate {
+            self.last_timer_tick = Some(now);
+            self.mark_dirty();
+            return true;
+        }
+        false
+    }
+
     /// Compute a hash of the current state for cache key.
     fn state_hash(&self) -> u64 {
         use std::collections::hash_map::DefaultHasher;
@@ -143,7 +189,9 @@ impl ToolExecComponent {
         self.args.to_string().hash(&mut hasher);
         self.is_error.hash(&mut hasher);
         self.is_complete.hash(&mut hasher);
-        self.duration_secs.map(|s| s.to_bits()).hash(&mut hasher);
+        // Include live duration in hash so cache invalidates when elapsed time changes
+        // (component is re-rendered every frame by Container, but cache_check is a no-op).
+        self.live_duration().map(|s| s.to_bits()).hash(&mut hasher);
         self.exit_code.hash(&mut hasher);
         self.cancelled.hash(&mut hasher);
         self.was_truncated.hash(&mut hasher);
@@ -183,11 +231,9 @@ impl Component for ToolExecComponent {
     }
 
     fn cache_key(&self, width: usize) -> Option<RenderCacheKey> {
-        // Duration changes every frame while running, so disable cache for active bash
-        let is_active_bash = self.name == "bash" && !self.is_complete && self.started_at.is_some();
-        if is_active_bash {
-            return None;
-        }
+        // Duration is computed at render time via live_duration(); cache includes the current
+        // value so it's invalidated on each render. Container::render() doesn't use caching,
+        // so this is effectively a no-op — kept for correctness if caching is added later.
         Some(RenderCacheKey {
             width,
             expanded: self.expanded,
@@ -225,9 +271,7 @@ impl ToolExecComponent {
             is_partial,
             is_error: self.is_error,
             cwd: String::new(),
-            duration_secs: self
-                .duration_secs
-                .or_else(|| self.started_at.map(|t| t.elapsed().as_secs_f64())),
+            duration_secs: self.live_duration(),
             exit_code: self.exit_code,
             cancelled: self.cancelled,
             was_truncated: self.was_truncated,
@@ -327,7 +371,7 @@ impl ToolExecComponent {
                     output,
                     self.is_error,
                     self.expanded,
-                    self.duration_secs,
+                    self.live_duration(),
                     self.was_truncated,
                     self.full_output_path.as_deref(),
                     self.exit_code,
