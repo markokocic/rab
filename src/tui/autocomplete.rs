@@ -284,6 +284,9 @@ impl AutocompleteProvider for CombinedAutocompleteProvider {
 
         // Slash command argument completion (after space in /command ...)
         if let Some(space_pos) = text_before.find(' ') {
+            if space_pos == 0 {
+                return None;
+            }
             let cmd_name = &text_before[1..space_pos];
             let arg_text = &text_before[space_pos + 1..];
 
