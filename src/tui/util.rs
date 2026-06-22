@@ -1084,9 +1084,7 @@ fn test_wrap_text_with_ansi_no_duplicate_lines() {
     let mut seen = std::collections::HashSet::new();
     for line in &result {
         let trimmed = line.trim().to_string();
-        if !trimmed.is_empty()
-            && !seen.insert(trimmed.clone())
-        {
+        if !trimmed.is_empty() && !seen.insert(trimmed.clone()) {
             panic!("Duplicate line found: '{}'", trimmed);
         }
     }
