@@ -18,4 +18,8 @@ pub trait Component {
     fn is_focusable(&self) -> bool {
         false
     }
+
+    /// Toggle expanded/collapsed state. No-op by default.
+    /// Override for components that support expand/collapse (tool results, messages, etc.).
+    fn set_expanded(&mut self, _expanded: bool) {}
 }

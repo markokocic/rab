@@ -1526,7 +1526,7 @@ pub fn create_highlight_fn() -> Option<HighlightFn> {
 }
 
 #[cfg(feature = "syntect")]
-fn highlight_code(code: &str, lang: Option<&str>) -> Vec<String> {
+pub fn highlight_code(code: &str, lang: Option<&str>) -> Vec<String> {
     use std::sync::LazyLock;
 
     use syntect::{
@@ -1580,6 +1580,42 @@ fn highlight_code(code: &str, lang: Option<&str>) -> Vec<String> {
     }
 
     result
+}
+
+/// Map a file path to a language identifier for syntax highlighting.
+pub fn path_to_language(path: &str) -> Option<&'static str> {
+    let ext = path.rsplit('.').next()?.to_lowercase();
+    let lang = match ext.as_str() {
+        "ts" | "tsx" => "typescript",
+        "js" | "jsx" | "mjs" | "cjs" => "javascript",
+        "py" => "python",
+        "rb" => "ruby",
+        "rs" => "rust",
+        "go" => "go",
+        "java" => "java",
+        "kt" => "kotlin",
+        "swift" => "swift",
+        "c" | "h" => "c",
+        "cpp" | "cc" | "cxx" | "hpp" => "cpp",
+        "cs" => "csharp",
+        "php" => "php",
+        "sh" | "bash" | "zsh" => "bash",
+        "ps1" => "powershell",
+        "sql" => "sql",
+        "html" | "htm" => "html",
+        "css" | "scss" | "sass" | "less" => "css",
+        "json" => "json",
+        "yaml" | "yml" => "yaml",
+        "toml" => "toml",
+        "xml" => "xml",
+        "md" | "markdown" => "markdown",
+        "clj" | "cljs" | "cljc" => "clojure",
+        "ex" | "exs" => "elixir",
+        "hs" => "haskell",
+        "lua" => "lua",
+        _ => return None,
+    };
+    Some(lang)
 }
 
 // ── Tests ────────────────────────────────────────────────────────

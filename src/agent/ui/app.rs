@@ -1,4 +1,7 @@
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::path::PathBuf;
+use std::rc::{Rc, Weak};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -7,14 +10,18 @@ use crate::agent::provider::{Provider, ToolDef};
 use crate::agent::session::SessionManager;
 use crate::agent::types::{AgentMessage, Usage};
 use crate::agent::ui::chat_editor::{ChatEditor, InputAction};
+use crate::agent::ui::components::EditorComponent;
+use crate::agent::ui::components::FooterComponent;
 use crate::agent::ui::footer::Footer;
-use crate::agent::ui::messages::{DisplayMsg, render_messages, session_messages_to_display};
+use crate::agent::ui::messages::{DisplayMsg, session_messages_to_display};
 use crate::agent::ui::model_selector::ModelSelector;
 use crate::agent::ui::theme::RabTheme;
 use crate::agent::ui::working::WorkingIndicator;
 use crate::agent::{AgentEvent, LoopConfig, run_agent_loop};
 use crate::tui::Component;
 use crate::tui::TUI;
+use crate::tui::components::RefContainer;
+use crate::tui::components::Spacer;
 use crate::tui::terminal::{self, ProcessTerminal, TerminalTrait};
 use crossterm::event::KeyEvent;
 use tokio::sync::mpsc;
@@ -66,11 +73,25 @@ pub struct App {
     /// Conversation history (AgentMessage).
     conversation: Vec<AgentMessage>,
 
-    /// Rendered display messages.
+    /// Rendered display messages (legacy — being migrated to Components).
     messages: Vec<DisplayMsg>,
 
-    /// The chat editor.
-    editor: ChatEditor,
+    /// Component-based chat area — mirrors pi's `this.chatContainer`.
+    /// Components are added here in handle_agent_event instead of pushing to messages.
+    pub chat_container: RefContainer,
+
+    // ── Section components for the UI layout (written by compose_ui) ──
+    /// Pending streaming text section.
+    pub pending_section: std::rc::Rc<crate::tui::components::DynamicLines>,
+    /// Status text section (transient, dim).
+    pub status_section: std::rc::Rc<crate::tui::components::DynamicLines>,
+    /// Queued messages section.
+    pub queued_section: std::rc::Rc<crate::tui::components::DynamicLines>,
+    /// Working indicator section.
+    pub working_section: std::rc::Rc<crate::tui::components::DynamicLines>,
+
+    /// The chat editor (shared ownership — App mutates, TUI.root renders).
+    editor: Rc<RefCell<ChatEditor>>,
 
     /// Agent event channel.
     event_tx: mpsc::UnboundedSender<AgentEvent>,
@@ -105,8 +126,12 @@ pub struct App {
     /// Session persistence.
     session: Option<SessionManager>,
 
-    /// Footer.
-    footer: Footer,
+    /// Footer (shared ownership — App mutates, TUI.root renders).
+    footer: Rc<RefCell<Footer>>,
+
+    /// Pending tool executions keyed by tool call ID.
+    /// Used to update ToolExecComponent when ToolResult arrives (pi's `pendingTools` Map).
+    pending_tools: HashMap<String, Weak<RefCell<crate::agent::ui::components::ToolExecComponent>>>,
 
     /// Working indicator.
     working: WorkingIndicator,
@@ -130,16 +155,8 @@ pub struct App {
 
     /// Settings reference for persisting toggle changes.
     settings: crate::agent::settings::Settings,
-
     // ── Message rendering cache (avoids re-rendering messages every frame) ──
-    /// Rendered message lines from last `render_messages()` call.
-    cached_message_lines: Option<Vec<String>>,
-    /// Number of messages when cache was built (`.len()`).
-    cached_msg_count: usize,
-    /// Display settings snapshot when cache was built.
-    cached_msg_settings: (bool, bool), // (hide_thinking, collapse_tool_output)
-    /// Terminal width when cache was built.
-    cached_msg_width: usize,
+    // Cache fields removed — messages now rendered via Components in chat_container.
 }
 
 impl App {
@@ -159,11 +176,15 @@ impl App {
             .collect();
         editor.set_slash_commands(commands.iter().map(|(n, _)| n.clone()).collect());
 
+        let editor = Rc::new(RefCell::new(editor));
+
         let mut footer = Footer::new(config.cwd.to_string_lossy().to_string());
         footer.set_git_branch(config.git_branch.clone());
         footer.set_model(&config.model);
         footer.set_model_supports_reasoning(config.model_supports_reasoning);
         footer.set_thinking_level(config.thinking_level.clone());
+
+        let footer = Rc::new(RefCell::new(footer));
 
         // Load session messages
         let context = session.build_session_context();
@@ -189,7 +210,7 @@ impl App {
             startup_info.push(DisplayMsg::Info(resource_parts.join("  ·  ")));
         }
 
-        // Combine startup info with history
+        // Combine startup info with history (legacy — for session saving / tests)
         let messages = if startup_info.is_empty() {
             history_display
         } else {
@@ -198,6 +219,25 @@ impl App {
             combined.extend(history_display);
             combined
         };
+
+        // Populate chat_container with initial messages (startup info + history).
+        // Add spacers between messages matching pi's addMessageToChat behavior.
+        let chat_container = RefContainer::new();
+        {
+            let mut chat = chat_container.inner.borrow_mut();
+            for display_msg in &messages {
+                if let Some(component) =
+                    crate::agent::ui::components::display_msg_to_component(display_msg)
+                {
+                    if !chat.children().is_empty() {
+                        chat.add_child(std::boxed::Box::new(crate::tui::components::Spacer::new(
+                            1,
+                        )));
+                    }
+                    chat.add_child(component);
+                }
+            }
+        }
 
         Self {
             cwd: config.cwd,
@@ -210,6 +250,12 @@ impl App {
             available_models: config.available_models,
             conversation: history_messages,
             messages,
+            chat_container,
+            pending_tools: HashMap::new(),
+            pending_section: std::rc::Rc::new(crate::tui::components::DynamicLines::new()),
+            status_section: std::rc::Rc::new(crate::tui::components::DynamicLines::new()),
+            queued_section: std::rc::Rc::new(crate::tui::components::DynamicLines::new()),
+            working_section: std::rc::Rc::new(crate::tui::components::DynamicLines::new()),
             editor,
             event_tx: tx,
             event_rx: rx,
@@ -235,11 +281,27 @@ impl App {
             settings: config.settings,
             auto_compact: true,
             status_text: None,
+        }
+    }
 
-            cached_message_lines: None,
-            cached_msg_count: 0,
-            cached_msg_settings: (config.hide_thinking, config.collapse_tool_output),
-            cached_msg_width: 0,
+    /// Refresh git branch for footer display.
+    /// Called on AgentStart to match pi's FooterDataProvider.onBranchChange.
+    fn refresh_git_branch(&self) {
+        if let Ok(output) = std::process::Command::new("git")
+            .args([
+                "-C",
+                &self.cwd.to_string_lossy(),
+                "rev-parse",
+                "--abbrev-ref",
+                "HEAD",
+            ])
+            .output()
+            && output.status.success()
+        {
+            let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !branch.is_empty() {
+                self.footer.borrow_mut().set_git_branch(Some(branch));
+            }
         }
     }
 }
@@ -264,6 +326,36 @@ pub async fn run(config: AppConfig, session: SessionManager) -> anyhow::Result<(
     // (content grows/shrinks frequently as pending text is flushed).
     tui.set_clear_on_shrink(false);
     let mut app = App::new(config, session);
+
+    // Set up the component tree in TUI.root (matching pi's TUI.extend(Container))
+    // Order: header → chat_container (messages) → pending → status → queued → working → editor → footer
+    tui.root.add_child(std::boxed::Box::new(
+        crate::agent::ui::components::HeaderComponent::new(),
+    ));
+    tui.root
+        .add_child(std::boxed::Box::new(app.chat_container.clone()));
+    tui.root.add_child(std::boxed::Box::new(
+        crate::tui::components::RcDynamicLines(app.pending_section.clone()),
+    ));
+    tui.root.add_child(std::boxed::Box::new(
+        crate::tui::components::RcDynamicLines(app.status_section.clone()),
+    ));
+    tui.root.add_child(std::boxed::Box::new(
+        crate::tui::components::RcDynamicLines(app.queued_section.clone()),
+    ));
+    tui.root.add_child(std::boxed::Box::new(
+        crate::tui::components::RcDynamicLines(app.working_section.clone()),
+    ));
+    tui.root
+        .add_child(std::boxed::Box::new(EditorComponent(app.editor.clone())));
+    tui.root
+        .add_child(std::boxed::Box::new(FooterComponent(app.footer.clone())));
+
+    // Initialize editor border color
+    app.editor.borrow_mut().update_border_color(
+        app.thinking_level.as_deref(),
+        &app.theme as &dyn crate::tui::Theme,
+    );
 
     // Cache terminal dimensions to avoid expensive syscall on every frame.
     // Only re-query when a resize event is detected or periodically.
@@ -309,9 +401,10 @@ pub async fn run(config: AppConfig, session: SessionManager) -> anyhow::Result<(
 
         // Compose and render only when state has changed
         if dirty {
-            let lines = compose_ui(&mut app, cols as usize, rows as usize);
+            // Update section components from compose_ui
+            compose_ui(&mut app, cols as usize);
             tui.set_dimensions(cols as usize, rows as usize);
-            tui.render(lines, cols as usize, rows as usize, &mut stdout)?;
+            tui.render(cols as usize, rows as usize, &mut stdout)?;
             dirty = false;
         }
 
@@ -333,72 +426,26 @@ pub async fn run(config: AppConfig, session: SessionManager) -> anyhow::Result<(
     Ok(())
 }
 
-/// Compose the full UI from app state - matching pi's main screen layout.
+/// Update UI section components from app state.
+/// Each section is a child of TUI.root rendered in the correct order.
 ///
 /// Layout (top to bottom):
-///   header → messages → spacer → status → editor → footer
-fn compose_ui(app: &mut App, width: usize, _height: usize) -> Vec<String> {
-    let mut lines = Vec::new();
-
-    // Note: overlays (help, model selector) are now handled via TUI.show_overlay().
-    // compose_ui always returns base content; TUI composites overlays on top.
-
-    // ── Header (pi-style: logo only) ──
-    // Model info, thinking level, token stats are shown in the footer.
-    lines.push(app.theme.bold(&app.theme.fg("accent", "rab")));
-    lines.push(String::new());
-
-    // ── Messages with scroll support ──
-    // Cache: only re-render messages when they change, settings change, or width changes.
-    let current_settings = (app.hide_thinking, app.collapse_tool_output);
-    let cache_valid = app.cached_message_lines.is_some()
-        && app.cached_msg_count == app.messages.len()
-        && app.cached_msg_settings == current_settings
-        && app.cached_msg_width == width;
-
-    if !cache_valid {
-        let rendered = render_messages(
-            &app.messages,
-            width,
-            app.hide_thinking,
-            app.collapse_tool_output,
-            &app.theme,
-        );
-        app.cached_msg_count = app.messages.len();
-        app.cached_msg_settings = current_settings;
-        app.cached_msg_width = width;
-        app.cached_message_lines = Some(rendered);
-    }
-
-    let rendered = app.cached_message_lines.as_ref().unwrap();
-
-    // Apply scroll offset: when > 0, skip some of the oldest message lines
-    // (effectively scrolling up in the message history).
-    let total = rendered.len();
-    let scroll = app.scroll_offset.min(total.saturating_sub(1));
-    let visible = if scroll > 0 {
-        // Show "↑ N more" indicator at top
-        let indicator = app.theme.fg("dim", &format!(" ↑ {} more", scroll));
-        lines.push(crate::agent::ui::messages::pad_to_width(&indicator, width));
-        &rendered[scroll..]
-    } else {
-        &rendered[..]
-    };
-    lines.extend(visible.iter().cloned());
-
+///   header → chat_container (messages) → pending → status → queued → working → editor → footer
+fn compose_ui(app: &mut App, width: usize) {
     // ── Pending (streaming) text ──
+    let mut pending_lines = Vec::new();
     if let Some(ref text) = app.pending_text
         && !text.is_empty()
     {
         let inner = width.saturating_sub(2);
         for line in text.lines() {
             if line.is_empty() {
-                lines.push(String::new());
+                pending_lines.push(String::new());
             } else {
                 let wrapped = crate::tui::util::wrap_text_with_ansi(line, inner);
                 for w in wrapped {
                     let line = format!(" {}", w);
-                    lines.push(crate::agent::ui::messages::pad_to_width(&line, width));
+                    pending_lines.push(crate::agent::ui::messages::pad_to_width(&line, width));
                 }
             }
         }
@@ -413,7 +460,7 @@ fn compose_ui(app: &mut App, width: usize, _height: usize) -> Vec<String> {
                     .italic(&app.theme.fg("thinking_text", " Thinking…"))
             );
             let padded = crate::agent::ui::messages::pad_to_width(&content, width);
-            lines.push(app.theme.bg("thinking_bg", &padded));
+            pending_lines.push(app.theme.bg("thinking_bg", &padded));
         } else {
             let level_color = app
                 .thinking_level
@@ -423,46 +470,44 @@ fn compose_ui(app: &mut App, width: usize, _height: usize) -> Vec<String> {
             for line in text.lines() {
                 let content = format!(" {}", app.theme.italic(&app.theme.fg(level_color, line)));
                 let padded = crate::agent::ui::messages::pad_to_width(&content, width);
-                lines.push(app.theme.bg("thinking_bg", &padded));
+                pending_lines.push(app.theme.bg("thinking_bg", &padded));
             }
         }
     }
+    app.pending_section.set_lines(pending_lines);
 
     // ── Transient status text (pi-style: replaces previous status, not added to chat) ──
+    let mut status_lines = Vec::new();
     if let Some(ref status) = app.status_text {
         let line = app.theme.fg("dim", &format!(" {}", status));
-        lines.push(crate::agent::ui::messages::pad_to_width(&line, width));
+        status_lines.push(crate::agent::ui::messages::pad_to_width(&line, width));
     }
+    app.status_section.set_lines(status_lines);
 
     // ── Queued messages (pi-style: shown between chat and editor) ──
+    let mut queued_lines = Vec::new();
     if !app.queued_messages.is_empty() {
         for msg in &app.queued_messages {
             let line = app.theme.fg("dim", &format!(" ◷ {}", msg));
-            lines.push(crate::agent::ui::messages::pad_to_width(&line, width));
+            queued_lines.push(crate::agent::ui::messages::pad_to_width(&line, width));
         }
         let hint = app
             .theme
             .fg("dim", " ↳ queued - will send when current finishes");
-        lines.push(crate::agent::ui::messages::pad_to_width(&hint, width));
+        queued_lines.push(crate::agent::ui::messages::pad_to_width(&hint, width));
     }
+    app.queued_section.set_lines(queued_lines);
 
     // ── Spacer/status line before editor ──
-    // Blank line when idle, spinner when working.
-    // Exactly one line of separation to keep editor position stable.
-    let working_lines = app.working.render(width);
-    if !working_lines.is_empty() {
-        lines.extend(working_lines);
-    } else if lines.last().is_none_or(|l| !l.trim().is_empty()) {
-        lines.push(String::new());
+    let mut working_lines = Vec::new();
+    let wl = app.working.render(width);
+    if !wl.is_empty() {
+        working_lines.extend(wl);
+    } else {
+        // Ensure at least one blank line before editor
+        working_lines.push(String::new());
     }
-
-    // ── Editor ──
-    lines.extend(app.editor.editor.render(width));
-
-    // ── Footer ──
-    lines.extend(app.footer.render(width));
-
-    lines
+    app.working_section.set_lines(working_lines);
 }
 
 /// Handle keyboard input. Mirrors pi's InteractiveMode key dispatch:
@@ -481,14 +526,16 @@ fn handle_input(app: &mut App, tui: &mut TUI, key: &KeyEvent) {
     }
 
     // ── Dispatch to ChatEditor (mirrors pi's CustomEditor.handleInput) ──
-    match app.editor.handle_input(key) {
+    // Borrow the editor in a let binding so the RefMut drops before we mutate App.
+    let action = app.editor.borrow_mut().handle_input(key);
+    match action {
         InputAction::Handled => {}
         InputAction::Escape => {
             // Pi-style: abort streaming or bash, else clear editor
             if app.is_streaming {
                 interrupt_streaming(app);
             } else {
-                app.editor.editor.set_text("");
+                app.editor.borrow_mut().editor.set_text("");
             }
         }
         InputAction::Clear => {
@@ -564,7 +611,7 @@ fn handle_clear(app: &mut App) {
         // Double Ctrl+C within 500ms = exit (pi-style)
         app.should_quit = true;
     } else {
-        app.editor.editor.set_text("");
+        app.editor.borrow_mut().editor.set_text("");
         app.status_text = Some("Cleared".into());
     }
 }
@@ -583,7 +630,12 @@ fn handle_thinking_cycle(app: &mut App) {
     };
 
     app.thinking_level = Some(next.to_string());
-    app.footer.set_thinking_level(Some(next.to_string()));
+    app.footer
+        .borrow_mut()
+        .set_thinking_level(Some(next.to_string()));
+    app.editor
+        .borrow_mut()
+        .update_border_color(Some(next), &app.theme as &dyn crate::tui::Theme);
     app.settings.default_thinking_level = Some(next.to_string());
     let _ = app.settings.save();
     app.status_text = Some(format!("Thinking level: {}", next));
@@ -605,16 +657,26 @@ fn handle_model_cycle(app: &mut App, dir: isize) {
     };
 
     app.model = app.available_models[next_idx].clone();
-    app.footer.set_model(&app.model);
+    app.footer.borrow_mut().set_model(&app.model);
     // All rab models support reasoning (deepseek-v4-flash, deepseek-v4-pro).
-    app.footer.set_model_supports_reasoning(true);
+    app.footer.borrow_mut().set_model_supports_reasoning(true);
     app.status_text = Some(format!("Model: {}", app.model));
 }
 
 /// Toggle all tool output expansion (Ctrl+O).
+/// Mirrors pi's `toggleToolOutputExpansion()` which iterates all chat_container
+/// children and calls `setExpanded()` on `Expandable` components.
 fn handle_tools_expand(app: &mut App) {
     app.tools_expanded = !app.tools_expanded;
     app.collapse_tool_output = !app.tools_expanded;
+
+    // Propagate to all children in chat_container
+    let mut chat = app.chat_container.inner.borrow_mut();
+    for child in chat.children_mut().iter_mut() {
+        child.set_expanded(app.tools_expanded);
+    }
+    drop(chat);
+
     app.settings.collapse_tool_output = Some(app.collapse_tool_output);
     if let Err(e) = app.settings.save() {
         app.messages.push(DisplayMsg::Info(format!(
@@ -649,7 +711,7 @@ fn handle_editor_external(app: &mut App) {
             .unwrap_or(0)
     ));
 
-    let current_text = app.editor.editor.get_text();
+    let current_text = app.editor.borrow().editor.get_text();
     if let Err(e) = std::fs::write(&tmp_file, &current_text) {
         app.status_text = Some(format!("Failed to write temp file: {}", e));
         return;
@@ -673,8 +735,8 @@ fn handle_editor_external(app: &mut App) {
         Ok(status) if status.success() => {
             if let Ok(new_content) = std::fs::read_to_string(&tmp_file) {
                 let trimmed = new_content.trim_end_matches('\n').to_string();
-                app.editor.editor.set_text(&trimmed);
-                app.editor.check_autocomplete();
+                app.editor.borrow_mut().editor.set_text(&trimmed);
+                app.editor.borrow_mut().check_autocomplete();
             }
             let _ = std::fs::remove_file(&tmp_file);
             app.status_text = Some("Editor closed".into());
@@ -712,8 +774,8 @@ fn handle_dequeue(app: &mut App) {
     let restored = app.queued_messages.join("\n\n");
     let count = app.queued_messages.len();
     app.queued_messages.clear();
-    app.editor.editor.set_text(&restored);
-    app.editor.check_autocomplete();
+    app.editor.borrow_mut().editor.set_text(&restored);
+    app.editor.borrow_mut().check_autocomplete();
     app.status_text = Some(format!(
         "Restored {} queued message{}",
         count,
@@ -724,7 +786,7 @@ fn handle_dequeue(app: &mut App) {
 /// Toggle auto-compact indicator (Ctrl+Shift+C).
 fn handle_compact_toggle(app: &mut App) {
     app.auto_compact = !app.auto_compact;
-    app.footer.set_auto_compact(app.auto_compact);
+    app.footer.borrow_mut().set_auto_compact(app.auto_compact);
     app.status_text = Some(if app.auto_compact {
         "Auto-compact: on".into()
     } else {
@@ -739,11 +801,11 @@ fn interrupt_streaming(app: &mut App) {
     }
     app.is_streaming = false;
     app.working.stop();
-    app.footer.set_streaming(false);
+    app.footer.borrow_mut().set_streaming(false);
 
     if !app.queued_messages.is_empty() {
         let queued = app.queued_messages.join("\n\n");
-        app.editor.editor.set_text(&queued);
+        app.editor.borrow_mut().editor.set_text(&queued);
         app.queued_messages.clear();
     }
 
@@ -778,6 +840,12 @@ fn submit_message(app: &mut App, message: String) {
     // Handle /skill:name [args] expansion (pi-style: before command dispatch)
     if trimmed.starts_with("/skill:") {
         let expanded = crate::agent::skills::expand_skill_command(&trimmed, &app.skills);
+        chat_add(
+            app,
+            std::boxed::Box::new(crate::agent::ui::components::UserMessageComponent::new(
+                &expanded,
+            )),
+        );
         app.messages.push(DisplayMsg::User(expanded.clone()));
         if app.is_streaming {
             app.queued_messages.push(expanded);
@@ -801,6 +869,13 @@ fn submit_message(app: &mut App, message: String) {
     }
 
     // Normal message submission to LLM
+    // Add Component to chat_container with spacer
+    chat_add(
+        app,
+        std::boxed::Box::new(crate::agent::ui::components::UserMessageComponent::new(
+            &trimmed,
+        )),
+    );
     app.messages.push(DisplayMsg::User(trimmed.clone()));
 
     if app.is_streaming {
@@ -825,7 +900,7 @@ fn start_agent_loop(app: &mut App, message: String) {
 
     app.is_streaming = true;
     app.working.start();
-    app.footer.set_streaming(true);
+    app.footer.borrow_mut().set_streaming(true);
     app.pending_text = None;
     app.pending_thinking = None;
 
@@ -904,15 +979,21 @@ fn handle_slash_command(app: &mut App, input: &str) {
 }
 
 /// Handle ! and !! bang commands.
+/// Renders via BashExecutionComponent (borders, spinner, expand/collapse)
+/// matching pi's handleBashCommand.
 fn handle_bang_command(app: &mut App, command: String) {
     let cwd = app.cwd.clone();
     let tx = app.event_tx.clone();
 
+    // Add BashExecutionComponent to chat_container (no DisplayMsg::User — it's a bash execution, not a user message)
+    let bash_comp = crate::agent::ui::components::BashExecution::new(&command);
+    chat_add(app, std::boxed::Box::new(bash_comp));
     app.messages
         .push(DisplayMsg::User(format!("! {}", command)));
+
     app.is_streaming = true;
     app.working.start();
-    app.footer.set_streaming(true);
+    app.footer.borrow_mut().set_streaming(true);
 
     let handle = tokio::spawn(async move {
         let started = std::time::Instant::now();
@@ -967,6 +1048,155 @@ fn handle_bang_command(app: &mut App, command: String) {
     app.agent_abort = Some(handle.abort_handle());
 }
 
+/// Add a Component to chat_container with a spacer before it if chat_container is not empty.
+/// Mirrors pi's `addMessageToChat()` which adds `new Spacer(1)` before each message
+/// when `this.chatContainer.children.length > 0`.
+pub fn chat_add(app: &mut App, component: std::boxed::Box<dyn Component>) {
+    let mut chat = app.chat_container.inner.borrow_mut();
+    if !chat.children().is_empty() {
+        chat.add_child(std::boxed::Box::new(Spacer::new(1)));
+    }
+    chat.add_child(component);
+}
+
+/// Format a tool call header matching pi's per-tool renderCall patterns.
+fn format_tool_call_header(name: &str, args: &serde_json::Value) -> String {
+    let theme = crate::agent::ui::theme::current_theme();
+    match name {
+        "bash" => {
+            let cmd = args
+                .get("command")
+                .and_then(|v| v.as_str())
+                .unwrap_or("...");
+            let timeout = args.get("timeout").and_then(|v| v.as_i64());
+            let timeout_suffix = timeout
+                .map(|t| theme.fg("muted", &format!(" (timeout {}s)", t)))
+                .unwrap_or_default();
+            format!(
+                "{}{}",
+                theme.fg("toolTitle", &theme.bold(&format!("$ {}", cmd))),
+                timeout_suffix
+            )
+        }
+        "read" => {
+            let path = args
+                .get("file_path")
+                .or_else(|| args.get("path"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let offset = args.get("offset").and_then(|v| v.as_u64()).unwrap_or(0);
+            let limit = args.get("limit").and_then(|v| v.as_u64());
+            let short = if let Ok(home) = std::env::var("HOME") {
+                path.replacen(&home, "~", 1)
+            } else {
+                path.to_string()
+            };
+            let path_disp = if short.is_empty() {
+                String::new()
+            } else {
+                theme.fg("accent", &short)
+            };
+            let range = if offset > 0 || limit.is_some() {
+                let start = if offset > 0 { offset } else { 1 };
+                let range_str = match limit {
+                    Some(l) => format!(":{}-{}", start, start + l - 1),
+                    None => format!(":{}", start),
+                };
+                theme.fg("warning", &range_str)
+            } else {
+                String::new()
+            };
+            let is_docs = path.contains("docs/") || path.ends_with("README.md");
+            let is_resource = path.ends_with("AGENTS.md") || path.ends_with("CLAUDE.md");
+            if is_docs {
+                format!(
+                    "{} {} {}",
+                    theme.fg("toolTitle", &theme.bold("read docs")),
+                    path_disp,
+                    range
+                )
+            } else if is_resource {
+                format!(
+                    "{} {} {}",
+                    theme.fg("toolTitle", &theme.bold("read resource")),
+                    path_disp,
+                    range
+                )
+            } else {
+                format!(
+                    "{} {} {}",
+                    theme.fg("toolTitle", &theme.bold("read")),
+                    path_disp,
+                    range
+                )
+            }
+        }
+        "write" => {
+            let path = args
+                .get("file_path")
+                .or_else(|| args.get("path"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let short = if let Ok(home) = std::env::var("HOME") {
+                path.replacen(&home, "~", 1)
+            } else {
+                path.to_string()
+            };
+            format!(
+                "{} {}",
+                theme.fg("toolTitle", &theme.bold("write")),
+                theme.fg("accent", &short)
+            )
+        }
+        "edit" => {
+            let path = args
+                .get("file_path")
+                .or_else(|| args.get("path"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let short = if let Ok(home) = std::env::var("HOME") {
+                path.replacen(&home, "~", 1)
+            } else {
+                path.to_string()
+            };
+            format!(
+                "{} {}",
+                theme.fg("toolTitle", &theme.bold("edit")),
+                theme.fg("accent", &short)
+            )
+        }
+        "ls" => {
+            let path = args
+                .get("file_path")
+                .or_else(|| args.get("path"))
+                .and_then(|v| v.as_str())
+                .unwrap_or(".");
+            let limit = args.get("limit").and_then(|v| v.as_u64());
+            let short = if let Ok(home) = std::env::var("HOME") {
+                path.replacen(&home, "~", 1)
+            } else {
+                path.to_string()
+            };
+            let limit_str = limit.map(|l| format!(" (limit {})", l)).unwrap_or_default();
+            format!(
+                "{} {}{}",
+                theme.fg("toolTitle", &theme.bold("ls")),
+                theme.fg("accent", &short),
+                limit_str
+            )
+        }
+        _ => {
+            let args_str = serde_json::to_string(args).unwrap_or_default();
+            let suffix = if args_str.is_empty() || args_str == "{}" {
+                String::new()
+            } else {
+                format!("  {}", theme.fg("muted", &args_str))
+            };
+            format!("{}{}", theme.fg("toolTitle", &theme.bold(name)), suffix)
+        }
+    }
+}
+
 /// Handle agent events from the channel.
 fn handle_agent_event(app: &mut App, event: AgentEvent) {
     match event {
@@ -974,6 +1204,9 @@ fn handle_agent_event(app: &mut App, event: AgentEvent) {
             app.is_streaming = true;
             app.pending_text = None;
             app.pending_thinking = None;
+
+            // Refresh git branch on each agent start (matches pi's FooterDataProvider)
+            app.refresh_git_branch();
         }
         AgentEvent::TurnStart => {}
         AgentEvent::TextDelta { delta } => {
@@ -992,22 +1225,79 @@ fn handle_agent_event(app: &mut App, event: AgentEvent) {
                 app.pending_thinking = Some(delta);
             }
         }
-        AgentEvent::ToolCall { name, args, .. } => {
+        AgentEvent::ToolCall { id, name, args, .. } => {
             flush_all(app);
+            // Format the call header using per-tool formatting (pi's renderCall patterns)
+            let styled = crate::agent::ui::app::format_tool_call_header(&name, &args);
+
+            // Create a combined ToolExecComponent with Rc/Weak for result updates
+            let tool_comp = crate::agent::ui::components::ToolExecComponent::new(&name, styled);
+            let comp = Rc::new(RefCell::new(if name == "read" {
+                let path = args
+                    .get("file_path")
+                    .or_else(|| args.get("path"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                tool_comp.with_file_path(path.to_string())
+            } else {
+                tool_comp
+            }));
+            app.pending_tools.insert(id.clone(), Rc::downgrade(&comp));
+            chat_add(
+                app,
+                std::boxed::Box::new(crate::agent::ui::components::RcToolExec(comp)),
+            );
+
+            // Legacy path
+            let args_str = serde_json::to_string(&args).unwrap_or_default();
             app.messages.push(DisplayMsg::ToolCall {
                 name,
-                args: serde_json::to_string(&args).unwrap_or_default(),
+                args: args_str,
             });
         }
         AgentEvent::ToolResult {
             content,
-            compact,
+            compact: _,
             is_error,
-            ..
+            name,
+            id,
         } => {
+            if let Some(weak) = app.pending_tools.remove(&id) {
+                // Update existing ToolExecComponent
+                if let Some(comp) = weak.upgrade() {
+                    comp.borrow_mut().set_result(&content, is_error);
+                }
+            } else if name == "bash" {
+                // Bash result without preceding ToolCall (e.g. from bang command):
+                // Create BashExecutionComponent with borders + colored output
+                let cmd = content
+                    .lines()
+                    .next()
+                    .unwrap_or("")
+                    .trim_start_matches("$ ")
+                    .to_string();
+                let mut bash = crate::agent::ui::components::BashExecution::new(&cmd);
+                let output_lines: Vec<&str> = content.lines().skip(2).collect();
+                let output = output_lines.join("\n");
+                if !output.is_empty() {
+                    bash.append_chunk(&output);
+                }
+                bash.set_complete(if is_error { 1 } else { 0 });
+                chat_add(app, std::boxed::Box::new(bash));
+            } else {
+                // Non-bash tool result without preceding call (shouldn't happen):
+                // Fall back to generic ToolResultComponent
+                chat_add(
+                    app,
+                    std::boxed::Box::new(crate::agent::ui::components::ToolResultComponent::new(
+                        &content, is_error,
+                    )),
+                );
+            }
+            // Legacy path
             app.messages.push(DisplayMsg::ToolResult {
                 content,
-                compact,
+                compact: None,
                 is_error,
             });
         }
@@ -1018,7 +1308,7 @@ fn handle_agent_event(app: &mut App, event: AgentEvent) {
             flush_all(app);
             app.is_streaming = false;
             app.working.stop();
-            app.footer.set_streaming(false);
+            app.footer.borrow_mut().set_streaming(false);
             app.agent_abort = None;
 
             // Persist new messages to session and update conversation state
@@ -1036,7 +1326,9 @@ fn handle_agent_event(app: &mut App, event: AgentEvent) {
             }
             if let Some(last) = messages.iter().rev().find(|m| m.usage.is_some()) {
                 app.last_usage = last.usage.clone();
-                app.footer.accumulate_usage(last.usage.as_ref().unwrap());
+                app.footer
+                    .borrow_mut()
+                    .accumulate_usage(last.usage.as_ref().unwrap());
             }
 
             // Process next queued message (pi-style: batch-submit after current finishes)
@@ -1052,6 +1344,13 @@ fn flush_text(app: &mut App) {
     if let Some(text) = app.pending_text.take()
         && !text.is_empty()
     {
+        // Add Component to chat_container with spacer
+        let mut comp = crate::agent::ui::components::AssistantMessageComponent::new(&text);
+        if app.hide_thinking {
+            comp.set_hide_thinking(true);
+        }
+        chat_add(app, std::boxed::Box::new(comp));
+        // Legacy path
         app.messages.push(DisplayMsg::AssistantText(text));
     }
 }
@@ -1060,6 +1359,14 @@ fn flush_thinking(app: &mut App) {
     if let Some(text) = app.pending_thinking.take()
         && !text.is_empty()
     {
+        // Add Component to chat_container with spacer
+        let mut thinking = crate::agent::ui::components::AssistantMessageComponent::new("");
+        thinking.add_thinking(&text, app.thinking_level.clone());
+        if app.hide_thinking {
+            thinking.set_hide_thinking(true);
+        }
+        chat_add(app, std::boxed::Box::new(thinking));
+        // Legacy path
         app.messages.push(DisplayMsg::Thinking {
             text,
             level: app.thinking_level.clone(),
@@ -1113,6 +1420,7 @@ mod tests {
     use super::*;
     use crate::agent::provider::StreamEvent;
     use crate::agent::types::AgentMessage;
+    use crate::agent::ui::messages::render_messages;
     use async_trait::async_trait;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use futures::Stream;
@@ -1166,7 +1474,7 @@ mod tests {
         let before = compose_ui_test(&mut app, width);
         // Type "/"
         let slash = KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE);
-        app.editor.editor.handle_input(&slash);
+        app.editor.borrow_mut().editor.handle_input(&slash);
         // Second compose
         let after = compose_ui_test(&mut app, width);
 
@@ -1273,8 +1581,8 @@ mod tests {
             lines.push(String::new());
         }
         lines.extend(app.working.render(width));
-        lines.extend(app.editor.editor.render(width));
-        lines.extend(app.footer.render(width));
+        lines.extend(app.editor.borrow().editor.render(width));
+        lines.extend(app.footer.borrow().render(width));
         lines
     }
 
@@ -1607,11 +1915,11 @@ mod tests {
             "Queued messages should be cleared after interrupt"
         );
         assert!(
-            app.editor.editor.get_text().contains("q1"),
+            app.editor.borrow().editor.get_text().contains("q1"),
             "Editor should contain restored queued messages"
         );
         assert!(
-            app.editor.editor.get_text().contains("q2"),
+            app.editor.borrow().editor.get_text().contains("q2"),
             "Editor should contain both restored queued messages"
         );
     }
@@ -1911,14 +2219,14 @@ mod tests {
         let config = make_config(cwd.clone());
         let mut app = App::new(config, session);
         app.is_streaming = false;
-        app.editor.editor.set_text("some text");
+        app.editor.borrow_mut().editor.set_text("some text");
         // Set last_clear_time far in the past so double-press doesn't trigger
         app.last_clear_time = std::time::Instant::now() - std::time::Duration::from_secs(10);
 
         handle_clear(&mut app);
 
         assert!(
-            app.editor.editor.get_text().is_empty(),
+            app.editor.borrow().editor.get_text().is_empty(),
             "Editor should be cleared"
         );
     }
@@ -2068,11 +2376,11 @@ mod tests {
 
         assert!(app.queued_messages.is_empty(), "Queues should be empty");
         assert!(
-            app.editor.editor.get_text().contains("msg1"),
+            app.editor.borrow().editor.get_text().contains("msg1"),
             "Editor should contain msg1"
         );
         assert!(
-            app.editor.editor.get_text().contains("msg2"),
+            app.editor.borrow().editor.get_text().contains("msg2"),
             "Editor should contain msg2"
         );
     }

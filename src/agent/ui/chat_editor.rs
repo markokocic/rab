@@ -183,6 +183,50 @@ impl ChatEditor {
     ///
     /// This keeps app-level side effects (aborting agent, opening overlays, etc.)
     /// in the app layer while keeping text-editing logic in the Editor component.
+    /// Update editor border color based on thinking level or bash mode.
+    /// Matches pi's `updateEditorBorderColor()`.
+    /// - Bash mode (text starts with `!`): uses `bashMode` color
+    /// - Otherwise: uses thinking level color (`thinkingOff`..`thinkingXhigh`)
+    pub fn update_border_color(
+        &mut self,
+        thinking_level: Option<&str>,
+        theme: &dyn crate::tui::Theme,
+    ) {
+        let text = self.editor.get_text();
+        if text.trim_start().starts_with('!') {
+            let ansi = theme.fg("bashMode", "").to_string();
+            // Extract just the ANSI prefix (before any text)
+            let prefix = if ansi.starts_with('\x1b') {
+                let end = ansi.rfind('m').unwrap_or(ansi.len());
+                ansi[..end + 1].to_string()
+            } else {
+                ansi
+            };
+            let prefix2 = prefix.clone();
+            self.editor.border_color = Box::new(move |s| format!("{}{}\x1b[39m", prefix2, s));
+        } else {
+            let level = thinking_level.unwrap_or("off");
+            let color_name = match level {
+                "off" => "thinkingOff",
+                "minimal" => "thinkingMinimal",
+                "low" => "thinkingLow",
+                "medium" => "thinkingMedium",
+                "high" => "thinkingHigh",
+                "xhigh" | "max" => "thinkingXhigh",
+                _ => "thinkingOff",
+            };
+            let ansi = theme.fg(color_name, "").to_string();
+            let prefix = if ansi.starts_with('\x1b') {
+                let end = ansi.rfind('m').unwrap_or(ansi.len());
+                ansi[..end + 1].to_string()
+            } else {
+                ansi
+            };
+            let prefix2 = prefix.clone();
+            self.editor.border_color = Box::new(move |s| format!("{}{}\x1b[39m", prefix2, s));
+        }
+    }
+
     pub fn handle_input(&mut self, key: &KeyEvent) -> InputAction {
         let kb = get_keybindings();
 

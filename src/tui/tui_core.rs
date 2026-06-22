@@ -3,6 +3,7 @@ use std::io::{self, Write};
 use crossterm::event::KeyEvent;
 
 use crate::tui::Component;
+use crate::tui::container::Container;
 use crate::tui::overlay::{OverlayAnchor, OverlayEntry, OverlayLayout, OverlayOptions, SizeValue};
 use crate::tui::screen::Screen;
 use crate::tui::util::{
@@ -24,6 +25,11 @@ pub const CURSOR_MARKER: &str = "\x1b_pi:c\x07";
 // =============================================================================
 
 pub struct TUI {
+    /// The root container — all top-level children are added here.
+    /// Matches pi's `class TUI extends Container` — the TUI itself renders
+    /// this root container first, then applies overlays.
+    pub root: Container,
+
     /// The diff renderer
     screen: Screen,
     /// Terminal dimensions (cached)
@@ -45,6 +51,7 @@ pub struct TUI {
 impl TUI {
     pub fn new() -> Self {
         Self {
+            root: Container::new(),
             screen: Screen::new(),
             width: 80,
             height: 24,
@@ -206,13 +213,15 @@ impl TUI {
 
     // ── Rendering ──────────────────────────────────────────────────
 
-    /// Composite overlays into content lines, then diff-render to screen.
+    /// Render the root component tree, composite overlays, then diff-render to screen.
     ///
-    /// `base_lines`: the application's rendered content (without overlays).
-    /// `writer`: terminal stdout.
+    /// Matches pi's TUI.render() which extends Container:
+    /// 1. Render root Container (all permanent children)
+    /// 2. Append chat_buffer (bridge from compose_ui during migration)
+    /// 3. Composite any overlays on top
+    /// 4. Diff-render via Screen
     pub fn render(
         &mut self,
-        mut lines: Vec<String>,
         width: usize,
         height: usize,
         writer: &mut dyn Write,
@@ -220,24 +229,29 @@ impl TUI {
         self.width = width;
         self.height = height;
 
-        // 1. Composite overlays into the rendered lines
+        // 1. Render root container (all sections in correct order).
+        //    Root children: header_section → chat_container → pending_section →
+        //    status_section → queued_section → working_section → editor → footer
+        let mut lines = self.root.render(width);
+
+        // 3. Composite overlays into the rendered lines
         if !self.overlay_stack.is_empty() {
             lines = self.composite_overlays(&lines, width, height);
         }
 
-        // 2. Extract cursor marker and strip it from lines
+        // 3. Extract cursor marker and strip it from lines
         let cursor_pos = self.extract_cursor_position(&mut lines, height);
 
-        // 3. Apply segment reset (normalize terminal output)
+        // 4. Apply segment reset (normalize terminal output)
         for line in lines.iter_mut() {
             *line = normalize_terminal_output(line);
         }
 
-        // 4. Delegate to Screen for diff rendering
+        // 5. Delegate to Screen for diff rendering
         self.screen
             .render(lines.clone(), width as u16, height as u16, writer)?;
 
-        // 5. Position hardware cursor if marker was found
+        // 6. Position hardware cursor if marker was found
         if let Some((row, col)) = cursor_pos {
             self.position_hard_cursor(row, col, writer)?;
             // Sync Screen's cursor tracking with actual hardware cursor position

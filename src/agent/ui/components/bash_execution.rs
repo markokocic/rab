@@ -48,9 +48,13 @@ impl BashExecution {
         let command = command.into();
 
         // Create a loader matching pi's style: spinner in bashMode color, message in muted color
+        let theme = crate::agent::ui::theme::current_theme();
+        let spinner_ansi = theme.fg_ansi("bashMode").to_string();
+        let msg_ansi = theme.fg_ansi("muted").to_string();
+        drop(theme);
         let loader = Loader::new(
-            Box::new(|s| format!("\x1b[38;2;138;190;183m{}\x1b[39m", s)), // bashMode color
-            Box::new(|s| format!("\x1b[38;2;128;128;128m{}\x1b[39m", s)), // muted color
+            Box::new(move |s| format!("{}{}\x1b[39m", spinner_ansi, s)),
+            Box::new(move |s| format!("{}{}\x1b[39m", msg_ansi, s)),
             "Running... (Esc to cancel)",
         );
 
@@ -193,6 +197,10 @@ impl BashExecution {
 }
 
 impl Component for BashExecution {
+    fn set_expanded(&mut self, expanded: bool) {
+        BashExecution::set_expanded(self, expanded);
+    }
+
     fn render(&self, width: usize) -> Vec<String> {
         let theme = crate::agent::ui::theme::current_theme();
         let border_key = self.border_color_key();
