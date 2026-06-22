@@ -4,6 +4,19 @@ use std::time::Duration;
 use crossterm::event::{self, Event, KeyEvent, KeyboardEnhancementFlags};
 
 // =============================================================================
+// TerminalEvent — events that can come from the terminal beyond just keys
+// =============================================================================
+
+/// Events from the terminal that the app loop should handle.
+/// Matches pi's StdinBuffer which emits both `data` (key sequences) and `paste` events.
+#[derive(Debug, Clone)]
+pub enum TerminalEvent {
+    Key(KeyEvent),
+    Paste(String),
+    Resize(u16, u16),
+}
+
+// =============================================================================
 // Terminal trait — pi-compatible terminal interface
 // =============================================================================
 
@@ -38,11 +51,14 @@ pub trait TerminalTrait {
 // Poll functions (kept as free functions for the event loop)
 // =============================================================================
 
-pub fn poll_key_event(timeout: Option<Duration>) -> io::Result<Option<KeyEvent>> {
+/// Poll for any terminal event (key, paste, resize).
+/// Returns None on timeout or for unhandled event types.
+pub fn poll_terminal_event(timeout: Option<Duration>) -> io::Result<Option<TerminalEvent>> {
     if event::poll(timeout.unwrap_or(Duration::ZERO))? {
         match event::read()? {
-            Event::Key(key) => Ok(Some(key)),
-            Event::Resize(_, _) => Ok(None),
+            Event::Key(key) => Ok(Some(TerminalEvent::Key(key))),
+            Event::Paste(content) => Ok(Some(TerminalEvent::Paste(content))),
+            Event::Resize(w, h) => Ok(Some(TerminalEvent::Resize(w, h))),
             _ => Ok(None),
         }
     } else {
@@ -50,10 +66,19 @@ pub fn poll_key_event(timeout: Option<Duration>) -> io::Result<Option<KeyEvent>>
     }
 }
 
+pub fn poll_key_event(timeout: Option<Duration>) -> io::Result<Option<KeyEvent>> {
+    match poll_terminal_event(timeout)? {
+        Some(TerminalEvent::Key(key)) => Ok(Some(key)),
+        _ => Ok(None),
+    }
+}
+
 pub fn read_key_event() -> io::Result<KeyEvent> {
     loop {
         match event::read()? {
             Event::Key(key) => return Ok(key),
+            Event::Paste(_) => continue,
+            Event::Resize(_, _) => continue,
             _ => continue,
         }
     }

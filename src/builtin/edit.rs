@@ -518,7 +518,7 @@ impl ToolRenderer for EditRenderer {
                         (old.as_str(), new.and_then(|v| v.as_str()))
                 {
                     let preview = format_edit_preview(old_str, new_str, width, theme);
-                    lines.push(preview);
+                    lines.extend(preview);
                 }
             }
 
@@ -563,8 +563,8 @@ impl ToolRenderer for EditRenderer {
 }
 
 /// Format a compact preview of a single edit operation.
-/// Shows first N chars of oldText → first N chars of newText.
-fn format_edit_preview(old: &str, new: &str, _width: usize, theme: &dyn Theme) -> String {
+/// Shows first N chars of oldText → first N chars of newText as separate lines.
+fn format_edit_preview(old: &str, new: &str, _width: usize, theme: &dyn Theme) -> Vec<String> {
     let max_preview = 30;
     let old_first_line = old.lines().next().unwrap_or("");
     let new_first_line = new.lines().next().unwrap_or("");
@@ -574,7 +574,7 @@ fn format_edit_preview(old: &str, new: &str, _width: usize, theme: &dyn Theme) -
 
     let old_styled = theme.fg("toolDiffRemoved", &format!("-{}", old_preview));
     let new_styled = theme.fg("toolDiffAdded", &format!("+{}", new_preview));
-    format!("  {} {}", old_styled, new_styled)
+    vec![format!("  {}", old_styled), format!("  {}", new_styled)]
 }
 
 /// Truncate a string to max_chars, adding "..." if truncated.

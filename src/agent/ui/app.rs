@@ -390,10 +390,22 @@ pub async fn run(config: AppConfig, session: SessionManager) -> anyhow::Result<(
             Duration::from_millis(50)
         };
 
-        if let Some(key) = terminal::poll_key_event(Some(timeout))? {
-            // TUI overlay routing first (overlays get first crack at input)
-            if !tui.route_input(&key) {
-                handle_input(&mut app, &mut tui, &key);
+        if let Some(evt) = terminal::poll_terminal_event(Some(timeout))? {
+            match evt {
+                terminal::TerminalEvent::Key(key) => {
+                    // TUI overlay routing first (overlays get first crack at input)
+                    if !tui.route_input(&key) {
+                        handle_input(&mut app, &mut tui, &key);
+                    }
+                }
+                terminal::TerminalEvent::Paste(content) => {
+                    // Route paste directly to the editor (pi-style: wrap with
+                    // bracketed paste markers so Editor.handleInput detects them)
+                    app.editor.borrow_mut().editor.handle_paste(&content);
+                }
+                terminal::TerminalEvent::Resize(_, _) => {
+                    // Handled by signal handler via dimensions check below
+                }
             }
             dirty = true;
         }

@@ -13,6 +13,9 @@ pub struct Screen {
     max_lines_rendered: usize,
     full_redraw_count: usize,
     clear_on_shrink: bool,
+    /// Whether to use synchronized output markers (\x1b[?2026h / \x1b[?2026l).
+    /// Enabled by default (matching pi) to prevent flicker during differential renders.
+    use_sync_output: bool,
 }
 
 impl Screen {
@@ -27,6 +30,7 @@ impl Screen {
             max_lines_rendered: 0,
             full_redraw_count: 0,
             clear_on_shrink: true,
+            use_sync_output: true,
         }
     }
 
@@ -88,6 +92,26 @@ impl Screen {
         self.clear_on_shrink = enabled;
     }
 
+    /// Enable or disable synchronized output markers (\x1b[?2026h / \x1b[?2026l).
+    /// Enabled by default (matching pi's always-on approach).
+    pub fn set_use_sync_output(&mut self, enabled: bool) {
+        self.use_sync_output = enabled;
+    }
+
+    /// Emit synchronized output begin marker if enabled.
+    fn sync_begin(&self, buf: &mut String) {
+        if self.use_sync_output {
+            buf.push_str("\x1b[?2026h");
+        }
+    }
+
+    /// Emit synchronized output end marker if enabled.
+    fn sync_end(&self, buf: &mut String) {
+        if self.use_sync_output {
+            buf.push_str("\x1b[?2026l");
+        }
+    }
+
     fn full_render(
         &mut self,
         lines: &[String],
@@ -104,8 +128,8 @@ impl Screen {
         }
 
         if lines.is_empty() {
-            buf.push_str("\x1b[?2026h");
-            buf.push_str("\x1b[?2026l");
+            self.sync_begin(&mut buf);
+            self.sync_end(&mut buf);
             write!(w, "{}", buf)?;
             w.flush()?;
             self.cursor_row = 0;
@@ -118,7 +142,7 @@ impl Screen {
             return Ok(());
         }
 
-        buf.push_str("\x1b[?2026h");
+        self.sync_begin(&mut buf);
 
         for (i, line) in lines.iter().enumerate() {
             if i > 0 {
@@ -127,7 +151,7 @@ impl Screen {
             buf.push_str(line);
         }
 
-        buf.push_str("\x1b[?2026l");
+        self.sync_end(&mut buf);
         write!(w, "{}", buf)?;
         w.flush()?;
 
@@ -240,7 +264,7 @@ impl Screen {
                 return self.full_render(&new_lines, writer, true, width_usize, height_usize);
             };
 
-            buf.push_str("\x1b[?2026h");
+            self.sync_begin(&mut buf);
 
             if line_diff > 0 {
                 buf.push_str(&format!("\x1b[{}B", line_diff));
@@ -268,7 +292,7 @@ impl Screen {
                 buf.push_str(&format!("\x1b[{}A", move_back));
             }
 
-            buf.push_str("\x1b[?2026l");
+            self.sync_end(&mut buf);
             write!(writer, "{}", buf)?;
             writer.flush()?;
 
@@ -287,7 +311,7 @@ impl Screen {
 
         // Differential render: update changed lines in place
         let mut buf = String::new();
-        buf.push_str("\x1b[?2026h");
+        self.sync_begin(&mut buf);
 
         let move_target = if appended && first == self.prev_lines.len() && first > 0 {
             first - 1
@@ -366,7 +390,7 @@ impl Screen {
 
             if extra > height_usize {
                 // Too many extra lines - fall back to full redraw
-                buf.push_str("\x1b[?2026l");
+                self.sync_end(&mut buf);
                 write!(writer, "{}", buf)?;
                 writer.flush()?;
                 return self.full_render(&new_lines, writer, true, width_usize, height_usize);
@@ -395,7 +419,7 @@ impl Screen {
             }
         }
 
-        buf.push_str("\x1b[?2026l");
+        self.sync_end(&mut buf);
         write!(writer, "{}", buf)?;
         writer.flush()?;
 
@@ -444,11 +468,8 @@ mod tests {
         screen.render(lines.clone(), 80, 24, &mut output).unwrap();
 
         let output_str = String::from_utf8(output).unwrap();
-        // Should have synchronized output markers
-        assert!(output_str.contains("\x1b[?2026h"));
         assert!(output_str.contains("hello"));
         assert!(output_str.contains("world"));
-        assert!(output_str.contains("\x1b[?2026l"));
     }
 
     #[test]

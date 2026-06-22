@@ -23,7 +23,9 @@ use std::collections::HashMap;
 
 use crate::tui::undo_stack::UndoStack;
 use crate::tui::util::{visible_width, visual_col_to_byte_offset, wrap_text_with_ansi};
-use crate::tui::word_nav::{find_word_backward, find_word_forward};
+use crate::tui::word_nav::{
+    WordNavigationOptions, find_word_backward_with, find_word_forward_with,
+};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -190,6 +192,7 @@ impl Editor {
     }
 
     pub fn insert_text_at_cursor(&mut self, text: &str) {
+        self.clear_autocomplete();
         self.exit_history();
         self.last_action = None;
         self.push_undo();
@@ -209,7 +212,21 @@ impl Editor {
             self.autocomplete_list = None;
             return;
         }
-        // Build SelectListTheme with standalone closures (Box<dyn Fn> is not Clone).
+        self.set_autocomplete_with_layout(items, None);
+    }
+
+    /// Set autocomplete items with an optional custom layout.
+    /// Pi-style: slash commands use a special layout with wider primary column.
+    fn set_autocomplete_with_layout(
+        &mut self,
+        items: Vec<SelectItem>,
+        layout: Option<crate::tui::components::select_list::SelectListLayoutOptions>,
+    ) {
+        if items.is_empty() {
+            self.autocomplete_active = false;
+            self.autocomplete_list = None;
+            return;
+        }
         let theme = SelectListTheme {
             selected_prefix: Box::new(|s| {
                 format!("\x1b[7m\x1b[38;2;138;190;183m→ {}\x1b[27m\x1b[39m", s)
@@ -223,7 +240,7 @@ impl Editor {
             no_match: Box::new(|s| s.to_string()),
             hint: Box::new(|s| s.to_string()),
         };
-        let mut list = SelectList::new(items, 5, theme, None);
+        let mut list = SelectList::new(items, 5, theme, layout);
         list.set_selected_index(0);
         self.autocomplete_list = Some(list);
         self.autocomplete_active = true;
@@ -461,7 +478,19 @@ impl Editor {
                 si
             })
             .collect();
-        self.set_autocomplete(select_items);
+        // Pi-style: slash commands use a wider primary column layout
+        let layout = if prefix.starts_with('/') {
+            Some(
+                crate::tui::components::select_list::SelectListLayoutOptions {
+                    min_primary_column_width: Some(12),
+                    max_primary_column_width: Some(32),
+                    truncate_primary: None,
+                },
+            )
+        } else {
+            None
+        };
+        self.set_autocomplete_with_layout(select_items, layout);
         self.autocomplete_prefix = prefix;
     }
 
@@ -490,16 +519,52 @@ impl Editor {
 
     // ── Delete ──
 
+    /// Find the segment before cursor, treating paste markers as atomic units.
+    /// Returns (start, len) of the segment to delete.
+    fn grapheme_or_paste_before(&self, line: &str, cursor: usize) -> Option<(usize, usize)> {
+        // Check if cursor is at the end of a paste marker
+        for &(start, end) in &Self::find_paste_marker_spans(line) {
+            if cursor >= end && cursor < end + 10 {
+                // The grapheme at end could be the start of the next marker.
+                // If cursor lands exactly at a marker start, the previous
+                // atomic unit is that marker itself.
+                if cursor == end {
+                    return Some((start, end - start));
+                }
+            }
+        }
+        // Also check if cursor is inside a marker — snap to start
+        for &(start, end) in &Self::find_paste_marker_spans(line) {
+            if cursor > start && cursor < end {
+                return Some((start, end - start));
+            }
+        }
+        // Default: last grapheme
+        let graphemes: Vec<(usize, &str)> = line[..cursor].grapheme_indices(true).collect();
+        graphemes.last().map(|&(idx, g)| (idx, g.len()))
+    }
+
+    /// Find the segment after cursor, treating paste markers as atomic units.
+    fn grapheme_or_paste_after(&self, line: &str, cursor: usize) -> Option<(usize, usize)> {
+        // Check if cursor is at the start of a paste marker
+        for &(start, end) in &Self::find_paste_marker_spans(line) {
+            if cursor == start {
+                return Some((start, end - start));
+            }
+        }
+        // Default: first grapheme
+        let graphemes: Vec<(usize, &str)> = line[cursor..].grapheme_indices(true).collect();
+        graphemes.first().map(|&(i, g)| (cursor + i, g.len()))
+    }
+
     fn backspace(&mut self) {
         self.exit_history();
         self.last_action = None;
         if self.cursor_col > 0 {
             self.push_undo();
             let line = self.lines[self.cursor_line].clone();
-            let graphemes: Vec<(usize, &str)> =
-                line[..self.cursor_col].grapheme_indices(true).collect();
-            if let Some(&(idx, g)) = graphemes.last() {
-                self.lines[self.cursor_line].drain(idx..idx + g.len());
+            if let Some((idx, len)) = self.grapheme_or_paste_before(&line, self.cursor_col) {
+                self.lines[self.cursor_line].drain(idx..idx + len);
                 self.set_cursor_col(idx);
             }
         } else if self.cursor_line > 0 {
@@ -519,12 +584,8 @@ impl Editor {
         let line = self.lines[self.cursor_line].clone();
         if self.cursor_col < line.len() {
             self.push_undo();
-            let graphemes: Vec<(usize, &str)> = line[self.cursor_col..]
-                .grapheme_indices(true)
-                .map(|(i, g)| (self.cursor_col + i, g))
-                .collect();
-            if let Some(&(idx, g)) = graphemes.first() {
-                self.lines[self.cursor_line].drain(idx..idx + g.len());
+            if let Some((idx, len)) = self.grapheme_or_paste_after(&line, self.cursor_col) {
+                self.lines[self.cursor_line].drain(idx..idx + len);
             }
         } else if self.cursor_line + 1 < self.lines.len() {
             self.push_undo();
@@ -588,7 +649,11 @@ impl Editor {
         if self.cursor_col == 0 {
             return;
         }
-        let new_col = find_word_backward(&line, self.cursor_col);
+        let opts = WordNavigationOptions {
+            segment: None,
+            is_atomic_segment: Some(&|s: &str| s.starts_with("[paste #") && s.ends_with(']')),
+        };
+        let new_col = find_word_backward_with(&line, self.cursor_col, &opts);
         if new_col < self.cursor_col {
             self.push_undo();
             let deleted = line[new_col..self.cursor_col].to_string();
@@ -607,7 +672,11 @@ impl Editor {
         if self.cursor_col >= line.len() {
             return;
         }
-        let new_col = find_word_forward(&line, self.cursor_col);
+        let opts = WordNavigationOptions {
+            segment: None,
+            is_atomic_segment: Some(&|s: &str| s.starts_with("[paste #") && s.ends_with(']')),
+        };
+        let new_col = find_word_forward_with(&line, self.cursor_col, &opts);
         if new_col > self.cursor_col {
             self.push_undo();
             let deleted = line[self.cursor_col..new_col].to_string();
@@ -653,11 +722,13 @@ impl Editor {
     fn move_left(&mut self) {
         self.last_action = None;
         if self.cursor_col > 0 {
-            let line = &self.lines[self.cursor_line];
+            let line = &self.lines[self.cursor_line].clone();
             let graphemes: Vec<(usize, &str)> =
                 line[..self.cursor_col].grapheme_indices(true).collect();
             if let Some(&(idx, _g)) = graphemes.last() {
-                self.set_cursor_col(idx);
+                let raw = idx;
+                // Snap to paste marker start if inside one
+                self.set_cursor_col(Self::snap_paste_marker(line, raw, true));
             }
         } else if self.cursor_line > 0 {
             self.cursor_line -= 1;
@@ -667,11 +738,13 @@ impl Editor {
 
     fn move_right(&mut self) {
         self.last_action = None;
-        let line = &self.lines[self.cursor_line];
+        let line = &self.lines[self.cursor_line].clone();
         if self.cursor_col < line.len() {
             let mut it = line[self.cursor_col..].grapheme_indices(true);
             if let Some((idx, g)) = it.next() {
-                self.set_cursor_col(self.cursor_col + idx + g.len());
+                let raw = self.cursor_col + idx + g.len();
+                // Snap to paste marker end if inside one
+                self.set_cursor_col(Self::snap_paste_marker(line, raw, false));
             }
         } else if self.cursor_line + 1 < self.lines.len() {
             self.cursor_line += 1;
@@ -698,23 +771,123 @@ impl Editor {
         self.set_cursor_col(len);
     }
 
-    fn move_vertical(&mut self, delta: isize) {
-        let target_line = if delta < 0 {
-            if self.cursor_line == 0 {
-                return;
+    /// Build visual line spans: (logical_line, start_byte_in_logical, length_in_bytes).
+    fn build_visual_line_spans(&self, width: usize) -> Vec<(usize, usize, usize)> {
+        let mut spans = Vec::new();
+        for (i, line) in self.lines.iter().enumerate() {
+            let line_w = visible_width(line);
+            if line.is_empty() {
+                spans.push((i, 0, 0));
+            } else if line_w <= width {
+                spans.push((i, 0, line.len()));
+            } else {
+                let chunks = crate::tui::util::wrap_text_with_ansi(line, width);
+                let mut byte_pos = 0;
+                for chunk in &chunks {
+                    let chunk_len = chunk.len();
+                    spans.push((i, byte_pos, chunk_len));
+                    byte_pos += chunk_len;
+                }
             }
-            self.cursor_line - 1
-        } else if self.cursor_line + 1 >= self.lines.len() {
-            return;
+        }
+        spans
+    }
+
+    /// Find the visual line index for the current cursor position.
+    fn find_current_visual_line(&self, spans: &[(usize, usize, usize)]) -> usize {
+        for (i, &(li, start, len)) in spans.iter().enumerate() {
+            if li != self.cursor_line {
+                continue;
+            }
+            let offset = self.cursor_col.saturating_sub(start);
+            let is_last = i + 1 >= spans.len() || spans[i + 1].0 != li;
+            if offset <= len || (is_last && offset == len) {
+                return i;
+            }
+        }
+        spans.len().saturating_sub(1)
+    }
+
+    /// Move cursor to a target visual line with sticky column logic.
+    /// Mirrors pi's moveToVisualLine() + computeVerticalMoveColumn().
+    fn move_to_visual_line(
+        &mut self,
+        spans: &[(usize, usize, usize)],
+        current_vis: usize,
+        target_vis: usize,
+    ) {
+        let (cur_li, _cur_start, cur_len) = spans[current_vis];
+        let (tgt_li, tgt_start, tgt_len) = spans[target_vis];
+        let cur_vis_col = self.cursor_col;
+
+        let is_last_source = current_vis + 1 >= spans.len() || spans[current_vis + 1].0 != cur_li;
+        let src_max = if is_last_source {
+            cur_len
         } else {
-            self.cursor_line + 1
+            cur_len.saturating_sub(1)
         };
 
-        let target_len = self.lines[target_line].len();
-        let pref = self.preferred_col.unwrap_or(self.cursor_col);
-        self.preferred_col = Some(pref);
-        self.cursor_line = target_line;
-        self.cursor_col = pref.min(target_len);
+        let is_last_target = target_vis + 1 >= spans.len() || spans[target_vis + 1].0 != tgt_li;
+        let tgt_max = if is_last_target {
+            tgt_len
+        } else {
+            tgt_len.saturating_sub(1)
+        };
+
+        // Decision table (matches pi)
+        let has_pref = self.preferred_col.is_some();
+        let cursor_in_middle = cur_vis_col < src_max;
+        let target_too_short = tgt_max < cur_vis_col;
+
+        let move_to_col = if !has_pref || cursor_in_middle {
+            if target_too_short {
+                self.preferred_col = Some(cur_vis_col);
+                tgt_max
+            } else {
+                self.preferred_col = None;
+                cur_vis_col
+            }
+        } else {
+            let pref = self.preferred_col.unwrap_or(0);
+            let target_cant_fit_pref = tgt_max < pref;
+            if target_too_short || target_cant_fit_pref {
+                tgt_max
+            } else {
+                self.preferred_col = None;
+                pref
+            }
+        };
+
+        self.cursor_line = tgt_li;
+        let raw_col = tgt_start + move_to_col;
+        let line = &self.lines[tgt_li].clone();
+        self.cursor_col = raw_col.min(line.len());
+        // Snapping uses `delta < 0` for moving-up context
+        // (we don't have delta here, but snap-to-start is the safe choice
+        //  since the marker boundary determination is same regardless of direction)
+        // Actually, snap to start when moving up, end when moving down.
+        // Infer direction from target_vis vs current_vis.
+        let moving_up = target_vis < current_vis;
+        self.cursor_col = Self::snap_paste_marker(line, self.cursor_col, moving_up);
+    }
+
+    fn move_vertical(&mut self, delta: isize) {
+        let width = self.last_width.get();
+        let spans = self.build_visual_line_spans(width);
+        let current_vis = self.find_current_visual_line(&spans);
+
+        let target_vis = if delta < 0 {
+            if current_vis == 0 {
+                return;
+            }
+            current_vis - 1
+        } else if current_vis + 1 >= spans.len() {
+            return;
+        } else {
+            current_vis + 1
+        };
+
+        self.move_to_visual_line(&spans, current_vis, target_vis);
     }
 
     // ── Character jump (pi-style) ──
@@ -805,26 +978,130 @@ impl Editor {
 
     // ── Paste markers (pi-style) ──
 
-    /// Handle a paste: for large pastes (>10 lines or >1000 chars),
-    /// stores the content and inserts a marker like "[paste #1 +123 lines]".
-    /// Small pastes are inserted directly.
-    pub fn handle_paste(&mut self, text: &str) {
-        let lines: Vec<&str> = text.split('\n').collect();
-        let total_chars = text.len();
+    /// CSI-u decode: terminals with extended keys (e.g. tmux popups with
+    /// `extended-keys-format=csi-u`) re-encode control bytes inside bracketed
+    /// paste as `\x1b[<codepoint>;5u`. Decode those back to the literal byte.
+    fn decode_csi_u_in_paste(&self, text: &str) -> String {
+        // Pattern: ESC [ digits ; 5 u  — Ctrl+<letter> encoded as CSI-u
+        let re = regex::Regex::new(r"\x1b\[(\d+);5u").unwrap();
+        re.replace_all(text, |caps: &regex::Captures| {
+            let cp: u32 = caps[1].parse().unwrap_or(0);
+            if (97..=122).contains(&cp) {
+                // Ctrl+A..Ctrl+Z
+                char::from_u32(cp - 96)
+                    .map(|c| c.to_string())
+                    .unwrap_or_default()
+            } else if (65..=90).contains(&cp) {
+                // Ctrl+Shift+A..Ctrl+Shift+Z
+                char::from_u32(cp - 64)
+                    .map(|c| c.to_string())
+                    .unwrap_or_default()
+            } else {
+                caps[0].to_string()
+            }
+        })
+        .to_string()
+    }
 
-        if lines.len() > 10 || total_chars > 1000 {
+    // ── Paste marker atomic segment helpers (pi-style) ──
+
+    /// Find all paste marker spans `[paste #N ...]` in a line.
+    /// Returns (start, end) byte positions.
+    fn find_paste_marker_spans(line: &str) -> Vec<(usize, usize)> {
+        let mut spans = Vec::new();
+        let mut pos = 0;
+        while let Some(start) = line[pos..].find("[paste #") {
+            let abs_start = pos + start;
+            if let Some(end) = line[abs_start..].find(']') {
+                let abs_end = abs_start + end + 1;
+                spans.push((abs_start, abs_end));
+                pos = abs_end;
+            } else {
+                break;
+            }
+        }
+        spans
+    }
+
+    /// If cursor is inside a paste marker, snap to the nearest boundary:
+    /// start of marker when moving left, end when moving right.
+    fn snap_paste_marker(line: &str, cursor: usize, moving_left: bool) -> usize {
+        for &(start, end) in &Self::find_paste_marker_spans(line) {
+            if cursor > start && cursor < end {
+                return if moving_left { start } else { end };
+            }
+        }
+        cursor
+    }
+
+    /// Handle a paste: normalizes line endings, filters non-printable chars,
+    /// CSI-u decodes control bytes, and for large pastes (>10 lines or >1000 chars)
+    /// stores the content with a marker like "[paste #1 +123 lines]".
+    /// Matches pi's Editor.handlePaste().
+    pub fn handle_paste(&mut self, text: &str) {
+        self.clear_autocomplete();
+        self.exit_history();
+        self.last_action = None;
+        self.push_undo();
+
+        // 1. CSI-u decode control bytes that tmux/etc may have re-encoded
+        let decoded = self.decode_csi_u_in_paste(text);
+
+        // 2. Normalize line endings and tabs (same as insert_text_internal)
+        let normalized = decoded
+            .replace("\r\n", "\n")
+            .replace('\r', "\n")
+            .replace('\t', "    ");
+
+        // 3. Filter non-printable chars except newlines
+        let filtered: String = normalized
+            .chars()
+            .filter(|&c| c == '\n' || c == ' ' || c as u32 >= 32)
+            .collect();
+
+        // 4. If pasting a file path (starts with /, ~, or .) and char before
+        //    cursor is a word char, prepend a space (pi-style)
+        let current_line = self.lines[self.cursor_line].clone();
+        let space_prefix = if filtered.starts_with('/')
+            || filtered.starts_with('~')
+            || filtered.starts_with('.')
+        {
+            if self.cursor_col > 0 {
+                let prev = current_line
+                    .as_bytes()
+                    .get(self.cursor_col - 1)
+                    .copied()
+                    .unwrap_or(b' ');
+                if prev.is_ascii_alphanumeric() || prev == b'_' {
+                    " "
+                } else {
+                    ""
+                }
+            } else {
+                ""
+            }
+        } else {
+            ""
+        };
+        let prepared = format!("{}{}", space_prefix, filtered);
+
+        let total_chars = prepared.len();
+        let is_large = prepared.lines().count().max(1) > 10 || total_chars > 1000;
+
+        if is_large {
+            let line_count = prepared.lines().count();
             self.paste_counter += 1;
             let paste_id = self.paste_counter;
-            self.pastes.insert(paste_id, text.to_string());
+            self.pastes.insert(paste_id, prepared);
 
-            let marker = if lines.len() > 10 {
-                format!("[paste #{} +{} lines]", paste_id, lines.len())
+            let marker = if line_count > 10 {
+                format!("[paste #{} +{} lines]", paste_id, line_count)
             } else {
                 format!("[paste #{} {} chars]", paste_id, total_chars)
             };
-            self.insert_text_at_cursor(&marker);
+            self.insert_text_internal(&marker);
         } else {
-            self.insert_text_at_cursor(text);
+            self.insert_text_internal(&prepared);
         }
     }
 
@@ -1238,18 +1515,30 @@ impl Component for Editor {
 
         // ── Word movement ──
         if kb.matches(key, ACTION_EDITOR_CURSOR_WORD_LEFT) {
-            let line = &self.lines[self.cursor_line];
+            let line = &self.lines[self.cursor_line].clone();
             if self.cursor_col > 0 {
-                let c = find_word_backward(line, self.cursor_col);
+                let opts = WordNavigationOptions {
+                    segment: None,
+                    is_atomic_segment: Some(&|s: &str| {
+                        s.starts_with("[paste #") && s.ends_with(']')
+                    }),
+                };
+                let c = find_word_backward_with(line, self.cursor_col, &opts);
                 self.set_cursor_col(c);
             }
             self.update_autocomplete_if_active();
             return true;
         }
         if kb.matches(key, ACTION_EDITOR_CURSOR_WORD_RIGHT) {
-            let line = &self.lines[self.cursor_line];
+            let line = &self.lines[self.cursor_line].clone();
             if self.cursor_col < line.len() {
-                let c = find_word_forward(line, self.cursor_col);
+                let opts = WordNavigationOptions {
+                    segment: None,
+                    is_atomic_segment: Some(&|s: &str| {
+                        s.starts_with("[paste #") && s.ends_with(']')
+                    }),
+                };
+                let c = find_word_forward_with(line, self.cursor_col, &opts);
                 self.set_cursor_col(c);
             }
             self.update_autocomplete_if_active();

@@ -418,17 +418,43 @@ fn split_into_tokens(text: &str) -> Vec<String> {
         }
 
         let segment_str = &text[i..end];
-        for grapheme in segment_str.graphemes(true) {
+        let mut seg_pos = 0;
+        while seg_pos < segment_str.len() {
+            // Check for paste marker start — treat as single atomic token
+            if segment_str[seg_pos..].starts_with("[paste #") {
+                if !current.is_empty() {
+                    tokens.push(std::mem::take(&mut current));
+                    current_is_space = None;
+                }
+                if let Some(end) = segment_str[seg_pos..].find(']') {
+                    let marker = &segment_str[seg_pos..=seg_pos + end];
+                    let token = format!("{}{}", pending_ansi, marker);
+                    pending_ansi.clear();
+                    tokens.push(token);
+                    seg_pos += end + 1;
+                    continue;
+                }
+            }
+
+            // Get the next grapheme
+            let grapheme = if let Some(g) = segment_str[seg_pos..].graphemes(true).next() {
+                g
+            } else {
+                break;
+            };
+            let g_len = grapheme.len();
             let is_space = grapheme == " ";
 
             // CJK characters get their own token
             if !is_space && is_cjk_break(grapheme) {
                 if !current.is_empty() {
                     tokens.push(std::mem::take(&mut current));
+                    current_is_space = None;
                 }
                 let token = format!("{}{}", pending_ansi, grapheme);
                 pending_ansi.clear();
                 tokens.push(token);
+                seg_pos += g_len;
                 continue;
             }
 
@@ -444,6 +470,7 @@ fn split_into_tokens(text: &str) -> Vec<String> {
 
             current_is_space = Some(segment_is_space);
             current.push_str(grapheme);
+            seg_pos += g_len;
         }
 
         i = end;

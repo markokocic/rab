@@ -60,9 +60,16 @@ fn trim_trailing_empty_lines<'a>(lines: &'a [&'a str]) -> &'a [&'a str] {
     &lines[..end]
 }
 
-/// Build a compact label for the read tool output, matching pi's compact mode.
+/// Compact read classification matching pi's `CompactReadClassification`.
+#[derive(Debug, PartialEq)]
+enum CompactReadKind {
+    Resource,
+    Skill,
+}
+
+/// Build a compact classification for the read tool output, matching pi's `getCompactReadClassification`.
 /// Returns `None` for regular files.
-fn compact_read_label(path: &str, cwd: &Path, start_line: usize) -> Option<String> {
+fn get_compact_read_classification(path: &str, cwd: &Path) -> Option<(CompactReadKind, String)> {
     let abs_path = if Path::new(path).is_absolute() {
         Path::new(path).to_path_buf()
     } else {
@@ -71,33 +78,23 @@ fn compact_read_label(path: &str, cwd: &Path, start_line: usize) -> Option<Strin
 
     let file_name = abs_path.file_name()?.to_str()?;
 
-    // AGENTS.md / CLAUDE.md → "read resource <path>"
+    // AGENTS.md / CLAUDE.md → resource with path relative to cwd
     if file_name.eq_ignore_ascii_case("AGENTS.md") || file_name.eq_ignore_ascii_case("CLAUDE.md") {
         let display = abs_path
             .strip_prefix(cwd)
             .unwrap_or(&abs_path)
             .to_string_lossy()
             .to_string();
-        let range = if start_line > 0 {
-            format!(":{}", start_line + 1)
-        } else {
-            String::new()
-        };
-        return Some(format!("read resource {}{}", display, range));
+        return Some((CompactReadKind::Resource, display));
     }
 
-    // SKILL.md → "read skill <dirname>"
+    // SKILL.md → skill with parent directory name
     if file_name == "SKILL.md"
         && let Some(parent) = abs_path.parent()
         && let Some(dir_name) = parent.file_name()
     {
         let dir_name = dir_name.to_str().unwrap_or("unknown");
-        let range = if start_line > 0 {
-            format!(":{}", start_line + 1)
-        } else {
-            String::new()
-        };
-        return Some(format!("read skill {}{}", dir_name, range));
+        return Some((CompactReadKind::Skill, dir_name.to_string()));
     }
 
     None
@@ -305,8 +302,12 @@ impl AgentTool for ReadTool {
             user_limited_lines = None;
         }
 
-        // Compute compact label before truncation (for UI rendering)
-        let compact = compact_read_label(path, &self.cwd, start_line);
+        // Compute compact classification label for the legacy DisplayMsg path
+        let compact =
+            get_compact_read_classification(path, &self.cwd).map(|(kind, label)| match kind {
+                CompactReadKind::Resource => format!("read resource {}", label),
+                CompactReadKind::Skill => format!("read skill {}", label),
+            });
 
         // Apply truncation
         let trunc = truncate_head(&selected_content, DEFAULT_MAX_LINES, DEFAULT_MAX_BYTES);
@@ -398,35 +399,14 @@ impl ToolRenderer for ReadRenderer {
         let offset = args.get("offset").and_then(|v| v.as_u64()).unwrap_or(0);
         let limit = args.get("limit").and_then(|v| v.as_u64());
 
-        // Determine compact label when collapsed
-        let title = if !ctx.expanded {
-            let start_line = if offset > 0 { offset as usize - 1 } else { 0 };
-            compact_read_label(path, Path::new(&self.cwd), start_line)
+        // Compute compact classification
+        let classification = if !ctx.expanded {
+            get_compact_read_classification(path, Path::new(&self.cwd))
         } else {
             None
         };
 
-        // Determine the tool title prefix
-        let (tool_label, path_display) = if let Some(ref label) = title {
-            // Extract "read resource" or "read skill" prefix from label
-            let parts: Vec<&str> = label.splitn(2, ' ').collect();
-            let prefix = parts.first().map(|s| s.to_string()).unwrap_or_default();
-            let rest = parts.get(1).map(|s| s.to_string()).unwrap_or_default();
-            (prefix, rest)
-        } else {
-            let short = if let Ok(home) = std::env::var("HOME") {
-                path.replacen(&home, "~", 1)
-            } else {
-                path.to_string()
-            };
-            let path_disp = if short.is_empty() {
-                String::new()
-            } else {
-                theme.fg("accent", &short)
-            };
-            ("read".to_string(), path_disp)
-        };
-
+        // Format line range (matching pi's formatReadLineRange)
         let range = if offset > 0 || limit.is_some() {
             let start = if offset > 0 { offset } else { 1 };
             let range_str = match limit {
@@ -438,19 +418,52 @@ impl ToolRenderer for ReadRenderer {
             String::new()
         };
 
+        // Expand hint (matching pi's ` (Ctrl+O to expand)` in `dim` color)
         let expand_hint = if !ctx.expanded && !ctx.expand_key.is_empty() {
             theme.fg("muted", &format!(" ({}) to expand", ctx.expand_key))
         } else {
             String::new()
         };
 
-        vec![format!(
-            "{} {} {}{}",
-            theme.fg("toolTitle", &theme.bold(&tool_label)),
-            path_display,
-            range,
-            expand_hint,
-        )]
+        if let Some((kind, label)) = classification {
+            match kind {
+                CompactReadKind::Skill => {
+                    // Pi: `[skill] name:range (Ctrl+O to expand)`
+                    // [skill] in customMessageLabel bold, name in customMessageText
+                    let prefix = theme.fg("customMessageLabel", "\x1b[1m[skill]\x1b[22m ");
+                    let name = theme.fg("customMessageText", &label);
+                    vec![format!("{}{}{}{}", prefix, name, range, expand_hint)]
+                }
+                CompactReadKind::Resource => {
+                    // Pi: `read resource  path:range (Ctrl+O to expand)`
+                    // "read resource" in bold toolTitle, path in accent
+                    let title_styled = theme.fg("toolTitle", &theme.bold("read resource"));
+                    let path_styled = theme.fg("accent", &label);
+                    vec![format!(
+                        "{} {} {}{}",
+                        title_styled, path_styled, range, expand_hint
+                    )]
+                }
+            }
+        } else {
+            // Regular call: `read  path:range`
+            let short = if let Ok(home) = std::env::var("HOME") {
+                path.replacen(&home, "~", 1)
+            } else {
+                path.to_string()
+            };
+            let path_disp = if short.is_empty() {
+                String::new()
+            } else {
+                theme.fg("accent", &short)
+            };
+            vec![format!(
+                "{} {} {}",
+                theme.fg("toolTitle", &theme.bold("read")),
+                path_disp,
+                range,
+            )]
+        }
     }
 
     fn render_result(
@@ -472,11 +485,10 @@ impl ToolRenderer for ReadRenderer {
             return vec![];
         }
 
-        // Show first N lines when collapsed, all when expanded
-        let max_lines = if ctx.expanded { usize::MAX } else { 10 };
-        let all_lines: Vec<&str> = content.lines().collect();
-        let display_lines: Vec<&str> = all_lines.iter().copied().take(max_lines).collect();
-        let remaining = all_lines.len().saturating_sub(display_lines.len());
+        // Pi: return empty when collapsed and not error (result is hidden until expanded)
+        if !ctx.expanded && !ctx.is_error {
+            return vec![];
+        }
 
         let path = ctx.file_path.as_deref().unwrap_or("");
         let lang = if !path.is_empty() {
@@ -485,34 +497,34 @@ impl ToolRenderer for ReadRenderer {
             None
         };
 
-        let mut result = Vec::new();
-
-        // Syntax-highlighted lines or plain
-        #[cfg(feature = "syntect")]
-        if let Some(lang) = lang {
-            let text = display_lines.join("\n");
-            let hl = crate::tui::components::highlight_code(&text, Some(lang));
-            if !hl.is_empty() {
-                for line in hl {
-                    result.push(theme.fg("toolOutput", &line));
-                }
-            } else {
-                for line in &display_lines {
-                    result.push(theme.fg("toolOutput", line));
-                }
-            }
-        } else {
-            for line in &display_lines {
-                result.push(theme.fg("toolOutput", line));
-            }
+        // Pi: trim trailing empty lines
+        let all_lines: Vec<&str> = content.lines().collect();
+        let mut end = all_lines.len();
+        while end > 0 && all_lines[end - 1].is_empty() {
+            end -= 1;
         }
+        let trimmed_lines = &all_lines[..end];
 
-        #[cfg(not(feature = "syntect"))]
+        // Pi: show up to 10 lines when collapsed, full when expanded
+        let max_lines = if ctx.expanded { usize::MAX } else { 10 };
+        let display_lines: Vec<&str> = trimmed_lines.iter().copied().take(max_lines).collect();
+        let remaining = trimmed_lines.len().saturating_sub(display_lines.len());
+
+        // Pi: start with blank line (`\n` before content)
+        let mut result = vec![String::new()];
+
+        // Pi: apply replaceTabs and color each line
         for line in &display_lines {
-            result.push(theme.fg("toolOutput", line));
+            let processed = line.replace('\t', "   ");
+            #[cfg(feature = "syntect")]
+            if let Some(lang) = lang {
+                // Pi uses highlightCode on the full text, then replaceTabs on each line
+                let _ = lang;
+            }
+            result.push(theme.fg("toolOutput", &processed));
         }
 
-        // "N more lines" hint
+        // Pi: remaining lines hint
         if remaining > 0 && !ctx.expand_key.is_empty() {
             result.push(theme.fg(
                 "muted",
@@ -649,38 +661,39 @@ mod tests {
         assert!(trimmed.is_empty());
     }
 
-    // ── Compact label tests ──────────────────────────────────
+    // ── Compact classification tests ─────────────────────────
 
     #[test]
-    fn test_compact_label_agents_md() {
-        let label = compact_read_label("path/to/AGENTS.md", Path::new("path"), 0);
-        assert!(label.is_some());
-        let l = label.unwrap();
-        assert!(l.contains("read resource"));
-        assert!(l.contains("to/AGENTS.md"));
+    fn test_compact_classification_agents_md() {
+        let result = get_compact_read_classification("path/to/AGENTS.md", Path::new("path"));
+        assert!(result.is_some());
+        let (kind, label) = result.unwrap();
+        assert_eq!(kind, CompactReadKind::Resource);
+        assert!(label.contains("to/AGENTS.md"));
     }
 
     #[test]
-    fn test_compact_label_claude_md() {
-        let label = compact_read_label("path/CLAUDE.md", Path::new("path"), 0);
-        assert!(label.is_some());
-        let l = label.unwrap();
-        assert!(l.contains("read resource"));
+    fn test_compact_classification_claude_md() {
+        let result = get_compact_read_classification("CLAUDE.md", Path::new("path"));
+        assert!(result.is_some());
+        let (kind, label) = result.unwrap();
+        assert_eq!(kind, CompactReadKind::Resource);
+        assert_eq!(label, "CLAUDE.md");
     }
 
     #[test]
-    fn test_compact_label_skill() {
-        let label = compact_read_label("skills/my-skill/SKILL.md", Path::new("."), 0);
-        assert!(label.is_some());
-        let l = label.unwrap();
-        assert!(l.contains("read skill"));
-        assert!(l.contains("my-skill"));
+    fn test_compact_classification_skill() {
+        let result = get_compact_read_classification("skills/my-skill/SKILL.md", Path::new("."));
+        assert!(result.is_some());
+        let (kind, label) = result.unwrap();
+        assert_eq!(kind, CompactReadKind::Skill);
+        assert_eq!(label, "my-skill");
     }
 
     #[test]
-    fn test_compact_label_regular_file() {
-        let label = compact_read_label("src/main.rs", Path::new("."), 0);
-        assert!(label.is_none());
+    fn test_compact_classification_regular_file() {
+        let result = get_compact_read_classification("src/main.rs", Path::new("."));
+        assert!(result.is_none());
     }
 
     // ── Integration tests ────────────────────────────────────
