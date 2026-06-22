@@ -3,6 +3,7 @@ pub mod component;
 pub mod container;
 pub mod focusable;
 pub mod fuzzy;
+pub mod image;
 pub mod keybindings;
 pub mod keys;
 pub mod kill_ring;

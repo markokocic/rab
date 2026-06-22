@@ -814,10 +814,11 @@ pub fn apply_background_to_line(
     bg_fn(&padded)
 }
 
-/// Check if a line contains a Kitty image sequence.
-/// Always returns false for non-image builds. Stub matching pi's `isImageLine`.
-pub fn is_image_line(_line: &str) -> bool {
-    false
+/// Check if a line contains a Kitty image sequence or data URL.
+/// Data URLs (data:image/...;base64,...) are detected by checking if the
+/// line starts with the data URL prefix.
+pub fn is_image_line(line: &str) -> bool {
+    line.trim_start().starts_with("data:image/") && line.contains(";base64,")
 }
 
 /// Slice text by visible columns, returning both the extracted text and its width.

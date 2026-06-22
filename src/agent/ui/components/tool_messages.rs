@@ -335,34 +335,63 @@ impl ToolExecComponent {
                     theme,
                 )));
             } else {
-                let fg_key = if self.is_error { "error" } else { "toolOutput" };
-                let fg_ansi = theme.fg_ansi(fg_key).to_string();
-
-                let display_text = if self.expanded {
-                    output.clone()
-                } else {
-                    let lines: Vec<&str> = output.lines().collect();
-                    if lines.len() > PREVIEW_LINES {
-                        let preview = lines[..PREVIEW_LINES].join("\n");
-                        format!(
-                            "{}\n... ({} more lines)",
-                            preview,
-                            lines.len() - PREVIEW_LINES
-                        )
+                // Check if this is an image (data URL)
+                if crate::tui::util::is_image_line(output) {
+                    let kitty_seq = crate::tui::image::kitty_image_sequence(output);
+                    if !kitty_seq.is_empty() {
+                        // Image rendered via Kitty protocol
+                        msg_box.add_child(std::boxed::Box::new(Text::new(kitty_seq, 0, 0, None)));
+                        // Add a blank line after the image
+                        msg_box.add_child(std::boxed::Box::new(Text::new(
+                            String::new(),
+                            0,
+                            0,
+                            None,
+                        )));
                     } else {
-                        output.clone()
+                        msg_box.add_child(std::boxed::Box::new(Text::new(
+                            output.clone(),
+                            0,
+                            0,
+                            None,
+                        )));
                     }
-                };
+                } else {
+                    let fg_key = if self.is_error { "error" } else { "toolOutput" };
+                    let fg_ansi = theme.fg_ansi(fg_key).to_string();
 
-                // Apply syntax highlighting for read results
-                let styled_lines: Vec<String> = if self.name == "read" && !self.is_error {
-                    if let Some(ref path) = self.file_path {
-                        let lang = crate::tui::components::path_to_language(path);
-                        #[cfg(feature = "syntect")]
-                        if lang.is_some() {
-                            let hl = crate::tui::components::highlight_code(&display_text, lang);
-                            if !hl.is_empty() {
-                                hl
+                    let display_text = if self.expanded {
+                        output.clone()
+                    } else {
+                        let lines: Vec<&str> = output.lines().collect();
+                        if lines.len() > PREVIEW_LINES {
+                            let preview = lines[..PREVIEW_LINES].join("\n");
+                            format!(
+                                "{}\n... ({} more lines)",
+                                preview,
+                                lines.len() - PREVIEW_LINES
+                            )
+                        } else {
+                            output.clone()
+                        }
+                    };
+
+                    // Apply syntax highlighting for read results
+                    let styled_lines: Vec<String> = if self.name == "read" && !self.is_error {
+                        if let Some(ref path) = self.file_path {
+                            let lang = crate::tui::components::path_to_language(path);
+                            #[cfg(feature = "syntect")]
+                            if lang.is_some() {
+                                let hl =
+                                    crate::tui::components::highlight_code(&display_text, lang);
+                                if !hl.is_empty() {
+                                    hl
+                                } else {
+                                    display_text
+                                        .lines()
+                                        .map(|line| format!("{}{}\x1b[39m", fg_ansi, line))
+                                        .collect()
+                                }
                             } else {
                                 display_text
                                     .lines()
@@ -380,16 +409,11 @@ impl ToolExecComponent {
                             .lines()
                             .map(|line| format!("{}{}\x1b[39m", fg_ansi, line))
                             .collect()
-                    }
-                } else {
-                    display_text
-                        .lines()
-                        .map(|line| format!("{}{}\x1b[39m", fg_ansi, line))
-                        .collect()
-                };
+                    };
 
-                let result_text = Text::new(styled_lines.join("\n"), 0, 0, None);
-                msg_box.add_child(std::boxed::Box::new(result_text));
+                    let result_text = Text::new(styled_lines.join("\n"), 0, 0, None);
+                    msg_box.add_child(std::boxed::Box::new(result_text));
+                }
             }
         }
 
