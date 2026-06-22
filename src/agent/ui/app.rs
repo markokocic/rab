@@ -138,6 +138,9 @@ pub struct App {
     streaming_component:
         Option<Weak<RefCell<crate::agent::ui::components::AssistantMessageComponent>>>,
 
+    /// Active bash execution component (for bang commands — updated when result arrives).
+    bash_component: Option<Weak<RefCell<crate::agent::ui::components::BashExecution>>>,
+
     /// Working indicator.
     working: WorkingIndicator,
 
@@ -258,6 +261,7 @@ impl App {
             chat_container,
             pending_tools: HashMap::new(),
             streaming_component: None,
+            bash_component: None,
             pending_section: std::rc::Rc::new(crate::tui::components::DynamicLines::new()),
             status_section: std::rc::Rc::new(crate::tui::components::DynamicLines::new()),
             queued_section: std::rc::Rc::new(crate::tui::components::DynamicLines::new()),
@@ -991,9 +995,15 @@ fn handle_bang_command(app: &mut App, command: String) {
     let cwd = app.cwd.clone();
     let tx = app.event_tx.clone();
 
-    // Add BashExecutionComponent to chat_container (no DisplayMsg::User — it's a bash execution, not a user message)
-    let bash_comp = crate::agent::ui::components::BashExecution::new(&command);
-    chat_add(app, std::boxed::Box::new(bash_comp));
+    // Add BashExecutionComponent to chat_container (track for result updates)
+    let bash_comp = Rc::new(RefCell::new(
+        crate::agent::ui::components::BashExecution::new(&command),
+    ));
+    app.bash_component = Some(Rc::downgrade(&bash_comp));
+    chat_add(
+        app,
+        std::boxed::Box::new(crate::tui::components::RcRefCellComponent(bash_comp)),
+    );
     app.messages
         .push(DisplayMsg::User(format!("! {}", command)));
 
@@ -1319,22 +1329,37 @@ fn handle_agent_event(app: &mut App, event: AgentEvent) {
                     };
                 }
             } else if name == "bash" {
-                // Bash result without preceding ToolCall (e.g. from bang command):
-                // Create BashExecutionComponent with borders + colored output
-                let cmd = content
-                    .lines()
-                    .next()
-                    .unwrap_or("")
-                    .trim_start_matches("$ ")
-                    .to_string();
-                let mut bash = crate::agent::ui::components::BashExecution::new(&cmd);
-                let output_lines: Vec<&str> = content.lines().skip(2).collect();
-                let output = output_lines.join("\n");
-                if !output.is_empty() {
-                    bash.append_chunk(&output);
+                // Bash result (from bang command or LLM tool call without preceding ToolCall):
+                // Update existing BashExecutionComponent or create new one
+                if let Some(weak) = app.bash_component.as_ref().and_then(|w| w.upgrade()) {
+                    let mut bash = weak.borrow_mut();
+                    let output_lines: Vec<&str> = content.lines().skip(2).collect();
+                    let output = output_lines.join("\n");
+                    if !output.is_empty() {
+                        bash.append_chunk(&output);
+                    }
+                    bash.set_duration_from_content(&content);
+                    bash.set_complete(if is_error { 1 } else { 0 });
+                    drop(bash);
+                    app.bash_component = None;
+                } else {
+                    // No tracked component — create new BashExecutionComponent
+                    let cmd = content
+                        .lines()
+                        .next()
+                        .unwrap_or("")
+                        .trim_start_matches("$ ")
+                        .to_string();
+                    let mut bash = crate::agent::ui::components::BashExecution::new(&cmd);
+                    let output_lines: Vec<&str> = content.lines().skip(2).collect();
+                    let output = output_lines.join("\n");
+                    if !output.is_empty() {
+                        bash.append_chunk(&output);
+                    }
+                    bash.set_duration_from_content(&content);
+                    bash.set_complete(if is_error { 1 } else { 0 });
+                    chat_add(app, std::boxed::Box::new(bash));
                 }
-                bash.set_complete(if is_error { 1 } else { 0 });
-                chat_add(app, std::boxed::Box::new(bash));
             } else {
                 // Non-bash tool result without preceding call (shouldn't happen):
                 // Fall back to generic ToolResultComponent
@@ -1367,6 +1392,7 @@ fn handle_agent_event(app: &mut App, event: AgentEvent) {
         AgentEvent::AgentEnd { ref messages } => {
             flush_all(app);
             app.streaming_component = None;
+            app.bash_component = None;
             app.is_streaming = false;
             app.working.stop();
             app.footer.borrow_mut().set_streaming(false);

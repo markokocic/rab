@@ -18,8 +18,8 @@ const PREVIEW_LINES: usize = 20;
 /// - Command header with `$` prefix
 /// - Spinner while running (uses Loader component)
 /// - Streaming output in muted color (no ANSI)
-/// - Collapse/expand support showing LAST N lines (preview truncation)
-/// - Status line with exit code, cancellation, truncation warnings
+/// - Collapse/expand support showing FIRST N lines (preview truncation)
+/// - Status line with exit code, duration, cancellation, truncation warnings
 /// - Width-aware visual truncation for collapsed preview
 pub struct BashExecution {
     command: String,
@@ -31,6 +31,8 @@ pub struct BashExecution {
     full_output_path: Option<String>,
     /// Whether output was truncated for LLM context limits.
     was_truncated: bool,
+    /// Execution duration in seconds (parsed from result content or set externally).
+    duration_secs: Option<f64>,
     /// Loader component for spinner animation.
     loader: Loader,
 }
@@ -66,6 +68,7 @@ impl BashExecution {
             exclude_from_context: false,
             full_output_path: None,
             was_truncated: false,
+            duration_secs: None,
             loader,
         }
     }
@@ -130,6 +133,23 @@ impl BashExecution {
 
     pub fn set_truncated(&mut self, truncated: bool) {
         self.was_truncated = truncated;
+    }
+
+    /// Set the execution duration in seconds.
+    pub fn set_duration_secs(&mut self, secs: f64) {
+        self.duration_secs = Some(secs);
+    }
+
+    /// Parse and set duration from result content (format: `[Xs]` at end of string).
+    pub fn set_duration_from_content(&mut self, content: &str) {
+        if let Some(end_bracket) = content.rfind(']')
+            && let Some(start_bracket) = content[..end_bracket].rfind('[')
+        {
+            let num_str = &content[start_bracket + 1..end_bracket];
+            if let Ok(secs) = num_str.parse::<f64>() {
+                self.duration_secs = Some(secs);
+            }
+        }
     }
 
     pub fn is_expanded(&self) -> bool {
@@ -231,18 +251,24 @@ impl Component for BashExecution {
             context_output.split('\n').collect()
         };
 
-        // ── Preview truncation (pi-style: last PREVIEW_LINES when collapsed) ──
+        // ── Preview truncation (pi-style: first PREVIEW_LINES when collapsed, hint at top) ──
         let preview_lines: Vec<&str> = if self.expanded {
             available_lines.clone()
         } else if available_lines.len() > PREVIEW_LINES {
-            available_lines[available_lines.len() - PREVIEW_LINES..].to_vec()
+            available_lines[..PREVIEW_LINES].to_vec()
         } else {
             available_lines.clone()
         };
 
         let hidden_line_count = available_lines.len().saturating_sub(preview_lines.len());
 
-        // ── Output (wrapping each line like pi's Text component does) ──
+        // ── "N earlier lines" hint at top when collapsed (matching pi) ──
+        if !self.expanded && hidden_line_count > 0 {
+            let hint = theme.fg("muted", &format!("... {} more lines", hidden_line_count));
+            lines.push(hint);
+        }
+
+        // ── Output ──
         if !preview_lines.is_empty() {
             for line in &preview_lines {
                 let styled = theme.fg("toolOutput", line);
@@ -254,14 +280,18 @@ impl Component for BashExecution {
         // ── Status / hints ──
         let mut status_parts: Vec<String> = Vec::new();
 
-        // Show hidden lines count (collapsed preview)
-        if hidden_line_count > 0 {
-            if self.expanded {
-                status_parts.push(theme.fg("muted", &format!("({} lines)", available_lines.len())));
-            } else {
-                status_parts
-                    .push(theme.fg("muted", &format!("... {} more lines", hidden_line_count)));
-            }
+        // Empty line before status (matching pi)
+        if !preview_lines.is_empty() {
+            status_parts.push(String::new());
+        }
+
+        // Duration (pi: "Elapsed X.Xs" during, "Took X.Xs" after)
+        if let Some(secs) = self.duration_secs {
+            let label = match self.status {
+                BashStatus::Running => "Elapsed",
+                _ => "Took",
+            };
+            status_parts.push(theme.fg("muted", &format!("{} {:.1}s", label, secs)));
         }
 
         // Status text
@@ -303,8 +333,15 @@ impl Component for BashExecution {
             }
             _ => {
                 if !status_parts.is_empty() {
-                    let status_line = status_parts.join("  ");
-                    lines.push(status_line);
+                    // Skip leading empty line
+                    let status_line = if status_parts.len() == 1 && status_parts[0].is_empty() {
+                        String::new()
+                    } else {
+                        status_parts.join("  ")
+                    };
+                    if !status_line.is_empty() {
+                        lines.push(status_line);
+                    }
                 }
             }
         }
@@ -498,7 +535,7 @@ mod tests {
     }
 
     #[test]
-    fn test_collapsed_preview_shows_last_lines() {
+    fn test_collapsed_preview_shows_first_lines() {
         init_theme(Some("dark"), false);
         let mut bash = BashExecution::new("test");
         for i in 0..50 {
@@ -508,10 +545,10 @@ mod tests {
 
         let lines = bash.render(80);
         let all = lines.join("\n");
-        assert!(!all.contains("line 0"), "Collapsed: hide first line");
-        assert!(!all.contains("line 29"), "Collapsed: hide line 30");
-        assert!(all.contains("line 30"), "Collapsed: show line 31");
-        assert!(all.contains("line 49"), "Collapsed: show last line");
+        assert!(all.contains("line 0"), "Collapsed: show first line");
+        assert!(all.contains("line 19"), "Collapsed: show line 20");
+        assert!(!all.contains("line 20"), "Collapsed: hide line 21");
+        assert!(!all.contains("line 49"), "Collapsed: hide last line");
         assert!(all.contains("30 more lines"), "Should show remaining count");
     }
 

@@ -12,6 +12,7 @@ pub use markdown::{
     DefaultTextStyle, Markdown, MarkdownOptions, MarkdownTheme, StyleFn, highlight_code,
     path_to_language,
 };
+pub use rc_ref_cell_component::RcRefCellComponent;
 pub mod ref_container;
 pub mod select_list;
 pub mod settings_list;
