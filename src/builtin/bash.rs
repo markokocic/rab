@@ -40,6 +40,7 @@ struct BashTool {
 
 const DEFAULT_MAX_LINES: usize = 2000;
 const DEFAULT_MAX_BYTES: usize = 50 * 1024; // 50KB
+const DEFAULT_TIMEOUT_SECS: u64 = 300; // 5 minutes default timeout for all commands
 
 // ── Helpers ──────────────────────────────────────────────────────
 
@@ -336,7 +337,7 @@ impl AgentTool for BashTool {
         let command = args["command"]
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("Missing 'command' argument"))?;
-        let timeout = args["timeout"].as_u64();
+        let timeout = args["timeout"].as_u64().or(Some(DEFAULT_TIMEOUT_SECS));
         let started_at = Instant::now();
 
         cancel.check()?;

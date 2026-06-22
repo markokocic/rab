@@ -80,6 +80,9 @@ fn find_tool<'a>(
     tools.iter().find(|t| t.name() == name).map(|t| t.as_ref())
 }
 
+/// Maximum tool-calling iterations before we force-stop (prevents infinite LLM loops).
+const MAX_TOOL_ITERATIONS: usize = 25;
+
 /// Run the full agent loop. Returns all new messages added during the run.
 /// `history` contains pre-existing messages from a previous session (if continuing).
 pub async fn run_agent_loop(
@@ -99,8 +102,22 @@ pub async fn run_agent_loop(
     emit(AgentEvent::TurnStart);
 
     // Inner loop: stream LLM → execute tools → repeat
-    // Outer loop (steering/follow-up queues) will be added in Phase 1
+    let mut iteration_count: usize = 0;
     loop {
+        iteration_count += 1;
+        if iteration_count > MAX_TOOL_ITERATIONS {
+            let msg = format!(
+                "Agent loop exceeded maximum iterations ({}). Last response may be incomplete.",
+                MAX_TOOL_ITERATIONS
+            );
+            emit(AgentEvent::Aborted {
+                reason: msg.clone(),
+            });
+            emit(AgentEvent::AgentEnd {
+                messages: new_messages.clone(),
+            });
+            return Ok(new_messages);
+        }
         // 1. Stream LLM response
         let mut stream = provider
             .stream(

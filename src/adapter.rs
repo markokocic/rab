@@ -22,6 +22,8 @@ fn build_reqwest_client() -> reqwest::Client {
         .with_no_client_auth();
     reqwest::Client::builder()
         .tls_backend_preconfigured(tls_config)
+        .timeout(std::time::Duration::from_secs(300)) // overall request timeout
+        .connect_timeout(std::time::Duration::from_secs(30))
         .build()
         .expect("Failed to build reqwest client")
 }
