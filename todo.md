@@ -6,7 +6,7 @@
 - [x] **Read tool title — no space between filename and `:`:** Should be like pi (no `" "` between filename and colon).
 - [ ] **Scrolling broken in chat screen:** Once you scroll up with the mouse, you can't scroll back down.
 - [ ] **Agentic loop freeze:** Sometimes after a few rounds the screen freezes and rab stops responding to any input. Only recoverable via `pkill -9 rab` from another terminal.
-- [ ] **Welcome message:** Render exactly the same content and using the same UI as pi's welcome message.
+- [x] **Welcome message:** Render exactly the same content and using the same UI as pi's welcome message.
 - [ ] **Autocomplete of `/` commands — align to pi:** In pi, `/q<enter>` closes pi. In rab, `/q<enter>` autocompletes to `/quit` and needs a second enter. Should close immediately like pi.
 - [x] **Thinking visibility — `Ctrl+t` only:** Should be toggled exclusively by `Ctrl+t`, matching pi behavior.
 - [x] **Expand/collapse states — `Ctrl+o` only:** Should be controlled exclusively by `Ctrl+o`, matching pi behavior.
