@@ -9,7 +9,7 @@ use crate::tui::component::{RenderCache, RenderCacheKey};
 use crate::tui::components::Text;
 use crate::tui::components::r#box::TuiBox;
 use crate::tui::keybindings::{self, ACTION_APP_TOOLS_EXPAND};
-use crate::tui::util::{truncate_to_width, visible_width};
+use crate::tui::util::truncate_to_width;
 
 /// Maximum preview lines when collapsed (matching pi's collapsible tool result).
 const PREVIEW_LINES: usize = 10;
@@ -746,65 +746,10 @@ impl Component for BashResult {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// Visual-line-aware truncation for bash preview
+// Visual-line-aware truncation (delegated to shared tui::visual_truncate)
 // ═══════════════════════════════════════════════════════════════════
 
-/// Count how many visual lines a logical line occupies at the given width.
-/// Accounts for ANSI escape codes and wide characters.
-fn visual_line_count(line: &str, width: usize) -> usize {
-    if width == 0 {
-        return 1;
-    }
-    let vis = visible_width(line);
-    if vis == 0 {
-        return 1;
-    }
-    vis.div_ceil(width)
-}
-
-/// Select the last `max_visual_lines` visual lines from a list of logical lines.
-/// Returns (selected_logical_lines, hidden_logical_line_count).
-///
-/// This matches pi's truncateToVisualLines behavior: it accounts for lines
-/// that wrap visually, ensuring the preview fits within the terminal height.
-fn truncate_to_visual_lines<'a>(
-    lines: &'a [&'a str],
-    width: usize,
-    max_visual_lines: usize,
-) -> (Vec<&'a str>, usize) {
-    if lines.is_empty() || max_visual_lines == 0 {
-        return (vec![], 0);
-    }
-
-    // Compute visual line count for each logical line
-    let visual_counts: Vec<usize> = lines.iter().map(|l| visual_line_count(l, width)).collect();
-
-    let total_visual: usize = visual_counts.iter().sum();
-
-    // If everything fits, return all lines
-    if total_visual <= max_visual_lines {
-        return (lines.to_vec(), 0);
-    }
-
-    // Walk backwards from the end, accumulating visual lines
-    let mut visual_budget = max_visual_lines;
-    let mut start_idx = lines.len();
-
-    for (i, &vis_count) in visual_counts.iter().enumerate().rev() {
-        if vis_count > visual_budget {
-            // This line partially fits - we can't split logical lines,
-            // so we skip it and show from i+1
-            break;
-        }
-        visual_budget -= vis_count;
-        start_idx = i;
-    }
-
-    let selected = lines[start_idx..].to_vec();
-    let hidden = start_idx;
-
-    (selected, hidden)
-}
+use crate::tui::visual_truncate::truncate_to_visual_lines;
 
 fn strip_context_truncation_footer(output: &str) -> String {
     let lines: Vec<&str> = output.lines().collect();
@@ -975,7 +920,7 @@ impl Component for ToolResultComponent {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::tui::visual_truncate::{truncate_to_visual_lines, visual_line_count};
 
     #[test]
     fn test_visual_line_count_ascii() {

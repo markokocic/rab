@@ -1,7 +1,7 @@
 use crate::agent::extension::{AgentTool, Cancel, Extension, ToolOutput};
 use crate::agent::extension::{ToolRenderContext, ToolRenderer};
 use crate::tui::Theme;
-use crate::tui::util::visible_width;
+use crate::tui::visual_truncate::truncate_to_visual_lines;
 use anyhow::Context;
 use async_trait::async_trait;
 use std::borrow::Cow;
@@ -682,55 +682,7 @@ fn format_command_header(cmd: &str, theme: &dyn Theme) -> Option<String> {
     Some(format!("{}{}", title, detail))
 }
 
-// ── Visual-line-aware truncation ────────────────────────────────
-
-/// Count how many visual lines a logical line occupies at the given width.
-fn visual_line_count(line: &str, width: usize) -> usize {
-    if width == 0 {
-        return 1;
-    }
-    let vis = visible_width(line);
-    if vis == 0 {
-        return 1;
-    }
-    vis.div_ceil(width)
-}
-
-/// Select the last `max_visual_lines` visual lines from a list of logical lines.
-/// Returns (selected_logical_lines, hidden_logical_line_count).
-fn truncate_to_visual_lines<'a>(
-    lines: &'a [&'a str],
-    width: usize,
-    max_visual_lines: usize,
-) -> (Vec<&'a str>, usize) {
-    if lines.is_empty() || max_visual_lines == 0 {
-        return (vec![], 0);
-    }
-
-    let visual_counts: Vec<usize> = lines.iter().map(|l| visual_line_count(l, width)).collect();
-
-    let total_visual: usize = visual_counts.iter().sum();
-
-    if total_visual <= max_visual_lines {
-        return (lines.to_vec(), 0);
-    }
-
-    let mut visual_budget = max_visual_lines;
-    let mut start_idx = lines.len();
-
-    for (i, &vis_count) in visual_counts.iter().enumerate().rev() {
-        if vis_count > visual_budget {
-            break;
-        }
-        visual_budget -= vis_count;
-        start_idx = i;
-    }
-
-    let selected = lines[start_idx..].to_vec();
-    let hidden = start_idx;
-
-    (selected, hidden)
-}
+// ── Visual-line-aware truncation (delegated to shared module) ────
 
 impl ToolRenderer for BashRenderer {
     fn render_call(

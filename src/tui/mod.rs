@@ -14,6 +14,7 @@ pub mod theme;
 pub mod tui_core;
 pub mod undo_stack;
 pub mod util;
+pub mod visual_truncate;
 pub mod word_nav;
 
 pub mod components;
