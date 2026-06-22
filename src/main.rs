@@ -207,7 +207,7 @@ async fn main() -> anyhow::Result<()> {
         include_defaults: true,
     });
 
-    let thinking_level = settings.default_thinking_level.as_deref();
+    let thinking_level = settings.default_thinking_level.as_deref().or(Some("xhigh"));
     let provider = adapter::GenaiProvider::new(&auth, thinking_level)?;
 
     if message_parts.is_empty() {
@@ -223,8 +223,8 @@ async fn main() -> anyhow::Result<()> {
             thinking_level: thinking_level.map(|s| s.to_string()),
             git_branch,
             available_models,
-            hide_thinking: settings.hide_thinking.unwrap_or(false),
-            collapse_tool_output: settings.collapse_tool_output.unwrap_or(false),
+            hide_thinking: settings.hide_thinking.unwrap_or(true),
+            collapse_tool_output: settings.collapse_tool_output.unwrap_or(true),
             interactive: true,
             settings,
             context_files: context_file_names,
