@@ -38,10 +38,31 @@ Reference: `~/src/cvstree/pi/` (TypeScript, same architecture).
 
 ## Chat/UX gaps — Completed ✅
 
+### Rendering architecture (pi 1:1)
+
+| Area | Status |
+|------|--------|
+| Component tree (TUI extends Container) | ✅ `TUI.root: Container`, recursive `render()` |
+| Message Components (User, Assistant, Tool, Bash, Info, Header) | ✅ 8 components with proper Box/bg/markdown/OSC133 |
+| Tool bg transitions (pending→success/error) | ✅ `ToolExecComponent` with per-tool formatting |
+| Expand/collapse global toggle | ✅ `set_expanded()` on Component trait |
+| Editor border color (thinking level + bash mode) | ✅ `update_border_color()` |
+| Spacers between all messages | ✅ `chat_add()` helper |
+| Progressive streaming (assistant text) | ✅ `Weak<RefCell<AssistantMessageComponent>>` in-place updates |
+| Progressive bash output | ✅ `AgentEvent::ToolProgress` with tokio async reads |
+| Syntax highlighting | ✅ syntect enabled, `highlight_code()`, `path_to_language()` |
+| Edit diff rendering | ✅ `render_diff()` with intra-line character-level inverse |
+| Bash duration display | ✅ "Elapsed X.Xs" / "Took X.Xs" |
+| Error/abort inline display | ✅ `AgentEvent::Aborted` — inline in streaming component |
+| Write success hides output | ✅ Only bg transition, no text |
+| Git branch refresh | ✅ on AgentStart |
+| Theme completeness | ✅ All 44 color tokens from pi, all 9 syntax colors |
+
+### Other
+
 | Area | Status |
 |------|--------|
 | Missing app actions (clear, suspend, thinking cycle, model cycle, etc.) | ✅ 11 actions implemented |
-| Message rendering polish (Markdown, OSC 133, tool expand/collapse) | ✅ Markdown + table rendering, OSC 133, expand/collapse |
 | Scrolling (Page Up/Down, scroll indicators) | ✅ PageUp/PageDown, scroll indicator, reset on submit |
 | Editor & input (auto-trigger slash autocomplete) | ✅ Auto-shows on `/char`, checked after external editor/dequeue |
 | Footer improvements (auto-compact, narrow terminal, extension status) | ✅ `app.compact.toggle`, graceful truncation, status line |

@@ -783,49 +783,49 @@ See [`tui.md`](tui.md) for the full design.
 
 **App layer**: ChatEditor, Messages, WorkingIndicator, Footer, ModelSelector, HelpOverlay, BashExecution. All wired through `TUI.show_overlay()`. Header/messages/editor/footer layout matching pi exactly.
 
-### Layout (current implementation)
+### Layout (component tree)
 
 ```
 Terminal (main screen, no alternate screen):
-┌──────────────────────────────────────────┐
-│  [terminal scrollback - Shift+PgUp]      │  ← native scroll, not managed by TUI
-├──────────────────────────────────────────┤
-│  rab · model deepseek-v4-flash           │  ← header (logo + model)
-│   Enter submit · Ctrl+J · Esc …          │  ← keybinding hints
-│                                          │
-│  user message text…                      │  ← DisplayMsg::User
-│                                          │
-│  Assistant response text…                │  ← DisplayMsg::AssistantText
-│  _Thinking about the problem…_           │  ← DisplayMsg::Thinking (italic)
-│                                          │
-│  ⚙ tool_name  args                       │  ← DisplayMsg::ToolCall
-│  ─────────────────────                   │
-│  tool result line 1                      │  ← DisplayMsg::ToolResult
-│  tool result line 2                      │
-│  ─────────────────────                   │
-│                                          │
-│  ◷ queued-while-streaming                │  ← queued messages (during streaming)
-│  ↳ queued — will send when current…      │
-│                                          │
-│  ⠋ Working...                            │  ← working indicator (always 1 line)
-│ ┌─────────────────────────────────────┐  │
-│ │ > user types here…                 │  │  ← editor (bordered)
-│ │                                    │  │
-│ └─────────────────────────────────────┘  │
-│ ~/rab (master)                           │  ← footer cwd
-│ ● ↑23k ↓45k  42%/100k (auto)  model     │  ← footer stats
-└──────────────────────────────────────────┘
+TUI.root (Container):
+  ├── HeaderComponent
+  │   ├── "rab" logo
+  │   └── keybinding hints (expandable via Ctrl+O)
+  │
+  ├── chat_container (RefContainer)
+  │   ├── UserMessageComponent
+  │   │   └── Box(userMessageBg) + Markdown(userMessageText) + OSC133
+  │   ├── ToolExecComponent
+  │   │   ├── Background: toolPendingBg → toolSuccessBg/toolErrorBg
+  │   │   ├── Header: per-tool formatting (read docs/path, $ command, write path, etc.)
+  │   │   └── Result: syntax-highlighted (read) / diff-colored (edit) / plain (toolOutput)
+  │   ├── RcRefCellComponent (streaming)
+  │   │   └── AssistantMessageComponent: Markdown + thinking blocks + OSC133
+  │   ├── BashExecutionComponent
+  │   │   ├── Borders (bashMode color), spinner, streaming output
+  │   │   └── Duration: "Elapsed X.Xs" / "Took X.Xs"
+  │   ├── InfoMessageComponent (dim text)
+  │   └── Spacer(1) between each (via chat_add helper)
+  │
+  ├── pending_section (DynamicLines — streaming text/thinking)
+  ├── status_section (DynamicLines — transient status)
+  ├── queued_section (DynamicLines — ◷ queued messages)
+  ├── working_section (DynamicLines — ⠋ Working...)
+  ├── EditorComponent (border color: thinking level / bash mode)
+  └── FooterComponent (cwd, git branch, token usage, model, auto-compact)
 ```
 
-All content is one flat line buffer managed by the diff renderer. Layout (top
-to bottom): **header** → **messages** (User in TuiBox, AssistantText plain,
-Thinking italic, ToolCall/ToolResult in TuiBox) → **pending (streaming) text**
-→ **queued messages** → **transient status** → **spacer** → **working
-indicator** (always 1 line) → **editor** (bordered, with autocomplete
-dropdown via SelectList) → **footer** (2 lines).
+The component tree is rendered recursively: `TUI.render()` calls
+`root.render(width)` which calls each child's `render()` in order. The
+resulting lines are composited with overlays and diff-rendered via `Screen`.
 
-New messages are appended lines - the diff renderer writes `\r\n` at the right
-spot, which pushes content up through the terminal's native scroll.
+Tool execution components use `Rc<RefCell<>>` + `Weak` for in-place updates:
+- `streaming_component: Option<Weak<RefCell<AssistantMessageComponent>>>`
+  — created on first `TextDelta`, updated with `append_text()`/`add_thinking()`
+- `pending_tools: HashMap<String, Weak<RefCell<ToolExecComponent>>>`
+  — created on `ToolCall`, updated with `set_result()` on `ToolResult`
+- `bash_component: Option<Weak<RefCell<BashExecution>>>`
+  — created on bang command, updated with `append_chunk()` on `ToolProgress`
 
 ### Message queuing
 
