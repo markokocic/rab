@@ -8,7 +8,7 @@ const OSC133_ZONE_START: &str = "\x1b]133;A\x07";
 const OSC133_ZONE_END: &str = "\x1b]133;B\x07";
 const OSC133_ZONE_FINAL: &str = "\x1b]133;C\x07";
 
-/// Assistant message component — matches pi's AssistantMessageComponent.
+/// Assistant message component - matches pi's AssistantMessageComponent.
 /// Renders text content with Markdown, optional thinking blocks.
 pub struct AssistantMessageComponent {
     text: String,
@@ -40,10 +40,15 @@ impl AssistantMessageComponent {
     }
 
     pub fn add_thinking(&mut self, text: impl Into<String>, level: Option<String>) {
-        self.thinking.push(ThinkingBlock {
-            text: text.into(),
-            level,
-        });
+        let text = text.into();
+        // Merge with the last thinking block if it exists (pi-style: appends to
+        // an ongoing thinking stream instead of creating a new block per chunk).
+        // This avoids rendering multiple " Thinking…" lines when hide_thinking is true.
+        if let Some(last) = self.thinking.last_mut() {
+            last.text.push_str(&text);
+        } else {
+            self.thinking.push(ThinkingBlock { text, level });
+        }
         self.invalidate();
     }
 
@@ -75,11 +80,6 @@ impl Component for AssistantMessageComponent {
         drop(cached);
 
         let mut lines: Vec<String> = Vec::new();
-        let has_visible = !self.text.trim().is_empty() || !self.thinking.is_empty();
-
-        if has_visible {
-            lines.push(String::new()); // spacer
-        }
 
         // Render thinking blocks first
         for block in &self.thinking {
@@ -116,16 +116,18 @@ impl Component for AssistantMessageComponent {
                     .join("\n");
                 lines.push(styled_text);
             }
+        }
 
-            // Add spacer if more content follows
-            let has_content_after = !self.text.trim().is_empty();
-            if has_content_after {
-                lines.push(String::new());
-            }
+        // Add spacer between thinking and main text (one blank line, not one per block)
+        let has_thinking =
+            !self.thinking.is_empty() && self.thinking.iter().any(|b| !b.text.trim().is_empty());
+        let has_text = !self.text.trim().is_empty();
+        if has_thinking && has_text {
+            lines.push(String::new());
         }
 
         // Render main text content
-        if !self.text.trim().is_empty() {
+        if has_text {
             let md_theme = crate::agent::ui::theme::get_markdown_theme();
             let md = Markdown::new(self.text.clone(), 1, 0, md_theme, None, None);
             let md_lines = md.render(width);
