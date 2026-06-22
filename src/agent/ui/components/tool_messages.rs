@@ -1,7 +1,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use crate::agent::extension::ToolRenderer;
+use crate::agent::extension::{ToolRenderContext, ToolRenderer};
 use crate::agent::ui::theme::{RabTheme, current_theme};
 use crate::tui::Component;
 use crate::tui::components::Text;
@@ -134,34 +134,39 @@ impl ToolExecComponent {
     ) -> Vec<String> {
         let is_partial = !self.is_complete;
 
+        // Build render context (matching pi's ToolRenderContext)
+        let expand_key = crate::agent::ui::components::tool_messages::format_key_hint(
+            crate::tui::keybindings::ACTION_APP_TOOLS_EXPAND,
+        );
+        let ctx = ToolRenderContext {
+            expanded: self.expanded,
+            args_complete: self.is_complete,
+            is_partial,
+            is_error: self.is_error,
+            cwd: String::new(),
+            duration_secs: self.duration_secs,
+            exit_code: self.exit_code,
+            cancelled: self.cancelled,
+            was_truncated: self.was_truncated,
+            full_output_path: self.full_output_path.clone(),
+            file_path: self.file_path.clone(),
+            expand_key,
+        };
+
         // For `renderShell: "self"` tools (like edit), no colored box wrapping
         if renderer.render_self() {
             let mut lines: Vec<String> = Vec::new();
             // Spacer above
             lines.push(String::new());
 
-            let call_lines = renderer.render_call(
-                &self.args,
-                self.expanded,
-                self.is_complete,
-                is_partial,
-                width,
-                theme,
-            );
+            let call_lines = renderer.render_call(&self.args, width, theme, &ctx);
             if !call_lines.is_empty() {
                 lines.extend(call_lines);
             }
 
             // Result body
             if let Some(ref output) = self.output {
-                let result_lines = renderer.render_result(
-                    output,
-                    self.is_error,
-                    self.expanded,
-                    is_partial,
-                    width,
-                    theme,
-                );
+                let result_lines = renderer.render_result(output, width, theme, &ctx);
                 if !result_lines.is_empty() {
                     lines.extend(result_lines);
                 }
@@ -189,27 +194,13 @@ impl ToolExecComponent {
         );
 
         // Call header
-        let call_lines = renderer.render_call(
-            &self.args,
-            self.expanded,
-            self.is_complete,
-            is_partial,
-            width,
-            &theme_clone,
-        );
+        let call_lines = renderer.render_call(&self.args, width, &theme_clone, &ctx);
         let header_text = Text::new(call_lines.join("\n"), 0, 0, None);
         msg_box.add_child(std::boxed::Box::new(header_text));
 
         // Result body
         if let Some(ref output) = self.output {
-            let result_lines = renderer.render_result(
-                output,
-                self.is_error,
-                self.expanded,
-                is_partial,
-                width,
-                &theme_clone,
-            );
+            let result_lines = renderer.render_result(output, width, &theme_clone, &ctx);
             if !result_lines.is_empty() {
                 let result_text = Text::new(result_lines.join("\n"), 0, 0, None);
                 msg_box.add_child(std::boxed::Box::new(result_text));

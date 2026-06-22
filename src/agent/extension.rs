@@ -159,6 +159,32 @@ impl ToolOutput {
     }
 }
 
+/// Context passed to ToolRenderer methods (matching pi's ToolRenderContext).
+/// Carries all metadata about the tool execution that renderers may need.
+#[derive(Debug, Clone)]
+pub struct ToolRenderContext {
+    pub expanded: bool,
+    pub args_complete: bool,
+    pub is_partial: bool,
+    pub is_error: bool,
+    /// Working directory for path resolution.
+    pub cwd: String,
+    /// Duration in seconds (bash).
+    pub duration_secs: Option<f64>,
+    /// Exit code (bash).
+    pub exit_code: Option<i32>,
+    /// Whether execution was cancelled (bash).
+    pub cancelled: bool,
+    /// Whether output was truncated (bash/read).
+    pub was_truncated: bool,
+    /// Path to full output file (bash).
+    pub full_output_path: Option<String>,
+    /// File path for syntax highlighting (read).
+    pub file_path: Option<String>,
+    /// Keybinding hint for the expand action, e.g. "C-O".
+    pub expand_key: String,
+}
+
 /// Tool-specific rendering interface (matching pi's renderCall/renderResult pattern).
 /// Each built-in tool implements this to provide its own visual representation.
 pub trait ToolRenderer: Send + Sync {
@@ -167,11 +193,9 @@ pub trait ToolRenderer: Send + Sync {
     fn render_call(
         &self,
         args: &serde_json::Value,
-        expanded: bool,
-        args_complete: bool,
-        is_partial: bool,
         width: usize,
         theme: &dyn Theme,
+        ctx: &ToolRenderContext,
     ) -> Vec<String>;
 
     /// Render the tool result body.
@@ -180,11 +204,9 @@ pub trait ToolRenderer: Send + Sync {
     fn render_result(
         &self,
         content: &str,
-        is_error: bool,
-        expanded: bool,
-        is_partial: bool,
         width: usize,
         theme: &dyn Theme,
+        ctx: &ToolRenderContext,
     ) -> Vec<String>;
 
     /// Whether this tool uses `renderShell: "self"` (controls its own framing).

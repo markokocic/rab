@@ -1,4 +1,6 @@
 use crate::agent::extension::{AgentTool, Cancel, Extension, ToolOutput};
+use crate::agent::extension::{ToolRenderContext, ToolRenderer};
+use crate::tui::Theme;
 use anyhow::Context;
 use async_trait::async_trait;
 use std::borrow::Cow;
@@ -318,6 +320,10 @@ impl AgentTool for BashTool {
         "Execute bash commands (ls, grep, find, etc.)"
     }
 
+    fn renderer(&self) -> Option<Box<dyn ToolRenderer>> {
+        Some(Box::new(BashRenderer))
+    }
+
     async fn execute(
         &self,
         tool_call_id: String,
@@ -475,6 +481,143 @@ impl AgentTool for BashTool {
                 }
             }
         }
+    }
+}
+
+/// Tool renderer for the `bash` tool.
+/// Formats call headers with `$ command` and result with tail-based preview.
+struct BashRenderer;
+
+impl ToolRenderer for BashRenderer {
+    fn render_call(
+        &self,
+        args: &serde_json::Value,
+        _width: usize,
+        theme: &dyn Theme,
+        _ctx: &ToolRenderContext,
+    ) -> Vec<String> {
+        let cmd = args
+            .get("command")
+            .and_then(|v| v.as_str())
+            .unwrap_or("...");
+        let timeout = args.get("timeout").and_then(|v| v.as_i64());
+        let timeout_suffix = timeout
+            .map(|t| theme.fg("muted", &format!(" (timeout {}s)", t)))
+            .unwrap_or_default();
+        vec![format!(
+            "{}{}",
+            theme.fg("toolTitle", &theme.bold(&format!("$ {}", cmd))),
+            timeout_suffix
+        )]
+    }
+
+    fn render_result(
+        &self,
+        content: &str,
+        _width: usize,
+        theme: &dyn Theme,
+        ctx: &ToolRenderContext,
+    ) -> Vec<String> {
+        let mut lines: Vec<String> = Vec::new();
+
+        // Strip truncation footer
+        let clean = strip_context_truncation_footer(content);
+        let all_lines: Vec<&str> = clean.split('\n').collect();
+
+        if all_lines.is_empty() || (all_lines.len() == 1 && all_lines[0].is_empty()) {
+            return lines;
+        }
+
+        // Tail-based preview (matching pi's BASH_PREVIEW_LINES = 5)
+        let preview_count = 5;
+        let preview_lines: Vec<&str> = if ctx.expanded {
+            all_lines.clone()
+        } else {
+            let len = all_lines.len();
+            if len > preview_count {
+                all_lines[len - preview_count..].to_vec()
+            } else {
+                all_lines.clone()
+            }
+        };
+
+        let hidden_line_count = all_lines.len().saturating_sub(preview_lines.len());
+
+        if !ctx.expanded && hidden_line_count > 0 {
+            let hint = if ctx.expand_key.is_empty() {
+                theme.fg("muted", &format!("... {} earlier lines", hidden_line_count))
+            } else {
+                theme.fg(
+                    "muted",
+                    &format!(
+                        "... {} earlier lines, ({}) to expand",
+                        hidden_line_count, ctx.expand_key
+                    ),
+                )
+            };
+            lines.push(hint);
+        }
+
+        let fg_key = if ctx.is_error { "error" } else { "toolOutput" };
+        for line in &preview_lines {
+            if line.is_empty() {
+                lines.push(String::new());
+            } else {
+                lines.push(theme.fg(fg_key, line));
+            }
+        }
+
+        // Duration
+        if let Some(secs) = ctx.duration_secs {
+            let is_complete = ctx.exit_code.is_some() || ctx.cancelled;
+            let label = if is_complete { "Took" } else { "Elapsed" };
+            lines.push(theme.fg("muted", &format!("{} {:.1}s", label, secs)));
+        }
+
+        // Status
+        if ctx.cancelled {
+            lines.push(theme.fg("warning", "(cancelled)"));
+        } else if let Some(code) = ctx.exit_code
+            && code != 0
+        {
+            lines.push(theme.fg("warning", &format!("(exit {})", code)));
+        }
+
+        // Truncation warnings
+        if ctx.was_truncated {
+            if let Some(ref path) = ctx.full_output_path {
+                lines.push(theme.fg(
+                    "warning",
+                    &format!("Output truncated. Full output: {}", path),
+                ));
+            } else {
+                lines.push(theme.fg("warning", "Output truncated."));
+            }
+        }
+
+        lines
+    }
+}
+
+/// Strip the context-truncation footer from bash output.
+fn strip_context_truncation_footer(output: &str) -> String {
+    let lines: Vec<&str> = output.lines().collect();
+    if lines.len() < 3 {
+        return output.to_string();
+    }
+    let last = lines.last().map_or("", |v| v).trim();
+    if last.starts_with('[')
+        && (last.contains("Showing lines") || last.contains("Showing last"))
+        && last.contains("Full output:")
+    {
+        let before: Vec<&str> = lines[..lines.len() - 1].to_vec();
+        if !before.is_empty() && before[before.len() - 1].is_empty() {
+            before[..before.len() - 1].join("\n")
+        } else {
+            before.join("\n")
+        }
+    } else {
+        output.to_string()
     }
 }
 

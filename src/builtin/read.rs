@@ -1,4 +1,6 @@
 use crate::agent::extension::{AgentTool, Cancel, Extension, ToolOutput};
+use crate::agent::extension::{ToolRenderContext, ToolRenderer};
+use crate::tui::Theme;
 use anyhow::Context;
 use async_trait::async_trait;
 use std::borrow::Cow;
@@ -228,6 +230,12 @@ impl AgentTool for ReadTool {
         "Read file contents"
     }
 
+    fn renderer(&self) -> Option<Box<dyn ToolRenderer>> {
+        Some(Box::new(ReadRenderer {
+            cwd: self.cwd.clone(),
+        }))
+    }
+
     async fn execute(
         &self,
         tool_call_id: String,
@@ -357,6 +365,152 @@ impl AgentTool for ReadTool {
         } else {
             Ok(ToolOutput::ok(output))
         }
+    }
+}
+
+/// Tool renderer for the `read` tool.
+/// Formats call headers with compact labels and result content with syntax highlighting.
+struct ReadRenderer {
+    cwd: std::path::PathBuf,
+}
+
+impl ToolRenderer for ReadRenderer {
+    fn render_call(
+        &self,
+        args: &serde_json::Value,
+        _width: usize,
+        theme: &dyn Theme,
+        ctx: &ToolRenderContext,
+    ) -> Vec<String> {
+        use std::path::Path;
+        let path = args
+            .get("file_path")
+            .or_else(|| args.get("path"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let offset = args.get("offset").and_then(|v| v.as_u64()).unwrap_or(0);
+        let limit = args.get("limit").and_then(|v| v.as_u64());
+
+        // Determine compact label when collapsed
+        let title = if !ctx.expanded {
+            let start_line = if offset > 0 { offset as usize - 1 } else { 0 };
+            compact_read_label(path, Path::new(&self.cwd), start_line)
+        } else {
+            None
+        };
+
+        // Determine the tool title prefix
+        let (tool_label, path_display) = if let Some(ref label) = title {
+            // Extract "read resource" or "read skill" prefix from label
+            let parts: Vec<&str> = label.splitn(2, ' ').collect();
+            let prefix = parts.first().map(|s| s.to_string()).unwrap_or_default();
+            let rest = parts.get(1).map(|s| s.to_string()).unwrap_or_default();
+            (prefix, rest)
+        } else {
+            let short = if let Ok(home) = std::env::var("HOME") {
+                path.replacen(&home, "~", 1)
+            } else {
+                path.to_string()
+            };
+            let path_disp = if short.is_empty() {
+                String::new()
+            } else {
+                theme.fg("accent", &short)
+            };
+            ("read".to_string(), path_disp)
+        };
+
+        let range = if offset > 0 || limit.is_some() {
+            let start = if offset > 0 { offset } else { 1 };
+            let range_str = match limit {
+                Some(l) => format!(":{}-{}", start, start + l - 1),
+                None => format!(":{}", start),
+            };
+            theme.fg("warning", &range_str)
+        } else {
+            String::new()
+        };
+
+        let expand_hint = if !ctx.expanded && !ctx.expand_key.is_empty() {
+            theme.fg("muted", &format!(" ({}) to expand", ctx.expand_key))
+        } else {
+            String::new()
+        };
+
+        vec![format!(
+            "{} {} {}{}",
+            theme.fg("toolTitle", &theme.bold(&tool_label)),
+            path_display,
+            range,
+            expand_hint,
+        )]
+    }
+
+    fn render_result(
+        &self,
+        content: &str,
+        _width: usize,
+        theme: &dyn Theme,
+        ctx: &ToolRenderContext,
+    ) -> Vec<String> {
+        if content.is_empty() {
+            return vec![];
+        }
+
+        // Show first N lines when collapsed, all when expanded
+        let max_lines = if ctx.expanded { usize::MAX } else { 10 };
+        let all_lines: Vec<&str> = content.lines().collect();
+        let display_lines: Vec<&str> = all_lines.iter().copied().take(max_lines).collect();
+        let remaining = all_lines.len().saturating_sub(display_lines.len());
+
+        let path = ctx.file_path.as_deref().unwrap_or("");
+        let lang = if !path.is_empty() {
+            crate::tui::components::path_to_language(path)
+        } else {
+            None
+        };
+
+        let mut result = Vec::new();
+
+        // Syntax-highlighted lines or plain
+        #[cfg(feature = "syntect")]
+        if let Some(lang) = lang {
+            let text = display_lines.join("\n");
+            let hl = crate::tui::components::highlight_code(&text, Some(lang));
+            if !hl.is_empty() {
+                for line in hl {
+                    result.push(theme.fg("toolOutput", &line));
+                }
+            } else {
+                for line in &display_lines {
+                    result.push(theme.fg("toolOutput", line));
+                }
+            }
+        } else {
+            for line in &display_lines {
+                result.push(theme.fg("toolOutput", line));
+            }
+        }
+
+        #[cfg(not(feature = "syntect"))]
+        for line in &display_lines {
+            result.push(theme.fg("toolOutput", line));
+        }
+
+        // "N more lines" hint
+        if remaining > 0 && !ctx.expand_key.is_empty() {
+            result.push(theme.fg(
+                "muted",
+                &format!(
+                    "... ({} more lines, {} to expand)",
+                    remaining, ctx.expand_key
+                ),
+            ));
+        } else if remaining > 0 {
+            result.push(theme.fg("muted", &format!("... ({} more lines)", remaining)));
+        }
+
+        result
     }
 }
 

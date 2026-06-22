@@ -1,4 +1,6 @@
 use crate::agent::extension::{AgentTool, Cancel, Extension, ToolOutput};
+use crate::agent::extension::{ToolRenderContext, ToolRenderer};
+use crate::tui::Theme;
 use anyhow::Context;
 use async_trait::async_trait;
 use std::borrow::Cow;
@@ -295,6 +297,10 @@ impl AgentTool for EditTool {
         "Make precise file edits with exact text replacement, including multiple disjoint edits in one call"
     }
 
+    fn renderer(&self) -> Option<Box<dyn ToolRenderer>> {
+        Some(Box::new(EditRenderer))
+    }
+
     async fn execute(
         &self,
         tool_call_id: String,
@@ -453,6 +459,73 @@ impl AgentTool for EditTool {
         .await?;
 
         Ok(ToolOutput::ok(output))
+    }
+}
+
+/// Tool renderer for the `edit` tool.
+/// Uses `renderShell: "self"` — renders its own framing without colored box.
+struct EditRenderer;
+
+impl ToolRenderer for EditRenderer {
+    fn render_self(&self) -> bool {
+        true
+    }
+
+    fn render_call(
+        &self,
+        args: &serde_json::Value,
+        _width: usize,
+        theme: &dyn Theme,
+        _ctx: &ToolRenderContext,
+    ) -> Vec<String> {
+        let path = args
+            .get("file_path")
+            .or_else(|| args.get("path"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let short = if let Ok(home) = std::env::var("HOME") {
+            path.replacen(&home, "~", 1)
+        } else {
+            path.to_string()
+        };
+        let path_disp = if short.is_empty() {
+            String::new()
+        } else {
+            theme.fg("accent", &short)
+        };
+        vec![format!(
+            "{} {}",
+            theme.fg("toolTitle", &theme.bold("edit")),
+            path_disp
+        )]
+    }
+
+    fn render_result(
+        &self,
+        content: &str,
+        _width: usize,
+        theme: &dyn Theme,
+        _ctx: &ToolRenderContext,
+    ) -> Vec<String> {
+        // Extract diff from ```diff ... ``` block in the result
+        if let Some(start) = content.find("```diff\n") {
+            let after = &content[start + 8..];
+            if let Some(end) = after.find("```") {
+                let diff_text = &after[..end];
+                let has_diff = diff_text
+                    .lines()
+                    .any(|l| l.starts_with('-') || l.starts_with('+') || l.starts_with(' '));
+                if has_diff {
+                    let rendered = crate::tui::components::diff::render_diff(diff_text);
+                    return rendered;
+                }
+            }
+        }
+        // Fallback: show content as-is
+        if content.is_empty() {
+            return vec![];
+        }
+        vec![theme.fg("toolOutput", content)]
     }
 }
 
