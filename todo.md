@@ -3,7 +3,7 @@
 ## Active / Pi alignment
 
 - [ ] **Tool renderers — align rab to pi:** In pi, expand shows `pi: ... (5 earlier lines, ctrl+o to expand)` / `rab: ... 10 earlier lines, (C-O) to expand`. Rab should match this format exactly (variable N, same text/layout).
-- [ ] **Read tool title — no space between filename and `:`:** Should be like pi (no `" "` between filename and colon).
+- [x] **Read tool title — no space between filename and `:`:** Should be like pi (no `" "` between filename and colon).
 - [ ] **Scrolling broken in chat screen:** Once you scroll up with the mouse, you can't scroll back down.
 - [ ] **Agentic loop freeze:** Sometimes after a few rounds the screen freezes and rab stops responding to any input. Only recoverable via `pkill -9 rab` from another terminal.
 - [ ] **Welcome message:** Render exactly the same content and using the same UI as pi's welcome message.

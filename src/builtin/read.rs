@@ -440,7 +440,7 @@ impl ToolRenderer for ReadRenderer {
                     let title_styled = theme.fg("toolTitle", &theme.bold("read resource"));
                     let path_styled = theme.fg("accent", &label);
                     vec![format!(
-                        "{} {} {}{}",
+                        "{} {}{}{}",
                         title_styled, path_styled, range, expand_hint
                     )]
                 }
@@ -458,7 +458,7 @@ impl ToolRenderer for ReadRenderer {
                 theme.fg("accent", &short)
             };
             vec![format!(
-                "{} {} {}",
+                "{} {}{}",
                 theme.fg("toolTitle", &theme.bold("read")),
                 path_disp,
                 range,
