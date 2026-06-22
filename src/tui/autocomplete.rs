@@ -794,7 +794,7 @@ mod tests {
     fn test_find_unclosed_quote_prefix_at() {
         let result = find_unclosed_quote_prefix("hello @\"path");
         assert!(result.is_some());
-        let (start, prefix) = result.unwrap();
+        let (_start, prefix) = result.unwrap();
         assert_eq!(&prefix[..1], "@");
     }
 

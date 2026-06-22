@@ -80,6 +80,7 @@ pub struct Editor {
     cursor_line: usize,
     cursor_col: usize,
     padding_x: usize,
+    #[allow(dead_code)]
     max_visible_lines: usize,
     scroll_offset: usize,
     _theme: EditorTheme,
@@ -111,6 +112,8 @@ pub struct Editor {
     pub just_submitted: bool,
 
     // Pi-style autocomplete state (uses SelectList)
+    /// Terminal height for dynamic max-visible-lines (pi: 30% of rows, min 5).
+    terminal_rows: usize,
     autocomplete_list: Option<SelectList>,
     pub autocomplete_active: bool,
     /// The prefix from the provider's last get_suggestions call.
@@ -151,6 +154,7 @@ impl Editor {
             on_submit: None,
             on_change: None,
             disable_submit: false,
+            terminal_rows: 24,
             autocomplete_list: None,
             autocomplete_active: false,
             autocomplete_prefix: String::new(),
@@ -176,6 +180,12 @@ impl Editor {
 
     pub fn get_cursor(&self) -> (usize, usize) {
         (self.cursor_line, self.cursor_col)
+    }
+
+    /// Update the terminal height so render can compute max visible lines
+    /// dynamically (pi: 30% of rows, min 5).
+    pub fn set_terminal_rows(&mut self, rows: usize) {
+        self.terminal_rows = rows;
     }
 
     pub fn set_text(&mut self, text: &str) {
@@ -1248,12 +1258,18 @@ impl Editor {
 
     // ── Page scroll ──
 
+    fn page_size(&self) -> usize {
+        std::cmp::max(5, (self.terminal_rows as f64 * 0.3) as usize)
+    }
+
     fn page_up(&mut self) {
-        self.scroll_offset = self.scroll_offset.saturating_sub(self.max_visible_lines);
+        let size = self.page_size();
+        self.scroll_offset = self.scroll_offset.saturating_sub(size);
     }
 
     fn page_down(&mut self) {
-        self.scroll_offset += self.max_visible_lines;
+        let size = self.page_size();
+        self.scroll_offset += size;
     }
 
     // ── Submit ──
@@ -1351,7 +1367,8 @@ impl Component for Editor {
             .unwrap_or(0);
 
         // Adjust scroll to keep cursor visible
-        let max_vis = self.max_visible_lines.max(1);
+        // Pi: max visible lines is 30% of terminal height, minimum 5.
+        let max_vis = std::cmp::max(5, (self.terminal_rows as f64 * 0.3) as usize).max(1);
         let mut scroll = self.scroll_offset;
         if cursor_vis < scroll {
             scroll = cursor_vis;
@@ -2293,13 +2310,23 @@ mod tests {
             EditorTheme::default(),
             EditorOptions {
                 padding_x: 1,
-                max_visible_lines: 2,
+                max_visible_lines: 10,
             },
         );
-        editor.set_text("line1\nline2\nline3\nline4");
-        editor.scroll_offset = 1;
+        // Set terminal_rows=6 → max_vis = max(5, 1) = 5.
+        // With 6 content lines and cursor at the bottom, scroll offset of 2
+        // should produce an up-arrow indicator at the top.
+        editor.set_terminal_rows(6);
+        editor.set_text("line1\nline2\nline3\nline4\nline5\nline6");
+        editor.cursor_line = 5;
+        editor.cursor_col = 5;
+        editor.scroll_offset = 2;
         let lines = editor.render(80);
-        assert!(lines[0].contains("↑"));
+        assert!(
+            lines[0].contains("↑"),
+            "Expected scroll-up indicator, got: {:?}",
+            lines[0]
+        );
     }
 
     #[test]

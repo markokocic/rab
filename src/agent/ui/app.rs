@@ -403,8 +403,10 @@ pub async fn run(config: AppConfig, session: SessionManager) -> anyhow::Result<(
                     // bracketed paste markers so Editor.handleInput detects them)
                     app.editor.borrow_mut().editor.handle_paste(&content);
                 }
-                terminal::TerminalEvent::Resize(_, _) => {
-                    // Handled by signal handler via dimensions check below
+                terminal::TerminalEvent::Resize(w, h) => {
+                    // Update editor's terminal height for dynamic max-visible-lines
+                    app.editor.borrow_mut().editor.set_terminal_rows(h as usize);
+                    tui.set_dimensions(w as usize, h as usize);
                 }
             }
             dirty = true;
@@ -419,6 +421,7 @@ pub async fn run(config: AppConfig, session: SessionManager) -> anyhow::Result<(
         // Check terminal size only when we're about to render
         // (avoids expensive ioctl syscall on idle frames)
         if dirty && let Ok((w, h)) = term.size() {
+            app.editor.borrow_mut().editor.set_terminal_rows(h as usize);
             cols = w;
             rows = h;
         }
