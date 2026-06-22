@@ -191,7 +191,18 @@ impl Editor {
     }
 
     pub fn add_to_history(&mut self, text: &str) {
-        self.history.push(text.to_string());
+        let trimmed = text.trim().to_string();
+        if trimmed.is_empty() {
+            return;
+        }
+        // Skip consecutive duplicates (pi-style)
+        if !self.history.is_empty() && self.history[0] == trimmed {
+            return;
+        }
+        self.history.insert(0, trimmed);
+        if self.history.len() > 100 {
+            self.history.pop();
+        }
         self.history_index = -1;
     }
 
@@ -282,6 +293,27 @@ impl Editor {
     /// the new position yields no suggestions, refreshes otherwise.
     fn update_autocomplete_if_active(&mut self) {
         if self.autocomplete_active {
+            self.try_trigger_autocomplete();
+        }
+    }
+
+    /// Pi-style: after backspace/delete that dismissed autocomplete,
+    /// re-trigger if cursor is still in a completable context.
+    fn retrigger_autocomplete_dismissed(&mut self) {
+        if self.autocomplete_active {
+            return; // not dismissed
+        }
+        let line = self
+            .lines
+            .get(self.cursor_line)
+            .map(|l| l.as_str())
+            .unwrap_or("");
+        let before = &line[..self.cursor_col.min(line.len())];
+        // Slash command: / followed by letters, no space yet
+        if before.starts_with('/') && !before.contains(' ') {
+            self.try_trigger_autocomplete();
+        } else if before.contains('@') {
+            // Check @ is at token start
             self.try_trigger_autocomplete();
         }
     }
@@ -639,6 +671,9 @@ impl Editor {
             self.lines[self.cursor_line].push_str(&next);
         }
         self.notify_change();
+
+        // Pi: re-trigger autocomplete after forward delete if in context
+        self.retrigger_autocomplete_dismissed();
     }
 
     // ── Kill operations ──
@@ -994,13 +1029,14 @@ impl Editor {
         if self.history.is_empty() {
             return;
         }
+        // Pi: newest at front (index 0), Up increases index (goes older)
         let idx = if self.history_index < 0 {
-            self.history.len() as i32 - 1
+            0
         } else {
-            self.history_index - 1
+            self.history_index + 1
         };
-        if idx < 0 {
-            return;
+        if idx >= self.history.len() as i32 {
+            return; // already at oldest
         }
 
         // Pi: save draft when first entering history browsing
@@ -1022,8 +1058,9 @@ impl Editor {
         if self.history_index < 0 {
             return;
         }
-        let idx = self.history_index + 1;
-        if idx >= self.history.len() as i32 {
+        // Pi: Down decreases index (goes newer). history_index > 0 means browsing older entries.
+        let idx = self.history_index - 1;
+        if idx < 0 {
             // Pi: restore draft instead of clearing to empty
             if let Some(draft) = self.history_draft.take() {
                 self.lines = draft.lines;
@@ -1827,6 +1864,7 @@ mod tests {
                         name: name.to_string(),
                         description: Some(format!("The {} command", name)),
                         argument_hint: None,
+                        argument_completions: None,
                     })
                     .collect(),
             }

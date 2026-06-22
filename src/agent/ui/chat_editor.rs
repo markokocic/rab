@@ -137,6 +137,7 @@ impl ChatEditor {
                 name,
                 description: None,
                 argument_hint: None,
+                argument_completions: None,
             })
             .collect();
         self.rebuild_autocomplete_provider();

@@ -35,6 +35,10 @@ pub struct SlashCommand {
     pub name: String,
     pub description: Option<String>,
     pub argument_hint: Option<String>,
+    /// Static argument completions (pi-compat: `getArgumentCompletions`).
+    /// When set, these are filtered by the typed prefix and shown.
+    /// When None, file completion is used for arguments.
+    pub argument_completions: Option<Vec<AutocompleteItem>>,
 }
 
 /// Provider that generates autocomplete suggestions.
@@ -577,6 +581,22 @@ impl AutocompleteProvider for CombinedAutocompleteProvider {
             let arg_text = &text_before[space_pos + 1..];
             for cmd in &self.slash_commands {
                 if cmd.name == cmd_name {
+                    // Check for static argument completions (pi-compat)
+                    if let Some(ref completions) = cmd.argument_completions {
+                        let lower = arg_text.to_lowercase();
+                        let filtered: Vec<AutocompleteItem> = completions
+                            .iter()
+                            .filter(|c| c.value.to_lowercase().starts_with(&lower))
+                            .cloned()
+                            .collect();
+                        if !filtered.is_empty() {
+                            return Some(AutocompleteSuggestions {
+                                items: filtered,
+                                prefix: arg_text.to_string(),
+                            });
+                        }
+                    }
+                    // Fall back to file path completion
                     if force
                         || arg_text.contains('/')
                         || arg_text.contains('.')
@@ -705,11 +725,13 @@ mod tests {
                     name: "help".into(),
                     description: Some("Show help".into()),
                     argument_hint: None,
+                    argument_completions: None,
                 },
                 SlashCommand {
                     name: "history".into(),
                     description: Some("Show history".into()),
                     argument_hint: None,
+                    argument_completions: None,
                 },
             ],
             "/tmp".into(),
@@ -730,6 +752,7 @@ mod tests {
                 name: "help".into(),
                 description: None,
                 argument_hint: None,
+                argument_completions: None,
             }],
             "/tmp".into(),
         );
