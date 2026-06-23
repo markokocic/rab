@@ -41,15 +41,29 @@ impl AssistantMessageComponent {
 
     pub fn add_thinking(&mut self, text: impl Into<String>, level: Option<String>) {
         let text = text.into();
-        // Some providers (e.g. Ollama) send the FULL accumulated content in each
-        // chunk instead of a delta. Detect this: if the new text starts with the
-        // existing text, it's a full accumulation — replace instead of append.
+        if text.is_empty() {
+            return;
+        }
         if let Some(last) = self.thinking.last_mut() {
-            if text.starts_with(&last.text) && !text.is_empty() {
-                last.text = text;
-            } else {
-                last.text.push_str(&text);
+            // Skip exact duplicates (same content sent again by the provider).
+            if text == last.text {
+                return;
             }
+            // Some providers (e.g. Ollama) send FULL accumulated content in each
+            // chunk instead of a delta. Detect this: if the new text is longer,
+            // and its trimmed version starts with the trimmed existing text,
+            // it's a full accumulation — replace instead of append.
+            if text.len() > last.text.len() {
+                let t_trimmed = text.trim_start();
+                let l_trimmed = last.text.trim_start();
+                if t_trimmed.starts_with(l_trimmed) {
+                    last.text = text;
+                    self.invalidate();
+                    return;
+                }
+            }
+            // Default: treat as delta and append
+            last.text.push_str(&text);
         } else {
             self.thinking.push(ThinkingBlock { text, level });
         }
@@ -57,14 +71,28 @@ impl AssistantMessageComponent {
     }
 
     pub fn append_text(&mut self, delta: &str) {
-        // Some providers (e.g. Ollama) send FULL accumulated content in each chunk
-        // instead of a delta. Detect this: if delta starts with existing text,
-        // replace instead of append.
-        if delta.starts_with(&self.text) && !delta.is_empty() {
-            self.text = delta.to_string();
-        } else {
-            self.text.push_str(delta);
+        if delta.is_empty() {
+            return;
         }
+        // Some providers (e.g. Ollama) send FULL accumulated content in each chunk
+        // instead of a delta. Detect this: if delta is longer than existing text,
+        // and its trimmed version starts with the trimmed existing text,
+        // replace instead of append.
+        if delta.len() > self.text.len() {
+            let d_trimmed = delta.trim_start();
+            let s_trimmed = self.text.trim_start();
+            if delta == self.text {
+                return; // Skip exact duplicate
+            }
+            if d_trimmed.starts_with(s_trimmed) {
+                self.text = delta.to_string();
+                self.invalidate();
+                return;
+            }
+        } else if delta == self.text {
+            return; // Skip exact duplicate
+        }
+        self.text.push_str(delta);
         self.invalidate();
     }
 
