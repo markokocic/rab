@@ -2,8 +2,10 @@
 /// background, bold, italic, underline, and strikethrough.
 ///
 /// Create via builder methods and apply with `apply()`:
-/// ```ignore
-/// let styled = Style::new().fg(theme.fg_ansi("accent")).bold().apply("hello");
+/// ```
+/// let styled = rab::tui::Style::new().bg("\x1b[48;2;52;53;65m".to_string()).bold().apply("hello");
+/// assert!(styled.starts_with("\x1b[48"));
+/// assert!(styled.contains("hello"));
 /// ```
 #[derive(Debug, Clone, Default)]
 pub struct Style {
