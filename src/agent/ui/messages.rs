@@ -151,7 +151,12 @@ pub fn render_messages(
                 if idx + 1 < msg_count {
                     let has_content = messages[idx + 1..].iter().any(|m| match m {
                         DisplayMsg::AssistantText(t) if !t.is_empty() => true,
+                        DisplayMsg::Thinking { text, .. } if !text.trim().is_empty() => true,
                         DisplayMsg::ToolResult { .. } => true,
+                        DisplayMsg::ToolCall { .. } => true,
+                        DisplayMsg::BashCommand { .. } => true,
+                        DisplayMsg::User(t) if !t.trim().is_empty() => true,
+                        DisplayMsg::Info(t) if !t.trim().is_empty() => true,
                         _ => false,
                     });
                     if has_content {

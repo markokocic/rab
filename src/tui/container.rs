@@ -400,24 +400,25 @@ impl Component for Container {
         let mut lines = Vec::new();
         for (idx, child) in self.children.iter_mut().enumerate() {
             let cache = &mut self.child_caches[idx];
-            // Use cached output if: child-cache is valid, child doesn't need
-            // re-render, and width matches.
+            // Use cached output if width matches and the child's cache key
+            // hasn't changed (or child doesn't provide one — always re-render).
             if !cache.dirty
-                && !child.is_dirty()
                 && let Some(ref cached) = cache.cache
                 && cached.key.width == width
+                && child.cache_key(width).is_some_and(|k| k == cached.key)
             {
                 lines.extend(cached.lines.clone());
                 continue;
             }
             let child_lines = child.render(width);
             child.clear_dirty();
+            let cache_key = child.cache_key(width).unwrap_or(RenderCacheKey {
+                width,
+                expanded: false,
+                state_hash: 0,
+            });
             cache.cache = Some(RenderCache {
-                key: RenderCacheKey {
-                    width,
-                    expanded: false,
-                    state_hash: 0,
-                },
+                key: cache_key,
                 lines: child_lines.clone(),
             });
             cache.dirty = false;
@@ -494,6 +495,14 @@ mod tests {
         fn render(&mut self, _width: usize) -> Vec<String> {
             self.render_count += 1;
             vec![format!("{}[{}]", self.label, self.render_count)]
+        }
+
+        fn cache_key(&self, width: usize) -> Option<RenderCacheKey> {
+            Some(RenderCacheKey {
+                width,
+                expanded: false,
+                state_hash: self.render_count as u64,
+            })
         }
 
         fn is_dirty(&self) -> bool {

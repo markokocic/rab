@@ -122,6 +122,9 @@ pub struct App {
     /// Exit flag.
     should_quit: bool,
 
+    /// Timestamp of last agent event received (used for streaming safety timeout).
+    last_streaming_event: std::time::Instant,
+
     /// Token usage from last response.
     last_usage: Option<Usage>,
 
@@ -310,6 +313,7 @@ impl App {
             last_clear_time: std::time::Instant::now(),
 
             should_quit: false,
+            last_streaming_event: std::time::Instant::now(),
             last_usage: None,
             agent_abort: None,
             session: Some(session),
@@ -370,6 +374,7 @@ pub async fn run(config: AppConfig, session: SessionManager) -> anyhow::Result<(
     term.start(&mut stdout)?;
     term.hide_cursor(&mut stdout)?;
     term.set_color_scheme_notifications(&mut stdout, true)?;
+    crate::tui::terminal::start_stdin_reader();
 
     let mut tui = TUI::new();
     // Disable clear_on_shrink to avoid full redraws during streaming
@@ -503,6 +508,20 @@ pub async fn run(config: AppConfig, session: SessionManager) -> anyhow::Result<(
             tui.set_dimensions(cols as usize, rows as usize);
             tui.render(cols as usize, rows as usize, &mut stdout)?;
             dirty = false;
+        }
+
+        // Safety timeout: force stop streaming if no agent events for 60s.
+        // Prevents the event loop from spinning at 16ms with `is_streaming`
+        // stuck true after the agent task completes or panics without
+        // delivering AgentEnd through the channel.
+        if app.is_streaming
+            && app.last_streaming_event.elapsed() > std::time::Duration::from_secs(60)
+        {
+            app.is_streaming = false;
+            app.working.stop();
+            app.footer.borrow_mut().set_streaming(false);
+            app.status_text = Some("Streaming timed out — agent may have crashed".into());
+            dirty = true;
         }
 
         // Pi: clear transient status after rendering
@@ -1381,12 +1400,14 @@ fn handle_agent_event(app: &mut App, event: AgentEvent) {
             app.is_streaming = true;
             app.pending_text = None;
             app.pending_thinking = None;
+            app.last_streaming_event = std::time::Instant::now();
 
             // Refresh git branch on each agent start (matches pi's FooterDataProvider)
             app.refresh_git_branch();
         }
         AgentEvent::TurnStart => {}
         AgentEvent::TextDelta { delta } => {
+            app.last_streaming_event = std::time::Instant::now();
             // Progressive streaming: create or update AssistantMessageComponent in-place
             if let Some(weak) = app.streaming_component.as_ref().and_then(|w| w.upgrade()) {
                 weak.borrow_mut().append_text(&delta);
@@ -1408,6 +1429,7 @@ fn handle_agent_event(app: &mut App, event: AgentEvent) {
             }
         }
         AgentEvent::ThinkingDelta { delta } => {
+            app.last_streaming_event = std::time::Instant::now();
             // Progressive thinking: add thinking block to streaming component
             if let Some(weak) = app.streaming_component.as_ref().and_then(|w| w.upgrade()) {
                 weak.borrow_mut()
@@ -1429,6 +1451,7 @@ fn handle_agent_event(app: &mut App, event: AgentEvent) {
             }
         }
         AgentEvent::ToolCall { id, name, args, .. } => {
+            app.last_streaming_event = std::time::Instant::now();
             flush_all(app);
             // Clear streaming component so answer text from the next turn creates a new
             // assistant message component (below the tool execution, matching pi).
@@ -1505,6 +1528,7 @@ fn handle_agent_event(app: &mut App, event: AgentEvent) {
             name,
             id,
         } => {
+            app.last_streaming_event = std::time::Instant::now();
             if let Some(weak) = app.pending_tools.remove(&id) {
                 // Update existing ToolExecComponent
                 if let Some(comp) = weak.upgrade() {
@@ -1584,6 +1608,7 @@ fn handle_agent_event(app: &mut App, event: AgentEvent) {
             });
         }
         AgentEvent::ToolProgress { content, is_error } => {
+            app.last_streaming_event = std::time::Instant::now();
             // Stream partial bash output to the tracked bash component
             if let Some(weak) = app.bash_component.as_ref().and_then(|w| w.upgrade()) {
                 let mut bash = weak.borrow_mut();
@@ -1594,6 +1619,7 @@ fn handle_agent_event(app: &mut App, event: AgentEvent) {
             }
         }
         AgentEvent::UserMessage { content } => {
+            app.last_streaming_event = std::time::Instant::now();
             // A queued message was injected by the agent loop (from steering or follow-up queue)
             chat_add(
                 app,
@@ -1609,9 +1635,11 @@ fn handle_agent_event(app: &mut App, event: AgentEvent) {
                 let err_text = format!("\n\n**Error:** {}", reason);
                 weak.borrow_mut().append_text(&err_text);
             }
+            app.last_streaming_event = std::time::Instant::now();
         }
         AgentEvent::TurnEnd => {
             flush_all(app);
+            app.last_streaming_event = std::time::Instant::now();
             // Streaming component is complete - clear reference (text persists in chat)
             app.streaming_component = None;
         }

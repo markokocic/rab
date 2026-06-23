@@ -61,9 +61,12 @@ pub trait Component {
     fn invalidate(&mut self) {}
 
     /// Check if this component needs re-render.
-    /// Default: always re-render (conservative).
+    /// Default: false — the Container's per-child cache tracking determines
+    /// whether to re-render. Override to return true for components whose
+    /// state can change without explicit invalidation (e.g. ToolExecComponent
+    /// receiving streaming output).
     fn is_dirty(&self) -> bool {
-        true
+        false
     }
 
     /// Clear dirty flag after successful render.
