@@ -121,9 +121,6 @@ pub struct App {
     /// Timestamp of last Ctrl+C for double-press detection (pi-style).
     last_clear_time: std::time::Instant,
 
-    /// Main loop iteration counter for diagnostic tracking.
-    loop_count: u64,
-
     /// Exit flag.
     should_quit: bool,
 
@@ -313,7 +310,6 @@ impl App {
             tools_expanded: !config.collapse_tool_output,
             scroll_offset: 0,
             last_clear_time: std::time::Instant::now(),
-            loop_count: 0,
 
             should_quit: false,
             last_usage: None,
@@ -473,9 +469,6 @@ pub async fn run(config: AppConfig, session: SessionManager) -> anyhow::Result<(
         if had_event {
             dirty = true;
         }
-
-        // Increment loop counter
-        app.loop_count = app.loop_count.wrapping_add(1);
 
         // Check terminal size only when we're about to render
         // (avoids expensive ioctl syscall on idle frames)
