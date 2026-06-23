@@ -2535,6 +2535,32 @@ mod tests {
     }
 
     #[test]
+    fn test_emits_cursor_marker_when_focused() {
+        let mut editor = Editor::new(EditorOptions::default());
+        editor.focused = true;
+        editor.insert_character("hello");
+        let lines = editor.render(40);
+        let content = &lines[1];
+        assert!(
+            content.contains(CURSOR_MARKER),
+            "Focused editor should emit cursor marker"
+        );
+    }
+
+    #[test]
+    fn test_no_cursor_marker_when_not_focused() {
+        let mut editor = Editor::new(EditorOptions::default());
+        editor.focused = false;
+        editor.insert_character("hello");
+        let lines = editor.render(40);
+        let content = &lines[1];
+        assert!(
+            !content.contains(CURSOR_MARKER),
+            "Unfocused editor should not emit cursor marker"
+        );
+    }
+
+    #[test]
     fn test_render_borders_always_present() {
         let mut editor = Editor::new(EditorOptions::default());
         let lines = editor.render(80);

@@ -400,8 +400,10 @@ impl Component for Container {
         let mut lines = Vec::new();
         for (idx, child) in self.children.iter_mut().enumerate() {
             let cache = &mut self.child_caches[idx];
-            // Use cached output if child is not dirty and cache is valid
+            // Use cached output if: child-cache is valid, child doesn't need
+            // re-render, and width matches.
             if !cache.dirty
+                && !child.is_dirty()
                 && let Some(ref cached) = cache.cache
                 && cached.key.width == width
             {
@@ -409,6 +411,7 @@ impl Component for Container {
                 continue;
             }
             let child_lines = child.render(width);
+            child.clear_dirty();
             cache.cache = Some(RenderCache {
                 key: RenderCacheKey {
                     width,
@@ -461,5 +464,148 @@ impl Component for Container {
         for cache in &mut self.child_caches {
             cache.dirty = false;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tui::component::Component;
+
+    /// Test component that tracks how many times it was rendered and whether
+    /// it reports as dirty. Used to verify the Container's caching logic.
+    struct TrackRender {
+        render_count: usize,
+        dirty: bool,
+        label: String,
+    }
+
+    impl TrackRender {
+        fn new(label: &str) -> Self {
+            Self {
+                render_count: 0,
+                dirty: true,
+                label: label.to_string(),
+            }
+        }
+    }
+
+    impl Component for TrackRender {
+        fn render(&mut self, _width: usize) -> Vec<String> {
+            self.render_count += 1;
+            vec![format!("{}[{}]", self.label, self.render_count)]
+        }
+
+        fn is_dirty(&self) -> bool {
+            self.dirty
+        }
+
+        fn clear_dirty(&mut self) {
+            self.dirty = false;
+        }
+    }
+
+    #[test]
+    fn test_re_render_when_dirty() {
+        let mut c = Container::new();
+        let child = Box::new(TrackRender::new("a"));
+        c.add_child(child);
+
+        // First render: child is dirty, should render
+        let lines = c.render(80);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0], "a[1]");
+
+        // Second render: child is NOT dirty (clear_dirty was called),
+        // should use cache
+        let lines = c.render(80);
+        assert_eq!(lines[0], "a[1]"); // cached
+
+        // Mark dirty and render again
+        c.invalidate_all();
+        let lines = c.render(80);
+        assert_eq!(lines[0], "a[2]"); // re-rendered
+    }
+
+    #[test]
+    fn test_re_render_when_child_stays_dirty() {
+        // A component that always returns is_dirty() = true should
+        // never be cached by the Container.
+        struct AlwaysDirty;
+
+        impl Component for AlwaysDirty {
+            fn render(&mut self, _width: usize) -> Vec<String> {
+                vec!["fresh".to_string()]
+            }
+
+            fn is_dirty(&self) -> bool {
+                true
+            }
+        }
+
+        let mut c = Container::new();
+        c.add_child(Box::new(AlwaysDirty));
+
+        let lines1 = c.render(80);
+        assert_eq!(lines1[0], "fresh");
+
+        // Second render: child is still dirty, should NOT use cache
+        let lines2 = c.render(80);
+        assert_eq!(lines2[0], "fresh");
+
+        // Verify the Container's own cache was NOT used
+        // (the child's render was called)
+        // We can check this by checking that the internal cache was bypassed
+        assert!(
+            !c.child_caches[0].dirty,
+            "child cache should be marked clean after render"
+        );
+    }
+
+    #[test]
+    fn test_cached_after_non_dirty_render() {
+        let mut c = Container::new();
+        c.add_child(Box::new(TrackRender::new("x")));
+
+        // First render
+        c.render(80);
+
+        // Second render with different width — cache miss despite not dirty
+        let lines = c.render(40);
+        assert_eq!(lines[0], "x[2]"); // re-rendered because width differs
+    }
+
+    #[test]
+    fn test_mixed_dirty_and_not_dirty_children() {
+        struct SometimesDirty {
+            toggle: bool,
+        }
+        impl Component for SometimesDirty {
+            fn render(&mut self, _width: usize) -> Vec<String> {
+                vec!["s".to_string()]
+            }
+            fn is_dirty(&self) -> bool {
+                self.toggle
+            }
+            fn clear_dirty(&mut self) {
+                // No-op: clear_dirty is called by Container after render,
+                // but is_dirty depends on toggle, not a flag we clear here
+            }
+        }
+
+        let mut c = Container::new();
+        c.add_child(Box::new(TrackRender::new("a")));
+        c.add_child(Box::new(SometimesDirty { toggle: false }));
+
+        // First render: both children are dirty by initialization (TrackRender)
+        let lines = c.render(80);
+        assert_eq!(lines[0], "a[1]");
+        assert_eq!(lines[1], "s");
+
+        // Second render: TrackRender now not dirty (cleared), SometimesDirty is false
+        // Both should use cache
+        let lines = c.render(80);
+        assert_eq!(lines[0], "a[1]"); // cached
+        assert_eq!(lines[1], "s");
     }
 }

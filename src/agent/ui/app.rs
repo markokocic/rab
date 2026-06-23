@@ -21,6 +21,7 @@ use crate::agent::ui::working::WorkingIndicator;
 use crate::agent::{AgentEvent, LoopConfig, run_agent_loop};
 use crate::tui::Component;
 use crate::tui::TUI;
+use crate::tui::focusable::Focusable;
 
 use crate::agent::ui::theme::ThemeKey;
 use crate::tui::components::Spacer;
@@ -377,6 +378,9 @@ pub async fn run(config: AppConfig, session: SessionManager) -> anyhow::Result<(
     // (content grows/shrinks frequently as pending text is flushed).
     tui.set_clear_on_shrink(false);
     let mut app = App::new(config, session);
+
+    // Focus the editor so it emits the cursor marker for Screen tracking
+    app.editor.borrow_mut().editor.set_focused(true);
 
     // Set up the component tree in TUI.root (matching pi's TUI.extend(Container))
     // Order: header → chat_container (messages) → pending → status → queued → working → editor → footer

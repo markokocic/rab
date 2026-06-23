@@ -162,25 +162,40 @@ impl TUI {
     }
 
     fn position_hard_cursor(
-        &self,
+        &mut self,
         row: usize,
         col: usize,
         writer: &mut dyn Write,
     ) -> io::Result<()> {
-        // Calculate viewport position
-        let viewport_top = self.screen.prev_viewport_top();
-        if row < viewport_top {
+        let total = self.screen.total_lines();
+        if total == 0 {
             return Ok(());
         }
-        let screen_row = row - viewport_top;
-        if screen_row >= self.height {
-            return Ok(());
-        }
-        let screen_col = col.min(self.width - 1);
+        let target_row = row.min(total.saturating_sub(1));
+        let target_col = col.min(self.width.saturating_sub(1));
 
-        // Move cursor: CSI <row> ; <col> H (1-based)
-        write!(writer, "\x1b[{};{}H", screen_row + 1, screen_col + 1)?;
-        writer.flush()?;
+        // Relative row movement from the physical cursor position (pi-style).
+        // This avoids absolute CSI H which assumes content starts at terminal row 0.
+        let current_row = self.screen.hardware_cursor_row();
+        let row_delta = target_row as i32 - current_row as i32;
+        let mut buf = String::new();
+        if row_delta > 0 {
+            buf.push_str(&format!("\x1b[{}B", row_delta));
+        } else if row_delta < 0 {
+            buf.push_str(&format!("\x1b[{}A", -row_delta));
+        }
+        // Absolute column within the row
+        buf.push_str(&format!("\x1b[{}G", target_col + 1));
+
+        if !buf.is_empty() {
+            write!(writer, "{}", buf)?;
+            writer.flush()?;
+        }
+
+        // Update Screen tracking to match the new physical cursor position
+        // (matching pi's hardwareCursorRow = targetRow in positionHardwareCursor).
+        self.screen.set_hardware_cursor_row(target_row);
+
         Ok(())
     }
 }

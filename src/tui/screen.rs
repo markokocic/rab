@@ -39,9 +39,17 @@ impl Screen {
         self.prev_viewport_top
     }
 
-    /// The current hardware cursor row tracking.
+    /// The row where the hardware cursor physically sits after the last render.
+    /// Used by TUI to position the cursor to the marker position via relative
+    /// movements (matching pi's approach).
     pub fn hardware_cursor_row(&self) -> usize {
         self.hardware_cursor_row
+    }
+
+    /// Update the tracked hardware cursor row after TUI repositions the cursor
+    /// (matching pi's hardwareCursorRow = targetRow in positionHardwareCursor).
+    pub fn set_hardware_cursor_row(&mut self, row: usize) {
+        self.hardware_cursor_row = row;
     }
 
     /// Extract cursor marker from lines and return its (row, col) position.
@@ -328,7 +336,8 @@ impl Screen {
             writer.flush()?;
 
             self.cursor_row = target_row;
-            self.hardware_cursor_row = cursor_pos.map(|(r, _)| r).unwrap_or(target_row);
+            // Physical cursor is at end of remaining content after clearing
+            self.hardware_cursor_row = target_row;
             self.prev_lines = new_lines;
             self.prev_viewport_top = prev_viewport_top;
             self.prev_height = height_usize as u16;
@@ -454,16 +463,21 @@ impl Screen {
         write!(writer, "{}", buf)?;
         writer.flush()?;
 
-        let new_cursor_row = cursor_pos
-            .map(|(r, _)| r)
-            .unwrap_or_else(|| new_lines.len().saturating_sub(1));
-        self.cursor_row = new_cursor_row;
-        self.hardware_cursor_row = new_cursor_row;
+        // Track physical cursor position after the diff output:
+        // - If content shrunk: cursor was moved to end of new content
+        // - Otherwise: cursor is at the last written line (render_end)
+        let final_cursor_row = if new_lines.len() < self.prev_lines.len() {
+            new_lines.len().saturating_sub(1)
+        } else {
+            render_end
+        };
+        self.cursor_row = final_cursor_row;
+        self.hardware_cursor_row = final_cursor_row;
         self.max_lines_rendered = self.max_lines_rendered.max(new_lines.len());
         self.prev_lines = new_lines;
         // Advance viewport_top if cursor ended up below the viewport
         // (matching pi's Math.max(prevViewportTop, finalCursorRow - height + 1)).
-        let hw_row_for_viewport = new_cursor_row;
+        let hw_row_for_viewport = final_cursor_row;
         self.prev_viewport_top =
             viewport_top.max(hw_row_for_viewport.saturating_sub(height_usize - 1));
         self.prev_height = height_usize as u16;
@@ -689,5 +703,85 @@ mod tests {
             footer_count,
             content
         );
+    }
+
+    #[test]
+    fn test_hardware_cursor_row_after_full_render() {
+        let mut screen = Screen::new();
+        let mut output = Vec::new();
+
+        let lines = vec!["a", "b", "c", "d"]
+            .into_iter()
+            .map(String::from)
+            .collect::<Vec<_>>();
+        screen.render(lines, 40, 24, &mut output).unwrap();
+
+        // After full render, hardware cursor should be at last content line
+        assert_eq!(screen.hardware_cursor_row(), 3);
+    }
+
+    #[test]
+    fn test_hardware_cursor_row_after_diff_single_line() {
+        let mut screen = Screen::new();
+        let mut output = Vec::new();
+
+        let initial: Vec<String> = (0..6).map(|i| format!("line {}", i)).collect();
+        screen.render(initial.clone(), 40, 24, &mut output).unwrap();
+        output.clear();
+
+        // Change line 2 only
+        let mut changed = initial.clone();
+        changed[2] = "line 2 modified".to_string();
+        screen.render(changed, 40, 24, &mut output).unwrap();
+
+        // After diff with single-line change, physical cursor is at render_end (= 2)
+        assert_eq!(screen.hardware_cursor_row(), 2);
+    }
+
+    #[test]
+    fn test_hardware_cursor_row_after_diff_content_shrunk() {
+        let mut screen = Screen::new();
+        let mut output = Vec::new();
+
+        let initial: Vec<String> = (0..6).map(|i| format!("line {}", i)).collect();
+        screen.render(initial, 40, 24, &mut output).unwrap();
+        output.clear();
+
+        // Content shrinks from 6 to 4 lines
+        let after: Vec<String> = (0..4).map(|i| format!("line {}", i)).collect();
+        screen.render(after, 40, 24, &mut output).unwrap();
+
+        // After diff with content shrink, physical cursor is at new_lines.len() - 1
+        assert_eq!(screen.hardware_cursor_row(), 3);
+    }
+
+    #[test]
+    fn test_set_hardware_cursor_row_syncs_tracking() {
+        let mut screen = Screen::new();
+        let mut output = Vec::new();
+
+        let lines = vec!["a", "b", "c"]
+            .into_iter()
+            .map(String::from)
+            .collect::<Vec<_>>();
+        screen.render(lines, 40, 24, &mut output).unwrap();
+        assert_eq!(screen.hardware_cursor_row(), 2);
+
+        // Simulate TUI repositioning cursor (like position_hard_cursor does)
+        screen.set_hardware_cursor_row(0);
+        assert_eq!(screen.hardware_cursor_row(), 0);
+
+        // Next diff should use the updated position
+        output.clear();
+        let new_lines = vec!["changed", "b", "c"]
+            .into_iter()
+            .map(String::from)
+            .collect::<Vec<_>>();
+        screen.render(new_lines, 40, 24, &mut output).unwrap();
+
+        // After repositioning to row 0, diff should start from there
+        let diff = String::from_utf8_lossy(&output);
+        // Should contain "changed" since line 0 was modified
+        assert!(diff.contains("changed"), "Diff should contain changed line");
     }
 }
