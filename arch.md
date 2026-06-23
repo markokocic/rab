@@ -8,15 +8,15 @@ lets it act on your codebase.
 
 | pi (`packages/`) | rab equivalent | Status |
 |---|---|---|
-| `pi-tui` (terminal UI, components, editor) | `src/tui/` + `src/agent/ui/` | ✅ **1/1 complete** — 29 modules, 632 tests. Direct Rust port on crossterm. See [`tui.md`](tui.md). |
-| `pi-agent-core` (agent loop, session, compaction, skills) | `src/agent/` | ✅ loop, session, skills done. ⬜ compaction not implemented. |
-| `coding-agent` (CLI, extensions, tools, settings, commands) | `cli.rs`, `builtin/`, `settings.rs`, `commands.rs` | ✅ tools, settings, auth, CLI done. ⬜ models.json, hooks, steering. |
-| `pi-ai` (providers, streaming) | `Provider` trait + `adapter/genai.rs` | ⬜ needs multi-backend support (currently OpenCode Go only) |
-| `coding-agent/modes/interactive/theme/` | `src/agent/ui/theme.rs` | ✅ JSON theme system with resolution, fallback, detection |
+| `pi-tui` (terminal UI, components, editor) | `src/tui/` + `src/agent/ui/` | ✅ **1/1 complete** — 30 modules, 662 tests. Direct Rust port on crossterm. See [`tui.md`](tui.md). |
+| `pi-agent-core` (agent loop, session, compaction, skills) | `src/agent/` | ✅ loop, session, skills, types, provider, extension done. ⬜ compaction not implemented. ⬜ steering/follow-up queues infrastructure exists but not actively used. |
+| `coding-agent` (CLI, extensions, tools, settings, commands) | `cli.rs`, `builtin/`, `settings.rs`, `commands.rs` | ✅ tools, settings, auth, CLI done. ⬜ models.json not implemented. ✅ hook pipeline (before/after tool call) wired. ✅ 8 slash commands implemented. |
+| `pi-ai` (providers, streaming) | `Provider` trait + `adapter/genai.rs` | ⬜ Single backend (OpenCode Go). Needs multi-backend support (claude→Anthropic, gpt→OpenAI, gemini→Gemini, fallback→Ollama). |
+| `coding-agent/modes/interactive/theme/` | `src/agent/ui/theme.rs` | ✅ JSON theme system with resolution, fallback, detection (698 lines) |
 | `coding-agent/resource-loader.ts` | `src/agent/context_files.rs` | ✅ AGENTS.md/CLAUDE.md discovery |
-| `coding-agent/skills.ts` | `src/agent/skills.rs` | ✅ Skill loading, frontmatter, prompt formatting |
-| `tui/src/components/image.ts` | `src/tui/image.rs` | ✅ Basic Kitty protocol image support |
-| `tui/src/terminal-image.ts` | `src/tui/image.rs` (partial) | ⬜ Missing: capabilities detection, iTerm2, cell dimensions |
+| `coding-agent/skills.ts` | `src/agent/skills.rs` | ✅ Skill loading, frontmatter, prompt formatting (825 lines) |
+| `tui/src/components/image.ts` | `src/tui/image.rs` | ⬜ Basic Kitty protocol support (data URL encoding, sequence generation). No TUI Component, no capabilities detection, no iTerm2, no cell dimensions. |
+| `tui/src/terminal-image.ts` | `src/tui/image.rs` (partial) | ⬜ Missing: capabilities detection, iTerm2, cell dimensions, resize, convert, paste |
 | `coding-agent/utils/image-resize.ts` | — | ⬜ Not implemented |
 | `coding-agent/utils/clipboard-image.ts` | — | ⬜ Not implemented |
 | MCP extensions | `pi-mcp-adapter` (planned) | ⬜ Phase 2 |
@@ -28,6 +28,7 @@ lets it act on your codebase.
   `Extension` trait. No separate tool registration path. `--no-builtin-tools`
   just skips loading builtins; user extensions still load.
 - **No live-reload of extensions** - extensions are compiled in, not hot-reloaded.
+  (WASM plugin system deferred to Phase 2.)
 - **Provider layer is isolated behind a trait** - rab defines its own `Provider`
   trait. The default implementation wraps [genai](https://github.com/jeremychone/rust-genai)
   (Apache 2.0, 711★, 50 contributors). The agent loop depends only on the trait,
@@ -67,19 +68,22 @@ isolated behind a trait - replaceable with no changes to core logic.
 │  │read   │ │ agent/ │ │.rs     │ │.rs     │ │prompt │      │
 │  │write  │ │ ui/    │ │/quit   │ │~/.rab/ │ │.rs    │      │
 │  │edit   │ │screen  │ │/model  │ │settings│ │AGENTS │      │
-│  │bash   │ │editor  │ │        │ │        │ │.md    │      │
-│  │commands│  list   │ └───────┘ └────────┘ └───────┘      │
-│  └──┬────┘ └───┬────┘                                      │
-│     │          │ crossterm (0.28)                          │
-│     │          │ unicode-segmentation, unicode-width       │
-│  └──┬────┘  impl agent::extension::Extension trait       │         │
+│  │bash   │ │editor  │ │/new    │ │        │ │.md    │      │
+│  │commands│  list   │ │/resume │ └────────┘ └───────┘      │
+│  └──┬────┘ └───┬────┘ │/session│                           │
+│     │          │ crossterm (0.29)                           │
+│     │          │ unicode-segmentation, unicode-width        │
+│  └──┬────┘  impl agent::extension::Extension trait        │         │
 │  ┌──▼──────────────────────────────────────────────────────────┐│
 │  │       agent/extension.rs  (AgentTool, Extension traits)     ││
 │  │  pub trait Extension {                                       ││
 │  │    fn tools(&self) -> Vec<Box<dyn AgentTool>>;               ││
 │  │    fn commands(&self) -> Vec<SlashCommand>;                  ││
+│  │    fn before_tool_call(&self, tc) -> Option<BlockReason>;    ││
+│  │    fn after_tool_call(&self, tc, result) -> Option<String>;  ││
 │  │  }                                                           ││
 │  │  pub trait CommandHandler { execute, completions }           ││
+│  │  pub trait ToolRenderer { render_call, render_result }      ││
 │  │  Builtin + user extensions share this trait                  ││
 │  └──────────────────────────────────────────────────────────────┘│
 │                                                          │
@@ -87,6 +91,7 @@ isolated behind a trait - replaceable with no changes to core logic.
 │  │            agent/provider.rs  (Provider trait)        │   │
 │  │  pub trait Provider { ... }                        │   │
 │  │  pub struct StreamEvent { ... }                    │   │
+│  │  fn set_reasoning_effort(level)                    │   │
 │  │  Agent loop depends ONLY on this, not on genai     │   │
 │  └────────────────────┬─────────────────────────────┘   │
 │                       │                                   │
@@ -114,7 +119,7 @@ isolated behind a trait - replaceable with no changes to core logic.
 
 The universal message type. Every entry in a session transcript is one of these.
 
-```
+```rust
 AgentMessage
 ├── id: String                      # UUID v4
 ├── parent_id: Option<String>       # for session tree (MVP: linear)
@@ -138,12 +143,13 @@ pub trait AgentTool: Send + Sync {
     fn label(&self) -> &str;                    // human-readable for UI
 
     /// Custom rendering for the tool call header (name + args).
-    /// Returns ANSI-styled text. When None, default rendering is used.
-    fn render_call(&self) -> Option<fn(&serde_json::Value) -> String> { None }
+    fn renderer(&self) -> Option<Box<dyn ToolRenderer>> { None }
 
-    /// Custom rendering for the tool result body.
-    /// Returns ANSI-styled text. When None, default rendering is used.
-    fn render_result(&self) -> Option<fn(&str, bool) -> String> { None }
+    /// Optional argument pre-processing (pi-compatible: `prepareArguments`).
+    fn prepare_arguments(&self, args: Value) -> Value { args }
+
+    /// Execution mode override (defaults to Parallel).
+    fn execution_mode(&self) -> ToolExecutionMode { ToolExecutionMode::Parallel }
 
     /// Guidelines for the system prompt specific to this tool.
     fn prompt_guidelines(&self) -> Vec<String> { vec![] }
@@ -156,34 +162,59 @@ pub trait AgentTool: Send + Sync {
 
 ### AgentEvent
 
-Emitted by the loop for consumers (print mode writes to stdout; TUI later
-renders to screen). Mirrors pi's `AgentEvent` union.
+Emitted by the loop for consumers (print mode writes to stdout; TUI renders to screen). Mirrors pi's `AgentEvent` union.
 
-```
+```rust
 AgentEvent
 ├── AgentStart
 ├── TurnStart
 ├── TextDelta { delta: String }
 ├── ThinkingDelta { delta: String }
 ├── ToolCall { id, name, args }
-├── ToolResult { id, name, content, is_error }
+├── ToolCallArgsUpdate { id, name, args }
+├── ToolProgress { id, content, is_error, is_complete }
+├── ToolResult { id, name, content, is_error, terminated }
 ├── TurnEnd
 ├── AgentEnd { messages: Vec<AgentMessage> }
+├── Aborted
+├── UserMessage { text: String }
 ```
+
+### PendingMessageQueue & QueueMode
+
+```rust
+pub enum QueueMode { All, OneAtATime }
+
+pub struct PendingMessageQueue {
+    messages: Vec<AgentMessage>,
+    mode: QueueMode,
+}
+
+impl PendingMessageQueue {
+    fn new(mode: QueueMode) -> Self;
+    fn enqueue(&mut self, msg: AgentMessage);
+    fn drain(&mut self) -> Vec<AgentMessage>;
+    fn drain_all(&mut self) -> Vec<AgentMessage>;
+    fn len(&self) -> usize;
+    fn is_empty(&self) -> bool;
+}
+```
+
+Used for steering (mid-stream) and follow-up (post-agent) message delivery.
 
 ---
 
-## Agent loop (`src/agent/`)
+## Agent loop (`src/agent/loop.rs`)
 
-Adapted directly from pi's `runAgentLoop` in `agent-loop.ts`. The loop is the
-heart of the system - everything else feeds into or reads from it.
+Adapted directly from pi's `runAgentLoop` in `agent-loop.ts` (1962 lines).
+The loop is the heart of the system - everything else feeds into or reads from it.
 
 ### Pseudocode
 
 ```rust
 async fn run_agent_loop(
     prompts: Vec<AgentMessage>,
-    context: &AgentContext,      // system_prompt + tools (flattened from all extensions) + history
+    context: &AgentContext,      // system_prompt + tools + history
     config: &LoopConfig,         // model, thinking, hooks, queues
     emit: &dyn EventSink,
     signal: CancellationToken,
@@ -221,16 +252,32 @@ async fn run_agent_loop(
 
             // 3. Execute tool calls (parallel by default)
             if !response.tool_calls.is_empty() {
+                // Phase 1 (sequential preflight): emit ToolCall events, check before_tool_call hooks
                 for tc in &response.tool_calls {
                     emit(ToolCall { id: tc.id, name: tc.name, args: tc.args });
-                    let result = execute_tool(&context.tools, tc, signal).await;
-                    let msg = AgentMessage::tool_result(tc.id, &result);
+                    // Check before_tool_call hooks
+                    for ext in &context.extensions {
+                        if let Some(reason) = ext.before_tool_call(tc).await {
+                            return ToolResult::blocked(reason);
+                        }
+                    }
+                }
+                // Phase 2 (parallel execution): execute all tools concurrently
+                let results = join_all(response.tool_calls.iter().map(|tc| {
+                    execute_tool(&context.tools, tc, signal)
+                })).await;
+                for result in results {
+                    // Check after_tool_call hooks
+                    for ext in &context.extensions {
+                        if let Some(overridden) = ext.after_tool_call(tc, &result).await {
+                            // patch result
+                        }
+                    }
                     emit(ToolResult { ... });
                     messages.push(msg);
                     new_messages.push(msg);
                 }
-                // Loop continues - tool results go back to LLM
-                continue;
+                continue; // loop continues - tool results go back to LLM
             }
 
             // 4. No tool calls - turn complete
@@ -263,51 +310,54 @@ async fn run_agent_loop(
 
 ### Hook pipeline
 
-Hooks live on the `Extension` trait, not on the loop config. When a tool
-is about to execute, all extensions are consulted:
+Hooks live on the `Extension` trait. When a tool is about to execute, all
+extensions are consulted:
 
 ```rust
-// In execute_tool():
-for ext in &context.extensions {
-    if let Some(reason) = ext.before_tool_call(&tool_call, &context).await {
-        return ToolResult::blocked(reason);
+// Phase 1 (preflight):
+for tc in &response.tool_calls {
+    for ext in &context.extensions {
+        if let Some(reason) = ext.before_tool_call(tc).await {
+            return ToolResult::blocked(reason);
+        }
     }
 }
+// Phase 2 (execute):
 let result = tool.execute(args).await;
+// After execution:
 for ext in &context.extensions {
-    if let Some(override) = ext.after_tool_call(&tool_call, &result).await {
+    if let Some(overridden) = ext.after_tool_call(tc, &final_result).await {
         // patch result
     }
 }
 ```
 
-Every hook receives the agent's `CancellationToken` and must honour it.
-
 ### Queue modes
 
 - **Steering queue**: injected after the current assistant turn finishes
-  executing tool calls. Used for mid-run user input. (Not yet implemented.)
+  executing tool calls. Used for mid-run user input. Infrastructure exists
+  (`PendingMessageQueue`, `drain_steering()` in loop.rs), not actively used
+  by TUI yet.
 - **Follow-up queue**: injected only after the agent would otherwise stop
-  (no tool calls, no steering). Used for post-run follow-up questions.
-  (Not yet implemented.)
+  (no tool calls, no steering). Infrastructure exists, not actively used.
 - **TUI-level queuing** (implemented): When `is_streaming`, `submit_message`
   queues to `App.queued_messages` instead of spawning concurrent loops.
   Queued messages display between chat and editor. On `AgentEnd`, next
   queued message auto-submits. Ctrl+C restores queue to editor.
-- Both support `one-at-a-time` and `all` drain modes.
+- Both support `one-at-a-time` and `all` drain modes via `QueueMode`.
 
 ### Tool execution modes
 
-| Mode | Behaviour |
-|------|-----------|
-| `parallel` (default) | Preflight all tool calls, execute concurrent, emit results in source order |
-| `sequential` | Execute one tool at a time, feed result before starting next |
+| Mode | Behaviour | Status |
+|------|-----------|--------|
+| `parallel` (default) | Preflight all tool calls (Phase 1), execute concurrent (Phase 2), emit results in source order | ✅ Implemented |
+| `sequential` | Execute one tool at a time, feed result before starting next | ⬜ Not implemented |
 
-A tool can override the global mode via `AgentTool::execution_mode`.
+A tool can override the global mode via `AgentTool::execution_mode()`.
 
 ---
 
-## Session layer (`src/agent/session.rs`)
+## Session layer (`src/agent/session.rs`) — ✅ 1985 lines
 
 ### Format
 
@@ -326,14 +376,14 @@ JSONL file, one object per line. Same format as pi's sessions.
 ├── agent/
 │   ├── settings.json          # global settings
 │   └── auth.json              # API keys and OAuth credentials
-├── models.json                # custom provider/model definitions
-├── keybindings.json           # custom keybinds (phase 2)
+├── models.json                # ⬜ custom provider/model definitions (not implemented)
+├── keybindings.json           # custom keybinds
 ├── SYSTEM.md                  # custom system prompt (full override)
 ├── APPEND_SYSTEM.md           # appended to system prompt
 ├── AGENTS.md                  # global context file
-├── extensions/                # user extensions (phase 2)
+├── extensions/                # ⬜ user extensions (Phase 2 - WASM)
 ├── skills/                    # agent skills
-├── themes/                    # TUI themes (phase 2)
+├── themes/                    # TUI themes
 └── sessions/
     └── <cwd-hash>/            # one directory per project
         ├── 01J...abc.jsonl
@@ -349,10 +399,6 @@ JSONL file, one object per line. Same format as pi's sessions.
 ### Session struct
 
 ```rust
-struct SessionManager {
-    path: PathBuf,             // path to .jsonl file
-}
-
 impl SessionManager {
     fn create(cwd: &Path) -> Self;
     fn open(path: &Path) -> Self;
@@ -368,27 +414,25 @@ are resolved by walking from the root along the active branch. Branching
 happens when a new entry points to a non-tail parent - no format changes
 needed.
 
-## Compaction (`compaction.rs`)
+## Compaction (`compaction.rs`) — ⬜ NOT IMPLEMENTED
 
 When the conversation approaches the model's context window, older messages
 are summarized to free space. Ported from pi's compaction algorithm.
 
-```
-Original: [sys] [user1] [asst1+tool] [user2] [asst2+tool] [user3]
-Compacted: [sys] [summary_of_1_and_2] [user3]
-```
-
 Algorithm:
 1. **Check threshold** - estimate total tokens. If under limit, skip.
 2. **Find cut point** - walk messages from oldest to newest, accumulating
-tokens. Cut where the tail (newest messages) fits in the remaining budget.
+   tokens. Cut where the tail (newest messages) fits in the remaining budget.
 3. **Generate summary** - prompt a fast model with the older messages to
-produce a concise summary. The summary replaces the older entries.
+   produce a concise summary. The summary replaces the older entries.
 4. **Replace** - swap old messages with a single synthetic user message
-containing the summary. Tool results are included in what gets summarized.
+   containing the summary. Tool results are included in what gets summarized.
 
 Manual trigger via `/compact` (TUI). Automatic trigger before context
 overflow causes an error.
+
+**Current status:** `compact` field exists in `LoopConfig` and `ToolOutput`,
+but no actual compaction/summarization has been implemented.
 
 ---
 
@@ -396,9 +440,8 @@ overflow causes an error.
 
 All capability - built-in or user-provided - comes through the same trait.
 There is no separate tool registration path. **Slash commands use the same
-`Extension` trait as tools** - built-in commands (`/quit`, `/model`) and
-user-provided commands go through the same `commands()` method and the same
-`CommandHandler` interface.
+`Extension` trait as tools** - built-in commands and user-provided commands
+go through the same `commands()` method and the same `CommandHandler` interface.
 
 ```rust
 #[async_trait]
@@ -409,7 +452,6 @@ pub trait Extension: Send + Sync {
     fn tools(&self) -> Vec<Box<dyn AgentTool>> { vec![] }
 
     /// Slash commands (e.g. `/quit`, `/model`).
-    /// Built-in commands and extension commands use the same interface.
     fn commands(&self) -> Vec<SlashCommand> { vec![] }
 
     /// Called before any tool executes. Return Some(reason) to block.
@@ -421,22 +463,26 @@ pub trait Extension: Send + Sync {
 }
 
 pub trait CommandHandler: Send + Sync {
-    /// Execute the command. Returns CommandResult (sync - no I/O needed).
     fn execute(&self, args: &str) -> anyhow::Result<CommandResult>;
-
-    /// Get argument completions for autocomplete.
     fn argument_completions(&self, prefix: &str) -> Vec<AutocompleteItem>;
 }
 
 pub enum CommandResult {
-    Info(String),         // Show info message
-    Quit,                 // Request graceful shutdown
-    ModelChanged(String), // Switched to new model
+    Info(String),
+    Quit,
+    ModelChanged(String),
+    ShowHelp,
+    Reloaded,
+    NewSession,
+    SessionSwitched { path: PathBuf },
+    SessionInfo { session_id, file_path, name, message_count },
+    OpenSessionSelector,
+    SessionNamed { name: String },
 }
 
 pub struct SlashCommand {
-    pub name: String,             // e.g. "quit"
-    pub description: String,      // e.g. "Exit rab"
+    pub name: String,
+    pub description: String,
     pub handler: Box<dyn CommandHandler>,
 }
 ```
@@ -457,24 +503,28 @@ fn collect_commands(exts: &[Box<dyn Extension>]) -> Vec<SlashCommand> {
 `--no-builtin-tools` simply skips loading builtin extensions; user extensions
 still load. `--no-extensions` skips both.
 
+---
+
 ## Built-in extensions (`builtin/`)
 
 Each built-in is an `Extension` that provides tools or commands. They serve
 as the reference implementation for user extensions.
 
-### commands
+### commands — ✅ 8 commands implemented
 
-Provides core slash commands (`/quit`, `/model`) via the `CommandHandler` trait.
+Provides core slash commands via the `CommandHandler` trait.
 Same interface as user-provided commands - no special path for built-ins.
 
 | Command | Handler | Description |
 |---------|---------|-------------|
 | `/quit` | `QuitCommand` | Returns `CommandResult::Quit`, TUI breaks event loop |
-| `/model <name>` | `ModelCommand` | Switches active model; no args shows available models |
-
-`/model` provides argument completions via `argument_completions()` - when the
-user types `/model ` followed by a partial model name, matching models are
-suggested.
+| `/model <name>` | `ModelCommand` | Switches active model; no args shows available models. Provides argument completions. |
+| `/hotkeys` | `HotkeysCommand` | Shows keyboard shortcuts overlay |
+| `/reload` | `ReloadCommand` | Reloads settings and auth from disk |
+| `/new` | `NewCommand` | Clears conversation, starts new session |
+| `/resume` | `ResumeCommand` | Opens session selector |
+| `/session` | `SessionInfoCommand` | Shows session info (ID, file, message count) |
+| `/name <name>` | `NameCommand` | Sets session display name |
 
 ### read
 
@@ -495,8 +545,8 @@ suggested.
 
 | Field | Value |
 |-------|-------|
-| **Parameters** | `path: string`, `search: string`, `replace: string` |
-| **Behaviour** | Reads file, finds exact-match `search`, replaces with `replace`. Error if `search` appears zero or >1 times. |
+| **Parameters** | `path: string`, `search: string` (array or string), `replace: string` |
+| **Behaviour** | Reads file, finds exact-match `search`, replaces with `replace`. Error if `search` appears zero or >1 times. Supports old/new edit format. Diff rendering via `render_diff()` with intra-line character-level inverse. |
 
 ### bash
 
@@ -504,7 +554,9 @@ suggested.
 |-------|-------|
 | **Parameters** | `command: string`, `timeout_secs?: int` (default 120) |
 | **Behaviour** | Runs `sh -c <command>`. Captures stdout + stderr combined. Truncated to last 2000 lines / 50KB. |
-| **Security** | Command deny-list (optional for MVP). Working directory is the project root. |
+| **Security** | Command deny-list (optional for MVP). Working directory is the project root. Live streaming via `ToolProgress` events. |
+
+---
 
 ## Slash commands
 
@@ -514,16 +566,40 @@ is no separate path for core vs. user commands.
 
 When the user types a slash command (e.g. `/quit`, `/model deepseek-v4-pro`),
 the TUI dispatches it to the matching `CommandHandler::execute()`. The result
-(`CommandResult`) determines what happens: show info, quit, or switch models.
+(`CommandResult`) determines what happens: show info, quit, switch models,
+open session selector, etc.
 
-### Built-in commands (via `CommandsExtension`)
+### Built-in commands (via `CommandsExtension`) — ✅ 8 implemented
 
 | Command | Result | Description |
-|---|---|---|
+|---------|--------|-------------|
 | `/quit` | `CommandResult::Quit` | Graceful shutdown |
 | `/model <name>` | `CommandResult::ModelChanged(name)` or `Info` | Switch model; no args lists available models |
+| `/hotkeys` | `CommandResult::ShowHelp` | Show keyboard shortcuts |
+| `/reload` | `CommandResult::Reloaded` | Reload settings and auth |
+| `/new` | `CommandResult::NewSession` | Clear conversation |
+| `/resume` | `CommandResult::OpenSessionSelector` | Open session selector |
+| `/session` | `CommandResult::SessionInfo` | Show session info |
+| `/name <name>` | `CommandResult::SessionNamed` | Set session name |
 
-More commands will be added as the session layer matures (`/new`, `/compact`, etc.).
+### Commands not yet implemented (14 of 22 pi built-ins)
+
+| Command | Priority | Notes |
+|---------|----------|-------|
+| `/settings` | high | Settings menu/overlay |
+| `/export` | high | Session export (.html/.jsonl) |
+| `/import` | high | Import and resume a session from JSONL |
+| `/copy` | high | Copy last assistant message to clipboard |
+| `/compact` | high | Manual session compaction |
+| `/changelog` | high | Changelog overlay |
+| `/scoped-models` | medium | Filter models for Ctrl+P cycling |
+| `/fork` | medium | Fork session from previous message |
+| `/clone` | medium | Duplicate current session |
+| `/trust` | medium | Project trust decision |
+| `/login` | medium | Provider auth config |
+| `/logout` | medium | Remove provider auth |
+| `/share` | low | Share as GitHub gist |
+| `/tree` | low | Session tree navigation |
 
 ### Extension commands
 
@@ -600,43 +676,46 @@ pub trait Provider: Send + Sync {
         system_prompt: &str,
         messages: &[AgentMessage],
         tools: &[ToolDef],
-        signal: CancellationToken,
     ) -> Result<Pin<Box<dyn Stream<Item = StreamEvent> + Send>>>;
+
+    /// Update reasoning effort for the provider (maps to thinking level).
+    fn set_reasoning_effort(&self, level: Option<&str>);
 }
 ```
 
 The trait takes `AgentMessage` directly - no intermediate conversion layer.
 Each adapter translates rab types into its own backend format internally.
 
-### Genai adapter (`adapter/genai.rs`)
+### Genai adapter (`adapter/genai.rs`) — ✅ single backend
 
 The **only file** that imports genai. Wraps `genai::Client`, configured for the
 target provider.
 
-**PoC:** Client configured for OpenCode Go (`https://opencode.ai/zen/go/v1`)
-using genai's OpenAI adapter. Models: `deepseek-v4-flash` (default), `deepseek-v4-pro`.
+**Current:** Client configured for OpenCode Go (`https://opencode.ai/zen/go/v1`)
+using genai's OpenAI adapter. Models: `opencode_go::deepseek-v4-flash` (default),
+`opencode_go::deepseek-v4-pro`.
 
-**Phase 1:** Extended with provider auto-detection from model name prefix -
+**Future:** Extended with provider auto-detection from model name prefix -
 `claude*` → Anthropic, `gpt*` → OpenAI, `gemini*` → Google, fallback → Ollama.
 OpenCode Go remains available as an explicit provider.
 
 ```rust
 pub struct GenaiProvider {
     client: genai::Client,
+    model_prefix: String,
+    reasoning_effort: RwLock<Option<ReasoningEffort>>,
 }
 
-#[async_trait]
 impl Provider for GenaiProvider {
     async fn stream(&self, model: &str, system: &str,
-                    messages: &[AgentMessage], tools: &[ToolDef],
-                    signal: CancellationToken)
+                    messages: &[AgentMessage], tools: &[ToolDef])
         -> Result<Pin<Box<dyn Stream<Item = StreamEvent> + Send>>>
     {
         let req = ChatRequest::new(to_genai_messages(messages))
             .with_system(system)
             .with_tools(to_genai_tools(tools));
         let genai_stream = self.client
-            .exec_chat_stream(model, req, None).await?;
+            .exec_chat_stream(&full_model, req, Some(&options)).await?;
         Ok(Box::pin(genai_stream.map(|ev| convert_event(ev))))
     }
 }
@@ -644,16 +723,13 @@ impl Provider for GenaiProvider {
 
 `src/agent/` only sees `Box<dyn Provider>`.
 
-Before the provider call, `transform_context` can prune or inject
-AgentMessages (e.g. for compaction, later).
-
 ---
 
 ## Settings (`src/agent/settings.rs`) — ✅
 
 Same file names and format as pi, under `~/.rab/agent/`. Auth in `~/.rab/agent/auth.json`,
 settings in `~/.rab/agent/settings.json`. Keybindings in `~/.rab/keybindings.json`.
-`~/.rab/models.json` for custom provider/models is not yet implemented.
+`~/.rab/models.json` for custom provider/models is **not yet implemented**.
 
 ### Config files
 
@@ -662,7 +738,7 @@ settings in `~/.rab/agent/settings.json`. Keybindings in `~/.rab/keybindings.jso
 | `~/.pi/agent/settings.json` | `~/.rab/agent/settings.json` | ✅ |
 | `.pi/settings.json` | `.rab/settings.json` | ✅ |
 | `~/.pi/agent/auth.json` | `~/.rab/agent/auth.json` | ✅ |
-| `~/.pi/agent/models.json` | `~/.rab/models.json` | ⬜ |
+| `~/.pi/agent/models.json` | `~/.rab/models.json` | ⬜ Not implemented |
 | `~/.pi/agent/AGENTS.md` | `~/.rab/AGENTS.md` | ✅ |
 | `AGENTS.md` / `CLAUDE.md` | `AGENTS.md` / `CLAUDE.md` | ✅ |
 | `~/.pi/agent/keybindings.json` | `~/.rab/keybindings.json` | ✅ |
@@ -705,7 +781,7 @@ over both.
 
 ---
 
-## CLI (`cli.rs`)
+## CLI (`cli.rs`) — ✅ 470 lines
 
 ```
 rab [OPTIONS] [MESSAGE]...
@@ -723,6 +799,7 @@ Model:
 
 Tools:
   --no-tools       Disable all tools (chat-only mode)
+  -et, --exclude-tools <TOOLS>...  Exclude specific tools
 
 Context:
   -nc, --no-context-files      Skip AGENTS.md loading
@@ -735,7 +812,7 @@ Other:
 ```
 
 Model auto-detection: `gpt*` → OpenAI, `claude*` → Anthropic, `gemini*` → Gemini,
-fallback → Ollama.
+fallback → Ollama. **(Currently only OpenCode Go is implemented.)**
 
 ---
 
@@ -744,12 +821,12 @@ fallback → Ollama.
 ### Print mode
 
 ```
-$ rab -p "What does git status do?"
+$ rab "What does git status do?"
 Shows the current state of the working directory and staging area...
 ```
 
 ```
-$ cat README.md | rab -p "Summarize this"
+$ cat README.md | rab "Summarize this"
 This README describes a project that...
 ```
 
@@ -758,37 +835,51 @@ results shown prefixed.
 
 ### Interactive mode
 
-Same agent loop, different sink: `tui.rs` subscribes to the agent event
-stream and renders to a pi-tui-style main-screen TUI instead of stdout.
-Same crate - no separate abstraction layer needed.
+Same agent loop, different sink: `App` in `src/agent/ui/` subscribes to the
+agent event stream and renders to a pi-tui-style main-screen TUI instead of
+stdout. Same crate - no separate abstraction layer needed.
 
 ---
 
 ## TUI (`src/tui/` + `src/agent/ui/`) — ✅ COMPLETE
 
-The TUI library is a 1/1 port of pi's `@earendil-works/pi-tui` (29 modules, 632 tests).
+The TUI library is a 1/1 port of pi's `@earendil-works/pi-tui` (30 modules, 662 tests).
 See [`tui.md`](tui.md) for the full design.
 
-**Core**: Component trait, Container, Focusable, Screen diff renderer, overlay system (show/hide/composite), cursor marker extraction, hardware cursor positioning, synchronized output.
+**Core**: Component trait, Container, Focusable, Screen diff renderer, overlay
+system (show/hide/composite, anchor-based positioning), cursor marker extraction,
+hardware cursor positioning, synchronized output.
 
-**Terminal**: TerminalTrait, ProcessTerminal, Kitty keyboard protocol (flags 1+2+4), bracketed paste, progress indicator, drainInput, setTitle, OSC 2031 color scheme notifications. No direct crossterm in app layer.
+**Terminal**: TerminalTrait, ProcessTerminal, crossterm event polling, raw mode,
+cursor hide/show, synchronized output.
 
-**Keys & keybindings**: String-based key IDs (match_key_id, key_event_to_id), 27 action IDs with defaults, JSON config loading from `~/.rab/keybindings.json`, all 7 components migrated to `get_keybindings().matches()`.
+**Keys & keybindings**: String-based key IDs (`matches_key()`, `key_event_to_id()`),
+27+ action IDs with defaults, JSON config loading from `~/.rab/keybindings.json`.
 
 **Components**:
-- Editor (multi-line, word-wrap, kill ring, undo stack, paste markers, bracketed paste, history recall, character jump, sticky column, border_color, AutocompleteProvider integration)
+- Editor (multi-line, word-wrap, kill ring, undo stack, paste markers, bracketed paste,
+  history recall, character jump, sticky column, border_color, AutocompleteProvider
+  integration, slash command completion)
 - Input (single-line, undo coalescing, smart scroll centering, paste handling)
 - SelectList (two-column layout, layout options, prefix filter, selection change callback)
 - SettingsList (submenu support, two-column layout, description wrapping, search)
 - Loader / CancellableLoader (color functions, timer-based animation, abort support)
 - Box (render cache), Text/TruncatedText (RefCell cache), Spacer
-- Image (Kitty protocol image rendering, data URL detection)
+- Markdown (pulldown-cmark renderer with syntax highlighting, tables, code blocks)
 - Diff (unified diff with colored +/lines and intra-line character-level inverse)
+- Image (Kitty protocol image sequences, data URL encoding)
 - VisualTruncate (shared `truncate_to_visual_lines()` utility)
+- DynamicLines (dynamically-sized section component)
+- RcRefCellComponent (bridge for shared ownership components)
 
-**Autocomplete**: AutocompleteProvider trait, CombinedAutocompleteProvider (slash commands + file path completion via read_dir)
+**Autocomplete**: AutocompleteProvider trait, CombinedAutocompleteProvider (slash
+commands + file path completion via read_dir)
 
-**App layer**: ChatEditor, Messages, WorkingIndicator, Footer, ModelSelector, HelpOverlay, BashExecution. All wired through `TUI.show_overlay()`. Header/messages/editor/footer layout matching pi exactly.
+**App layer**: ChatEditor, Messages, WorkingIndicator, Footer, ModelSelector,
+HelpOverlay. All message components (UserMessageComponent, AssistantMessageComponent,
+ToolExecComponent, BashExecution, EditorComponent, FooterComponent, HeaderComponent,
+InfoMessageComponent). All wired through `TUI.show_overlay()`.
+Header/messages/editor/footer layout matching pi exactly.
 
 ### Layout (component tree)
 
@@ -871,7 +962,7 @@ if !args.no_extensions {
 }
 ```
 
-### Dynamic plugin system (WASM via wasmtime)
+### Dynamic plugin system (WASM via wasmtime) — ⬜ NOT STARTED
 
 The primary mechanism for user plugins. Plugins are `.wasm` components loaded
 at runtime from `~/.rab/extensions/` (global) and `.rab/extensions/` (project).
@@ -934,7 +1025,6 @@ world rab-plugin {
     export name: func() -> string;
     export tools: func() -> list<tool-def>;
     export commands: func() -> list<slash-command>;
-    // tool-call-id and args-json come as strings; host owns serialization
     export execute-tool: func(
         tool-name: string,
         tool-call-id: string,
@@ -1036,7 +1126,7 @@ and plugin - documented as a power-user feature, not the default path.
 ### Skills ✅
 
 Skills are markdown files following the [Agent Skills standard](https://agentskills.io).
-Loaded from `~/.rab/skills/` and `.rab/skills/` via `src/agent/skills.rs`.
+Loaded from `~/.rab/skills/` and `.rab/skills/` via `src/agent/skills.rs` (825 lines).
 
 **Implemented:**
 - `load_skills()` - discovers SKILL.md files, parses YAML-like frontmatter (`name:`, `description:`, `disable-model-invocation:`)
@@ -1045,7 +1135,7 @@ Loaded from `~/.rab/skills/` and `.rab/skills/` via `src/agent/skills.rs`.
 - `expand_skill_command()` - `/skill:name [args]` expansion in user input (pi-style)
 - Startup resource listing shows skill names in the welcome message
 
-### pi-mcp-adapter
+### pi-mcp-adapter — ⬜ NOT STARTED
 
 An `Extension` that connects to MCP (Model Context Protocol) servers and
 exposes their tools to the agent. Uses the `rmcp` crate for client-side MCP
@@ -1111,15 +1201,25 @@ rab (EPL-2.0)
 ├── serde + serde_json 1   (MIT)        - JSON serialization
 ├── uuid 1                 (MIT)        - message/session IDs
 ├── chrono 0.4             (MIT)        - timestamps
-├── directories 5          (MIT)        - XDG paths
+├── directories 6          (MIT)        - XDG paths
 ├── anyhow 1               (MIT)        - error handling
 ├── futures 0.3            (MIT)        - StreamExt
 ├── async-trait 0.1        (MIT)        - trait async fn
-├── colored 2              (MPL-2.0)    - terminal colors
+├── colored 3              (MPL-2.0)    - terminal colors
 ├── tracing 0.1            (MIT)        - structured logging
 ├── crossterm 0.29         (MIT)        - terminal I/O (raw mode, events, cursor)
 ├── unicode-segmentation 1 (MIT)        - grapheme-aware cursor movement
 ├── unicode-width 0.2      (MIT)        - character display width
+├── pulldown-cmark 0.13    (MIT)        - markdown parsing
+├── syntect 5.3            (MIT)        - syntax highlighting (optional feature)
+├── diff 0.1               (MIT)        - diff algorithm for edit tool
+├── base64 0.22            (MIT)        - image data URL encoding
+├── async-stream 0.3       (MIT)        - async stream generation
+├── reqwest 0.12           (MIT)        - HTTP client
+├── rustls 0.23            (MIT)        - TLS
+├── webpki-roots 1         (ISC)        - CA certificates
+├── libc 0.2               (MIT)        - system calls
+├── regex 1.12             (MIT)        - regex
 ├── wasmtime 26+           (Apache 2.0) - WASM runtime for dynamic plugins (phase 2)
 ├── notify 7               (CC0-1.0)    - file watcher for plugin hot reload (phase 2)
 └── rmcp 1                 (MIT)        - MCP client for pi-mcp-adapter (phase 2)

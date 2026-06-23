@@ -2,14 +2,14 @@
 
 ## Active / Pi alignment
 
-- [x] **Tool renderers — align rab to pi:** In pi, expand shows `pi: ... (5 earlier lines, ctrl+o to expand)` / `rab: ... 10 earlier lines, (C-O) to expand`. Rab should match this format exactly (variable N, same text/layout).
-- [x] **Read tool title — no space between filename and `:`:** Should be like pi (no `" "` between filename and colon).
+- [x] **Tool renderers — align rab to pi:** In pi, expand shows `pi: ... (5 earlier lines, ctrl+o to expand)` / `rab: ... 10 earlier lines, (C-O) to expand`. Rab matches this format exactly (variable N, same text/layout).
+- [x] **Read tool title — no space between filename and `:`:** Matches pi (no `" "` between filename and colon).
 - [ ] **Scrolling broken in chat screen:** Once you scroll up with the mouse, you can't scroll back down.
 - [ ] **Agentic loop freeze:** Sometimes after a few rounds the screen freezes and rab stops responding to any input. Only recoverable via `pkill -9 rab` from another terminal.
-- [x] **Welcome message:** Render exactly the same content and using the same UI as pi's welcome message.
+- [x] **Welcome message:** Renders exactly the same content and using the same UI as pi's welcome message.
 - [ ] **Autocomplete of `/` commands — align to pi:** In pi, `/q<enter>` closes pi. In rab, `/q<enter>` autocompletes to `/quit` and needs a second enter. Should close immediately like pi.
-- [x] **Thinking visibility — `Ctrl+t` only:** Should be toggled exclusively by `Ctrl+t`, matching pi behavior.
-- [x] **Expand/collapse states — `Ctrl+o` only:** Should be controlled exclusively by `Ctrl+o`, matching pi behavior.
+- [x] **Thinking visibility — `Ctrl+t` only:** Toggled exclusively by `Ctrl+t`, matching pi behavior.
+- [x] **Expand/collapse states — `Ctrl+o` only:** Controlled exclusively by `Ctrl+o`, matching pi behavior.
 - [ ] **Model thinking settings reset + editor borders:** Thinking setting gets reset to off intermittently. Editor border colors don't reflect the thinking setting. Should behave like pi.
 
 ---
@@ -63,23 +63,27 @@ TUI.render()
 | Write success | No output text, just bg transition (pending→success) |
 | Git branch | `refresh_git_branch()` on each `AgentStart` |
 | codeBlockIndent | Already in `MarkdownTheme` (default `"  "`) |
+| Markdown rendering | `src/tui/components/markdown.rs` (2103 lines) - pulldown-cmark parser, syntax highlighting, code blocks, tables |
+| Overlay system | `src/tui/overlay.rs` - anchor-based positioning, sizing, margins, compositing |
+| Keybindings | `src/tui/keybindings.rs` - 27+ action IDs with defaults, JSON config loading from `~/.rab/keybindings.json` |
 
 ## Remaining (not rendering-related)
 
 These are feature gaps in the agent/tool functionality, not rendering:
 
-- **Missing slash commands**: /settings, /export, /import, /compact, /changelog, etc.
-- **Multi-backend provider**: genai adapter
-- **Context window compaction**
-- **Hook pipeline** (before/after tool call)
-- **Extensions**: follow pi's extension system
-- **MCP adapter**
+- **Missing slash commands** (14 of 22 pi built-ins): /settings, /export, /import, /copy, /compact, /changelog, /scoped-models, /fork, /clone, /trust, /login, /logout, /share, /tree (8 implemented: quit, model, hotkeys, reload, new, resume, session, name)
+- **Multi-backend provider**: genai adapter currently only supports OpenCode Go.
+- **Context window compaction**: `compact` field exists but no actual compaction/summarization logic.
+- **`~/.rab/models.json`**: Not implemented.
+- **WASM plugin system**: Not started (Phase 2).
+- **MCP adapter**: Not started (Phase 2).
+- **Dynamic hot-reload**: Not started.
 
 ## Image system gaps (7)
 
 | # | Gap | Status |
 |---|-----|--------|
-| C4 | TUI `Image` component (Kitty + iTerm2 + fallback) | ❌ Open |
+| C4 | TUI `Image` component (Kitty + iTerm2 + fallback) | ⬜ Basic Kitty protocol support in `src/tui/image.rs` (data URL encoding, Kitty sequences) but no `Component` impl |
 | C5 | Terminal capabilities detection (`getCapabilities()`) | ❌ Open |
 | C6 | Cell dimension tracking for pixel-accurate sizing | ❌ Open |
 | C7 | Image resize utility | ❌ Open |
@@ -92,12 +96,12 @@ These are feature gaps in the agent/tool functionality, not rendering:
 | # | Gap | Status |
 |---|-----|--------|
 | C11 | Visual truncate utility | ✅ `tui::visual_truncate.rs` |
-| C12 | Session selector + search | ❌ Open |
+| C12 | Session selector + search | ❌ Open (CommandResult::OpenSessionSelector exists, no UI impl) |
 | C13 | Theme selector overlay | ❌ Open |
 | C14 | Thinking level selector | ❌ Open |
 | C15 | Extension editor / input / selector | ❌ Open |
 | C16 | Config / settings selector | ❌ Open |
-| C17 | Model selector improvements | ❌ Open |
+| C17 | Model selector improvements | ❌ Open (basic ModelSelector exists via SelectList overlay) |
 | C18 | OAuth login dialog | ❌ Open |
 | C19 | Trust selector | ❌ Open |
 | C20 | First-time setup | ❌ Open |

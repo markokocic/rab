@@ -6,64 +6,68 @@ Reference: `~/src/cvstree/pi/` (TypeScript, same architecture).
 
 | Area | Status |
 |------|--------|
-| TUI library (27 modules, 429 tests) | ✅ 1/1 with pi |
-| Agent loop (streaming, tool execution, events) | ✅ |
-| Session persistence (JSONL tree, 66 tests) | ✅ |
-| Built-in tools (read, write, edit, bash) | ✅ 1/1 with pi |
+| TUI library (29 modules, **662 tests**) | ✅ 1/1 with pi |
+| Agent loop (streaming, tool execution, events, hook pipeline) | ✅ before_tool_call + after_tool_call wired; steering/follow-up queues infrastructure in place |
+| Session persistence (JSONL tree, 66+ tests) | ✅ |
+| Built-in tools (read, write, edit, bash) | ✅ 1/1 with pi (all renderers aligned) |
 | System prompt builder (AGENTS.md, skills, context) | ✅ |
-| Settings, auth, keybindings | ✅ |
-| Skills (loading, prompt formatting, `/skill:name`) | ✅ |
-| App UI (ChatEditor, Messages, Footer, ModelSelector, Help) | ✅ |
+| Settings, auth, keybindings | ✅ (`~/.rab/agent/settings.json`, `~/.rab/agent/auth.json`, `~/.rab/keybindings.json`) |
+| Skills (loading, prompt formatting, `/skill:name`) | ✅ `src/agent/skills.rs` - frontmatter parsing, XML prompt formatting |
+| App UI (ChatEditor, Messages, Footer, ModelSelector, Help, overlays) | ✅ Full component tree, overlay system, 8 components |
 | **ChatEditor → pi's CustomEditor alignment** | ✅ Ctrl+Z undo, Up/Down history via Editor, Tab via AutocompleteProvider, Enter via Editor's submit(), backslash continuation, visual-line-based history trigger, proper state cleanup on submit |
+| **Message rendering (8 gaps closed)** | ✅ Tool renderers, progressive rendering, diff preview, bash streaming, truncation, caching |
+| **Image system (basic)** | ⬜ `src/tui/image.rs` has data URL encoding + Kitty protocol sequences, but no TUI Component, no capabilities detection, no iTerm2 support, no resize/convert/paste |
+| **Keybindings** | ✅ 27+ action IDs with defaults, JSON config loading |
+| **Overlay system** | ✅ Anchor-based positioning, sizing, margins, compositing in `src/tui/overlay.rs` + `src/tui/tui_core.rs` |
+| **Markdown rendering** | ✅ `src/tui/components/markdown.rs` (2103 lines) - pulldown-cmark, syntax highlighting, tables, code blocks |
+| **Diff rendering** | ✅ Unified diff with colored +/- lines and intra-line character-level inverse |
 
 ## Phase 1 — Remaining
 
-| Item | Priority |
-|------|----------|
-| Multi-backend provider (`adapter/genai.rs`) | high |
-| Context window compaction | high |
-| Hook pipeline (`before_tool_call`, `after_tool_call`) | medium |
-| Steering / follow-up queues | medium |
-| `~/.rab/models.json` | medium |
-| Image system (7 gaps, see below) | medium |
-| UI components (10 gaps, see below) | medium |
-| Tool execution modes (sequential) | low |
-| `rab plugin new` scaffold | low |
+| Item | Priority | Notes |
+|------|----------|-------|
+| Multi-backend provider (`adapter/genai.rs`) | high | Currently only OpenCode Go support. Need auto-detection (claude→Anthropic, gpt→OpenAI, gemini→Gemini, fallback→Ollama) |
+| Context window compaction | high | `compact` field exists in types, no summarization logic yet |
+| `~/.rab/models.json` | medium | Custom provider/model definitions |
+| Image system (7 gaps, see below) | medium | Basic kitty protocol exists, needs capabilities detect, iTerm2, sizing, resize, convert, paste, selector UI |
+| UI components (10 gaps, see below) | medium | Session selector, theme selector, thinking level selector, settings selector, login dialog, trust selector, first-time setup |
+| Tool execution modes (sequential) | low | Only parallel is implemented |
+| Steering / follow-up queues (active use) | medium | Infrastructure exists, not actively used by TUI yet |
+| Slash commands (14 missing) | medium | 8/22 implemented; see todo.md for full list |
 
 ## Image system gaps (7)
 
-| # | Gap | Est. |
-|---|-----|------|
-| C4 | TUI `Image` component (Kitty + iTerm2 + fallback) | medium |
-| C5 | Terminal capabilities detection (`getCapabilities()`) | small |
-| C6 | Cell dimension tracking for pixel-accurate sizing | small |
-| C7 | Image resize utility | medium |
-| C8 | Image convert utility | small |
-| C9 | Clipboard image paste | medium |
-| C10 | Show images selector UI | medium |
+| # | Gap | Est. | Notes |
+|---|-----|------|-------|
+| C4 | TUI `Image` component (Kitty + iTerm2 + fallback) | medium | Basic Kitty protocol in `image.rs`, no Component impl |
+| C5 | Terminal capabilities detection (`getCapabilities()`) | small | |
+| C6 | Cell dimension tracking for pixel-accurate sizing | small | |
+| C7 | Image resize utility | medium | |
+| C8 | Image convert utility | small | |
+| C9 | Clipboard image paste | medium | |
+| C10 | Show images selector UI | medium | |
 
 ## UI component gaps (10)
 
-| # | Gap | Est. |
-|---|-----|------|
-| C12 | Session selector (`session-selector.ts` + search) | medium |
-| C13 | Theme selector overlay | medium |
-| C14 | Thinking level selector | small |
-| C15 | Extension editor / input / selector | large |
-| C16 | Config / settings selector | medium |
-| C17 | Model selector improvements | medium |
-| C18 | OAuth login dialog | medium |
-| C19 | Trust selector | small |
-| C20 | First-time setup | medium |
-| Slash commands (14 missing) | medium |
+| # | Gap | Est. | Notes |
+|---|-----|------|-------|
+| C12 | Session selector (`session-selector.ts` + search) | medium | `CommandResult::OpenSessionSelector` exists, no UI |
+| C13 | Theme selector overlay | medium | |
+| C14 | Thinking level selector | small | |
+| C15 | Extension editor / input / selector | large | |
+| C16 | Config / settings selector | medium | |
+| C17 | Model selector improvements | medium | Basic SelectList-based selector exists |
+| C18 | OAuth login dialog | medium | |
+| C19 | Trust selector | small | |
+| C20 | First-time setup | medium | |
 
 ## Phase 2 — Extensions & plugins
 
-| Item | Priority |
-|------|----------|
-| WASM plugin system (wasmtime + WIT) | low |
-| MCP adapter (rmcp crate) | low |
-| Dynamic hot-reload | low |
+| Item | Priority | Notes |
+|------|----------|-------|
+| WASM plugin system (wasmtime + WIT) | low | Not started |
+| MCP adapter (rmcp crate) | low | Not started |
+| Dynamic hot-reload | low | Not started |
 
 ## Chat/UX gaps — Completed ✅
 
@@ -72,7 +76,7 @@ Reference: `~/src/cvstree/pi/` (TypeScript, same architecture).
 | Area | Status |
 |------|--------|
 | Component tree (TUI extends Container) | ✅ `TUI.root: Container`, recursive `render()` |
-| Message Components (User, Assistant, Tool, Bash, Info, Header) | ✅ 8 components with proper Box/bg/markdown/OSC133 |
+| Message Components (User, Assistant, Tool, Bash, Info, Header) | ✅ 8+ components with proper Box/bg/markdown/OSC133 |
 | Tool bg transitions (pending→success/error) | ✅ `ToolExecComponent` with per-tool formatting |
 | Expand/collapse global toggle | ✅ `set_expanded()` on Component trait |
 | Editor border color (thinking level + bash mode) | ✅ `update_border_color()` |
@@ -86,6 +90,8 @@ Reference: `~/src/cvstree/pi/` (TypeScript, same architecture).
 | Write success hides output | ✅ Only bg transition, no text |
 | Git branch refresh | ✅ on AgentStart |
 | Theme completeness | ✅ All 44 color tokens from pi, all 9 syntax colors |
+| Overlay compositing | ✅ Anchor-based overlay positioning, sizing, margin, focus management |
+| Keybinding system | ✅ 27+ action IDs, JSON config, `matches_key()` dispatch |
 
 ### Tool rendering (8 gaps, all closed)
 
@@ -109,47 +115,44 @@ Reference: `~/src/cvstree/pi/` (TypeScript, same architecture).
 | Editor & input (auto-trigger slash autocomplete) | ✅ Auto-shows on `/char`, checked after external editor/dequeue |
 | Footer improvements (auto-compact, narrow terminal, extension status) | ✅ `app.compact.toggle`, graceful truncation, status line |
 
-## Chat/UX gaps — Deferred 🟡
+## Chat/UX gaps — 🟡 In Progress / Deferred
 
-### Missing slash commands (14 of 22 pi built-ins not implemented)
+### Slash commands (14 of 22 pi built-ins not implemented; 8 implemented)
 
-| Command | Priority | Notes |
-|---------|----------|-------|
-| `/settings` | high | Settings menu/overlay — needs overlay component |
-| `/export` | high | Session export (.html/.jsonl) — needs file I/O + HTML template |
-| `/import` | high | Import and resume a session from JSONL — needs file picker |
-| `/copy` | high | Copy last assistant message to clipboard — needs clipboard crate |
-| `/compact` | high | Manual session compaction — needs compaction logic first |
-| `/changelog` | high | Changelog overlay — needs overlay component + changelog data |
-| `/scoped-models` | medium | Filter models for Ctrl+P cycling — needs model filtering state |
-| `/fork` | medium | Fork session from previous message — needs fork UI |
-| `/clone` | medium | Duplicate current session — needs clone logic |
-| `/trust` | medium | Project trust decision — needs trust storage mechanism |
-| `/login` | medium | Provider auth config — login-dialog overlay |
-| `/logout` | medium | Remove provider auth — needs auth state management |
-| `/share` | low | Share as GitHub gist — needs GitHub API |
-| `/tree` | low | Session tree navigation — session-selector overlay |
-
-See `todo.md` for detailed task list.
-
-
-See `todo.md` for detailed task list. Major deferred areas:
-
-- **Overlays**: config-selector, theme-selector, session-selector, first-time-setup, changelog, login-dialog, oauth-selector
-- **Session management** (→ slash commands in todo.md): new, tree, fork, resume, toggleNamedFilter
-- **Other**: suspend/resume, debug key, dynamic keybinding hints, viewport-managed scrolling
+| Command | Status | Priority | Notes |
+|---------|--------|----------|-------|
+| `/quit` | ✅ | — | Graceful shutdown |
+| `/model` | ✅ | — | Switch model; no args lists available models |
+| `/hotkeys` | ✅ | — | Show keyboard shortcuts |
+| `/reload` | ✅ | — | Reload settings and auth from disk |
+| `/new` | ✅ | — | Clear conversation |
+| `/resume` | ✅ | — | Open session selector |
+| `/session` | ✅ | — | Show session info |
+| `/name` | ✅ | — | Set session display name |
+| `/settings` | ❌ | high | Settings menu/overlay |
+| `/export` | ❌ | high | Session export (.html/.jsonl) |
+| `/import` | ❌ | high | Import and resume a session from JSONL |
+| `/copy` | ❌ | high | Copy last assistant message to clipboard |
+| `/compact` | ❌ | high | Manual session compaction |
+| `/changelog` | ❌ | high | Changelog overlay |
+| `/scoped-models` | ❌ | medium | Filter models for Ctrl+P cycling |
+| `/fork` | ❌ | medium | Fork session from previous message |
+| `/clone` | ❌ | medium | Duplicate current session |
+| `/trust` | ❌ | medium | Project trust decision |
+| `/login` | ❌ | medium | Provider auth config |
+| `/logout` | ❌ | medium | Remove provider auth |
+| `/share` | ❌ | low | Share as GitHub gist |
+| `/tree` | ❌ | low | Session tree navigation |
 
 ### Agent framework (from Phase 1 — Remaining)
 
-| Item | Priority |
-|------|----------|
-| Multi-backend provider (`adapter/genai.rs`) | high |
-| Context window compaction | high |
-| Hook pipeline (`before_tool_call`, `after_tool_call`) | medium |
-| Steering / follow-up queues | medium |
-| `~/.rab/models.json` | medium |
-| Image system (7 gaps) | medium | See plan.md above for details |
-| UI components (10 gaps) | medium | See plan.md above for details |
-| Tool execution modes (sequential) | low |
-| Slash commands (14 missing) | medium | See todo.md for full list, 8/22 implemented |
-| `rab plugin new` scaffold | low |
+| Item | Priority | Notes |
+|------|----------|-------|
+| Multi-backend provider (`adapter/genai.rs`) | high | Currently single backend (OpenCode Go) |
+| Context window compaction | high | Not implemented |
+| `~/.rab/models.json` | medium | Not implemented |
+| Image system (7 gaps) | medium | Basic image.rs exists, needs full support |
+| UI components (10 gaps) | medium | See table above |
+| Tool execution modes (sequential) | low | |
+| Steering / follow-up queues (active use) | medium | Infrastructure exists, not wired in TUI message queuing |
+| `rab plugin new` scaffold | low | |
