@@ -28,6 +28,10 @@ impl Component for RcRefCellComponent {
         self.0.borrow_mut().set_expanded(expanded);
     }
 
+    fn set_hide_thinking(&mut self, hide: bool) {
+        self.0.borrow_mut().set_hide_thinking(hide);
+    }
+
     fn invalidate(&mut self) {
         self.0.borrow_mut().invalidate();
     }
