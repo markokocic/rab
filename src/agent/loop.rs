@@ -120,9 +120,6 @@ fn find_tool<'a>(
     tools.iter().find(|t| t.name() == name).map(|t| t.as_ref())
 }
 
-/// Maximum tool-calling iterations before we force-stop (prevents infinite LLM loops).
-const MAX_TOOL_ITERATIONS: usize = 25;
-
 /// Result of a single tool execution within the execution phase.
 struct ToolExecOutcome {
     id: String,
@@ -155,8 +152,6 @@ pub async fn run_agent_loop(
     emit(AgentEvent::AgentStart);
     emit(AgentEvent::TurnStart);
 
-    let mut iteration_count: usize = 0;
-
     // ── Outer loop: continues when follow-up messages arrive ──
     // (pi-compatible: after agent would stop, check follow-up queue and continue)
     loop {
@@ -164,33 +159,6 @@ pub async fn run_agent_loop(
         let mut has_more_tool_calls = true;
 
         while has_more_tool_calls {
-            iteration_count += 1;
-            if iteration_count > MAX_TOOL_ITERATIONS {
-                let msg = format!(
-                    "Agent loop exceeded maximum iterations ({}). Last response may be incomplete.",
-                    MAX_TOOL_ITERATIONS
-                );
-                // Pi-style: create an error assistant message so the failure is always visible
-                emit(AgentEvent::TextDelta { delta: msg.clone() });
-                let error_assistant = AgentMessage {
-                    id: uuid::Uuid::new_v4().to_string(),
-                    parent_id: None,
-                    role: Role::Assistant,
-                    content: msg.clone(),
-                    tool_calls: vec![],
-                    tool_call_id: None,
-                    usage: None,
-                    is_error: true,
-                    timestamp: chrono::Utc::now().timestamp_millis(),
-                };
-                messages.push(error_assistant.clone());
-                new_messages.push(error_assistant);
-                emit(AgentEvent::AgentEnd {
-                    messages: new_messages.clone(),
-                });
-                return Ok(new_messages);
-            }
-
             // Check steering messages before each LLM call
             // (pi-compatible: delivered after current turn's tool calls finish,
             //  before next LLM call)
