@@ -4,7 +4,6 @@ pub mod diff;
 pub mod dynamic_lines;
 pub mod editor;
 pub mod input;
-pub mod lines_component;
 pub mod loader;
 pub mod markdown;
 pub mod rc_ref_cell_component;
@@ -24,7 +23,6 @@ pub use cancellable_loader::CancellableLoader;
 pub use dynamic_lines::DynamicLines;
 pub use editor::Editor;
 pub use input::Input;
-pub use lines_component::LinesComponent;
 pub use loader::Loader;
 
 pub use select_list::{SelectItem, SelectList};
