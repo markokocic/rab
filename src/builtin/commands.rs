@@ -4,7 +4,7 @@ use crate::agent::extension::{
 use std::borrow::Cow;
 use std::sync::{Arc, Mutex};
 
-/// Built-in commands extension — provides all 22 pi slash commands.
+/// Built-in commands extension - provides all 22 pi slash commands.
 /// Uses the same Extension trait as all other extensions, making built-in
 /// commands indistinguishable from user-provided commands.
 pub struct CommandsExtension {
@@ -49,11 +49,6 @@ impl Extension for CommandsExtension {
             SlashCommand {
                 name: "quit".to_string(),
                 description: "Exit rab".to_string(),
-                handler: Box::new(QuitCommand),
-            },
-            SlashCommand {
-                name: "q".to_string(),
-                description: "Exit rab (alias for /quit)".to_string(),
                 handler: Box::new(QuitCommand),
             },
             SlashCommand {
@@ -286,7 +281,7 @@ impl CommandHandler for ImportCommand {
         let path = args.trim();
         if path.is_empty() {
             Ok(CommandResult::Info(
-                "Usage: /import <path-to-jsonl> — import and resume a session from a JSONL file"
+                "Usage: /import <path-to-jsonl> - import and resume a session from a JSONL file"
                     .to_string(),
             ))
         } else {
@@ -389,7 +384,7 @@ impl CommandHandler for NameCommand {
         let name = args.trim();
         if name.is_empty() {
             return Ok(CommandResult::Info(
-                "Usage: /name <name> — set session display name".to_string(),
+                "Usage: /name <name> - set session display name".to_string(),
             ));
         }
         Ok(CommandResult::SessionNamed {
@@ -454,7 +449,7 @@ impl CommandHandler for TrustCommand {
         let decision = args.trim();
         if decision.is_empty() {
             Ok(CommandResult::Info(
-                "Usage: /trust <auto|always|never> — save project trust decision for future sessions"
+                "Usage: /trust <auto|always|never> - save project trust decision for future sessions"
                     .to_string(),
             ))
         } else {
