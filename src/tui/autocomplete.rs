@@ -1,5 +1,6 @@
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::sync::Arc;
 
 use crate::tui::components::select_list::SelectItem;
 
@@ -31,14 +32,19 @@ pub struct AutocompleteSuggestions {
 
 /// A slash command definition.
 #[derive(Clone)]
+#[allow(clippy::type_complexity)]
 pub struct SlashCommand {
     pub name: String,
     pub description: Option<String>,
     pub argument_hint: Option<String>,
     /// Static argument completions (pi-compat: `getArgumentCompletions`).
     /// When set, these are filtered by the typed prefix and shown.
-    /// When None, file completion is used for arguments.
+    /// When None and `get_argument_completions` is also None, file completion is used.
     pub argument_completions: Option<Vec<AutocompleteItem>>,
+    /// Dynamic argument completions callback (pi-style `getArgumentCompletions`).
+    /// Called with the typed argument prefix, returns matching items.
+    /// Takes precedence over `argument_completions` when set.
+    pub get_argument_completions: Option<Arc<dyn Fn(&str) -> Vec<AutocompleteItem> + Send + Sync>>,
 }
 
 /// Provider that generates autocomplete suggestions.
@@ -285,7 +291,7 @@ fn resolve_scoped_fd_query(raw_query: &str, base_path: &str) -> Option<(String, 
 }
 
 // =============================================================================
-// CombinedAutocompleteProvider — handles slash commands + file paths
+// CombinedAutocompleteProvider - handles slash commands + file paths
 // =============================================================================
 
 /// Combined provider that handles slash commands and file path completion.
@@ -313,7 +319,7 @@ impl CombinedAutocompleteProvider {
             .filter(|cmd| cmd.name.to_lowercase().starts_with(&lower_prefix))
             .map(|cmd| {
                 let desc = match (&cmd.description, &cmd.argument_hint) {
-                    (Some(d), Some(h)) => Some(format!("{} — {}", h, d)),
+                    (Some(d), Some(h)) => Some(format!("{} - {}", h, d)),
                     (Some(d), None) => Some(d.clone()),
                     (None, Some(h)) => Some(h.clone()),
                     (None, None) => None,
@@ -342,7 +348,7 @@ impl CombinedAutocompleteProvider {
 
         let (fd_base_dir, fd_query, display_base) = resolve_scoped_fd_query(query, &self.base_path)
             .unwrap_or_else(|| {
-                // No scope — search from base_path with the full query
+                // No scope - search from base_path with the full query
                 (self.base_path.clone(), query.to_string(), String::new())
             });
 
@@ -563,6 +569,16 @@ impl AutocompleteProvider for CombinedAutocompleteProvider {
             let arg_text = &text_before[space_pos + 1..];
             for cmd in &self.slash_commands {
                 if cmd.name == cmd_name {
+                    // Check for dynamic argument completions callback (pi-style)
+                    if let Some(ref get_completions) = cmd.get_argument_completions {
+                        let items = get_completions(arg_text);
+                        if !items.is_empty() {
+                            return Some(AutocompleteSuggestions {
+                                items,
+                                prefix: arg_text.to_string(),
+                            });
+                        }
+                    }
                     // Check for static argument completions (pi-compat)
                     if let Some(ref completions) = cmd.argument_completions {
                         let lower = arg_text.to_lowercase();
@@ -724,12 +740,14 @@ mod tests {
                     description: Some("Show help".into()),
                     argument_hint: None,
                     argument_completions: None,
+                    get_argument_completions: None,
                 },
                 SlashCommand {
                     name: "history".into(),
                     description: Some("Show history".into()),
                     argument_hint: None,
                     argument_completions: None,
+                    get_argument_completions: None,
                 },
             ],
             "/tmp".into(),
@@ -751,6 +769,7 @@ mod tests {
                 description: None,
                 argument_hint: None,
                 argument_completions: None,
+                get_argument_completions: None,
             }],
             "/tmp".into(),
         );

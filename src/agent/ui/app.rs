@@ -203,14 +203,45 @@ impl App {
 
         let mut editor = ChatEditor::new(&theme, config.cwd.clone());
 
-        // Collect slash commands
+        // Collect slash commands with argument completion callbacks
+        use crate::tui::autocomplete::AutocompleteItem as AutoAutocompleteItem;
+        use crate::tui::autocomplete::SlashCommand as AutoSlashCommand;
+        let auto_commands: Vec<AutoSlashCommand> = config
+            .extensions
+            .iter()
+            .flat_map(|e| e.commands())
+            .map(|cmd| {
+                let handler = cmd.handler;
+                AutoSlashCommand {
+                    name: cmd.name,
+                    description: Some(cmd.description),
+                    argument_hint: None,
+                    argument_completions: None,
+                    get_argument_completions: Some(std::sync::Arc::new(
+                        move |prefix: &str| -> Vec<AutoAutocompleteItem> {
+                            handler
+                                .argument_completions(prefix)
+                                .into_iter()
+                                .map(|item| AutoAutocompleteItem {
+                                    value: item.value,
+                                    label: item.label,
+                                    description: item.description,
+                                })
+                                .collect()
+                        },
+                    )),
+                }
+            })
+            .collect();
+        editor.set_slash_commands(auto_commands);
+
+        // Keep commands list for help overlay and unknown-command display.
         let commands: Vec<(String, String)> = config
             .extensions
             .iter()
             .flat_map(|e| e.commands())
             .map(|c| (c.name, c.description))
             .collect();
-        editor.set_slash_commands(commands.iter().map(|(n, _)| n.clone()).collect());
 
         let editor = Rc::new(RefCell::new(editor));
 

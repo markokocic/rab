@@ -664,7 +664,7 @@ impl Editor {
                 }
             }
         }
-        // Also check if cursor is inside a marker — snap to start
+        // Also check if cursor is inside a marker - snap to start
         for &(start, end) in &Self::find_paste_marker_spans(line) {
             if cursor > start && cursor < end {
                 return Some((start, end - start));
@@ -837,7 +837,7 @@ impl Editor {
     }
 
     fn yank_pop(&mut self) {
-        // Must be called after yank() — check via last_action
+        // Must be called after yank() - check via last_action
         if self.last_action.as_deref() != Some("yank") || self.kill_ring.len() <= 1 {
             return;
         }
@@ -1086,7 +1086,7 @@ impl Editor {
             }
             line_idx += step;
         }
-        // No match — cursor stays
+        // No match - cursor stays
     }
 
     // ── History ──
@@ -1156,7 +1156,7 @@ impl Editor {
     /// `extended-keys-format=csi-u`) re-encode control bytes inside bracketed
     /// paste as `\x1b[<codepoint>;5u`. Decode those back to the literal byte.
     fn decode_csi_u_in_paste(&self, text: &str) -> String {
-        // Pattern: ESC [ digits ; 5 u  — Ctrl+<letter> encoded as CSI-u
+        // Pattern: ESC [ digits ; 5 u  - Ctrl+<letter> encoded as CSI-u
         let re = regex::Regex::new(r"\x1b\[(\d+);5u").unwrap();
         re.replace_all(text, |caps: &regex::Captures| {
             let cp: u32 = caps[1].parse().unwrap_or(0);
@@ -1948,6 +1948,7 @@ mod tests {
                         description: Some(format!("The {} command", name)),
                         argument_hint: None,
                         argument_completions: None,
+                        get_argument_completions: None,
                     })
                     .collect(),
             }

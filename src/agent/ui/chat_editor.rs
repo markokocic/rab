@@ -104,16 +104,8 @@ impl ChatEditor {
     }
 
     /// Set the available slash commands for autocomplete.
-    pub fn set_slash_commands(&mut self, commands: Vec<String>) {
-        self.slash_commands = commands
-            .into_iter()
-            .map(|name| SlashCommand {
-                name,
-                description: None,
-                argument_hint: None,
-                argument_completions: None,
-            })
-            .collect();
+    pub fn set_slash_commands(&mut self, commands: Vec<SlashCommand>) {
+        self.slash_commands = commands;
         self.rebuild_autocomplete_provider();
     }
 
@@ -361,6 +353,7 @@ impl ChatEditor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tui::autocomplete::SlashCommand;
     use crate::tui::theme::NoopTheme;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     fn make_editor() -> ChatEditor {
@@ -419,7 +412,13 @@ mod tests {
     #[test]
     fn test_escape_closes_autocomplete() {
         let mut ed = make_editor();
-        ed.set_slash_commands(vec!["help".into()]);
+        ed.set_slash_commands(vec![SlashCommand {
+            name: "help".into(),
+            description: None,
+            argument_hint: None,
+            argument_completions: None,
+            get_argument_completions: None,
+        }]);
         ed.editor.set_text("/");
         // Trigger autocomplete via the provider (Tab is handled by Editor now)
         ed.editor.handle_input(&ctrl('l')); // not helpful, just press a key
@@ -662,7 +661,22 @@ mod tests {
     fn test_tab_delegated_to_editor() {
         let mut ed = make_editor();
         // Set some text with a slash command prefix
-        ed.set_slash_commands(vec!["help".into(), "history".into()]);
+        ed.set_slash_commands(vec![
+            SlashCommand {
+                name: "help".into(),
+                description: None,
+                argument_hint: None,
+                argument_completions: None,
+                get_argument_completions: None,
+            },
+            SlashCommand {
+                name: "history".into(),
+                description: None,
+                argument_hint: None,
+                argument_completions: None,
+                get_argument_completions: None,
+            },
+        ]);
         ed.editor.set_text("/h");
 
         // Tab should be handled by Editor (trigger autocomplete provider)
