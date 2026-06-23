@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 120" fill="none">
+  <defs>
+    <linearGradient id="rustGradDark" x1="0" y1="0" x2="64" y2="64">
+      <stop offset="0%" stop-color="#D96B3F"/>
+      <stop offset="100%" stop-color="#B7410E"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="12" y="28" width="64" height="64" rx="16" fill="url(#rustGradDark)"/>
+
+  <g transform="translate(12, 28)" stroke="#FFFFFF" stroke-width="5" stroke-linecap="round" stroke-linejoin="round">
+    <line x1="28" y1="56" x2="28" y2="10"/>
+    <line x1="14" y1="18" x2="44" y2="18"/>
+    <line x1="28" y1="34" x2="38" y2="34"/>
+    <path d="M 44 18 Q 48 26 38 34"/>
+    <line x1="18" y1="50" x2="34" y2="46"/>
+  </g>
+
+  <text x="100" y="76" font-family="'Inter', system-ui, -apple-system, sans-serif" font-weight="700" font-size="50" fill="#E8E8E8" letter-spacing="-0.5">rab</text>
+  <text x="100" y="94" font-family="system-ui, -apple-system, sans-serif" font-weight="400" font-size="12" fill="#999" letter-spacing="1.5">QUIET · DEVOTED · AGENT</text>
+</svg>

@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <defs>
+    <linearGradient id="rustGrad" x1="0" y1="0" x2="64" y2="64">
+      <stop offset="0%" stop-color="#D96B3F"/>
+      <stop offset="100%" stop-color="#B7410E"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="0" y="0" width="64" height="64" rx="16" fill="url(#rustGrad)"/>
+
+  <g stroke="#FFFFFF" stroke-width="5" stroke-linecap="round" stroke-linejoin="round">
+    <!-- Vertical — cross upright / Р stem -->
+    <line x1="28" y1="56" x2="28" y2="10"/>
+
+    <!-- Top bar (titulus) — both sides -->
+    <line x1="14" y1="18" x2="44" y2="18"/>
+
+    <!-- Middle bar — right side only (bottom of Р bowl) -->
+    <line x1="28" y1="34" x2="38" y2="34"/>
+
+    <!-- Curve connecting right ends — completes the Р bowl -->
+    <path d="M 44 18 Q 48 26 38 34"/>
+
+    <!-- Slanted foot — Orthodox cross -->
+    <line x1="18" y1="50" x2="34" y2="46"/>
+  </g>
+</svg>

@@ -1,4 +1,11 @@
-# 🚧 rab
+# rab
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/logo-dark.svg">
+    <img src="assets/logo.svg" alt="rab logo" width="480">
+  </picture>
+</p>
 
 > ⚠️ **Work in Progress** — This project is under active development. APIs, features, and documentation are subject to change.
 
@@ -12,20 +19,28 @@ Inspired by [pi coding agent](https://pi.dev).
 
 ## ⚡ Quick Start
 
-### Install via cargo (from source)
-
-Since there are no pre-built releases yet, the only way to install **rab** is
-straight from the repository using `cargo`.
+### Install via cargo
 
 **Prerequisites:** [Rust](https://rustup.rs/) (latest stable toolchain)
 
-#### Option A: Install directly from git
+#### Option A: Install directly from git (recommended)
 
 ```bash
 cargo install --git https://github.com/markokocic/rab.git
 ```
 
-#### Option B: Clone and build locally
+> ⚠️ The project is under active development — the version on crates.io may be outdated.
+> Prefer the git install above for the latest changes.
+
+#### Option B: Install from crates.io
+
+```bash
+cargo install rab-agent
+```
+
+This installs the `rab` binary.
+
+#### Option C: Clone and build locally
 
 ```bash
 git clone https://github.com/markokocic/rab.git
