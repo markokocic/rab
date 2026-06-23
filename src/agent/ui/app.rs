@@ -12,6 +12,7 @@ use crate::agent::types::{AgentMessage, PendingMessageQueue, QueueMode, ToolExec
 use crate::agent::ui::chat_editor::{ChatEditor, InputAction};
 use crate::agent::ui::components::EditorComponent;
 use crate::agent::ui::components::FooterComponent;
+use crate::agent::ui::components::InfoMessageComponent;
 use crate::agent::ui::footer::Footer;
 use crate::agent::ui::messages::{DisplayMsg, session_messages_to_display};
 use crate::agent::ui::model_selector::ModelSelector;
@@ -662,18 +663,28 @@ fn handle_input(app: &mut App, tui: &mut TUI, key: &KeyEvent) {
         }
         InputAction::ToggleThinking => {
             app.hide_thinking = !app.hide_thinking;
-            app.settings.hide_thinking = Some(app.hide_thinking);
-            if let Err(e) = app.settings.save() {
-                app.messages.push(DisplayMsg::Info(format!(
-                    "Failed to save thinking setting: {}",
-                    e
-                )));
+            // Propagate to ALL existing components in chat container (matching pi)
+            {
+                let mut chat = app.chat_container.inner.borrow_mut();
+                for child in chat.children_mut().iter_mut() {
+                    child.set_hide_thinking(app.hide_thinking);
+                }
             }
-            app.messages.push(DisplayMsg::Info(if app.hide_thinking {
-                "Thinking blocks: hidden".into()
-            } else {
-                "Thinking blocks: visible".into()
-            }));
+            // Update streaming component if it exists
+            if let Some(weak) = app.streaming_component.as_ref().and_then(|w| w.upgrade()) {
+                weak.borrow_mut().set_hide_thinking(app.hide_thinking);
+            }
+            // Persist only the affected field (incremental save)
+            let _ = crate::agent::settings::save_field("hideThinkingBlock", app.hide_thinking);
+            app.settings.hide_thinking = Some(app.hide_thinking);
+            chat_add(
+                app,
+                Box::new(InfoMessageComponent::new(if app.hide_thinking {
+                    "Thinking blocks: hidden".to_string()
+                } else {
+                    "Thinking blocks: visible".to_string()
+                })),
+            );
         }
         InputAction::ToolsExpand => {
             handle_tools_expand(app);
@@ -741,12 +752,7 @@ fn handle_thinking_cycle(app: &mut App) {
         .borrow_mut()
         .update_border_color(Some(next), &app.theme as &dyn crate::tui::Theme);
     app.settings.default_thinking_level = Some(next.to_string());
-    if let Err(e) = app.settings.save() {
-        app.messages.push(DisplayMsg::Info(format!(
-            "Failed to save thinking setting: {}",
-            e
-        )));
-    }
+    let _ = crate::agent::settings::save_field("defaultThinkingLevel", next);
     // Update provider's reasoning effort so API calls use the new level
     app.provider.set_reasoning_effort(Some(next));
     app.status_text = Some(format!("Thinking level: {}", next));
@@ -793,17 +799,15 @@ fn handle_tools_expand(app: &mut App) {
     drop(chat);
 
     app.settings.collapse_tool_output = Some(app.collapse_tool_output);
-    if let Err(e) = app.settings.save() {
-        app.messages.push(DisplayMsg::Info(format!(
-            "Failed to save tool output setting: {}",
-            e
-        )));
-    }
-    app.messages.push(DisplayMsg::Info(if app.tools_expanded {
-        "Tool output: expanded".into()
-    } else {
-        "Tool output: collapsed".into()
-    }));
+    let _ = crate::agent::settings::save_field("collapseToolOutput", app.collapse_tool_output);
+    chat_add(
+        app,
+        Box::new(InfoMessageComponent::new(if app.tools_expanded {
+            "Tool output: expanded".to_string()
+        } else {
+            "Tool output: collapsed".to_string()
+        })),
+    );
 }
 
 /// Open external editor ($VISUAL / $EDITOR) for current editor content.

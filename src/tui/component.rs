@@ -71,4 +71,8 @@ pub trait Component {
     /// Toggle expanded/collapsed state. No-op by default.
     /// Override for components that support expand/collapse (tool results, messages, etc.).
     fn set_expanded(&mut self, _expanded: bool) {}
+
+    /// Toggle thinking block visibility. No-op by default.
+    /// Override for components that display thinking content (AssistantMessageComponent).
+    fn set_hide_thinking(&mut self, _hide: bool) {}
 }

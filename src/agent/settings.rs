@@ -116,8 +116,38 @@ impl Settings {
         Ok(())
     }
 
-    /// Resolved model name (defaults to deepseek-v4-flash).
+    /// Resolved model name (defaults to deepseek-v4-flask).
     pub fn model(&self) -> &str {
         self.default_model.as_deref().unwrap_or("deepseek-v4-flash")
     }
+}
+
+/// Save a single field to the global settings file without overwriting other fields.
+/// Reads the existing JSON, updates only `key` with `value`, and writes back.
+pub fn save_field(key: &str, value: impl serde::Serialize) -> anyhow::Result<()> {
+    let path = Settings::global_path()?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let mut data: serde_json::Value = if path.exists() {
+        let content = std::fs::read_to_string(&path)
+            .with_context(|| format!("Failed to read {}", path.display()))?;
+        serde_json::from_str(&content)
+            .with_context(|| format!("Failed to parse {}", path.display()))?
+    } else {
+        serde_json::Value::Object(serde_json::Map::new())
+    };
+
+    if let serde_json::Value::Object(ref mut map) = data {
+        let json_val = serde_json::to_value(value)
+            .with_context(|| format!("Failed to serialize field {}", key))?;
+        map.insert(key.to_string(), json_val);
+    }
+
+    let content = serde_json::to_string_pretty(&data)
+        .with_context(|| format!("Failed to serialize {}", path.display()))?;
+    std::fs::write(&path, &content)
+        .with_context(|| format!("Failed to write {}", path.display()))?;
+    Ok(())
 }

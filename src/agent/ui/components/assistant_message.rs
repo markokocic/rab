@@ -1,8 +1,9 @@
 use std::cell::RefCell;
+use std::sync::Arc;
 
 use crate::agent::ui::theme::current_theme;
 use crate::tui::Component;
-use crate::tui::components::markdown::Markdown;
+use crate::tui::components::markdown::{DefaultTextStyle, Markdown, StyleFn};
 
 const OSC133_ZONE_START: &str = "\x1b]133;A\x07";
 const OSC133_ZONE_END: &str = "\x1b]133;B\x07";
@@ -32,11 +33,6 @@ impl AssistantMessageComponent {
             cached_lines: RefCell::new(None),
             cached_width: RefCell::new(0),
         }
-    }
-
-    pub fn set_hide_thinking(&mut self, hide: bool) {
-        self.hide_thinking = hide;
-        self.invalidate();
     }
 
     pub fn add_thinking(&mut self, text: impl Into<String>, level: Option<String>) {
@@ -117,62 +113,68 @@ impl Component for AssistantMessageComponent {
         drop(cached);
 
         let mut lines: Vec<String> = Vec::new();
+        let md_theme = crate::agent::ui::theme::get_markdown_theme();
 
-        // Render thinking blocks first
+        let has_thinking =
+            !self.thinking.is_empty() && self.thinking.iter().any(|b| !b.text.trim().is_empty());
+        let has_text = !self.text.trim().is_empty();
+        let has_any_content = has_thinking || has_text;
+
+        // Leading blank line before any content (matching pi's leading Spacer(1))
+        if has_any_content {
+            lines.push(String::new());
+        }
+
+        // Render thinking blocks through Markdown (matching pi's approach)
         for block in &self.thinking {
             if block.text.trim().is_empty() {
                 continue;
             }
             if self.hide_thinking {
+                // Match pi: Text with padding_x=1, italic, thinkingText color
                 let theme = current_theme();
-                let label = theme.italic(&theme.fg("thinkingText", " Thinking... "));
-                lines.push(label);
+                let label = theme.italic(&theme.fg("thinkingText", "Thinking..."));
+                let padded = format!(" {} ", label);
+                lines.push(padded);
             } else {
-                let theme = current_theme();
-                let color_name = block
-                    .level
-                    .as_deref()
-                    .and_then(|l| match l {
-                        "minimal" | "low" => Some("thinking_level_low"),
-                        "medium" => Some("thinking_level_medium"),
-                        "high" => Some("thinking_level_high"),
-                        "xhigh" | "max" => Some("thinking_level_xhigh"),
-                        _ => None,
-                    })
-                    .unwrap_or("thinkingText");
-
-                let color_ansi = theme.fg_ansi(color_name).to_string();
-                let italic_style = "\x1b[3m";
-                let reset = "\x1b[23m\x1b[39m";
-
-                let styled_text = block
-                    .text
-                    .lines()
-                    .map(|line| format!("{}{}{}{}", italic_style, color_ansi, line, reset))
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                lines.push(styled_text);
+                // Pi always uses thinkingText color for ALL thinking blocks (not per-level)
+                let color_fn: StyleFn = Arc::new(|s: &str| -> String {
+                    crate::agent::ui::theme::current_theme().fg("thinkingText", s)
+                });
+                let default_style = DefaultTextStyle {
+                    color: Some(color_fn),
+                    bg_color: None,
+                    bold: false,
+                    italic: true,
+                    strikethrough: false,
+                    underline: false,
+                };
+                // Match pi: padding_x=1, padding_y=0, thinkingText + italic
+                let md = Markdown::new(
+                    block.text.trim().to_string(),
+                    1,
+                    0,
+                    crate::agent::ui::theme::get_markdown_theme(),
+                    Some(default_style),
+                    None,
+                );
+                lines.extend(md.render(width));
             }
         }
 
-        // Add spacer between thinking and main text (one blank line, not one per block)
-        let has_thinking =
-            !self.thinking.is_empty() && self.thinking.iter().any(|b| !b.text.trim().is_empty());
-        let has_text = !self.text.trim().is_empty();
+        // Blank line between thinking and text (matching pi's Spacer(1) after thinking)
         if has_thinking && has_text {
             lines.push(String::new());
         }
 
-        // Render main text content
+        // Render main text content through Markdown (matching pi)
         if has_text {
-            let md_theme = crate::agent::ui::theme::get_markdown_theme();
-            let md = Markdown::new(self.text.clone(), 1, 0, md_theme, None, None);
-            let md_lines = md.render(width);
-            lines.extend(md_lines);
+            let md = Markdown::new(self.text.trim().to_string(), 1, 0, md_theme, None, None);
+            lines.extend(md.render(width));
         }
 
-        // Add OSC133 zones
-        if !lines.is_empty() {
+        // Add OSC133 zones around the entire component (matching pi)
+        if has_any_content && !lines.is_empty() {
             lines[0] = format!("{}{}", OSC133_ZONE_START, &lines[0]);
             if let Some(last) = lines.last_mut() {
                 last.push_str(OSC133_ZONE_END);
@@ -184,6 +186,11 @@ impl Component for AssistantMessageComponent {
         *self.cached_lines.borrow_mut() = Some(lines);
         *self.cached_width.borrow_mut() = width;
         result
+    }
+
+    fn set_hide_thinking(&mut self, hide: bool) {
+        self.hide_thinking = hide;
+        self.invalidate();
     }
 
     fn invalidate(&mut self) {
