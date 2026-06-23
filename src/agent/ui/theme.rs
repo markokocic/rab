@@ -309,6 +309,54 @@ impl RabTheme {
     pub fn bold_accent(&self, text: &str) -> String {
         self.bold_fg("accent", text)
     }
+
+    // ── Style API ──
+
+    /// Create a `Style` with a foreground color resolved from a color name.
+    pub fn fg_style(&self, color: &str) -> crate::tui::Style {
+        crate::tui::Style::new().fg(self.fg_ansi(color).to_string())
+    }
+
+    /// Create a `Style` with a background color resolved from a color name.
+    pub fn bg_style(&self, color: &str) -> crate::tui::Style {
+        crate::tui::Style::new().bg(self.bg_ansi(color).to_string())
+    }
+}
+
+// ── ThemeKey Enum ───────────────────────────────────────────────
+
+pub use crate::tui::ThemeKey;
+
+impl RabTheme {
+    /// Get ANSI foreground escape code for a `ThemeKey`.
+    pub fn fg_ansi_key(&self, key: ThemeKey) -> &str {
+        self.fg_ansi(key.as_str())
+    }
+
+    /// Get ANSI background escape code for a `ThemeKey`.
+    pub fn bg_ansi_key(&self, key: ThemeKey) -> &str {
+        self.bg_ansi(key.as_str())
+    }
+
+    /// Apply foreground color from a `ThemeKey`.
+    pub fn fg_key(&self, key: ThemeKey, text: &str) -> String {
+        self.fg(key.as_str(), text)
+    }
+
+    /// Apply background color from a `ThemeKey`.
+    pub fn bg_key(&self, key: ThemeKey, text: &str) -> String {
+        self.bg(key.as_str(), text)
+    }
+
+    /// Create a `Style` with foreground from a `ThemeKey`.
+    pub fn fg_style_key(&self, key: ThemeKey) -> crate::tui::Style {
+        self.fg_style(key.as_str())
+    }
+
+    /// Create a `Style` with background from a `ThemeKey`.
+    pub fn bg_style_key(&self, key: ThemeKey) -> crate::tui::Style {
+        self.bg_style(key.as_str())
+    }
 }
 
 impl Theme for RabTheme {

@@ -1,6 +1,7 @@
 use crate::agent::extension::{AgentTool, Cancel, Extension, ToolOutput};
 use crate::agent::extension::{ToolRenderContext, ToolRenderer};
 use crate::tui::Theme;
+use crate::tui::ThemeKey;
 use anyhow::Context;
 use async_trait::async_trait;
 use std::borrow::Cow;
@@ -413,14 +414,14 @@ impl ToolRenderer for ReadRenderer {
                 Some(l) => format!(":{}-{}", start, start + l - 1),
                 None => format!(":{}", start),
             };
-            theme.fg("warning", &range_str)
+            theme.fg_key(ThemeKey::Warning, &range_str)
         } else {
             String::new()
         };
 
         // Expand hint (matching pi's ` (Ctrl+O to expand)` in `dim` color)
         let expand_hint = if !ctx.expanded && !ctx.expand_key.is_empty() {
-            theme.fg("muted", &format!(" ({}) to expand", ctx.expand_key))
+            theme.fg_key(ThemeKey::Muted, &format!(" ({}) to expand", ctx.expand_key))
         } else {
             String::new()
         };
@@ -430,15 +431,17 @@ impl ToolRenderer for ReadRenderer {
                 CompactReadKind::Skill => {
                     // Pi: `[skill] name:range (Ctrl+O to expand)`
                     // [skill] in customMessageLabel bold, name in customMessageText
-                    let prefix = theme.fg("customMessageLabel", "\x1b[1m[skill]\x1b[22m ");
-                    let name = theme.fg("customMessageText", &label);
+                    let prefix =
+                        theme.fg_key(ThemeKey::CustomMessageLabel, "\x1b[1m[skill]\x1b[22m ");
+                    let name = theme.fg_key(ThemeKey::CustomMessageText, &label);
                     vec![format!("{}{}{}{}", prefix, name, range, expand_hint)]
                 }
                 CompactReadKind::Resource => {
                     // Pi: `read resource  path:range (Ctrl+O to expand)`
                     // "read resource" in bold toolTitle, path in accent
-                    let title_styled = theme.fg("toolTitle", &theme.bold("read resource"));
-                    let path_styled = theme.fg("accent", &label);
+                    let title_styled =
+                        theme.fg_key(ThemeKey::ToolTitle, &theme.bold("read resource"));
+                    let path_styled = theme.fg_key(ThemeKey::Accent, &label);
                     vec![format!(
                         "{} {}{}{}",
                         title_styled, path_styled, range, expand_hint
@@ -455,11 +458,11 @@ impl ToolRenderer for ReadRenderer {
             let path_disp = if short.is_empty() {
                 String::new()
             } else {
-                theme.fg("accent", &short)
+                theme.fg_key(ThemeKey::Accent, &short)
             };
             vec![format!(
                 "{} {}{}",
-                theme.fg("toolTitle", &theme.bold("read")),
+                theme.fg_key(ThemeKey::ToolTitle, &theme.bold("read")),
                 path_disp,
                 range,
             )]
@@ -521,7 +524,7 @@ impl ToolRenderer for ReadRenderer {
                 // Pi uses highlightCode on the full text, then replaceTabs on each line
                 let _ = lang;
             }
-            result.push(theme.fg("toolOutput", &processed));
+            result.push(theme.fg_key(ThemeKey::ToolOutput, &processed));
         }
 
         // Pi: remaining lines hint
@@ -534,7 +537,7 @@ impl ToolRenderer for ReadRenderer {
                 ),
             ));
         } else if remaining > 0 {
-            result.push(theme.fg("muted", &format!("... ({} more lines)", remaining)));
+            result.push(theme.fg_key(ThemeKey::Muted, &format!("... ({} more lines)", remaining)));
         }
 
         result

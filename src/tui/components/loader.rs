@@ -140,7 +140,7 @@ impl Loader {
 }
 
 impl Component for Loader {
-    fn render(&self, width: usize) -> Vec<String> {
+    fn render(&mut self, width: usize) -> Vec<String> {
         // Pi: renderer returns ["", ...super.render(width)] — one blank line above for spacing
         let display = self.update_display();
         let mut lines = vec![String::new()]; // blank line above
@@ -171,7 +171,7 @@ mod tests {
 
     #[test]
     fn test_loader_renders_with_spacing() {
-        let loader = Loader::new(
+        let mut loader = Loader::new(
             Box::new(|s| s.to_string()),
             Box::new(|s| s.to_string()),
             "Loading...",
@@ -183,7 +183,7 @@ mod tests {
 
     #[test]
     fn test_loader_message() {
-        let loader = Loader::new(
+        let mut loader = Loader::new(
             Box::new(|s| s.to_string()),
             Box::new(|s| s.to_string()),
             "Working...",

@@ -17,7 +17,7 @@ impl Spacer {
 
 impl Component for Spacer {
     /// Pi: returns `[""]` (empty strings, not padded spaces)
-    fn render(&self, _width: usize) -> Vec<String> {
+    fn render(&mut self, _width: usize) -> Vec<String> {
         vec![String::new(); self.lines]
     }
 }
@@ -28,7 +28,7 @@ mod tests {
 
     #[test]
     fn test_spacer() {
-        let spacer = Spacer::new(3);
+        let mut spacer = Spacer::new(3);
         let lines = spacer.render(10);
         assert_eq!(lines.len(), 3);
         // Pi: spacer returns empty strings

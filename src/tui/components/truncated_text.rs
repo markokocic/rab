@@ -1,5 +1,3 @@
-use std::cell::RefCell;
-
 use crate::tui::Component;
 use crate::tui::util::{truncate_to_width, visible_width};
 
@@ -10,8 +8,8 @@ pub struct TruncatedText {
     ellipsis: String,
     padding_x: usize,
     padding_y: usize,
-    cached_width: RefCell<Option<usize>>,
-    cached_line: RefCell<String>,
+    cached_width: Option<usize>,
+    cached_line: String,
 }
 
 impl TruncatedText {
@@ -21,8 +19,8 @@ impl TruncatedText {
             ellipsis: "...".to_string(),
             padding_x: 0,
             padding_y: 0,
-            cached_width: RefCell::new(None),
-            cached_line: RefCell::new(String::new()),
+            cached_width: None,
+            cached_line: String::new(),
         }
     }
 
@@ -39,21 +37,20 @@ impl TruncatedText {
 
     pub fn set_text(&mut self, text: impl Into<String>) {
         self.text = text.into();
-        *self.cached_width.borrow_mut() = None;
+        self.cached_width = None;
     }
 
     pub fn set_ellipsis(&mut self, ellipsis: impl Into<String>) {
         self.ellipsis = ellipsis.into();
-        *self.cached_width.borrow_mut() = None;
+        self.cached_width = None;
     }
 }
 
 impl Component for TruncatedText {
-    fn render(&self, width: usize) -> Vec<String> {
+    fn render(&mut self, width: usize) -> Vec<String> {
         // Use cache for single-line no-padding case
-        if self.padding_x == 0 && self.padding_y == 0 && *self.cached_width.borrow() == Some(width)
-        {
-            return vec![self.cached_line.borrow().clone()];
+        if self.padding_x == 0 && self.padding_y == 0 && self.cached_width == Some(width) {
+            return vec![self.cached_line.clone()];
         }
 
         let mut result: Vec<String> = Vec::new();
@@ -96,8 +93,8 @@ impl Component for TruncatedText {
 
         // Cache single-line no-padding case
         if self.padding_x == 0 && self.padding_y == 0 {
-            *self.cached_width.borrow_mut() = Some(width);
-            *self.cached_line.borrow_mut() = if result.is_empty() {
+            self.cached_width = Some(width);
+            self.cached_line = if result.is_empty() {
                 String::new()
             } else {
                 result[0].clone()
@@ -108,7 +105,7 @@ impl Component for TruncatedText {
     }
 
     fn invalidate(&mut self) {
-        *self.cached_width.borrow_mut() = None;
+        self.cached_width = None;
     }
 }
 
@@ -119,7 +116,7 @@ mod tests {
 
     #[test]
     fn test_no_truncation() {
-        let tt = TruncatedText::new("hello");
+        let mut tt = TruncatedText::new("hello");
         let lines = tt.render(10);
         // Pi: padded to full width
         assert!(lines[0].starts_with("hello"));
@@ -128,7 +125,7 @@ mod tests {
 
     #[test]
     fn test_truncated() {
-        let tt = TruncatedText::new("hello world");
+        let mut tt = TruncatedText::new("hello world");
         let lines = tt.render(8);
         assert!(visible_width(&lines[0]) <= 8);
         assert!(lines[0].contains("..."));
@@ -136,7 +133,7 @@ mod tests {
 
     #[test]
     fn test_padding() {
-        let tt = TruncatedText::new("hello").with_padding(1, 1);
+        let mut tt = TruncatedText::new("hello").with_padding(1, 1);
         let lines = tt.render(10);
         assert_eq!(lines.len(), 3, "Should have top pad + line + bottom pad");
         assert!(
@@ -152,7 +149,7 @@ mod tests {
 
     #[test]
     fn test_only_first_line() {
-        let tt = TruncatedText::new("line1\nline2");
+        let mut tt = TruncatedText::new("line1\nline2");
         let lines = tt.render(20);
         assert_eq!(lines.len(), 1);
         assert!(

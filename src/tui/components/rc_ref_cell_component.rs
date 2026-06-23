@@ -16,8 +16,8 @@ impl Clone for RcRefCellComponent {
 }
 
 impl Component for RcRefCellComponent {
-    fn render(&self, width: usize) -> Vec<String> {
-        self.0.borrow().render(width)
+    fn render(&mut self, width: usize) -> Vec<String> {
+        self.0.borrow_mut().render(width)
     }
 
     fn handle_input(&mut self, key: &KeyEvent) -> bool {

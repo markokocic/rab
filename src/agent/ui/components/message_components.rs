@@ -3,12 +3,12 @@ use crate::agent::ui::components::UserMessageComponent;
 use crate::agent::ui::components::bash_execution::{BashExecution, BashStatus};
 use crate::agent::ui::components::info_message::InfoMessageComponent;
 use crate::agent::ui::messages::DisplayMsg;
+use crate::agent::ui::theme::ThemeKey;
 use crate::agent::ui::theme::{RabTheme, current_theme};
 use crate::tui::Component;
 use crate::tui::components::Spacer;
 use crate::tui::components::Text;
 use crate::tui::components::r#box::TuiBox;
-
 /// Convert a single DisplayMsg to a Box<dyn Component> for use in chat_container.
 /// This is used for initial session message loading.
 /// New messages during the session should be added as Components directly in handle_agent_event.
@@ -28,7 +28,7 @@ pub fn display_msg_to_component(msg: &DisplayMsg) -> Option<std::boxed::Box<dyn 
             )))
         }
         DisplayMsg::Thinking { text, level: _ } => {
-            let styled = theme.fg("thinkingText", &theme.italic(text));
+            let styled = theme.fg_key(ThemeKey::ThinkingText, &theme.italic(text));
             Some(std::boxed::Box::new(Text::new(styled, 0, 0, None)))
         }
         DisplayMsg::ToolCall { name: _, args: _ } => {
@@ -48,13 +48,7 @@ pub fn display_msg_to_component(msg: &DisplayMsg) -> Option<std::boxed::Box<dyn 
                 "toolSuccessBg"
             };
             let bg_ansi = theme.bg_ansi(bg_key).to_string();
-            let mut msg_box = TuiBox::new(
-                1,
-                1,
-                Some(std::boxed::Box::new(move |s: &str| -> String {
-                    format!("{}{}\x1b[49m", bg_ansi, s)
-                })),
-            );
+            let mut msg_box = TuiBox::new(1, 1, Some(crate::tui::Style::new().bg(bg_ansi)));
             msg_box.add_child(std::boxed::Box::new(Text::new(styled, 0, 0, None)));
             Some(std::boxed::Box::new(msg_box))
         }

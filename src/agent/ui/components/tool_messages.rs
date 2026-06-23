@@ -206,7 +206,7 @@ impl Component for ToolExecComponent {
         self.mark_dirty();
     }
 
-    fn render(&self, width: usize) -> Vec<String> {
+    fn render(&mut self, width: usize) -> Vec<String> {
         let theme = current_theme();
 
         // If tool has a renderer, delegate to it
@@ -312,13 +312,7 @@ impl ToolExecComponent {
         let bg_ansi = theme.bg_ansi(bg_key).to_string();
         let theme_clone = theme.clone();
 
-        let mut msg_box = TuiBox::new(
-            1,
-            1,
-            Some(std::boxed::Box::new(move |s: &str| -> String {
-                format!("{}{}\x1b[49m", bg_ansi, s)
-            })),
-        );
+        let mut msg_box = TuiBox::new(1, 1, Some(crate::tui::Style::new().bg(bg_ansi)));
 
         // Call header
         let call_lines = renderer.render_call(&self.args, width, &theme_clone, &ctx);
@@ -348,13 +342,7 @@ impl ToolExecComponent {
         };
         let bg_ansi = theme.bg_ansi(bg_key).to_string();
 
-        let mut msg_box = TuiBox::new(
-            1,
-            1,
-            Some(std::boxed::Box::new(move |s: &str| -> String {
-                format!("{}{}\x1b[49m", bg_ansi, s)
-            })),
-        );
+        let mut msg_box = TuiBox::new(1, 1, Some(crate::tui::Style::new().bg(bg_ansi)));
 
         // ── Header ──
         let header_styled = format_generic_call_header(&self.name, &self.args, theme);
@@ -475,7 +463,7 @@ fn format_generic_call_header(name: &str, args: &serde_json::Value, theme: &RabT
                 .unwrap_or("...");
             let timeout = args.get("timeout").and_then(|v| v.as_i64());
             let timeout_suffix = timeout
-                .map(|t| theme.fg("muted", &format!(" (timeout {}s)", t)))
+                .map(|t| theme.fg_key(ThemeKey::Muted, &format!(" (timeout {}s)", t)))
                 .unwrap_or_default();
             format!(
                 "{}{}",
@@ -493,7 +481,7 @@ fn format_generic_call_header(name: &str, args: &serde_json::Value, theme: &RabT
             let path_disp = if short.is_empty() {
                 String::new()
             } else {
-                theme.fg("accent", &short)
+                theme.fg_key(ThemeKey::Accent, &short)
             };
             let range = format_line_range(args, theme);
             format!(
@@ -513,7 +501,7 @@ fn format_generic_call_header(name: &str, args: &serde_json::Value, theme: &RabT
             let path_disp = if short.is_empty() {
                 String::new()
             } else {
-                theme.fg("accent", &short)
+                theme.fg_key(ThemeKey::Accent, &short)
             };
             format!(
                 "{} {}",
@@ -531,7 +519,7 @@ fn format_generic_call_header(name: &str, args: &serde_json::Value, theme: &RabT
             let path_disp = if short.is_empty() {
                 String::new()
             } else {
-                theme.fg("accent", &short)
+                theme.fg_key(ThemeKey::Accent, &short)
             };
             format!(
                 "{} {}",
@@ -551,7 +539,7 @@ fn format_generic_call_header(name: &str, args: &serde_json::Value, theme: &RabT
             format!(
                 "{} {}{}",
                 theme.fg("toolTitle", &theme.bold("ls")),
-                theme.fg("accent", &short),
+                theme.fg_key(ThemeKey::Accent, &short),
                 limit_str
             )
         }
@@ -560,7 +548,7 @@ fn format_generic_call_header(name: &str, args: &serde_json::Value, theme: &RabT
             let suffix = if args_str.is_empty() || args_str == "{}" {
                 String::new()
             } else {
-                format!("  {}", theme.fg("muted", &args_str))
+                format!("  {}", theme.fg_key(ThemeKey::Muted, &args_str))
             };
             format!("{}{}", theme.fg("toolTitle", &theme.bold(name)), suffix)
         }
@@ -579,7 +567,7 @@ fn format_line_range(args: &serde_json::Value, theme: &RabTheme) -> String {
         Some(l) => format!(":{}-{}", start, start + l - 1),
         None => format!(":{}", start),
     };
-    theme.fg("warning", &range_str)
+    theme.fg_key(ThemeKey::Warning, &range_str)
 }
 
 /// Shorten a path (replace home with ~).
@@ -647,16 +635,16 @@ impl BashResult {
 }
 
 impl Component for BashResult {
-    fn render(&self, width: usize) -> Vec<String> {
+    fn render(&mut self, width: usize) -> Vec<String> {
         let theme = &self.theme;
         let fg_ansi = if self.is_error {
-            theme.fg_ansi("error")
+            theme.fg_ansi_key(ThemeKey::Error)
         } else {
             theme.fg_ansi("toolOutput")
         }
         .to_string();
-        let dim_ansi = theme.fg_ansi("muted").to_string();
-        let warning_ansi = theme.fg_ansi("warning").to_string();
+        let dim_ansi = theme.fg_ansi_key(ThemeKey::Muted).to_string();
+        let warning_ansi = theme.fg_ansi_key(ThemeKey::Warning).to_string();
         let expand_key = format_key_hint(ACTION_APP_TOOLS_EXPAND);
 
         let mut lines: Vec<String> = Vec::new();
@@ -736,6 +724,7 @@ impl Component for BashResult {
 // Visual-line-aware truncation (delegated to shared tui::visual_truncate)
 // ═══════════════════════════════════════════════════════════════════
 
+use crate::agent::ui::theme::ThemeKey;
 use crate::tui::visual_truncate::truncate_to_visual_lines;
 
 fn strip_context_truncation_footer(output: &str) -> String {
@@ -773,8 +762,8 @@ impl Clone for RcToolExec {
 }
 
 impl Component for RcToolExec {
-    fn render(&self, width: usize) -> Vec<String> {
-        self.0.borrow().render(width)
+    fn render(&mut self, width: usize) -> Vec<String> {
+        self.0.borrow_mut().render(width)
     }
 
     fn set_expanded(&mut self, expanded: bool) {
@@ -831,9 +820,9 @@ impl Component for ToolCallComponent {
     fn set_expanded(&mut self, expanded: bool) {
         self.expanded = expanded;
     }
-    fn render(&self, width: usize) -> Vec<String> {
+    fn render(&mut self, width: usize) -> Vec<String> {
         let theme = current_theme();
-        let bg_ansi = theme.bg_ansi("toolPendingBg").to_string();
+        let bg_ansi = theme.bg_ansi_key(ThemeKey::ToolPendingBg).to_string();
 
         let mut styled = String::new();
         styled.push_str("\x1b[1m");
@@ -843,18 +832,12 @@ impl Component for ToolCallComponent {
 
         if !self.args.is_empty() && self.args != "{}" {
             styled.push_str("  ");
-            styled.push_str(theme.fg_ansi("muted"));
+            styled.push_str(theme.fg_ansi_key(ThemeKey::Muted));
             styled.push_str(&self.args);
         }
         styled.push_str("\x1b[39m");
 
-        let mut msg_box = TuiBox::new(
-            1,
-            1,
-            Some(std::boxed::Box::new(move |s: &str| -> String {
-                format!("{}{}\x1b[49m", bg_ansi, s)
-            })),
-        );
+        let mut msg_box = TuiBox::new(1, 1, Some(crate::tui::Style::new().bg(bg_ansi)));
         msg_box.add_child(std::boxed::Box::new(Text::new(styled, 0, 0, None)));
         msg_box.render(width)
     }
@@ -881,7 +864,7 @@ impl Component for ToolResultComponent {
     fn set_expanded(&mut self, expanded: bool) {
         self.expanded = expanded;
     }
-    fn render(&self, width: usize) -> Vec<String> {
+    fn render(&mut self, width: usize) -> Vec<String> {
         let theme = current_theme();
         let bg_key = if self.is_error {
             "toolErrorBg"
@@ -892,13 +875,7 @@ impl Component for ToolResultComponent {
         let bg_ansi = theme.bg_ansi(bg_key).to_string();
         let styled = theme.fg(fg_key, &self.content);
 
-        let mut msg_box = TuiBox::new(
-            1,
-            0,
-            Some(std::boxed::Box::new(move |s: &str| -> String {
-                format!("{}{}\x1b[49m", bg_ansi, s)
-            })),
-        );
+        let mut msg_box = TuiBox::new(1, 0, Some(crate::tui::Style::new().bg(bg_ansi)));
         msg_box.add_child(std::boxed::Box::new(Text::new(styled, 0, 0, None)));
         msg_box.render(width)
     }
@@ -908,7 +885,6 @@ impl Component for ToolResultComponent {
 #[cfg(test)]
 mod tests {
     use crate::tui::visual_truncate::{truncate_to_visual_lines, visual_line_count};
-
     #[test]
     fn test_visual_line_count_ascii() {
         assert_eq!(visual_line_count("hello", 80), 1);

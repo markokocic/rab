@@ -50,7 +50,7 @@ impl CancellableLoader {
 }
 
 impl Component for CancellableLoader {
-    fn render(&self, width: usize) -> Vec<String> {
+    fn render(&mut self, width: usize) -> Vec<String> {
         self.loader.render(width)
     }
 

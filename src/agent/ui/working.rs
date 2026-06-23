@@ -99,7 +99,7 @@ impl Default for WorkingIndicator {
 }
 
 impl Component for WorkingIndicator {
-    fn render(&self, _width: usize) -> Vec<String> {
+    fn render(&mut self, _width: usize) -> Vec<String> {
         if !self.active || self.options.frames.is_empty() {
             return vec![];
         }

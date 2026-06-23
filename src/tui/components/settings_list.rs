@@ -244,9 +244,9 @@ impl SettingsList {
 }
 
 impl Component for SettingsList {
-    fn render(&self, width: usize) -> Vec<String> {
+    fn render(&mut self, width: usize) -> Vec<String> {
         // If submenu is active, render it instead
-        if let Some(ref sub) = self.submenu_component {
+        if let Some(ref mut sub) = self.submenu_component {
             return sub.render(width);
         }
 
@@ -451,7 +451,7 @@ mod tests {
 
     #[test]
     fn test_render() {
-        let list = SettingsList::new(
+        let mut list = SettingsList::new(
             make_items(),
             10,
             SettingsListTheme::default(),
@@ -465,7 +465,7 @@ mod tests {
 
     #[test]
     fn test_hint_line_shown() {
-        let list = SettingsList::new(
+        let mut list = SettingsList::new(
             make_items(),
             10,
             SettingsListTheme::default(),

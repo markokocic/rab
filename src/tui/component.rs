@@ -1,5 +1,7 @@
 use crossterm::event::KeyEvent;
 
+use crate::tui::util::visible_width;
+
 /// Key for render caching — components return this to indicate when cache is valid.
 /// Two renders with the same cache key produce identical output.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25,7 +27,25 @@ pub struct RenderCache {
 pub trait Component {
     /// Render to lines for the given viewport width.
     /// Each returned string MUST NOT exceed `width` in visible width.
-    fn render(&self, width: usize) -> Vec<String>;
+    fn render(&mut self, width: usize) -> Vec<String>;
+
+    /// Render and pad each line to exactly `width` visible columns.
+    /// Default implementation calls `render(width)` and pads each line
+    /// with trailing spaces if its visible width is less than `width`.
+    fn render_padded(&mut self, width: usize) -> Vec<String> {
+        let lines = self.render(width);
+        lines
+            .into_iter()
+            .map(|line| {
+                let vw = visible_width(&line);
+                if vw < width {
+                    format!("{}{}", line, " ".repeat(width - vw))
+                } else {
+                    line
+                }
+            })
+            .collect()
+    }
 
     /// Handle keyboard input. Return `true` if consumed.
     fn handle_input(&mut self, _key: &KeyEvent) -> bool {

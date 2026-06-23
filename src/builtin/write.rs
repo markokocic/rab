@@ -1,6 +1,7 @@
 use crate::agent::extension::{AgentTool, Cancel, Extension, ToolOutput};
 use crate::agent::extension::{ToolRenderContext, ToolRenderer};
 use crate::tui::Theme;
+use crate::tui::ThemeKey;
 use anyhow::Context;
 use async_trait::async_trait;
 use std::borrow::Cow;
@@ -262,12 +263,12 @@ impl ToolRenderer for WriteRenderer {
         let path_disp = if short.is_empty() {
             String::new()
         } else {
-            theme.fg("accent", &short)
+            theme.fg_key(ThemeKey::Accent, &short)
         };
 
         let header = format!(
             "{} {}",
-            theme.fg("toolTitle", &theme.bold("write")),
+            theme.fg_key(ThemeKey::ToolTitle, &theme.bold("write")),
             path_disp
         );
 
@@ -278,7 +279,7 @@ impl ToolRenderer for WriteRenderer {
             let (display, remaining) = self.get_highlighted_lines(content, path, ctx.expanded);
 
             for line in &display {
-                lines.push(format!("\n{}", theme.fg("toolOutput", line)));
+                lines.push(format!("\n{}", theme.fg_key(ThemeKey::ToolOutput, line)));
             }
 
             if remaining > 0 {
@@ -309,6 +310,6 @@ impl ToolRenderer for WriteRenderer {
         if !ctx.is_error || content.is_empty() {
             return vec![];
         }
-        vec![theme.fg("error", content)]
+        vec![theme.fg_key(ThemeKey::Error, content)]
     }
 }

@@ -1,6 +1,7 @@
 use crate::agent::extension::{AgentTool, Cancel, Extension, ToolOutput};
 use crate::agent::extension::{ToolRenderContext, ToolRenderer};
 use crate::tui::Theme;
+use crate::tui::ThemeKey;
 use crate::tui::visual_truncate::truncate_to_visual_lines;
 use anyhow::Context;
 use async_trait::async_trait;
@@ -674,9 +675,9 @@ fn extract_find_info(cmd: &str) -> Option<String> {
 /// Format a header for recognized commands.
 fn format_command_header(cmd: &str, theme: &dyn Theme) -> Option<String> {
     let (name, desc) = parse_command(cmd)?;
-    let title = theme.fg("toolTitle", &theme.bold(name));
+    let title = theme.fg_key(ThemeKey::ToolTitle, &theme.bold(name));
     let detail = desc
-        .map(|d| format!(" {}", theme.fg("accent", &d)))
+        .map(|d| format!(" {}", theme.fg_key(ThemeKey::Accent, &d)))
         .unwrap_or_default();
     Some(format!("{}{}", title, detail))
 }
@@ -697,7 +698,7 @@ impl ToolRenderer for BashRenderer {
             .unwrap_or("...");
         let timeout = args.get("timeout").and_then(|v| v.as_i64());
         let timeout_suffix = timeout
-            .map(|t| theme.fg("muted", &format!(" (timeout {}s)", t)))
+            .map(|t| theme.fg_key(ThemeKey::Muted, &format!(" (timeout {}s)", t)))
             .unwrap_or_default();
 
         // Detect common commands and show them with a nicer header
@@ -706,7 +707,7 @@ impl ToolRenderer for BashRenderer {
         } else {
             vec![format!(
                 "{}{}",
-                theme.fg("toolTitle", &theme.bold(&format!("$ {}", cmd))),
+                theme.fg_key(ThemeKey::ToolTitle, &theme.bold(&format!("$ {}", cmd))),
                 timeout_suffix
             )]
         }
@@ -739,7 +740,10 @@ impl ToolRenderer for BashRenderer {
 
         if !ctx.expanded && hidden_line_count > 0 {
             let hint = if ctx.expand_key.is_empty() {
-                theme.fg("muted", &format!("... {} earlier lines", hidden_line_count))
+                theme.fg_key(
+                    ThemeKey::Muted,
+                    &format!("... {} earlier lines", hidden_line_count),
+                )
             } else {
                 theme.fg(
                     "muted",
@@ -765,16 +769,16 @@ impl ToolRenderer for BashRenderer {
         if let Some(secs) = ctx.duration_secs {
             let is_complete = ctx.exit_code.is_some() || ctx.cancelled;
             let label = if is_complete { "Took" } else { "Elapsed" };
-            lines.push(theme.fg("muted", &format!("{} {:.1}s", label, secs)));
+            lines.push(theme.fg_key(ThemeKey::Muted, &format!("{} {:.1}s", label, secs)));
         }
 
         // Status
         if ctx.cancelled {
-            lines.push(theme.fg("warning", "(cancelled)"));
+            lines.push(theme.fg_key(ThemeKey::Warning, "(cancelled)"));
         } else if let Some(code) = ctx.exit_code
             && code != 0
         {
-            lines.push(theme.fg("warning", &format!("(exit {})", code)));
+            lines.push(theme.fg_key(ThemeKey::Warning, &format!("(exit {})", code)));
         }
 
         // Truncation warnings
@@ -785,7 +789,7 @@ impl ToolRenderer for BashRenderer {
                     &format!("Output truncated. Full output: {}", path),
                 ));
             } else {
-                lines.push(theme.fg("warning", "Output truncated."));
+                lines.push(theme.fg_key(ThemeKey::Warning, "Output truncated."));
             }
         }
 

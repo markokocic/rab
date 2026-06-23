@@ -1428,7 +1428,7 @@ impl Editor {
 // ── Component impl ─────────────────────────────────────────────────
 
 impl Component for Editor {
-    fn render(&self, width: usize) -> Vec<String> {
+    fn render(&mut self, width: usize) -> Vec<String> {
         let max_padding = if width > 1 { (width - 1) / 2 } else { 0 };
         let pad_x = self.padding_x.min(max_padding);
         let content_width = if width > pad_x * 2 {
@@ -1555,7 +1555,7 @@ impl Component for Editor {
 
         // ── Autocomplete dropdown (pi-style: renders SelectList below bottom border) ──
         if self.autocomplete_active
-            && let Some(ref list) = self.autocomplete_list
+            && let Some(ref mut list) = self.autocomplete_list
         {
             let list_lines = list.render(width);
             result.extend(list_lines);
@@ -2393,7 +2393,7 @@ mod tests {
 
     #[test]
     fn test_render_borders() {
-        let editor = Editor::new(EditorTheme::default(), EditorOptions::default());
+        let mut editor = Editor::new(EditorTheme::default(), EditorOptions::default());
         let lines = editor.render(80);
         assert!(lines.len() >= 3);
         assert!(lines[0].contains('─'));

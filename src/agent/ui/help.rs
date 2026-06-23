@@ -21,7 +21,7 @@ impl HelpOverlay {
 }
 
 impl Component for HelpOverlay {
-    fn render(&self, width: usize) -> Vec<String> {
+    fn render(&mut self, width: usize) -> Vec<String> {
         let mut lines = Vec::new();
 
         // Reusable Text + Spacer for each section

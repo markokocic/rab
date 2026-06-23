@@ -1,3 +1,4 @@
+use crate::agent::ui::theme::ThemeKey;
 use crate::agent::ui::theme::current_theme;
 
 /// Render a unified diff string with colored lines and intra-line change highlighting.
@@ -86,8 +87,8 @@ fn render_intra_line_diff(old: &str, new: &str, output: &mut Vec<String>) {
     let changes: Vec<Change> = compute_word_diff(old, new);
 
     let theme = current_theme();
-    let added_ansi = theme.fg_ansi("toolDiffAdded").to_string();
-    let removed_ansi = theme.fg_ansi("toolDiffRemoved").to_string();
+    let added_ansi = theme.fg_ansi_key(ThemeKey::ToolDiffAdded).to_string();
+    let removed_ansi = theme.fg_ansi_key(ThemeKey::ToolDiffRemoved).to_string();
     let inverse_on = "\x1b[7m"; // reverse video
     let inverse_off = "\x1b[27m"; // reverse video off
     let reset = "\x1b[39m";
@@ -182,7 +183,6 @@ fn compute_word_diff(old: &str, new: &str) -> Vec<Change> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
     #[test]
     fn test_empty_diff() {
         let result = render_diff("");

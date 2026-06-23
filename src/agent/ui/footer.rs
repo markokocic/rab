@@ -1,6 +1,7 @@
 use crate::agent::types::Usage;
 use crate::agent::ui::messages::pad_to_width;
 use crate::agent::ui::theme::RabTheme;
+use crate::agent::ui::theme::ThemeKey;
 use crate::tui::util::{truncate_to_width, visible_width};
 
 // ── Helpers matching pi's footer.ts ──────────────────────────────
@@ -250,7 +251,7 @@ impl Footer {
 }
 
 impl crate::tui::Component for Footer {
-    fn render(&self, width: usize) -> Vec<String> {
+    fn render(&mut self, width: usize) -> Vec<String> {
         let w = width;
         if w < 4 {
             return vec![]; // Too narrow to show anything
@@ -268,7 +269,12 @@ impl crate::tui::Component for Footer {
         if let Some(ref name) = self.session_name {
             pwd = format!("{} • {}", pwd, name);
         }
-        let pwd_line = truncate_to_width(&theme.fg("dim", &pwd), w, &theme.fg("dim", "..."), true);
+        let pwd_line = truncate_to_width(
+            &theme.fg_key(ThemeKey::Dim, &pwd),
+            w,
+            &theme.fg_key(ThemeKey::Dim, "..."),
+            true,
+        );
         let pwd_line = if pwd_line.is_empty() {
             String::new()
         } else {
@@ -317,9 +323,9 @@ impl crate::tui::Component for Footer {
                     format!("{:.1}%/{}", p, window_str)
                 };
                 if p > 90.0 {
-                    theme.fg("error", &display)
+                    theme.fg_key(ThemeKey::Error, &display)
                 } else if p > 70.0 {
-                    theme.fg("warning", &display)
+                    theme.fg_key(ThemeKey::Warning, &display)
                 } else {
                     display
                 }
@@ -341,8 +347,8 @@ impl crate::tui::Component for Footer {
         if self.experimental_enabled {
             stats_parts.push(format!(
                 "{} {}",
-                theme.fg("dim", "•"),
-                theme.bold(&theme.fg("warning", "xp"))
+                theme.fg_key(ThemeKey::Dim, "•"),
+                theme.bold(&theme.fg_key(ThemeKey::Warning, "xp"))
             ));
         }
 
@@ -416,9 +422,9 @@ impl crate::tui::Component for Footer {
         };
 
         // Pi-style: dim statsLeft and remainder separately (statsLeft may contain colored context %)
-        let dim_stats_left = theme.fg("dim", &stats_left);
+        let dim_stats_left = theme.fg_key(ThemeKey::Dim, &stats_left);
         let remainder = &stats_line[stats_left.len()..]; // padding + rightSide
-        let dim_remainder = theme.fg("dim", remainder);
+        let dim_remainder = theme.fg_key(ThemeKey::Dim, remainder);
 
         let stats_line_formatted = format!("{}{}", dim_stats_left, dim_remainder);
 
@@ -432,7 +438,8 @@ impl crate::tui::Component for Footer {
                 .map(|(_, text)| sanitize_status_text(text))
                 .collect();
             let status_line = status_text.join(" ");
-            let truncated = truncate_to_width(&status_line, w, &theme.fg("dim", "..."), true);
+            let truncated =
+                truncate_to_width(&status_line, w, &theme.fg_key(ThemeKey::Dim, "..."), true);
             let status_line = if truncated.is_empty() {
                 String::new()
             } else {
@@ -455,7 +462,6 @@ impl crate::tui::Component for Footer {
 mod tests {
     use super::*;
     use crate::tui::Component;
-
     fn make_footer() -> Footer {
         crate::agent::ui::theme::init_theme(Some("dark"), false);
         let mut footer = Footer::new("/home/user/project");
@@ -531,7 +537,7 @@ mod tests {
 
     #[test]
     fn test_footer_shows_cwd() {
-        let footer = make_footer();
+        let mut footer = make_footer();
         let lines = footer.render(80);
         assert!(lines.len() >= 2, "Should have at least 2 lines");
         assert!(lines[0].contains("project"), "Should show cwd");
@@ -539,7 +545,7 @@ mod tests {
 
     #[test]
     fn test_footer_shows_git_branch() {
-        let footer = make_footer();
+        let mut footer = make_footer();
         let lines = footer.render(80);
         assert!(lines[0].contains("main"), "Should show git branch");
     }
@@ -571,7 +577,7 @@ mod tests {
 
     #[test]
     fn test_footer_shows_model() {
-        let footer = make_footer();
+        let mut footer = make_footer();
         let lines = footer.render(80);
         assert!(lines[1].contains("test-model"), "Should show model name");
     }
@@ -824,7 +830,7 @@ mod tests {
 
     #[test]
     fn test_footer_handles_very_narrow_terminal() {
-        let footer = make_footer();
+        let mut footer = make_footer();
         let lines = footer.render(3);
         assert!(lines.is_empty(), "Should return empty at width 3");
     }
@@ -845,7 +851,7 @@ mod tests {
 
     #[test]
     fn test_footer_line2_exact_width() {
-        let footer = make_footer();
+        let mut footer = make_footer();
         let lines = footer.render(80);
         for line in &lines {
             let vw = visible_width(line);
@@ -855,7 +861,7 @@ mod tests {
 
     #[test]
     fn test_footer_line2_padded_correctly() {
-        let footer = make_footer();
+        let mut footer = make_footer();
         for w in [40, 60, 80, 120] {
             let lines = footer.render(w);
             for line in &lines {

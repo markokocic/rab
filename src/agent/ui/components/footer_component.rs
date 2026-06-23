@@ -9,8 +9,8 @@ use crate::tui::Component;
 pub struct FooterComponent(pub Rc<RefCell<Footer>>);
 
 impl Component for FooterComponent {
-    fn render(&self, width: usize) -> Vec<String> {
-        self.0.borrow().render(width)
+    fn render(&mut self, width: usize) -> Vec<String> {
+        self.0.borrow_mut().render(width)
     }
 
     fn invalidate(&mut self) {

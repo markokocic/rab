@@ -100,12 +100,9 @@ impl Default for Container {
 }
 
 impl Component for Container {
-    fn render(&self, width: usize) -> Vec<String> {
-        // NOTE: We can't use caching here because we don't have &mut self.
-        // Caching is handled at a higher level (TUI or parent container).
-        // For now, just render all children.
+    fn render(&mut self, width: usize) -> Vec<String> {
         let mut lines = Vec::new();
-        for child in &self.children {
+        for child in self.children.iter_mut() {
             let child_lines = child.render(width);
             lines.extend(child_lines);
         }
@@ -225,7 +222,7 @@ impl Default for CachedContainer {
 }
 
 impl Component for CachedContainer {
-    fn render(&self, width: usize) -> Vec<String> {
+    fn render(&mut self, width: usize) -> Vec<String> {
         // For now, just delegate to inner container.
         // Full caching requires &mut self which render() doesn't have.
         // This is handled at the TUI level with render_with_cache().

@@ -1,6 +1,7 @@
 use crate::agent::extension::{AgentTool, Cancel, Extension, ToolOutput};
 use crate::agent::extension::{ToolRenderContext, ToolRenderer};
 use crate::tui::Theme;
+use crate::tui::ThemeKey;
 use anyhow::Context;
 use async_trait::async_trait;
 use std::borrow::Cow;
@@ -492,12 +493,12 @@ impl ToolRenderer for EditRenderer {
         let path_disp = if short.is_empty() {
             String::new()
         } else {
-            theme.fg("accent", &short)
+            theme.fg_key(ThemeKey::Accent, &short)
         };
 
         let mut lines = vec![format!(
             "{} {}",
-            theme.fg("toolTitle", &theme.bold("edit")),
+            theme.fg_key(ThemeKey::ToolTitle, &theme.bold("edit")),
             path_disp
         )];
 
@@ -558,7 +559,7 @@ impl ToolRenderer for EditRenderer {
         if content.is_empty() {
             return vec![];
         }
-        vec![theme.fg("toolOutput", content)]
+        vec![theme.fg_key(ThemeKey::ToolOutput, content)]
     }
 }
 
@@ -572,8 +573,8 @@ fn format_edit_preview(old: &str, new: &str, _width: usize, theme: &dyn Theme) -
     let old_preview = truncate_simple(old_first_line, max_preview);
     let new_preview = truncate_simple(new_first_line, max_preview);
 
-    let old_styled = theme.fg("toolDiffRemoved", &format!("-{}", old_preview));
-    let new_styled = theme.fg("toolDiffAdded", &format!("+{}", new_preview));
+    let old_styled = theme.fg_key(ThemeKey::ToolDiffRemoved, &format!("-{}", old_preview));
+    let new_styled = theme.fg_key(ThemeKey::ToolDiffAdded, &format!("+{}", new_preview));
     vec![format!("  {}", old_styled), format!("  {}", new_styled)]
 }
 

@@ -1,10 +1,9 @@
-use std::cell::RefCell;
 use std::sync::Arc;
 
+use crate::agent::ui::theme::ThemeKey;
 use crate::agent::ui::theme::current_theme;
 use crate::tui::Component;
 use crate::tui::components::markdown::{DefaultTextStyle, Markdown, StyleFn};
-
 const OSC133_ZONE_START: &str = "\x1b]133;A\x07";
 const OSC133_ZONE_END: &str = "\x1b]133;B\x07";
 const OSC133_ZONE_FINAL: &str = "\x1b]133;C\x07";
@@ -15,8 +14,8 @@ pub struct AssistantMessageComponent {
     text: String,
     thinking: Vec<ThinkingBlock>,
     hide_thinking: bool,
-    cached_lines: RefCell<Option<Vec<String>>>,
-    cached_width: RefCell<usize>,
+    cached_lines: Option<Vec<String>>,
+    cached_width: usize,
 }
 
 pub struct ThinkingBlock {
@@ -30,8 +29,8 @@ impl AssistantMessageComponent {
             text: text.into(),
             thinking: Vec::new(),
             hide_thinking: false,
-            cached_lines: RefCell::new(None),
-            cached_width: RefCell::new(0),
+            cached_lines: None,
+            cached_width: 0,
         }
     }
 
@@ -103,14 +102,12 @@ impl Component for AssistantMessageComponent {
     // Pi keeps app.thinking.toggle (Ctrl+T) and app.tools.expand (Ctrl+O)
     // as independent concerns — tool expansion must not affect thinking visibility.
 
-    fn render(&self, width: usize) -> Vec<String> {
-        let cached = self.cached_lines.borrow();
-        if *self.cached_width.borrow() == width
-            && let Some(ref lines) = *cached
+    fn render(&mut self, width: usize) -> Vec<String> {
+        if self.cached_width == width
+            && let Some(ref lines) = self.cached_lines
         {
             return lines.clone();
         }
-        drop(cached);
 
         let mut lines: Vec<String> = Vec::new();
         let md_theme = crate::agent::ui::theme::get_markdown_theme();
@@ -133,13 +130,13 @@ impl Component for AssistantMessageComponent {
             if self.hide_thinking {
                 // Match pi: Text with padding_x=1, italic, thinkingText color
                 let theme = current_theme();
-                let label = theme.italic(&theme.fg("thinkingText", "Thinking..."));
+                let label = theme.italic(&theme.fg_key(ThemeKey::ThinkingText, "Thinking..."));
                 let padded = format!(" {} ", label);
                 lines.push(padded);
             } else {
                 // Pi always uses thinkingText color for ALL thinking blocks (not per-level)
                 let color_fn: StyleFn = Arc::new(|s: &str| -> String {
-                    crate::agent::ui::theme::current_theme().fg("thinkingText", s)
+                    crate::agent::ui::theme::current_theme().fg_key(ThemeKey::ThinkingText, s)
                 });
                 let default_style = DefaultTextStyle {
                     color: Some(color_fn),
@@ -150,7 +147,7 @@ impl Component for AssistantMessageComponent {
                     underline: false,
                 };
                 // Match pi: padding_x=1, padding_y=0, thinkingText + italic
-                let md = Markdown::new(
+                let mut md = Markdown::new(
                     block.text.trim().to_string(),
                     1,
                     0,
@@ -169,7 +166,7 @@ impl Component for AssistantMessageComponent {
 
         // Render main text content through Markdown (matching pi)
         if has_text {
-            let md = Markdown::new(self.text.trim().to_string(), 1, 0, md_theme, None, None);
+            let mut md = Markdown::new(self.text.trim().to_string(), 1, 0, md_theme, None, None);
             lines.extend(md.render(width));
         }
 
@@ -183,8 +180,8 @@ impl Component for AssistantMessageComponent {
         }
 
         let result = lines.clone();
-        *self.cached_lines.borrow_mut() = Some(lines);
-        *self.cached_width.borrow_mut() = width;
+        self.cached_lines = Some(lines);
+        self.cached_width = width;
         result
     }
 
@@ -194,6 +191,6 @@ impl Component for AssistantMessageComponent {
     }
 
     fn invalidate(&mut self) {
-        *self.cached_lines.borrow_mut() = None;
+        self.cached_lines = None;
     }
 }

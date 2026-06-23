@@ -9,8 +9,8 @@ use crate::tui::Component;
 pub struct EditorComponent(pub Rc<RefCell<ChatEditor>>);
 
 impl Component for EditorComponent {
-    fn render(&self, width: usize) -> Vec<String> {
-        self.0.borrow().editor.render(width)
+    fn render(&mut self, width: usize) -> Vec<String> {
+        self.0.borrow_mut().editor.render(width)
     }
 
     fn invalidate(&mut self) {

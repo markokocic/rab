@@ -306,7 +306,7 @@ impl Input {
 }
 
 impl Component for Input {
-    fn render(&self, width: usize) -> Vec<String> {
+    fn render(&mut self, width: usize) -> Vec<String> {
         let prompt_width = visible_width(&self.prompt);
         let avail = width.saturating_sub(prompt_width);
 

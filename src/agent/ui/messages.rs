@@ -7,6 +7,7 @@ use crate::tui::components::markdown::{DefaultTextStyle, Markdown, MarkdownTheme
 use crate::tui::util::visible_width;
 
 use super::components::bash_execution::{BashExecution, BashStatus};
+use crate::agent::ui::theme::ThemeKey;
 
 /// A rendered display message ready for output.
 #[derive(Debug, Clone)]
@@ -63,7 +64,8 @@ pub fn render_messages(
                 let md_theme = get_md_theme();
                 let default_style = DefaultTextStyle {
                     color: Some(Arc::new(|s: &str| {
-                        crate::agent::ui::theme::current_theme().fg("userMessageText", s)
+                        crate::agent::ui::theme::current_theme()
+                            .fg_key(ThemeKey::UserMessageText, s)
                     })),
                     bg_color: None,
                     bold: false,
@@ -84,9 +86,10 @@ pub fn render_messages(
                 let mut msg_box = crate::tui::components::r#box::TuiBox::new(
                     1,
                     1,
-                    Some(std::boxed::Box::new(|s: &str| -> String {
-                        crate::agent::ui::theme::current_theme().bg("userMessageBg", s)
-                    })),
+                    Some(
+                        crate::agent::ui::theme::current_theme()
+                            .bg_style_key(ThemeKey::UserMessageBg),
+                    ),
                 );
                 msg_box.add_child(std::boxed::Box::new(md));
                 lines.extend(msg_box.render(width));
@@ -107,7 +110,7 @@ pub fn render_messages(
                 }
                 let asst_start = lines.len();
                 let md_theme = get_md_theme();
-                let md = Markdown::new(text.clone(), 1, 0, md_theme, None, None);
+                let mut md = Markdown::new(text.clone(), 1, 0, md_theme, None, None);
                 lines.extend(md.render(width));
                 if let Some(first) = lines.get_mut(asst_start) {
                     *first = format!("{}{}", OSC133_ZONE_START, first);
@@ -151,9 +154,7 @@ pub fn render_messages(
                     let mut md_box = crate::tui::components::r#box::TuiBox::new(
                         1,
                         0,
-                        Some(std::boxed::Box::new(|s: &str| -> String {
-                            crate::agent::ui::theme::current_theme().bg("thinking_bg", s)
-                        })),
+                        Some(crate::agent::ui::theme::current_theme().bg_style("thinking_bg")),
                     );
                     md_box.add_child(std::boxed::Box::new(md));
                     lines.extend(md_box.render(width));
@@ -178,9 +179,10 @@ pub fn render_messages(
                     let mut msg_box = crate::tui::components::r#box::TuiBox::new(
                         1,
                         1,
-                        Some(std::boxed::Box::new(move |s: &str| -> String {
-                            crate::agent::ui::theme::current_theme().bg("toolPendingBg", s)
-                        })),
+                        Some(
+                            crate::agent::ui::theme::current_theme()
+                                .bg_style_key(ThemeKey::ToolPendingBg),
+                        ),
                     );
                     msg_box.add_child(std::boxed::Box::new(TuiText::new(
                         theme.fg("toolTitle", label),
@@ -199,9 +201,7 @@ pub fn render_messages(
                     let mut msg_box = crate::tui::components::r#box::TuiBox::new(
                         1,
                         0,
-                        Some(std::boxed::Box::new(move |s: &str| -> String {
-                            crate::agent::ui::theme::current_theme().bg(bg_key, s)
-                        })),
+                        Some(crate::agent::ui::theme::current_theme().bg_style(bg_key)),
                     );
                     if collapse_tool_output {
                         let first_line = content.lines().next().unwrap_or("");
@@ -249,7 +249,9 @@ pub fn render_messages(
                         if let Some(cmd) = val.get("command").and_then(|v| v.as_str()) {
                             let timeout = val.get("timeout").and_then(|v| v.as_i64());
                             let timeout_suffix = timeout
-                                .map(|t| theme.fg("muted", &format!(" (timeout {}s)", t)))
+                                .map(|t| {
+                                    theme.fg_key(ThemeKey::Muted, &format!(" (timeout {}s)", t))
+                                })
                                 .unwrap_or_default();
                             let content = format!(
                                 "{}{}",
@@ -259,9 +261,10 @@ pub fn render_messages(
                             let mut msg_box = crate::tui::components::r#box::TuiBox::new(
                                 1,
                                 1,
-                                Some(std::boxed::Box::new(move |s: &str| -> String {
-                                    crate::agent::ui::theme::current_theme().bg("toolPendingBg", s)
-                                })),
+                                Some(
+                                    crate::agent::ui::theme::current_theme()
+                                        .bg_style_key(ThemeKey::ToolPendingBg),
+                                ),
                             );
                             msg_box
                                 .add_child(std::boxed::Box::new(TuiText::new(content, 0, 0, None)));
@@ -271,9 +274,10 @@ pub fn render_messages(
                             let mut msg_box = crate::tui::components::r#box::TuiBox::new(
                                 1,
                                 1,
-                                Some(std::boxed::Box::new(move |s: &str| -> String {
-                                    crate::agent::ui::theme::current_theme().bg("toolPendingBg", s)
-                                })),
+                                Some(
+                                    crate::agent::ui::theme::current_theme()
+                                        .bg_style_key(ThemeKey::ToolPendingBg),
+                                ),
                             );
                             let styled_name = theme.fg("toolTitle", &theme.bold(name));
                             msg_box.add_child(std::boxed::Box::new(TuiText::new(
@@ -289,9 +293,10 @@ pub fn render_messages(
                         let mut msg_box = crate::tui::components::r#box::TuiBox::new(
                             1,
                             1,
-                            Some(std::boxed::Box::new(move |s: &str| -> String {
-                                crate::agent::ui::theme::current_theme().bg("toolPendingBg", s)
-                            })),
+                            Some(
+                                crate::agent::ui::theme::current_theme()
+                                    .bg_style_key(ThemeKey::ToolPendingBg),
+                            ),
                         );
                         let styled_name = theme.fg("toolTitle", &theme.bold(name));
                         msg_box.add_child(std::boxed::Box::new(TuiText::new(
@@ -306,9 +311,10 @@ pub fn render_messages(
                     let mut msg_box = crate::tui::components::r#box::TuiBox::new(
                         1,
                         1,
-                        Some(std::boxed::Box::new(move |s: &str| -> String {
-                            crate::agent::ui::theme::current_theme().bg("toolPendingBg", s)
-                        })),
+                        Some(
+                            crate::agent::ui::theme::current_theme()
+                                .bg_style_key(ThemeKey::ToolPendingBg),
+                        ),
                     );
                     let truncated = if args.len() > 80 {
                         format!("{}…", &args[..80])
@@ -319,7 +325,11 @@ pub fn render_messages(
                     let content = if truncated.is_empty() || truncated == "{}" {
                         styled_name
                     } else {
-                        format!("{}  {}", styled_name, theme.fg("muted", &truncated))
+                        format!(
+                            "{}  {}",
+                            styled_name,
+                            theme.fg_key(ThemeKey::Muted, &truncated)
+                        )
                     };
                     let text_content = if content.is_empty() {
                         " ".into()
@@ -332,7 +342,7 @@ pub fn render_messages(
             }
             DisplayMsg::Info(text) => {
                 for line in text.lines() {
-                    let content = theme.fg("dim", &format!(" {}", line));
+                    let content = theme.fg_key(ThemeKey::Dim, &format!(" {}", line));
                     lines.push(pad_to_width(&content, width));
                 }
             }
@@ -340,7 +350,7 @@ pub fn render_messages(
     }
 
     if lines.is_empty() {
-        lines.push(theme.fg("dim", " Type a message and press Enter to send."));
+        lines.push(theme.fg_key(ThemeKey::Dim, " Type a message and press Enter to send."));
     }
 
     lines
@@ -414,7 +424,6 @@ pub fn fmt_tokens(count: f64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
     fn current_theme() -> crate::agent::ui::theme::RabTheme {
         crate::agent::ui::theme::current_theme().clone()
     }

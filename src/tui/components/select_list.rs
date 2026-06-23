@@ -223,7 +223,7 @@ impl SelectList {
 }
 
 impl Component for SelectList {
-    fn render(&self, width: usize) -> Vec<String> {
+    fn render(&mut self, width: usize) -> Vec<String> {
         let mut lines = Vec::new();
 
         if self.filtered_indices.is_empty() {
@@ -481,7 +481,7 @@ mod tests {
 
     #[test]
     fn test_render() {
-        let list = SelectList::new(make_items(), 10, SelectListTheme::default(), None);
+        let mut list = SelectList::new(make_items(), 10, SelectListTheme::default(), None);
         let lines = list.render(40);
         assert!(lines.len() >= 3);
     }
@@ -501,7 +501,7 @@ mod tests {
                 .with_description("Does something useful"),
             SelectItem::new("beta-tool", "Beta tool").with_description("Another tool description"),
         ];
-        let list = SelectList::new(items, 10, SelectListTheme::default(), None);
+        let mut list = SelectList::new(items, 10, SelectListTheme::default(), None);
         let lines = list.render(80);
         // Should have 2+ lines for items
         assert!(lines.len() >= 2);

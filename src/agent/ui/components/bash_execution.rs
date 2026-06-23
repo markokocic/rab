@@ -1,3 +1,4 @@
+use crate::agent::ui::theme::ThemeKey;
 use crate::tui::Component;
 use crate::tui::components::loader::Loader;
 use crate::tui::util::wrap_text_with_ansi;
@@ -51,8 +52,8 @@ impl BashExecution {
 
         // Create a loader matching pi's style: spinner in bashMode color, message in muted color
         let theme = crate::agent::ui::theme::current_theme();
-        let spinner_ansi = theme.fg_ansi("bashMode").to_string();
-        let msg_ansi = theme.fg_ansi("muted").to_string();
+        let spinner_ansi = theme.fg_ansi_key(ThemeKey::BashMode).to_string();
+        let msg_ansi = theme.fg_ansi_key(ThemeKey::Muted).to_string();
         drop(theme);
         let loader = Loader::new(
             Box::new(move |s| format!("{}{}\x1b[39m", spinner_ansi, s)),
@@ -221,7 +222,7 @@ impl Component for BashExecution {
         BashExecution::set_expanded(self, expanded);
     }
 
-    fn render(&self, width: usize) -> Vec<String> {
+    fn render(&mut self, width: usize) -> Vec<String> {
         let theme = crate::agent::ui::theme::current_theme();
         let border_key = self.border_color_key();
         let border_fn = |s: &str| theme.fg(border_key, s);
@@ -264,7 +265,10 @@ impl Component for BashExecution {
 
         // ── "N earlier lines" hint at top when collapsed (matching pi) ──
         if !self.expanded && hidden_line_count > 0 {
-            let hint = theme.fg("muted", &format!("... {} more lines", hidden_line_count));
+            let hint = theme.fg_key(
+                ThemeKey::Muted,
+                &format!("... {} more lines", hidden_line_count),
+            );
             lines.push(hint);
         }
 
@@ -291,7 +295,7 @@ impl Component for BashExecution {
                 BashStatus::Running => "Elapsed",
                 _ => "Took",
             };
-            status_parts.push(theme.fg("muted", &format!("{} {:.1}s", label, secs)));
+            status_parts.push(theme.fg_key(ThemeKey::Muted, &format!("{} {:.1}s", label, secs)));
         }
 
         // Status text
@@ -300,13 +304,13 @@ impl Component for BashExecution {
                 // Loader handles the spinner display
             }
             BashStatus::Complete { exit_code } if *exit_code != 0 => {
-                status_parts.push(theme.fg("error", &format!("(exit {})", exit_code)));
+                status_parts.push(theme.fg_key(ThemeKey::Error, &format!("(exit {})", exit_code)));
             }
             BashStatus::Cancelled => {
-                status_parts.push(theme.fg("warning", "(cancelled)"));
+                status_parts.push(theme.fg_key(ThemeKey::Warning, "(cancelled)"));
             }
             BashStatus::Error(msg) => {
-                status_parts.push(theme.fg("error", &format!("Error: {}", msg)));
+                status_parts.push(theme.fg_key(ThemeKey::Error, &format!("Error: {}", msg)));
             }
             _ => {}
         }
@@ -320,7 +324,7 @@ impl Component for BashExecution {
                     &format!("Output truncated. Full output: {}", path),
                 ));
             } else {
-                status_parts.push(theme.fg("warning", "Output truncated."));
+                status_parts.push(theme.fg_key(ThemeKey::Warning, "Output truncated."));
             }
         }
 
@@ -388,7 +392,6 @@ fn strip_ansi(s: &str) -> String {
 mod tests {
     use super::*;
     use crate::agent::ui::theme::init_theme;
-
     #[test]
     fn test_bash_execution_new() {
         let bash = BashExecution::new("echo hello");
@@ -499,7 +502,7 @@ mod tests {
     #[test]
     fn test_bash_execution_render_has_borders() {
         init_theme(Some("dark"), false);
-        let bash = BashExecution::new("echo hello");
+        let mut bash = BashExecution::new("echo hello");
         let lines = bash.render(80);
         let all = lines.join("\n");
         // Should have top border (just ─ with ANSI color codes)

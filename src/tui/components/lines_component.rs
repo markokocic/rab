@@ -48,7 +48,7 @@ impl Default for LinesComponent {
 }
 
 impl Component for LinesComponent {
-    fn render(&self, _width: usize) -> Vec<String> {
+    fn render(&mut self, _width: usize) -> Vec<String> {
         self.lines.borrow().clone()
     }
 

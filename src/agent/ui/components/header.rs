@@ -1,10 +1,10 @@
 use crossterm::event::KeyEvent;
 
+use crate::agent::ui::theme::ThemeKey;
 use crate::agent::ui::theme::current_theme;
 use crate::tui::Component;
 use crate::tui::keybindings;
 use crate::tui::keybindings::get_keybindings;
-
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Helper: get the display key text for an action (matches pi's keyText).
@@ -24,16 +24,16 @@ fn key_hint(action_id: &str, description: &str) -> String {
         return String::new();
     }
     let theme = current_theme();
-    let key_part = theme.fg("dim", &kt);
-    let desc_part = theme.fg("muted", &format!(" {}", description));
+    let key_part = theme.fg_key(ThemeKey::Dim, &kt);
+    let desc_part = theme.fg_key(ThemeKey::Muted, &format!(" {}", description));
     format!("{}{}", key_part, desc_part)
 }
 
 /// Format a raw key hint: `<dim>raw_key</dim><muted> description</muted>` (matches pi's rawKeyHint).
 fn raw_key_hint(key: &str, description: &str) -> String {
     let theme = current_theme();
-    let key_part = theme.fg("dim", key);
-    let desc_part = theme.fg("muted", &format!(" {}", description));
+    let key_part = theme.fg_key(ThemeKey::Dim, key);
+    let desc_part = theme.fg_key(ThemeKey::Muted, &format!(" {}", description));
     format!("{}{}", key_part, desc_part)
 }
 
@@ -41,14 +41,14 @@ fn raw_key_hint(key: &str, description: &str) -> String {
 /// Shows logo, keybinding hints in compact/expanded modes, and onboarding text.
 pub struct HeaderComponent {
     expanded: bool,
-    cached_lines: std::cell::RefCell<Option<Vec<String>>>,
+    cached_lines: Option<Vec<String>>,
 }
 
 impl HeaderComponent {
     pub fn new() -> Self {
         Self {
             expanded: false,
-            cached_lines: std::cell::RefCell::new(None),
+            cached_lines: None,
         }
     }
 
@@ -57,8 +57,8 @@ impl HeaderComponent {
             let theme = current_theme();
             format!(
                 "{}{}",
-                theme.bold(&theme.fg("accent", "rab")),
-                theme.fg("dim", &format!(" v{}", VERSION)),
+                theme.bold(&theme.fg_key(ThemeKey::Accent, "rab")),
+                theme.fg_key(ThemeKey::Dim, &format!(" v{}", VERSION)),
             )
         };
 
@@ -115,7 +115,7 @@ impl HeaderComponent {
             ];
             let separator = {
                 let theme = current_theme();
-                theme.fg("muted", " · ")
+                theme.fg_key(ThemeKey::Muted, " · ")
             };
             let compact_line = parts.join(&separator);
 
@@ -146,7 +146,7 @@ impl Component for HeaderComponent {
         let kb = get_keybindings();
         if kb.matches(key, keybindings::ACTION_APP_TOOLS_EXPAND) {
             self.expanded = !self.expanded;
-            *self.cached_lines.borrow_mut() = None;
+            self.cached_lines = None;
             // Don't consume — let the app-level handler also process Ctrl+O
             // so tool messages and global state (tools_expanded) stay in sync.
             return false;
@@ -154,7 +154,7 @@ impl Component for HeaderComponent {
         // Escape collapses expanded header
         if self.expanded && kb.matches(key, keybindings::ACTION_APP_ESCAPE) {
             self.expanded = false;
-            *self.cached_lines.borrow_mut() = None;
+            self.cached_lines = None;
             return true;
         }
         false
@@ -162,19 +162,19 @@ impl Component for HeaderComponent {
 
     fn set_expanded(&mut self, expanded: bool) {
         self.expanded = expanded;
-        *self.cached_lines.borrow_mut() = None;
+        self.cached_lines = None;
     }
 
-    fn render(&self, width: usize) -> Vec<String> {
-        if let Some(ref cached) = *self.cached_lines.borrow() {
+    fn render(&mut self, width: usize) -> Vec<String> {
+        if let Some(ref cached) = self.cached_lines {
             return cached.clone();
         }
         let lines = self.build_lines(width);
-        *self.cached_lines.borrow_mut() = Some(lines.clone());
+        self.cached_lines = Some(lines.clone());
         lines
     }
 
     fn invalidate(&mut self) {
-        *self.cached_lines.borrow_mut() = None;
+        self.cached_lines = None;
     }
 }

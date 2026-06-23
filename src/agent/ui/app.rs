@@ -21,7 +21,8 @@ use crate::agent::ui::working::WorkingIndicator;
 use crate::agent::{AgentEvent, LoopConfig, run_agent_loop};
 use crate::tui::Component;
 use crate::tui::TUI;
-use crate::tui::components::RefContainer;
+
+use crate::agent::ui::theme::ThemeKey;
 use crate::tui::components::Spacer;
 use crate::tui::terminal::{self, ProcessTerminal, TerminalTrait};
 use crossterm::event::KeyEvent;
@@ -83,17 +84,17 @@ pub struct App {
 
     /// Component-based chat area - mirrors pi's `this.chatContainer`.
     /// Components are added here in handle_agent_event instead of pushing to messages.
-    pub chat_container: RefContainer,
+    pub chat_container: std::rc::Rc<std::cell::RefCell<crate::tui::Container>>,
 
     // ── Section components for the UI layout (written by compose_ui) ──
     /// Pending streaming text section.
-    pub pending_section: std::rc::Rc<crate::tui::components::DynamicLines>,
+    pub pending_section: std::rc::Rc<std::cell::RefCell<crate::tui::components::DynamicLines>>,
     /// Status text section (transient, dim).
-    pub status_section: std::rc::Rc<crate::tui::components::DynamicLines>,
+    pub status_section: std::rc::Rc<std::cell::RefCell<crate::tui::components::DynamicLines>>,
     /// Queued messages section.
-    pub queued_section: std::rc::Rc<crate::tui::components::DynamicLines>,
+    pub queued_section: std::rc::Rc<std::cell::RefCell<crate::tui::components::DynamicLines>>,
     /// Working indicator section.
-    pub working_section: std::rc::Rc<crate::tui::components::DynamicLines>,
+    pub working_section: std::rc::Rc<std::cell::RefCell<crate::tui::components::DynamicLines>>,
 
     /// The chat editor (shared ownership - App mutates, TUI.root renders).
     editor: Rc<RefCell<ChatEditor>>,
@@ -251,9 +252,10 @@ impl App {
 
         // Populate chat_container with initial messages (startup info + history).
         // Add spacers between messages matching pi's addMessageToChat behavior.
-        let chat_container = RefContainer::new();
+        let chat_container =
+            std::rc::Rc::new(std::cell::RefCell::new(crate::tui::Container::new()));
         {
-            let mut chat = chat_container.inner.borrow_mut();
+            let mut chat = chat_container.borrow_mut();
             for display_msg in &messages {
                 if let Some(component) =
                     crate::agent::ui::components::display_msg_to_component(display_msg)
@@ -284,10 +286,18 @@ impl App {
             tool_call_start_times: HashMap::new(),
             streaming_component: None,
             bash_component: None,
-            pending_section: std::rc::Rc::new(crate::tui::components::DynamicLines::new()),
-            status_section: std::rc::Rc::new(crate::tui::components::DynamicLines::new()),
-            queued_section: std::rc::Rc::new(crate::tui::components::DynamicLines::new()),
-            working_section: std::rc::Rc::new(crate::tui::components::DynamicLines::new()),
+            pending_section: std::rc::Rc::new(std::cell::RefCell::new(
+                crate::tui::components::DynamicLines::new(),
+            )),
+            status_section: std::rc::Rc::new(std::cell::RefCell::new(
+                crate::tui::components::DynamicLines::new(),
+            )),
+            queued_section: std::rc::Rc::new(std::cell::RefCell::new(
+                crate::tui::components::DynamicLines::new(),
+            )),
+            working_section: std::rc::Rc::new(std::cell::RefCell::new(
+                crate::tui::components::DynamicLines::new(),
+            )),
             editor,
             event_tx: tx,
             event_rx: rx,
@@ -375,19 +385,25 @@ pub async fn run(config: AppConfig, session: SessionManager) -> anyhow::Result<(
             app.header.clone() as Rc<RefCell<dyn Component>>,
         ),
     ));
-    tui.root
-        .add_child(std::boxed::Box::new(app.chat_container.clone()));
     tui.root.add_child(std::boxed::Box::new(
-        crate::tui::components::RcDynamicLines(app.pending_section.clone()),
+        crate::tui::components::RcRefCellComponent(app.chat_container.clone()
+            as std::rc::Rc<std::cell::RefCell<dyn crate::tui::Component>>),
     ));
     tui.root.add_child(std::boxed::Box::new(
-        crate::tui::components::RcDynamicLines(app.status_section.clone()),
+        crate::tui::components::RcRefCellComponent(app.pending_section.clone()
+            as std::rc::Rc<std::cell::RefCell<dyn crate::tui::Component>>),
     ));
     tui.root.add_child(std::boxed::Box::new(
-        crate::tui::components::RcDynamicLines(app.queued_section.clone()),
+        crate::tui::components::RcRefCellComponent(app.status_section.clone()
+            as std::rc::Rc<std::cell::RefCell<dyn crate::tui::Component>>),
     ));
     tui.root.add_child(std::boxed::Box::new(
-        crate::tui::components::RcDynamicLines(app.working_section.clone()),
+        crate::tui::components::RcRefCellComponent(app.queued_section.clone()
+            as std::rc::Rc<std::cell::RefCell<dyn crate::tui::Component>>),
+    ));
+    tui.root.add_child(std::boxed::Box::new(
+        crate::tui::components::RcRefCellComponent(app.working_section.clone()
+            as std::rc::Rc<std::cell::RefCell<dyn crate::tui::Component>>),
     ));
     tui.root
         .add_child(std::boxed::Box::new(EditorComponent(app.editor.clone())));
@@ -440,9 +456,13 @@ pub async fn run(config: AppConfig, session: SessionManager) -> anyhow::Result<(
             dirty = true;
         }
 
-        // Drain agent events
+        // Drain agent events (batch: process all pending events before rendering)
+        let mut had_event = false;
         while let Ok(event) = app.event_rx.try_recv() {
             handle_agent_event(&mut app, event);
+            had_event = true;
+        }
+        if had_event {
             dirty = true;
         }
 
@@ -549,15 +569,15 @@ fn compose_ui(app: &mut App, width: usize) {
             }
         }
     }
-    app.pending_section.set_lines(pending_lines);
+    app.pending_section.borrow_mut().set_lines(pending_lines);
 
     // ── Transient status text (pi-style: replaces previous status, not added to chat) ──
     let mut status_lines = Vec::new();
     if let Some(ref status) = app.status_text {
-        let line = app.theme.fg("dim", &format!(" {}", status));
+        let line = app.theme.fg_key(ThemeKey::Dim, &format!(" {}", status));
         status_lines.push(crate::agent::ui::messages::pad_to_width(&line, width));
     }
-    app.status_section.set_lines(status_lines);
+    app.status_section.borrow_mut().set_lines(status_lines);
 
     // ── Queued messages (pi-style: shown between chat and editor) ──
     // Shows both steering and follow-up queue contents.
@@ -593,18 +613,19 @@ fn compose_ui(app: &mut App, width: usize) {
         queued_lines.push(crate::agent::ui::messages::pad_to_width(&line, width));
     }
     if steer_count > 0 || follow_count > 0 {
-        let hint = app
-            .theme
-            .fg("dim", " ↳ Esc to abort, Alt+↑ to restore follow-ups");
+        let hint = app.theme.fg_key(
+            ThemeKey::Dim,
+            " ↳ Esc to abort, Alt+↑ to restore follow-ups",
+        );
         queued_lines.push(crate::agent::ui::messages::pad_to_width(&hint, width));
     }
-    app.queued_section.set_lines(queued_lines);
+    app.queued_section.borrow_mut().set_lines(queued_lines);
 
     // ── Working indicator (pi-style: blank line + spinner before editor) ──
     let mut working_lines = Vec::new();
     let wl = app.working.render(width);
     working_lines.extend(wl);
-    app.working_section.set_lines(working_lines);
+    app.working_section.borrow_mut().set_lines(working_lines);
 }
 
 /// Handle keyboard input. Mirrors pi's InteractiveMode key dispatch:
@@ -665,7 +686,7 @@ fn handle_input(app: &mut App, tui: &mut TUI, key: &KeyEvent) {
             app.hide_thinking = !app.hide_thinking;
             // Propagate to ALL existing components in chat container (matching pi)
             {
-                let mut chat = app.chat_container.inner.borrow_mut();
+                let mut chat = app.chat_container.borrow_mut();
                 for child in chat.children_mut().iter_mut() {
                     child.set_hide_thinking(app.hide_thinking);
                 }
@@ -792,7 +813,7 @@ fn handle_tools_expand(app: &mut App) {
     app.header.borrow_mut().set_expanded(app.tools_expanded);
 
     // Propagate to all children in chat_container
-    let mut chat = app.chat_container.inner.borrow_mut();
+    let mut chat = app.chat_container.borrow_mut();
     for child in chat.children_mut().iter_mut() {
         child.set_expanded(app.tools_expanded);
     }
@@ -935,7 +956,7 @@ fn interrupt_streaming(app: &mut App) {
             let all = follow_up.drain_all();
             let text: Vec<String> = all.iter().map(|m| m.content.clone()).collect();
             app.editor.borrow_mut().editor.set_text(&text.join("\n\n"));
-            app.queued_section.set_lines(vec![]);
+            app.queued_section.borrow_mut().set_lines(vec![]);
         }
         drop(follow_up);
     }
@@ -1122,7 +1143,7 @@ fn handle_slash_command(app: &mut App, input: &str) {
     if cmd_name == "model" || cmd_name.starts_with("mod") && args.is_empty() {
         let models = app.available_models.clone();
         let current = app.model.clone();
-        let selector = ModelSelector::new(models, &current, &app.theme);
+        let mut selector = ModelSelector::new(models, &current, &app.theme);
         let lines = selector.render(cols as usize);
         // Render the model selector inline (not as overlay from here)
         // This is a stopgap until slash commands get TUI access
@@ -1304,7 +1325,7 @@ fn handle_bang_command(app: &mut App, command: String) {
 /// Mirrors pi's `addMessageToChat()` which adds `new Spacer(1)` before each message
 /// when `this.chatContainer.children.length > 0`.
 pub fn chat_add(app: &mut App, component: std::boxed::Box<dyn Component>) {
-    let mut chat = app.chat_container.inner.borrow_mut();
+    let mut chat = app.chat_container.borrow_mut();
     if !chat.children().is_empty() {
         chat.add_child(std::boxed::Box::new(Spacer::new(1)));
     }
@@ -1323,7 +1344,7 @@ fn format_tool_call_header(name: &str, args: &serde_json::Value) -> String {
                 .unwrap_or("...");
             let timeout = args.get("timeout").and_then(|v| v.as_i64());
             let timeout_suffix = timeout
-                .map(|t| theme.fg("muted", &format!(" (timeout {}s)", t)))
+                .map(|t| theme.fg_key(ThemeKey::Muted, &format!(" (timeout {}s)", t)))
                 .unwrap_or_default();
             format!(
                 "{}{}",
@@ -1347,7 +1368,7 @@ fn format_tool_call_header(name: &str, args: &serde_json::Value) -> String {
             let path_disp = if short.is_empty() {
                 String::new()
             } else {
-                theme.fg("accent", &short)
+                theme.fg_key(ThemeKey::Accent, &short)
             };
             let range = if offset > 0 || limit.is_some() {
                 let start = if offset > 0 { offset } else { 1 };
@@ -1355,7 +1376,7 @@ fn format_tool_call_header(name: &str, args: &serde_json::Value) -> String {
                     Some(l) => format!(":{}-{}", start, start + l - 1),
                     None => format!(":{}", start),
                 };
-                theme.fg("warning", &range_str)
+                theme.fg_key(ThemeKey::Warning, &range_str)
             } else {
                 String::new()
             };
@@ -1398,7 +1419,7 @@ fn format_tool_call_header(name: &str, args: &serde_json::Value) -> String {
             format!(
                 "{} {}",
                 theme.fg("toolTitle", &theme.bold("write")),
-                theme.fg("accent", &short)
+                theme.fg_key(ThemeKey::Accent, &short)
             )
         }
         "edit" => {
@@ -1415,7 +1436,7 @@ fn format_tool_call_header(name: &str, args: &serde_json::Value) -> String {
             format!(
                 "{} {}",
                 theme.fg("toolTitle", &theme.bold("edit")),
-                theme.fg("accent", &short)
+                theme.fg_key(ThemeKey::Accent, &short)
             )
         }
         "ls" => {
@@ -1434,7 +1455,7 @@ fn format_tool_call_header(name: &str, args: &serde_json::Value) -> String {
             format!(
                 "{} {}{}",
                 theme.fg("toolTitle", &theme.bold("ls")),
-                theme.fg("accent", &short),
+                theme.fg_key(ThemeKey::Accent, &short),
                 limit_str
             )
         }
@@ -1443,7 +1464,7 @@ fn format_tool_call_header(name: &str, args: &serde_json::Value) -> String {
             let suffix = if args_str.is_empty() || args_str == "{}" {
                 String::new()
             } else {
-                format!("  {}", theme.fg("muted", &args_str))
+                format!("  {}", theme.fg_key(ThemeKey::Muted, &args_str))
             };
             format!("{}{}", theme.fg("toolTitle", &theme.bold(name)), suffix)
         }
@@ -1924,7 +1945,7 @@ mod tests {
 
         // Header (matches compose_ui)
         // Model info, thinking level, token stats are shown in the footer.
-        lines.push(theme.bold(&theme.fg("accent", "rab")));
+        lines.push(theme.bold(&theme.fg_key(ThemeKey::Accent, "rab")));
         lines.push(String::new());
 
         let rendered = render_messages(
@@ -1939,7 +1960,7 @@ mod tests {
         let total = rendered.len();
         let scroll = app.scroll_offset.min(total.saturating_sub(1));
         let visible = if scroll > 0 {
-            let indicator = theme.fg("dim", &format!(" ↑ {} more", scroll));
+            let indicator = theme.fg_key(ThemeKey::Dim, &format!(" ↑ {} more", scroll));
             lines.push(crate::agent::ui::messages::pad_to_width(&indicator, width));
             &rendered[scroll..]
         } else {
@@ -1993,11 +2014,11 @@ mod tests {
             }
         };
         for msg in &follow_msgs {
-            let line = theme.fg("dim", &format!(" {}", msg));
+            let line = theme.fg_key(ThemeKey::Dim, &format!(" {}", msg));
             lines.push(crate::agent::ui::messages::pad_to_width(&line, width));
         }
         if !follow_msgs.is_empty() {
-            let hint = theme.fg("dim", " ↳ queued");
+            let hint = theme.fg_key(ThemeKey::Dim, " ↳ queued");
             lines.push(crate::agent::ui::messages::pad_to_width(&hint, width));
         }
 
@@ -2005,8 +2026,8 @@ mod tests {
             lines.push(String::new());
         }
         lines.extend(app.working.render(width));
-        lines.extend(app.editor.borrow().editor.render(width));
-        lines.extend(app.footer.borrow().render(width));
+        lines.extend(app.editor.borrow_mut().editor.render(width));
+        lines.extend(app.footer.borrow_mut().render(width));
         lines
     }
 

@@ -288,17 +288,22 @@ impl TUI {
     /// Lines are then composited at the calculated row/col position over the
     /// base content. Overlays with higher focus_order appear on top.
     fn composite_overlays(
-        &self,
+        &mut self,
         base_lines: &[String],
         term_width: usize,
         term_height: usize,
     ) -> Vec<String> {
         let mut result = base_lines.to_vec();
 
-        // Collect visible overlays sorted by focus order
-        let mut visible: Vec<&OverlayEntry> =
-            self.overlay_stack.iter().filter(|e| !e.hidden).collect();
-        visible.sort_by_key(|e| e.focus_order);
+        // Collect visible overlay indices sorted by focus order
+        let mut indices: Vec<usize> = self
+            .overlay_stack
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| !e.hidden)
+            .map(|(i, _)| i)
+            .collect();
+        indices.sort_by_key(|&i| self.overlay_stack[i].focus_order);
 
         let mut min_lines_needed = result.len();
 
@@ -308,40 +313,34 @@ impl TUI {
             layout: OverlayLayout,
         }
 
-        let rendered: Vec<RenderedOverlay> = visible
-            .iter()
-            .map(|entry| {
-                // Resolve layout with height=0 first to determine width
-                let layout =
-                    self.resolve_overlay_layout(&entry.options, 0, term_width, term_height);
+        let mut rendered: Vec<RenderedOverlay> = Vec::new();
+        for &idx in &indices {
+            // Resolve layout with height=0 first (options accessed immutably)
+            let options = self.overlay_stack[idx].options.clone();
+            let layout = self.resolve_overlay_layout(&options, 0, term_width, term_height);
 
-                // Render component at calculated width
-                let mut overlay_lines = entry.component.render(layout.width);
+            // Render component at calculated width (mutable access)
+            let mut overlay_lines = self.overlay_stack[idx].component.render(layout.width);
 
-                // Apply max_height
-                let overlay_height = if let Some(max_h) = layout.max_height {
-                    overlay_lines.truncate(max_h);
-                    overlay_lines.len()
-                } else {
-                    overlay_lines.len()
-                };
+            // Apply max_height
+            let overlay_height = if let Some(max_h) = layout.max_height {
+                overlay_lines.truncate(max_h);
+                overlay_lines.len()
+            } else {
+                overlay_lines.len()
+            };
 
-                // Re-resolve with actual height for proper row/col
-                let layout = self.resolve_overlay_layout(
-                    &entry.options,
-                    overlay_height,
-                    term_width,
-                    term_height,
-                );
+            // Re-resolve with actual height
+            let layout =
+                self.resolve_overlay_layout(&options, overlay_height, term_width, term_height);
 
-                min_lines_needed = min_lines_needed.max(layout.row + overlay_lines.len());
+            min_lines_needed = min_lines_needed.max(layout.row + overlay_lines.len());
 
-                RenderedOverlay {
-                    overlay_lines,
-                    layout,
-                }
-            })
-            .collect();
+            rendered.push(RenderedOverlay {
+                overlay_lines,
+                layout,
+            });
+        }
 
         // Ensure result has enough lines
         let working_height = result.len().max(term_height).max(min_lines_needed);
@@ -613,7 +612,7 @@ mod tests {
     }
 
     impl Component for TestComponent {
-        fn render(&self, _width: usize) -> Vec<String> {
+        fn render(&mut self, _width: usize) -> Vec<String> {
             vec![self.text.clone()]
         }
 

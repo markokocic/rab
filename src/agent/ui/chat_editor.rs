@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use crossterm::event::KeyEvent;
 
+use crate::agent::ui::theme::ThemeKey;
 use crate::tui::Component;
 use crate::tui::Theme;
 use crate::tui::autocomplete::{CombinedAutocompleteProvider, SlashCommand};
@@ -84,7 +85,7 @@ impl ChatEditor {
     pub fn new(theme: &dyn Theme, cwd: std::path::PathBuf) -> Self {
         let editor_theme = EditorTheme {
             text: {
-                let theme_text = theme.fg("text", "").to_string();
+                let theme_text = theme.fg_key(ThemeKey::Text, "").to_string();
                 Box::new(move |s| {
                     if !theme_text.is_empty() && theme_text.starts_with('\x1b') {
                         let prefix = &theme_text[..theme_text.len().saturating_sub(1)];
@@ -195,7 +196,7 @@ impl ChatEditor {
     ) {
         let text = self.editor.get_text();
         if text.trim_start().starts_with('!') {
-            let ansi = theme.fg("bashMode", "").to_string();
+            let ansi = theme.fg_key(ThemeKey::BashMode, "").to_string();
             // Extract just the ANSI prefix (before any text).
             // Use find('m') to get only the color-set code, not the trailing reset.
             // theme.fg() returns "\x1b[...m\x1b[39m"; we want "\x1b[...m" only.
@@ -391,7 +392,6 @@ mod tests {
     use super::*;
     use crate::tui::theme::NoopTheme;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-
     fn make_editor() -> ChatEditor {
         ChatEditor::new(&NoopTheme, std::env::temp_dir())
     }

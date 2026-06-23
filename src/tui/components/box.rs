@@ -1,8 +1,6 @@
 use crate::tui::Component;
-use crate::tui::util::{apply_background_to_line, visible_width};
-
-/// Type alias for background color functions.
-pub type BgFn = Box<dyn Fn(&str) -> String>;
+use crate::tui::Style;
+use crate::tui::util::visible_width;
 
 /// A container with padding and background color function.
 /// Children are rendered inside the padded area.
@@ -11,7 +9,7 @@ pub struct TuiBox {
     children: Vec<Box<dyn Component>>,
     padding_x: usize,
     padding_y: usize,
-    bg_fn: Option<BgFn>,
+    bg_style: Option<Style>,
     // Render cache
     cached_child_lines: Vec<String>,
     cached_width: usize,
@@ -20,12 +18,12 @@ pub struct TuiBox {
 }
 
 impl TuiBox {
-    pub fn new(padding_x: usize, padding_y: usize, bg_fn: Option<BgFn>) -> Self {
+    pub fn new(padding_x: usize, padding_y: usize, bg_style: Option<Style>) -> Self {
         Self {
             children: Vec::new(),
             padding_x,
             padding_y,
-            bg_fn,
+            bg_style,
             cached_child_lines: Vec::new(),
             cached_width: 0,
             cached_bg_sample: None,
@@ -38,8 +36,8 @@ impl TuiBox {
         self.invalidate_cache();
     }
 
-    pub fn set_bg_fn(&mut self, bg_fn: Option<BgFn>) {
-        self.bg_fn = bg_fn;
+    pub fn set_bg_style(&mut self, bg_style: Option<Style>) {
+        self.bg_style = bg_style;
         self.invalidate_cache();
     }
 
@@ -49,8 +47,14 @@ impl TuiBox {
     }
 
     fn apply_bg(&self, line: &str, width: usize) -> String {
-        if let Some(ref bg_fn) = self.bg_fn {
-            apply_background_to_line(line, width, bg_fn.as_ref())
+        if let Some(ref style) = self.bg_style {
+            let vis = visible_width(line);
+            let padded = if vis < width {
+                format!("{}{}", line, " ".repeat(width - vis))
+            } else {
+                line.to_string()
+            };
+            style.apply(&padded)
         } else {
             let vis = visible_width(line);
             if vis < width {
@@ -63,7 +67,7 @@ impl TuiBox {
 }
 
 impl Component for TuiBox {
-    fn render(&self, width: usize) -> Vec<String> {
+    fn render(&mut self, width: usize) -> Vec<String> {
         if self.children.is_empty() {
             return vec![];
         }
@@ -73,7 +77,7 @@ impl Component for TuiBox {
 
         // Render all children at content width
         let mut child_lines: Vec<String> = Vec::new();
-        for child in &self.children {
+        for child in self.children.iter_mut() {
             for line in child.render(content_width) {
                 child_lines.push(format!("{}{}", left_pad, line));
             }
@@ -84,7 +88,7 @@ impl Component for TuiBox {
         }
 
         // Check cache: compare child lines, width, and bg sample
-        let bg_sample = self.bg_fn.as_ref().map(|bg| bg("test"));
+        let bg_sample = self.bg_style.as_ref().map(|s| s.apply("test"));
         if self.cached_child_lines == child_lines
             && self.cached_width == width
             && self.cached_bg_sample == bg_sample
@@ -105,8 +109,10 @@ impl Component for TuiBox {
         }
 
         // Update cache
-        // Can't update in &self, so we need to use interior mutability or skip caching here
-        // For now, skip the cache (the struct fields would need RefCell)
+        self.cached_child_lines = child_lines;
+        self.cached_width = width;
+        self.cached_bg_sample = bg_sample;
+        self.cached_lines = result.clone();
 
         result
     }

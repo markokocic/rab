@@ -50,7 +50,7 @@ pub use overlay::{
 };
 pub use screen::Screen;
 pub use terminal::{ProcessTerminal, Terminal, TerminalTrait};
-pub use theme::Theme;
+pub use theme::{Style, Theme, ThemeKey};
 pub use tui_core::TUI;
 pub use util::{
     CJK_BREAK_REGEX, apply_background_to_line, is_cjk_break, is_image_line, is_whitespace_char,

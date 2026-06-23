@@ -55,7 +55,7 @@ impl ModelSelector {
 }
 
 impl Component for ModelSelector {
-    fn render(&self, width: usize) -> Vec<String> {
+    fn render(&mut self, width: usize) -> Vec<String> {
         let mut lines = vec![
             self.theme.bold(&self.theme.accent("  Select Model")),
             String::new(),
