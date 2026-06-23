@@ -928,18 +928,21 @@ fn interrupt_streaming(app: &mut App) {
     app.working.stop();
     app.footer.borrow_mut().set_streaming(false);
 
-    // Restore follow-up queue messages to editor (steering are mid-stream, not restorable)
-    let mut follow_up = app.follow_up_queue.lock().unwrap();
-    if !follow_up.is_empty() {
-        let all = follow_up.drain_all();
-        let text: Vec<String> = all.iter().map(|m| m.content.clone()).collect();
-        app.editor.borrow_mut().editor.set_text(&text.join("\n\n"));
-        app.queued_section.set_lines(vec![]);
+    // Restore follow-up queue messages to editor (steering are mid-stream, not restorable).
+    // Use try_lock to avoid deadlock if the agent loop holds the mutex when abort is called.
+    if let Ok(mut follow_up) = app.follow_up_queue.try_lock() {
+        if !follow_up.is_empty() {
+            let all = follow_up.drain_all();
+            let text: Vec<String> = all.iter().map(|m| m.content.clone()).collect();
+            app.editor.borrow_mut().editor.set_text(&text.join("\n\n"));
+            app.queued_section.set_lines(vec![]);
+        }
+        drop(follow_up);
     }
-    drop(follow_up);
 
-    // Also clear steering queue (consumed messages that were queued but not yet processed)
-    app.steering_queue.lock().unwrap().clear();
+    if let Ok(mut steering) = app.steering_queue.try_lock() {
+        steering.clear();
+    }
 
     app.status_text = Some("Interrupted".into());
 }
