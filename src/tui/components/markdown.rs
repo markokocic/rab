@@ -12,6 +12,12 @@ pub type StyleFn = Arc<dyn Fn(&str) -> String>;
 /// Type alias for code highlighting function.
 pub type HighlightFn = Arc<dyn Fn(&str, Option<&str>) -> Vec<String>>;
 
+// ── Code block indent (kept for backward compat, always "") ──
+
+/// DEPRECATED: Code blocks inherit padding from the component's padding_x.
+/// This constant is kept only for API compatibility and is always empty.
+pub const CODE_BLOCK_INDENT: &str = "";
+
 // ── MarkdownTheme ────────────────────────────────────────────────
 
 /// Theme functions for markdown elements.
@@ -33,7 +39,9 @@ pub struct MarkdownTheme {
     pub underline: StyleFn,
     /// If set, used for syntax-highlighted code blocks.
     pub highlight_code: Option<HighlightFn>,
-    /// Prefix applied to each rendered code block line (default: `"  "`).
+    /// DEPRECATED: Code blocks inherit padding from the component's padding_x.
+    /// Kept for API compatibility but should always be empty.
+    /// Use the component's padding_x for visual inset of code blocks.
     pub code_block_indent: String,
 }
 
@@ -71,7 +79,7 @@ impl MarkdownTheme {
             strikethrough,
             underline,
             highlight_code: None,
-            code_block_indent: "  ".to_string(),
+            code_block_indent: String::new(),
         }
     }
 }
@@ -283,17 +291,8 @@ impl Component for Markdown {
         // Calculate available width for content
         let content_width = width.saturating_sub(2 * self.padding_x).max(1);
 
-        // Replace tabs with 3 spaces
+        // Replace tabs with 3 spaces (only pre-processing needed)
         let normalized = self.text.replace('\t', "   ");
-
-        // Normalize: float headings to column 0 and dedent following lines
-        // to prevent CommonMark from nesting them inside list items.
-        // Some LLM outputs use progressive indentation like:
-        //   - item
-        //     ### heading
-        //     - sub-item
-        // which pulldown-cmark parsers as nested inside the list item.
-        let normalized = normalize_markdown_headings(&normalized);
 
         // Parse with pulldown-cmark
         let md_options = Options::ENABLE_STRIKETHROUGH
@@ -583,7 +582,6 @@ impl Markdown {
                     }
                 }
 
-                let indent = &self.theme.code_block_indent;
                 let border = self.theme.code_block_border.clone();
                 let code_fn = self.theme.code_block.clone();
 
@@ -595,11 +593,11 @@ impl Markdown {
                 if let Some(ref highlight) = self.theme.highlight_code {
                     let hl_lines = highlight(&code_text, info);
                     for hl in hl_lines {
-                        lines.push(format!("{}{}", indent, hl));
+                        lines.push(hl);
                     }
                 } else {
                     for code_line in code_text.split('\n') {
-                        lines.push(format!("{}{}", indent, code_fn(code_line)));
+                        lines.push(code_fn(code_line));
                     }
                 }
 
@@ -1505,7 +1503,9 @@ fn split_newline_apply(text: &str, apply: &dyn Fn(&str) -> String) -> String {
 pub fn normalize_markdown_headings(text: &str) -> String {
     let mut result = String::with_capacity(text.len());
     let mut in_code_block = false;
-    let lines: Vec<&str> = text.split('\n').collect();
+    // Use lines() to avoid trailing empty element when input ends with newline.
+    // split('\n') on "...\n" produces [..., ""], which gets rendered as extra blank line.
+    let lines: Vec<&str> = text.lines().collect();
     let mut i = 0;
 
     while i < lines.len() {

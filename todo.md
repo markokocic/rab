@@ -5,6 +5,7 @@
 - [ ] **Scrolling broken in chat screen:** Once you scroll up with the mouse, you can't scroll back down.
 - [ ] **Agentic loop freeze:** Sometimes after a few rounds the screen freezes and rab stops responding to any input. Only recoverable via `pkill -9 rab` from another terminal.
 - [ ] **Autocomplete of `/` commands - align to pi:** In pi, `/q<enter>` closes pi. In rab, `/q<enter>` autocompletes to `/quit` and needs a second enter. Should close immediately like pi.
+- [ ] **Enter key in slash command completion doesn't execute:** When selecting a slash command from the autocomplete dropdown, pressing Enter should execute the command immediately (matching pi behaviour), not just insert the text.
 - [ ] **Model thinking settings reset + editor borders:** Thinking setting gets reset to off intermittently. Editor border colors don't reflect the thinking setting. Should behave like pi.
 - [ ] **Markdown indentation inside code blocks:** Indentation compounds on each render, not matching pi.
 - [ ] **Write tool output:** Lines don't match screen width, styling/wrapping differ from pi. Needs 1:1 alignment.
@@ -14,6 +15,7 @@
 - [ ] **Slash command autocomplete:** Doesn't show hints like pi. Needs 1:1 alignment.
 - [ ] **`/new` command:** Needs alignment with pi behavior.
 - [ ] **`/session` command:** Needs alignment with pi behavior.
+- [ ] **Working indicator and spinner is missing:** Needs implementation — pi shows a working/spinner state during tool execution or agent activity.
 
 ## Remaining (not rendering-related)
 

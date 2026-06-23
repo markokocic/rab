@@ -285,11 +285,7 @@ async fn run_print_mode(
     let mut emitter = |event: AgentEvent| {
         match event {
             AgentEvent::TextDelta { delta } => {
-                // Normalize markdown headings in each delta to prevent progressive
-                // indentation (indented headings parsed as nested inside lists).
-                let normalized =
-                    rab::tui::components::markdown::normalize_markdown_headings(&delta);
-                print!("{}", normalized);
+                print!("{}", delta);
                 let _ = std::io::stdout().flush();
             }
             AgentEvent::ThinkingDelta { ref delta } => {
@@ -297,9 +293,7 @@ async fn run_print_mode(
                     eprint!("{}", colored::Colorize::dimmed("… "));
                     thinking_prefix_printed = true;
                 }
-                // Normalize headings in thinking output too
-                let normalized = rab::tui::components::markdown::normalize_markdown_headings(delta);
-                eprint!("{}", colored::Colorize::dimmed(&*normalized));
+                eprint!("{}", colored::Colorize::dimmed(delta.as_str()));
                 let _ = std::io::stderr().flush();
             }
             AgentEvent::ToolCall {
@@ -393,7 +387,7 @@ async fn run_print_mode(
                 colored::Colorize::red("✗"),
                 colored::Colorize::red(last_assistant.content.as_str())
             );
-            // Still return Ok — the error message is in the session.
+            // Still return Ok - the error message is in the session.
             // Caller can check last message is_error if needed.
         } else if !last_assistant.content.is_empty() && !last_assistant.content.ends_with('\n') {
             println!();
