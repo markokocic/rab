@@ -2,70 +2,18 @@
 
 ## Active / Pi alignment
 
-- [x] **Tool renderers — align rab to pi:** In pi, expand shows `pi: ... (5 earlier lines, ctrl+o to expand)` / `rab: ... 10 earlier lines, (C-O) to expand`. Rab matches this format exactly (variable N, same text/layout).
-- [x] **Read tool title — no space between filename and `:`:** Matches pi (no `" "` between filename and colon).
 - [ ] **Scrolling broken in chat screen:** Once you scroll up with the mouse, you can't scroll back down.
 - [ ] **Agentic loop freeze:** Sometimes after a few rounds the screen freezes and rab stops responding to any input. Only recoverable via `pkill -9 rab` from another terminal.
-- [x] **Welcome message:** Renders exactly the same content and using the same UI as pi's welcome message.
 - [ ] **Autocomplete of `/` commands — align to pi:** In pi, `/q<enter>` closes pi. In rab, `/q<enter>` autocompletes to `/quit` and needs a second enter. Should close immediately like pi.
-- [x] **Thinking visibility — `Ctrl+t` only:** Toggled exclusively by `Ctrl+t`, matching pi behavior.
-- [x] **Expand/collapse states — `Ctrl+o` only:** Controlled exclusively by `Ctrl+o`, matching pi behavior.
 - [ ] **Model thinking settings reset + editor borders:** Thinking setting gets reset to off intermittently. Editor border colors don't reflect the thinking setting. Should behave like pi.
-
----
-
-# Pi vs Rab - Message Rendering ✅ All Gaps Closed
-
-This document tracked gaps between pi's message rendering and rab's implementation.
-**All gaps have been closed.** Rab's rendering pipeline matches pi's architecture 1:1.
-
-## Current state
-
-```
-TUI.render()
-  └── root Container:
-      ├── HeaderComponent (logo + expandable keybinding hints)
-      ├── chat_container (RefContainer - all messages as Components)
-      │   ├── UserMessageComponent (Box + userMessageBg + markdown + OSC133)
-      │   ├── RcRefCellComponent (streaming assistant message, updated in-place)
-      │   │   └── AssistantMessageComponent (markdown + thinking blocks)
-      │   ├── ToolExecComponent (bg transitions: pending→success/error)
-      │   │   ├── Per-tool formatting via ToolRenderer: read (docs/resource labels, syntax)
-      │   │   │                                              bash ($ command, timeout, duration, truncation)
-      │   │   │                                              write (path + content preview, empty on success)
-      │   │   │                                              edit (renderShell: self, diff rendering)
-      │   │   └── Live duration from started_at for all tool calls
-      │   ├── BashExecutionComponent (borders, spinner, streaming output)
-      │   ├── InfoMessageComponent (dim text)
-      │   └── ...
-      ├── pending_section, status_section, queued_section, working_section
-      ├── EditorComponent (border color: thinking level / bash mode)
-      └── FooterComponent (model, tokens, git branch, streaming, auto-compact)
-```
-
-## Key architectural features (matching pi)
-
-| Feature | Implementation |
-|---------|---------------|
-| Component tree | TUI has `root: Container`, recursive `render()` |
-| Shared ownership | `RcRefCellComponent`, `RefContainer`, `RcToolExec` |
-| Streaming updates | `Weak<RefCell<AssistantMessageComponent>>` for in-place text/thinking |
-| Expand/collapse | `set_expanded()` on `Component` trait, global toggle via `handle_tools_expand()` |
-| Editor border color | `update_border_color()` - thinking level (`thinkingOff`..`thinkingXhigh`) or `bashMode` |
-| Spacers | `chat_add()` helper - adds `Spacer(1)` before each component when non-empty |
-| OSC133 zones | `UserMessageComponent` + `AssistantMessageComponent` emit them in `render()` |
-| Per-tool formatting | `format_tool_call_header()` - bash (`$ command`), read (compact docs/resource), write, edit, ls |
-| Diff rendering | `render_diff()` - unified diff, colored +/lines, intra-line character-level inverse |
-| Syntax highlighting | syntect enabled by default, `highlight_code()` + `path_to_language()` |
-| Bash streaming | `AgentEvent::ToolProgress` - tokio async reads, progressive component updates |
-| Duration display | "Elapsed X.Xs" / "Took X.Xs" in BashExecutionComponent |
-| Error/abort | `AgentEvent::Aborted` - inline error text in streaming component |
-| Write success | No output text, just bg transition (pending→success) |
-| Git branch | `refresh_git_branch()` on each `AgentStart` |
-| codeBlockIndent | Already in `MarkdownTheme` (default `"  "`) |
-| Markdown rendering | `src/tui/components/markdown.rs` (2103 lines) - pulldown-cmark parser, syntax highlighting, code blocks, tables |
-| Overlay system | `src/tui/overlay.rs` - anchor-based positioning, sizing, margins, compositing |
-| Keybindings | `src/tui/keybindings.rs` - 27+ action IDs with defaults, JSON config loading from `~/.rab/keybindings.json` |
+- [ ] **Markdown indentation inside code blocks:** Indentation compounds on each render, not matching pi.
+- [ ] **Write tool output:** Lines don't match screen width, styling/wrapping differ from pi. Needs 1:1 alignment.
+- [ ] **Edit tool diff:** Should be line-based, not character-based. Current diff is ugly.
+- [ ] **Bash tool duration:** All show 1.0s — duration not properly updated during streaming.
+- [ ] **Welcome message:** Doesn't look 1:1 identical with pi.
+- [ ] **Slash command autocomplete:** Doesn't show hints like pi. Needs 1:1 alignment.
+- [ ] **`/new` command:** Needs alignment with pi behavior.
+- [ ] **`/session` command:** Needs alignment with pi behavior.
 
 ## Remaining (not rendering-related)
 
@@ -78,6 +26,8 @@ These are feature gaps in the agent/tool functionality, not rendering:
 - **WASM plugin system**: Not started (Phase 2).
 - **MCP adapter**: Not started (Phase 2).
 - **Dynamic hot-reload**: Not started.
+- **Disable grep, ls, find tools**: These should be removed/disabled as built-in tools.
+- **Check unused dependencies**: Run `cargo-udeps` or equivalent to find and remove unused crates.
 
 ## Image system gaps (7)
 
@@ -95,7 +45,6 @@ These are feature gaps in the agent/tool functionality, not rendering:
 
 | # | Gap | Status |
 |---|-----|--------|
-| C11 | Visual truncate utility | ✅ `tui::visual_truncate.rs` |
 | C12 | Session selector + search | ❌ Open (CommandResult::OpenSessionSelector exists, no UI impl) |
 | C13 | Theme selector overlay | ❌ Open |
 | C14 | Thinking level selector | ❌ Open |
