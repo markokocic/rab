@@ -700,7 +700,11 @@ fn handle_input(app: &mut App, tui: &mut TUI, key: &KeyEvent) {
                 weak.borrow_mut().set_hide_thinking(app.hide_thinking);
             }
             // Persist only the affected field (incremental save)
-            let _ = crate::agent::settings::save_field("hideThinkingBlock", app.hide_thinking);
+            if let Err(e) =
+                crate::agent::settings::save_field("hideThinkingBlock", app.hide_thinking)
+            {
+                app.status_text = Some(format!("Failed to save thinking visibility: {}", e));
+            }
             app.settings.hide_thinking = Some(app.hide_thinking);
             chat_add(
                 app,
@@ -777,8 +781,11 @@ fn handle_thinking_cycle(app: &mut App) {
         .borrow_mut()
         .update_border_color(Some(next), &app.theme as &dyn crate::tui::Theme);
     app.settings.default_thinking_level = Some(next.to_string());
-    let _ = crate::agent::settings::save_field("defaultThinkingLevel", next);
+    if let Err(e) = crate::agent::settings::save_field("defaultThinkingLevel", next) {
+        app.status_text = Some(format!("Failed to save thinking level: {}", e));
+    }
     // Update provider's reasoning effort so API calls use the new level
+    // (even if save failed, the current session should use the new level)
     app.provider.set_reasoning_effort(Some(next));
     app.status_text = Some(format!("Thinking level: {}", next));
 }
@@ -824,7 +831,11 @@ fn handle_tools_expand(app: &mut App) {
     drop(chat);
 
     app.settings.collapse_tool_output = Some(app.collapse_tool_output);
-    let _ = crate::agent::settings::save_field("collapseToolOutput", app.collapse_tool_output);
+    if let Err(e) =
+        crate::agent::settings::save_field("collapseToolOutput", app.collapse_tool_output)
+    {
+        app.status_text = Some(format!("Failed to save tool output setting: {}", e));
+    }
     chat_add(
         app,
         Box::new(InfoMessageComponent::new(if app.tools_expanded {

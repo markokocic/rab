@@ -50,3 +50,4 @@ regex = "1.12.4"
 [features]
 default = ["syntect"]
 syntect = ["dep:syntect"]
+

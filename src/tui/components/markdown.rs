@@ -299,6 +299,15 @@ impl Component for Markdown {
         // Replace tabs with 3 spaces
         let normalized = self.text.replace('\t', "   ");
 
+        // Normalize: float headings to column 0 and dedent following lines
+        // to prevent CommonMark from nesting them inside list items.
+        // Some LLM outputs use progressive indentation like:
+        //   - item
+        //     ### heading
+        //     - sub-item
+        // which pulldown-cmark parsers as nested inside the list item.
+        let normalized = normalize_markdown_headings(&normalized);
+
         // Parse with pulldown-cmark
         let md_options = Options::ENABLE_STRIKETHROUGH
             | Options::ENABLE_TABLES
@@ -1482,6 +1491,101 @@ fn split_newline_apply(text: &str, apply: &dyn Fn(&str) -> String) -> String {
             }
         })
         .collect()
+}
+
+/// Normalize markdown by floating headings to column 0 and dedenting
+/// the lines that follow them.
+///
+/// Some LLM outputs use progressive indentation like:
+/// ```markdown
+/// - item
+///   ### heading
+///   - sub-item
+///     ### deeper
+///     - deeper-item
+/// ```
+///
+/// CommonMark parsers treat indented headings as inside the previous
+/// list item, causing progressive nesting in the rendered output.
+/// This function prevents that by:
+///   1. Ensuring headings always start at column 0.
+///   2. Dedenting the lines that follow a heading by the same amount
+///      the heading was indented, so they remain at the correct level.
+///   3. Inserting a blank line before a heading when the preceding
+///      content is non-blank, to close any open list.
+///
+/// Fenced code blocks (``` … ``` and ~~~ … ~~~) are preserved as-is.
+fn normalize_markdown_headings(text: &str) -> String {
+    let mut result = String::with_capacity(text.len());
+    let mut in_code_block = false;
+    let lines: Vec<&str> = text.split('\n').collect();
+    let mut i = 0;
+
+    while i < lines.len() {
+        let line = lines[i];
+        let trimmed_start = line.trim_start();
+
+        // Track code block state (fenced with ``` or ~~~)
+        if trimmed_start.starts_with("```") || trimmed_start.starts_with("~~~") {
+            in_code_block = !in_code_block;
+            result.push_str(line);
+            result.push('\n');
+            i += 1;
+            continue;
+        }
+
+        if !in_code_block && is_heading_line(trimmed_start) {
+            let indent = line.len() - trimmed_start.len();
+
+            // Insert blank line before heading if preceding line is non-blank
+            // to close any open list / blockquote.
+            if i > 0 && !lines[i - 1].trim().is_empty() {
+                result.push('\n');
+            }
+
+            // Float heading to column 0
+            result.push_str(trimmed_start);
+            result.push('\n');
+            i += 1;
+
+            // Dedent subsequent lines by the same amount, stopping at blank
+            // lines, next headings, or code fences.
+            while i < lines.len() {
+                let next = lines[i];
+                let next_trimmed = next.trim_start();
+
+                if next.trim().is_empty()
+                    || is_heading_line(next_trimmed)
+                    || next_trimmed.starts_with("```")
+                    || next_trimmed.starts_with("~~~")
+                {
+                    break;
+                }
+
+                let to_remove = indent.min(next.len() - next_trimmed.len());
+                result.push_str(&next[to_remove..]);
+                result.push('\n');
+                i += 1;
+            }
+            continue;
+        }
+
+        result.push_str(line);
+        result.push('\n');
+        i += 1;
+    }
+
+    result
+}
+
+/// Check if a trimmed line is a markdown ATX heading (starts with `# ` etc.).
+fn is_heading_line(s: &str) -> bool {
+    s.starts_with("# ")
+        || s.starts_with("## ")
+        || s.starts_with("### ")
+        || s.starts_with("#### ")
+        || s.starts_with("##### ")
+        || s.starts_with("###### ")
 }
 
 // ── Syntax Highlighting (feature-gated) ─────────────────────────
