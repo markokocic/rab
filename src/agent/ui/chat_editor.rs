@@ -106,7 +106,7 @@ impl ChatEditor {
         let editor = Editor::new(
             editor_theme,
             EditorOptions {
-                padding_x: 1,
+                padding_x: 0,
                 max_visible_lines: 10,
             },
         );
