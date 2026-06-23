@@ -140,7 +140,6 @@ impl Component for AssistantMessageComponent {
                 });
                 let default_style = DefaultTextStyle {
                     color: Some(color_fn),
-                    bg_color: None,
                     bold: false,
                     italic: true,
                     strikethrough: false,

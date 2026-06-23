@@ -5,7 +5,7 @@ use std::sync::Arc;
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
 use crate::tui::Component;
-use crate::tui::util::{apply_background_to_line, visible_width, wrap_text_with_ansi};
+use crate::tui::util::{visible_width, wrap_text_with_ansi};
 
 /// Type alias for markdown theme styling functions.
 pub type StyleFn = Arc<dyn Fn(&str) -> String>;
@@ -83,8 +83,6 @@ impl MarkdownTheme {
 pub struct DefaultTextStyle {
     /// Optional foreground color function.
     pub color: Option<StyleFn>,
-    /// Optional background color function (applied at the padding stage).
-    pub bg_color: Option<StyleFn>,
     pub bold: bool,
     pub italic: bool,
     pub strikethrough: bool,
@@ -324,47 +322,27 @@ impl Component for Markdown {
         // Add padding and background
         let left_margin = " ".repeat(self.padding_x);
         let right_margin = " ".repeat(self.padding_x);
-        let bg_fn = self
-            .default_text_style
-            .as_ref()
-            .and_then(|s| s.bg_color.clone());
-
         let mut content_lines: Vec<String> = Vec::new();
         for line in &wrapped {
             let line_with_margins = format!("{}{}{}", left_margin, line, right_margin);
-            if let Some(ref bg) = bg_fn {
-                content_lines.push(apply_background_to_line(
-                    &line_with_margins,
-                    width,
-                    bg.as_ref(),
-                ));
+            let visible = visible_width(&line_with_margins);
+            let padded = if visible < width {
+                format!("{}{}", line_with_margins, " ".repeat(width - visible))
             } else {
-                let visible = visible_width(&line_with_margins);
-                if visible < width {
-                    content_lines.push(format!(
-                        "{}{}",
-                        line_with_margins,
-                        " ".repeat(width - visible)
-                    ));
-                } else {
-                    content_lines.push(line_with_margins);
-                }
-            }
+                line_with_margins
+            };
+            content_lines.push(padded);
         }
 
         let empty_line = " ".repeat(width);
-        let empty_bg = bg_fn
-            .as_ref()
-            .map(|bg| bg(&empty_line))
-            .unwrap_or_else(|| empty_line.clone());
 
         let mut result = Vec::new();
         for _ in 0..self.padding_y {
-            result.push(empty_bg.clone());
+            result.push(empty_line.clone());
         }
         result.extend(content_lines);
         for _ in 0..self.padding_y {
-            result.push(empty_bg.clone());
+            result.push(empty_line.clone());
         }
 
         // Update cache
@@ -1896,7 +1874,6 @@ mod tests {
         let theme = test_theme();
         let default_style = DefaultTextStyle {
             color: Some(Arc::new(|s| format!("\x1b[33m{}\x1b[39m", s))),
-            bg_color: None,
             bold: true,
             italic: false,
             strikethrough: false,

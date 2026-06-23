@@ -67,7 +67,6 @@ pub fn render_messages(
                         crate::agent::ui::theme::current_theme()
                             .fg_key(ThemeKey::UserMessageText, s)
                     })),
-                    bg_color: None,
                     bold: false,
                     italic: false,
                     strikethrough: false,
@@ -143,7 +142,6 @@ pub fn render_messages(
                     };
                     let default_style = DefaultTextStyle {
                         color: Some(Arc::new(color_fn)),
-                        bg_color: None,
                         bold: false,
                         italic: true,
                         strikethrough: false,

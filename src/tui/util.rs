@@ -825,22 +825,6 @@ pub fn extract_segments(
 
 /// Apply a background color function to a line, padding it to the given width.
 /// Matches pi's `applyBackgroundToLine`.
-pub fn apply_background_to_line(
-    line: &str,
-    width: usize,
-    bg_fn: &dyn Fn(&str) -> String,
-) -> String {
-    let vis = visible_width(line);
-    let padded = if vis < width {
-        let mut result = line.to_string();
-        result.push_str(&" ".repeat(width - vis));
-        result
-    } else {
-        line.to_string()
-    };
-    bg_fn(&padded)
-}
-
 /// Check if a line contains a Kitty image sequence or data URL.
 /// Data URLs (data:image/...;base64,...) are detected by checking if the
 /// line starts with the data URL prefix.

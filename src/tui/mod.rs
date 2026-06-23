@@ -53,9 +53,9 @@ pub use terminal::{ProcessTerminal, Terminal, TerminalTrait};
 pub use theme::{Style, Theme, ThemeKey};
 pub use tui_core::TUI;
 pub use util::{
-    CJK_BREAK_REGEX, apply_background_to_line, is_cjk_break, is_image_line, is_whitespace_char,
-    normalize_terminal_output, slice_by_column, slice_with_width, truncate_to_width, visible_width,
-    visual_col_to_byte_offset, wrap_text_with_ansi,
+    CJK_BREAK_REGEX, is_cjk_break, is_image_line, is_whitespace_char, normalize_terminal_output,
+    slice_by_column, slice_with_width, truncate_to_width, visible_width, visual_col_to_byte_offset,
+    wrap_text_with_ansi,
 };
 pub use word_nav::{
     WordNavigationOptions, WordSegment, find_word_backward, find_word_backward_with,

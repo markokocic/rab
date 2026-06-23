@@ -31,7 +31,6 @@ impl UserMessageComponent {
                 let t = current_theme();
                 t.fg_key(ThemeKey::UserMessageText, s)
             })),
-            bg_color: None,
             bold: false,
             italic: false,
             strikethrough: false,
