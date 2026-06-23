@@ -1,6 +1,4 @@
 use std::io::{self, Write};
-use std::sync::LazyLock;
-use std::sync::Mutex;
 use std::time::Duration;
 
 use crossterm::event::{self, Event, KeyEvent, KeyboardEnhancementFlags};
@@ -50,75 +48,21 @@ pub trait TerminalTrait {
 }
 
 // =============================================================================
-// Background stdin reader — reads crossterm events on a dedicated thread
-// and forwards them through a channel so crossterm parser bugs (e.g. hanging
-// on partial escape sequences) cannot freeze the main event loop.
+// Poll functions (kept as free functions for the event loop)
 // =============================================================================
 
-use std::sync::mpsc;
-
-static EVENT_TX: LazyLock<Mutex<Option<mpsc::Sender<TerminalEvent>>>> =
-    LazyLock::new(|| Mutex::new(None));
-
-static EVENT_RX: LazyLock<Mutex<Option<mpsc::Receiver<TerminalEvent>>>> =
-    LazyLock::new(|| Mutex::new(None));
-
-/// Start the background stdin reader thread.
-/// Must be called once after raw mode is enabled.
-pub fn start_stdin_reader() {
-    let (tx, rx) = mpsc::channel();
-    *EVENT_TX.lock().unwrap() = Some(tx.clone());
-    *EVENT_RX.lock().unwrap() = Some(rx);
-
-    std::thread::spawn(move || {
-        // Read events in a loop. If crossterm's parser blocks, only this
-        // background thread is affected — the main loop remains responsive.
-        loop {
-            match event::read() {
-                Ok(Event::Key(key)) => {
-                    let _ = tx.send(TerminalEvent::Key(key));
-                }
-                Ok(Event::Paste(content)) => {
-                    let _ = tx.send(TerminalEvent::Paste(content));
-                }
-                Ok(Event::Resize(w, h)) => {
-                    let _ = tx.send(TerminalEvent::Resize(w, h));
-                }
-                Ok(_) => {}
-                Err(_) => {
-                    // Stdin error — terminal likely closed. Exit thread.
-                    break;
-                }
-            }
-        }
-    });
-}
-
-/// Poll for any terminal event (key, paste, resize) with a timeout.
+/// Poll for any terminal event (key, paste, resize).
 /// Returns None on timeout or for unhandled event types.
-/// Uses try_recv in a spin-loop with short sleeps so the mutex is never
-/// held during a blocking call — the main loop can always make progress.
 pub fn poll_terminal_event(timeout: Option<Duration>) -> io::Result<Option<TerminalEvent>> {
-    let deadline = timeout.map(|t| std::time::Instant::now() + t);
-    loop {
-        {
-            let rx_guard = EVENT_RX.lock().unwrap();
-            if let Some(rx) = rx_guard.as_ref() {
-                match rx.try_recv() {
-                    Ok(event) => return Ok(Some(event)),
-                    Err(mpsc::TryRecvError::Empty) => {}
-                    Err(mpsc::TryRecvError::Disconnected) => return Ok(None),
-                }
-            }
-        } // MutexGuard dropped here
-        if let Some(deadline) = deadline
-            && std::time::Instant::now() >= deadline
-        {
-            return Ok(None);
+    if event::poll(timeout.unwrap_or(Duration::ZERO))? {
+        match event::read()? {
+            Event::Key(key) => Ok(Some(TerminalEvent::Key(key))),
+            Event::Paste(content) => Ok(Some(TerminalEvent::Paste(content))),
+            Event::Resize(w, h) => Ok(Some(TerminalEvent::Resize(w, h))),
+            _ => Ok(None),
         }
-        // Brief sleep so we don't busy-spin, but responsive enough for the
-        // ~16ms poll interval.
-        std::thread::sleep(Duration::from_millis(2));
+    } else {
+        Ok(None)
     }
 }
 
@@ -131,21 +75,12 @@ pub fn poll_key_event(timeout: Option<Duration>) -> io::Result<Option<KeyEvent>>
 
 pub fn read_key_event() -> io::Result<KeyEvent> {
     loop {
-        let rx_guard = EVENT_RX.lock().unwrap();
-        if let Some(rx) = rx_guard.as_ref() {
-            match rx.recv() {
-                Ok(TerminalEvent::Key(key)) => return Ok(key),
-                Ok(_) => continue,
-                Err(_) => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::BrokenPipe,
-                        "stdin reader died",
-                    ));
-                }
-            }
+        match event::read()? {
+            Event::Key(key) => return Ok(key),
+            Event::Paste(_) => continue,
+            Event::Resize(_, _) => continue,
+            _ => continue,
         }
-        drop(rx_guard);
-        std::thread::sleep(Duration::from_millis(10));
     }
 }
 
@@ -176,7 +111,6 @@ impl ProcessTerminal {
         writer.flush()
     }
 
-    #[allow(dead_code)]
     fn enable_kitty_protocol(&mut self, writer: &mut dyn Write) -> io::Result<()> {
         let flags = KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
             | KeyboardEnhancementFlags::REPORT_EVENT_TYPES
@@ -216,10 +150,7 @@ impl TerminalTrait for ProcessTerminal {
         crossterm::terminal::enable_raw_mode()?;
         self.was_raw = true;
         self.enable_bracketed_paste(writer)?;
-        // Kitty keyboard protocol disabled temporarily — it can cause crossterm's
-        // event parser to hang on partial escape sequences, freezing the main loop.
-        // Re-enable once crossterm handles Kitty enhanced sequences robustly.
-        // self.enable_kitty_protocol(writer)?;
+        self.enable_kitty_protocol(writer)?;
         // Refresh terminal dimensions
         let _ = crossterm::terminal::size();
         Ok(())

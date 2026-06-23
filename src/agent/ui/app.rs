@@ -369,7 +369,6 @@ pub async fn run(config: AppConfig, session: SessionManager) -> anyhow::Result<(
 
     let mut term = ProcessTerminal::new();
     let mut stdout = std::io::stdout();
-    let (mut bg_writer, _writer_thread) = crate::tui::tui_core::BackgroundWriter::new();
 
     // Main-screen mode (like pi) - no alternate screen, no clear.
     // Content writes from current cursor position (after shell prompt).
@@ -377,9 +376,6 @@ pub async fn run(config: AppConfig, session: SessionManager) -> anyhow::Result<(
     term.start(&mut stdout)?;
     term.hide_cursor(&mut stdout)?;
     term.set_color_scheme_notifications(&mut stdout, true)?;
-    // Start background stdin reader so crossterm parser bugs don't freeze
-    // the main event loop.
-    crate::tui::terminal::start_stdin_reader();
 
     let mut tui = TUI::new();
     // Disable clear_on_shrink to avoid full redraws during streaming
@@ -514,7 +510,7 @@ pub async fn run(config: AppConfig, session: SessionManager) -> anyhow::Result<(
             // Update section components from compose_ui
             compose_ui(&mut app, cols as usize);
             tui.set_dimensions(cols as usize, rows as usize);
-            tui.render(cols as usize, rows as usize, &mut bg_writer)?;
+            tui.render(cols as usize, rows as usize, &mut stdout)?;
             dirty = false;
         }
 

@@ -1,5 +1,4 @@
 use std::io::{self, Write};
-use std::sync::mpsc;
 
 use crossterm::event::KeyEvent;
 
@@ -19,43 +18,6 @@ pub const CURSOR_MARKER: &str = "\x1b_pi:c\x07";
 //
 // Pi reference: packages/tui/src/tui.ts
 // =============================================================================
-
-/// A `Write` implementation that sends data through an mpsc channel to a
-/// background thread. Prevents the main event loop from blocking on PTY
-/// writes, which can hang when the terminal backs up.
-pub struct BackgroundWriter(mpsc::Sender<Vec<u8>>);
-
-impl BackgroundWriter {
-    pub fn new() -> (Self, std::thread::JoinHandle<()>) {
-        let (tx, rx) = mpsc::channel::<Vec<u8>>();
-        let handle = std::thread::spawn(move || {
-            let stdout = std::io::stdout();
-            let mut locked = stdout.lock();
-            while let Ok(data) = rx.recv() {
-                if data.is_empty() {
-                    // Empty message signals shutdown
-                    break;
-                }
-                let _ = locked.write_all(&data);
-                let _ = locked.flush();
-            }
-        });
-        (Self(tx), handle)
-    }
-}
-
-impl Write for BackgroundWriter {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.0.send(buf.to_vec()).map_err(|_| {
-            io::Error::new(io::ErrorKind::BrokenPipe, "background writer thread died")
-        })?;
-        Ok(buf.len())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
-}
 
 pub struct TUI {
     /// The root container — all top-level children are added here.

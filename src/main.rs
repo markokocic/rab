@@ -15,9 +15,6 @@ use rab::tui::keybindings::{Keybindings, init_keybindings};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Initialize freeze dump handler (SIGUSR1 → /tmp/rab-freeze.txt)
-    rab::diag::init();
-
     let cwd = std::env::current_dir()?;
 
     // Parse CLI flags
