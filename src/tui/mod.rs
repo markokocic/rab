@@ -3,7 +3,6 @@ pub mod component;
 pub mod container;
 pub mod focusable;
 pub mod fuzzy;
-pub mod image;
 pub mod keybindings;
 pub mod keys;
 pub mod kill_ring;
@@ -53,8 +52,8 @@ pub use terminal::{ProcessTerminal, Terminal, TerminalTrait};
 pub use theme::{Style, Theme, ThemeKey};
 pub use tui_core::TUI;
 pub use util::{
-    CJK_BREAK_REGEX, is_cjk_break, is_image_line, is_whitespace_char, normalize_terminal_output,
-    slice_by_column, slice_with_width, truncate_to_width, visible_width, visual_col_to_byte_offset,
+    CJK_BREAK_REGEX, is_cjk_break, is_whitespace_char, normalize_terminal_output, slice_by_column,
+    slice_with_width, truncate_to_width, visible_width, visual_col_to_byte_offset,
     wrap_text_with_ansi,
 };
 pub use word_nav::{

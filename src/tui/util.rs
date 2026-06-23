@@ -420,7 +420,7 @@ fn split_into_tokens(text: &str) -> Vec<String> {
         let segment_str = &text[i..end];
         let mut seg_pos = 0;
         while seg_pos < segment_str.len() {
-            // Check for paste marker start — treat as single atomic token
+            // Check for paste marker start - treat as single atomic token
             if segment_str[seg_pos..].starts_with("[paste #") {
                 if !current.is_empty() {
                     tokens.push(std::mem::take(&mut current));
@@ -821,15 +821,6 @@ pub fn extract_segments(
     }
 
     (before, before_width, after, after_width)
-}
-
-/// Apply a background color function to a line, padding it to the given width.
-/// Matches pi's `applyBackgroundToLine`.
-/// Check if a line contains a Kitty image sequence or data URL.
-/// Data URLs (data:image/...;base64,...) are detected by checking if the
-/// line starts with the data URL prefix.
-pub fn is_image_line(line: &str) -> bool {
-    line.trim_start().starts_with("data:image/") && line.contains(";base64,")
 }
 
 /// Slice text by visible columns, returning both the extracted text and its width.

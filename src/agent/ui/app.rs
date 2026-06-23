@@ -5,7 +5,7 @@ use std::rc::{Rc, Weak};
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::agent::extension::{AgentTool, Extension};
+use crate::agent::extension::{AgentTool, CommandResult, Extension};
 use crate::agent::provider::{Provider, ToolDef};
 use crate::agent::session::SessionManager;
 use crate::agent::types::{AgentMessage, PendingMessageQueue, QueueMode, ToolExecutionMode, Usage};
@@ -159,6 +159,10 @@ pub struct App {
     /// Transient status text (pi-style: replaces previous status, not added to chat).
     status_text: Option<String>,
 
+    /// Pending command result that needs TUI access (overlays etc.).
+    /// Set by handle_slash_command, consumed in the main loop where TUI is available.
+    pending_command_result: Option<CommandResult>,
+
     /// Agent tools (for tool execution).
     agent_tools: Arc<Vec<Box<dyn AgentTool>>>,
     /// Extensions.
@@ -305,6 +309,7 @@ impl App {
             event_rx: rx,
             is_streaming: false,
             pending_text: None,
+            pending_command_result: None,
             pending_thinking: None,
             hide_thinking: config.hide_thinking,
             collapse_tool_output: config.collapse_tool_output,
@@ -473,6 +478,38 @@ pub async fn run(config: AppConfig, session: SessionManager) -> anyhow::Result<(
             dirty = true;
         }
 
+        // Handle pending command results that need TUI access (overlays, etc.)
+        if let Some(result) = app.pending_command_result.take() {
+            match result {
+                CommandResult::ShowHelp => {
+                    show_help_overlay(&mut app, &mut tui);
+                }
+                CommandResult::OpenSessionSelector => {
+                    // Session selector not yet implemented
+                    app.messages.push(DisplayMsg::Info(
+                        "Session selector - not yet implemented.".to_string(),
+                    ));
+                }
+                CommandResult::OpenSettings => {
+                    app.messages.push(DisplayMsg::Info(
+                        "Settings menu - not yet implemented.".to_string(),
+                    ));
+                }
+                CommandResult::ScopedModels => {
+                    app.messages.push(DisplayMsg::Info(
+                        "Scoped models - not yet implemented.".to_string(),
+                    ));
+                }
+                CommandResult::Login { .. } => {
+                    app.messages.push(DisplayMsg::Info(
+                        "Login dialog - not yet implemented.".to_string(),
+                    ));
+                }
+                _ => {}
+            }
+            dirty = true;
+        }
+
         // Check terminal size only when we're about to render
         // (avoids expensive ioctl syscall on idle frames)
         if dirty && let Ok((w, h)) = term.size() {
@@ -520,7 +557,7 @@ pub async fn run(config: AppConfig, session: SessionManager) -> anyhow::Result<(
             app.is_streaming = false;
             app.working.stop();
             app.footer.borrow_mut().set_streaming(false);
-            app.status_text = Some("Streaming timed out — agent may have crashed".into());
+            app.status_text = Some("Streaming timed out - agent may have crashed".into());
             dirty = true;
         }
 
@@ -1191,48 +1228,236 @@ fn start_agent_loop(app: &mut App, message: String) {
     app.agent_abort = Some(handle.abort_handle());
 }
 
-/// Handle slash commands.
+/// Handle slash commands by dispatching through extension command handlers.
+/// For commands that need TUI access (overlays), the result is stored in
+/// `pending_command_result` and consumed in the main loop where TUI is available.
+/// Simple results (Info, Quit, etc.) are handled immediately.
 fn handle_slash_command(app: &mut App, input: &str) {
-    // Detect terminal size for overlay-like rendering
-    let (cols, _rows) = crossterm::terminal::size().unwrap_or((80, 24));
     let (cmd_name, args) = match input.split_once(' ') {
         Some((cmd, rest)) => (cmd.trim_start_matches('/'), rest),
         None => (input.trim_start_matches('/'), ""),
     };
 
-    // /model opens model selector
-    if cmd_name == "model" || cmd_name.starts_with("mod") && args.is_empty() {
-        let models = app.available_models.clone();
-        let current = app.model.clone();
-        let mut selector = ModelSelector::new(models, &current, &app.theme);
-        let lines = selector.render(cols as usize);
-        // Render the model selector inline (not as overlay from here)
-        // This is a stopgap until slash commands get TUI access
-        for line in lines {
-            app.messages.push(DisplayMsg::Info(line));
+    // Find the command handler first (before mutable borrow on app)
+    for ext in app.extensions.iter() {
+        for cmd in ext.commands() {
+            if cmd.name == cmd_name {
+                // Execute the handler here while we have immutably borrowed app,
+                // then use the result after dropping the borrow.
+                let result = cmd.handler.execute(args);
+                match result {
+                    Ok(result) => {
+                        // Drop the iterator borrow before mutating app
+                        drop((ext, cmd));
+                        handle_command_result(app, result);
+                        return;
+                    }
+                    Err(e) => {
+                        drop((ext, cmd));
+                        app.messages.push(DisplayMsg::Info(format!(
+                            "Error executing /{}: {}",
+                            cmd_name, e
+                        )));
+                        return;
+                    }
+                }
+            }
         }
-        return;
-    }
-
-    // /help
-    if cmd_name == "help" || cmd_name == "h" {
-        app.messages.push(DisplayMsg::Info(
-            "Help: Press F1 for keyboard shortcuts.".into(),
-        ));
-        return;
-    }
-
-    // /quit
-    if cmd_name == "quit" || cmd_name == "q" {
-        app.should_quit = true;
-        return;
     }
 
     // Unknown command
+    let available: Vec<&str> = app.commands.iter().map(|(n, _)| n.as_str()).collect();
     app.status_text = Some(format!(
-        "Unknown command: /{}. Type /help for available commands.",
-        cmd_name
+        "Unknown command: /{}. Available: {}",
+        cmd_name,
+        available.join(", ")
     ));
+}
+
+/// Handle a CommandResult from a slash command.
+/// Simple results are applied immediately; overlay-requiring ones
+/// are stored in `pending_command_result` for the main loop.
+fn handle_command_result(app: &mut App, result: CommandResult) {
+    match result {
+        CommandResult::Info(msg) => {
+            chat_add(
+                app,
+                std::boxed::Box::new(InfoMessageComponent::new(msg.clone())),
+            );
+            app.messages.push(DisplayMsg::Info(msg));
+        }
+        CommandResult::Quit => {
+            app.should_quit = true;
+        }
+        CommandResult::ModelChanged(model) => {
+            app.model = model.clone();
+            app.footer.borrow_mut().set_model(&model);
+            app.status_text = Some(format!("Model: {}", model));
+        }
+        CommandResult::ShowHelp => {
+            // Needs TUI overlay - defer
+            app.pending_command_result = Some(result);
+        }
+        CommandResult::Reloaded => {
+            chat_add(
+                app,
+                std::boxed::Box::new(InfoMessageComponent::new(
+                    "Settings, extensions, and keybindings reloaded.".to_string(),
+                )),
+            );
+            app.messages.push(DisplayMsg::Info(
+                "Settings, extensions, and keybindings reloaded.".to_string(),
+            ));
+        }
+        CommandResult::NewSession => {
+            // Clear conversation and messages
+            app.conversation.clear();
+            app.messages.retain(|m| matches!(m, DisplayMsg::Info(_)));
+            // Clear chat container children (keep header, etc.)
+            app.chat_container.borrow_mut().clear();
+            app.status_text = Some("New session started.".into());
+        }
+        CommandResult::SessionSwitched { path } => {
+            app.status_text = Some(format!("Switched to session: {}", path.display()));
+        }
+        CommandResult::SessionInfo {
+            session_id,
+            file_path,
+            name,
+            message_count,
+        } => {
+            let name_display = name.as_deref().unwrap_or("unnamed");
+            let file_display = file_path
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "in-memory".to_string());
+            let info = format!(
+                "Session: {} ({})\nID: {}\nMessages: {}",
+                name_display, file_display, session_id, message_count
+            );
+            chat_add(
+                app,
+                std::boxed::Box::new(InfoMessageComponent::new(info.clone())),
+            );
+            app.messages.push(DisplayMsg::Info(info));
+        }
+        CommandResult::OpenSessionSelector => {
+            // Needs TUI overlay - defer
+            app.pending_command_result = Some(result);
+        }
+        CommandResult::SessionNamed { name } => {
+            app.status_text = Some(format!("Session name: {}", name));
+        }
+        CommandResult::OpenSettings => {
+            // Needs TUI overlay - defer
+            app.pending_command_result = Some(result);
+        }
+        CommandResult::ScopedModels => {
+            // Needs TUI overlay - defer
+            app.pending_command_result = Some(result);
+        }
+        CommandResult::ExportSession { path } => {
+            let msg = if let Some(p) = path {
+                format!("Export session to {} - not yet implemented.", p)
+            } else {
+                "Export session - not yet implemented (defaults to HTML).".to_string()
+            };
+            chat_add(
+                app,
+                std::boxed::Box::new(InfoMessageComponent::new(msg.clone())),
+            );
+            app.messages.push(DisplayMsg::Info(msg));
+        }
+        CommandResult::ImportSession { path } => {
+            let msg = format!("Import session from {} - not yet implemented.", path);
+            chat_add(
+                app,
+                std::boxed::Box::new(InfoMessageComponent::new(msg.clone())),
+            );
+            app.messages.push(DisplayMsg::Info(msg));
+        }
+        CommandResult::ShareSession => {
+            let msg = "Share session - not yet implemented.".to_string();
+            chat_add(
+                app,
+                std::boxed::Box::new(InfoMessageComponent::new(msg.clone())),
+            );
+            app.messages.push(DisplayMsg::Info(msg));
+        }
+        CommandResult::CopyLastMessage => {
+            let msg = "Copy last agent message to clipboard - not yet implemented.".to_string();
+            chat_add(
+                app,
+                std::boxed::Box::new(InfoMessageComponent::new(msg.clone())),
+            );
+            app.messages.push(DisplayMsg::Info(msg));
+        }
+        CommandResult::ShowChangelog => {
+            let msg = "Changelog - not yet implemented.".to_string();
+            chat_add(
+                app,
+                std::boxed::Box::new(InfoMessageComponent::new(msg.clone())),
+            );
+            app.messages.push(DisplayMsg::Info(msg));
+        }
+        CommandResult::ForkSession { message_id } => {
+            let msg = if let Some(id) = message_id {
+                format!("Fork session at message {} - not yet implemented.", id)
+            } else {
+                "Fork session - not yet implemented.".to_string()
+            };
+            chat_add(
+                app,
+                std::boxed::Box::new(InfoMessageComponent::new(msg.clone())),
+            );
+            app.messages.push(DisplayMsg::Info(msg));
+        }
+        CommandResult::CloneSession => {
+            let msg = "Clone session - not yet implemented.".to_string();
+            chat_add(
+                app,
+                std::boxed::Box::new(InfoMessageComponent::new(msg.clone())),
+            );
+            app.messages.push(DisplayMsg::Info(msg));
+        }
+        CommandResult::SessionTree => {
+            let msg = "Session tree - not yet implemented.".to_string();
+            chat_add(
+                app,
+                std::boxed::Box::new(InfoMessageComponent::new(msg.clone())),
+            );
+            app.messages.push(DisplayMsg::Info(msg));
+        }
+        CommandResult::TrustDecision { decision } => {
+            let msg = format!("Trust decision '{}' saved.", decision);
+            chat_add(
+                app,
+                std::boxed::Box::new(InfoMessageComponent::new(msg.clone())),
+            );
+            app.messages.push(DisplayMsg::Info(msg));
+        }
+        CommandResult::Login { provider: _ } => {
+            // Needs TUI overlay - defer
+            app.pending_command_result = Some(result);
+        }
+        CommandResult::Logout { provider } => {
+            let prov = provider.as_deref().unwrap_or("all providers");
+            let msg = format!("Logged out from {} - not yet implemented.", prov);
+            chat_add(
+                app,
+                std::boxed::Box::new(InfoMessageComponent::new(msg.clone())),
+            );
+            app.messages.push(DisplayMsg::Info(msg));
+        }
+        CommandResult::CompactSession => {
+            let msg = "Compact session - not yet implemented.".to_string();
+            chat_add(
+                app,
+                std::boxed::Box::new(InfoMessageComponent::new(msg.clone())),
+            );
+            app.messages.push(DisplayMsg::Info(msg));
+        }
+    }
 }
 
 /// Handle ! and !! bang commands.
@@ -1414,7 +1639,7 @@ fn handle_agent_event(app: &mut App, event: AgentEvent) {
             } else {
                 // First text delta - create streaming component
                 // Direct addChild matching pi's `this.chatContainer.addChild(this.streamingComponent)`
-                // without a spacer — the component handles its own leading Spacer(1) internally.
+                // without a spacer - the component handles its own leading Spacer(1) internally.
                 use crate::tui::components::rc_ref_cell_component::RcRefCellComponent;
                 let comp = Rc::new(RefCell::new(
                     crate::agent::ui::components::AssistantMessageComponent::new(&delta),
@@ -1436,7 +1661,7 @@ fn handle_agent_event(app: &mut App, event: AgentEvent) {
                     .add_thinking(&delta, app.thinking_level.clone());
             } else {
                 // First thinking delta without text - create component with just thinking
-                // Direct addChild matching pi — no spacer, component handles its own spacing.
+                // Direct addChild matching pi - no spacer, component handles its own spacing.
                 use crate::tui::components::rc_ref_cell_component::RcRefCellComponent;
                 let mut comp = crate::agent::ui::components::AssistantMessageComponent::new("");
                 comp.add_thinking(&delta, app.thinking_level.clone());

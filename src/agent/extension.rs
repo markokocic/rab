@@ -53,7 +53,7 @@ pub enum CommandResult {
     ModelChanged(String),
     /// Show keyboard shortcuts help overlay.
     ShowHelp,
-    /// Reload settings and auth from disk.
+    /// Reload settings, extensions, keybindings, themes from disk.
     Reloaded,
     /// Start a new session (clear conversation).
     NewSession,
@@ -70,6 +70,34 @@ pub enum CommandResult {
     OpenSessionSelector,
     /// Name was set for the session.
     SessionNamed { name: String },
+    /// Open settings menu.
+    OpenSettings,
+    /// Enable/disable models for cycling.
+    ScopedModels,
+    /// Export session (HTML default, or specify path).
+    ExportSession { path: Option<String> },
+    /// Import and resume a session from a JSONL file.
+    ImportSession { path: String },
+    /// Share session as a secret GitHub gist.
+    ShareSession,
+    /// Copy last agent message to clipboard.
+    CopyLastMessage,
+    /// Show changelog entries.
+    ShowChangelog,
+    /// Create a new fork from a previous user message.
+    ForkSession { message_id: Option<String> },
+    /// Duplicate the current session at the current position.
+    CloneSession,
+    /// Navigate session tree (switch branches).
+    SessionTree,
+    /// Save project trust decision.
+    TrustDecision { decision: String },
+    /// Configure provider authentication.
+    Login { provider: Option<String> },
+    /// Remove provider authentication.
+    Logout { provider: Option<String> },
+    /// Manually compact the session context.
+    CompactSession,
 }
 
 /// A registered slash command.
@@ -163,7 +191,7 @@ impl ToolOutput {
         }
     }
 
-    /// Mark this tool output as terminal — the agent loop will stop after
+    /// Mark this tool output as terminal - the agent loop will stop after
     /// this batch of tool calls when ALL tools in the batch return terminate=true.
     pub fn with_terminate(mut self, terminate: bool) -> Self {
         self.terminate = terminate;

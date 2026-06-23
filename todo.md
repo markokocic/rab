@@ -4,12 +4,12 @@
 
 - [ ] **Scrolling broken in chat screen:** Once you scroll up with the mouse, you can't scroll back down.
 - [ ] **Agentic loop freeze:** Sometimes after a few rounds the screen freezes and rab stops responding to any input. Only recoverable via `pkill -9 rab` from another terminal.
-- [ ] **Autocomplete of `/` commands — align to pi:** In pi, `/q<enter>` closes pi. In rab, `/q<enter>` autocompletes to `/quit` and needs a second enter. Should close immediately like pi.
+- [ ] **Autocomplete of `/` commands - align to pi:** In pi, `/q<enter>` closes pi. In rab, `/q<enter>` autocompletes to `/quit` and needs a second enter. Should close immediately like pi.
 - [ ] **Model thinking settings reset + editor borders:** Thinking setting gets reset to off intermittently. Editor border colors don't reflect the thinking setting. Should behave like pi.
 - [ ] **Markdown indentation inside code blocks:** Indentation compounds on each render, not matching pi.
 - [ ] **Write tool output:** Lines don't match screen width, styling/wrapping differ from pi. Needs 1:1 alignment.
 - [ ] **Edit tool diff:** Should be line-based, not character-based. Current diff is ugly.
-- [ ] **Bash tool duration:** All show 1.0s — duration not properly updated during streaming.
+- [ ] **Bash tool duration:** All show 1.0s - duration not properly updated during streaming.
 - [ ] **Welcome message:** Doesn't look 1:1 identical with pi.
 - [ ] **Slash command autocomplete:** Doesn't show hints like pi. Needs 1:1 alignment.
 - [ ] **`/new` command:** Needs alignment with pi behavior.
@@ -19,7 +19,7 @@
 
 These are feature gaps in the agent/tool functionality, not rendering:
 
-- **Missing slash commands** (14 of 22 pi built-ins): /settings, /export, /import, /copy, /compact, /changelog, /scoped-models, /fork, /clone, /trust, /login, /logout, /share, /tree (8 implemented: quit, model, hotkeys, reload, new, resume, session, name)
+- ✅ **All 22 pi built-in slash commands implemented:** quit, model, hotkeys, reload, new, resume, session, name, settings, export, import, copy, compact, changelog, scoped-models, fork, clone, trust, login, logout, share, tree. Dispatch through extension framework fixed. Overlay-requiring commands (settings, login, model-selector, help) defer to main loop via `pending_command_result`.
 - **Multi-backend provider**: genai adapter currently only supports OpenCode Go.
 - **Context window compaction**: `compact` field exists but no actual compaction/summarization logic.
 - **`~/.rab/models.json`**: Not implemented.
@@ -33,13 +33,13 @@ These are feature gaps in the agent/tool functionality, not rendering:
 
 | # | Gap | Status |
 |---|-----|--------|
-| C4 | TUI `Image` component (Kitty + iTerm2 + fallback) | ⬜ Basic Kitty protocol support in `src/tui/image.rs` (data URL encoding, Kitty sequences) but no `Component` impl |
-| C5 | Terminal capabilities detection (`getCapabilities()`) | ❌ Open |
-| C6 | Cell dimension tracking for pixel-accurate sizing | ❌ Open |
-| C7 | Image resize utility | ❌ Open |
-| C8 | Image convert utility | ❌ Open |
-| C9 | Clipboard image paste | ❌ Open |
-| C10 | Show images selector UI | ❌ Open |
+| C4 | ~~TUI `Image` component (Kitty + iTerm2 + fallback)~~ | 🗑️ Removed |
+| C5 | ~~Terminal capabilities detection (`getCapabilities()`)~~ | 🗑️ Removed |
+| C6 | ~~Cell dimension tracking for pixel-accurate sizing~~ | 🗑️ Removed |
+| C7 | ~~Image resize utility~~ | 🗑️ Removed |
+| C8 | ~~Image convert utility~~ | 🗑️ Removed |
+| C9 | ~~Clipboard image paste~~ | 🗑️ Removed |
+| C10 | ~~Show images selector UI~~ | 🗑️ Removed |
 
 ## UI component gaps (10)
 

@@ -233,7 +233,7 @@ impl Component for ToolExecComponent {
     fn cache_key(&self, width: usize) -> Option<RenderCacheKey> {
         // Duration is computed at render time via live_duration(); cache includes the current
         // value so it's invalidated on each render. Container::render() doesn't use caching,
-        // so this is effectively a no-op — kept for correctness if caching is added later.
+        // so this is effectively a no-op - kept for correctness if caching is added later.
         Some(RenderCacheKey {
             width,
             expanded: self.expanded,
@@ -283,7 +283,7 @@ impl ToolExecComponent {
         // For `renderShell: "self"` tools (like edit), wrap call in a TuiBox with
         // the appropriate background, then append result lines after.
         // Pi's pattern: renderCall returns a Box (with bg/padding), renderResult
-        // returns a plain Text — both go in selfRenderContainer (a Container).
+        // returns a plain Text - both go in selfRenderContainer (a Container).
         if renderer.render_self() {
             let mut lines: Vec<String> = Vec::new();
             // Spacer above (matches pi's Spacer(1) in ToolExecutionComponent constructor)
@@ -307,7 +307,7 @@ impl ToolExecComponent {
                 lines.extend(call_box.render(width));
             }
 
-            // Result body (no box, just raw lines — matches pi where renderResult
+            // Result body (no box, just raw lines - matches pi where renderResult
             // returns a plain Text, not a Box)
             if let Some(ref output) = self.output {
                 let result_lines = renderer.render_result(output, width, theme, &ctx);
@@ -387,63 +387,34 @@ impl ToolExecComponent {
                     theme,
                 )));
             } else {
-                // Check if this is an image (data URL)
-                if crate::tui::util::is_image_line(output) {
-                    let kitty_seq = crate::tui::image::kitty_image_sequence(output);
-                    if !kitty_seq.is_empty() {
-                        // Image rendered via Kitty protocol
-                        msg_box.add_child(std::boxed::Box::new(Text::new(kitty_seq, 0, 0, None)));
-                        // Add a blank line after the image
-                        msg_box.add_child(std::boxed::Box::new(Text::new(
-                            String::new(),
-                            0,
-                            0,
-                            None,
-                        )));
-                    } else {
-                        msg_box.add_child(std::boxed::Box::new(Text::new(
-                            output.clone(),
-                            0,
-                            0,
-                            None,
-                        )));
-                    }
+                let fg_key = if self.is_error { "error" } else { "toolOutput" };
+                let fg_ansi = theme.fg_ansi(fg_key).to_string();
+
+                let display_text = if self.expanded {
+                    output.clone()
                 } else {
-                    let fg_key = if self.is_error { "error" } else { "toolOutput" };
-                    let fg_ansi = theme.fg_ansi(fg_key).to_string();
-
-                    let display_text = if self.expanded {
-                        output.clone()
+                    let lines: Vec<&str> = output.lines().collect();
+                    if lines.len() > PREVIEW_LINES {
+                        let preview = lines[..PREVIEW_LINES].join("\n");
+                        format!(
+                            "{}\n... ({} more lines)",
+                            preview,
+                            lines.len() - PREVIEW_LINES
+                        )
                     } else {
-                        let lines: Vec<&str> = output.lines().collect();
-                        if lines.len() > PREVIEW_LINES {
-                            let preview = lines[..PREVIEW_LINES].join("\n");
-                            format!(
-                                "{}\n... ({} more lines)",
-                                preview,
-                                lines.len() - PREVIEW_LINES
-                            )
-                        } else {
-                            output.clone()
-                        }
-                    };
+                        output.clone()
+                    }
+                };
 
-                    // Apply syntax highlighting for read results
-                    let styled_lines: Vec<String> = if self.name == "read" && !self.is_error {
-                        if let Some(ref path) = self.file_path {
-                            let lang = crate::tui::components::path_to_language(path);
-                            #[cfg(feature = "syntect")]
-                            if lang.is_some() {
-                                let hl =
-                                    crate::tui::components::highlight_code(&display_text, lang);
-                                if !hl.is_empty() {
-                                    hl
-                                } else {
-                                    display_text
-                                        .lines()
-                                        .map(|line| format!("{}{}\x1b[39m", fg_ansi, line))
-                                        .collect()
-                                }
+                // Apply syntax highlighting for read results
+                let styled_lines: Vec<String> = if self.name == "read" && !self.is_error {
+                    if let Some(ref path) = self.file_path {
+                        let lang = crate::tui::components::path_to_language(path);
+                        #[cfg(feature = "syntect")]
+                        if lang.is_some() {
+                            let hl = crate::tui::components::highlight_code(&display_text, lang);
+                            if !hl.is_empty() {
+                                hl
                             } else {
                                 display_text
                                     .lines()
@@ -461,11 +432,16 @@ impl ToolExecComponent {
                             .lines()
                             .map(|line| format!("{}{}\x1b[39m", fg_ansi, line))
                             .collect()
-                    };
+                    }
+                } else {
+                    display_text
+                        .lines()
+                        .map(|line| format!("{}{}\x1b[39m", fg_ansi, line))
+                        .collect()
+                };
 
-                    let result_text = Text::new(styled_lines.join("\n"), 0, 0, None);
-                    msg_box.add_child(std::boxed::Box::new(result_text));
-                }
+                let result_text = Text::new(styled_lines.join("\n"), 0, 0, None);
+                msg_box.add_child(std::boxed::Box::new(result_text));
             }
         }
 

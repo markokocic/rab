@@ -188,8 +188,7 @@ impl AgentTool for ReadTool {
     }
 
     fn description(&self) -> &str {
-        "Read the contents of a file. Supports text files and images (jpg, png, gif, webp). \
-         Images are sent as attachments. For text files, output is truncated to 2000 lines or \
+        "Read the contents of a file. For text files, output is truncated to 2000 lines or \
          50KB (whichever is hit first). Use offset/limit for large files. When you need the \
          full file, continue with offset until complete."
     }
@@ -249,13 +248,6 @@ impl AgentTool for ReadTool {
         };
 
         cancel.check()?;
-
-        // ── Image file handling ──
-        if crate::tui::image::is_image_path(&abs_path) {
-            let data_url = crate::tui::image::file_to_data_url(&abs_path)
-                .with_context(|| format!("Failed to read image {}", abs_path.display()))?;
-            return Ok(ToolOutput::ok(data_url));
-        }
 
         let content = std::fs::read_to_string(&abs_path)
             .with_context(|| format!("Failed to read {}", abs_path.display()))?;
@@ -467,14 +459,6 @@ impl ToolRenderer for ReadRenderer {
         theme: &dyn Theme,
         ctx: &ToolRenderContext,
     ) -> Vec<String> {
-        // ── Image: render using Kitty image protocol ──
-        if crate::tui::util::is_image_line(content) {
-            let kitty_seq = crate::tui::image::kitty_image_sequence(content);
-            if !kitty_seq.is_empty() {
-                return vec![kitty_seq, String::new()];
-            }
-        }
-
         if content.is_empty() {
             return vec![];
         }
