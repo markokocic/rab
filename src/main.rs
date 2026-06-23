@@ -282,79 +282,89 @@ async fn run_print_mode(
     session.append_message(&prompt);
 
     let mut thinking_prefix_printed = false;
-    let mut emitter = |event: AgentEvent| match event {
-        AgentEvent::TextDelta { delta } => {
-            print!("{}", delta);
-            let _ = std::io::stdout().flush();
-        }
-        AgentEvent::ThinkingDelta { ref delta } => {
-            if !thinking_prefix_printed {
-                eprint!("{}", colored::Colorize::dimmed("… "));
-                thinking_prefix_printed = true;
+    let mut emitter = |event: AgentEvent| {
+        match event {
+            AgentEvent::TextDelta { delta } => {
+                // Normalize markdown headings in each delta to prevent progressive
+                // indentation (indented headings parsed as nested inside lists).
+                let normalized =
+                    rab::tui::components::markdown::normalize_markdown_headings(&delta);
+                print!("{}", normalized);
+                let _ = std::io::stdout().flush();
             }
-            eprint!("{}", colored::Colorize::dimmed(delta.as_str()));
-            let _ = std::io::stderr().flush();
-        }
-        AgentEvent::ToolCall {
-            ref name, ref args, ..
-        } => {
-            eprintln!(
-                "\n{} {} {}",
-                colored::Colorize::dimmed("⚙"),
-                colored::Colorize::bold(name.as_str()),
-                colored::Colorize::dimmed(serde_json::to_string(args).unwrap_or_default().as_str())
-            );
-            thinking_prefix_printed = false;
-        }
-        AgentEvent::ToolResult {
-            ref content,
-            is_error,
-            ..
-        } => {
-            if is_error {
+            AgentEvent::ThinkingDelta { ref delta } => {
+                if !thinking_prefix_printed {
+                    eprint!("{}", colored::Colorize::dimmed("… "));
+                    thinking_prefix_printed = true;
+                }
+                // Normalize headings in thinking output too
+                let normalized = rab::tui::components::markdown::normalize_markdown_headings(delta);
+                eprint!("{}", colored::Colorize::dimmed(&*normalized));
+                let _ = std::io::stderr().flush();
+            }
+            AgentEvent::ToolCall {
+                ref name, ref args, ..
+            } => {
+                eprintln!(
+                    "\n{} {} {}",
+                    colored::Colorize::dimmed("⚙"),
+                    colored::Colorize::bold(name.as_str()),
+                    colored::Colorize::dimmed(
+                        serde_json::to_string(args).unwrap_or_default().as_str()
+                    )
+                );
+                thinking_prefix_printed = false;
+            }
+            AgentEvent::ToolResult {
+                ref content,
+                is_error,
+                ..
+            } => {
+                if is_error {
+                    eprintln!(
+                        "{} {}",
+                        colored::Colorize::red("✗"),
+                        colored::Colorize::red(content.as_str())
+                    );
+                } else {
+                    let truncated: String = content.chars().take(500).collect();
+                    eprintln!(
+                        "{} {}",
+                        colored::Colorize::dimmed("✓"),
+                        colored::Colorize::dimmed(truncated.as_str())
+                    );
+                    if content.len() > 500 {
+                        eprintln!("{}", colored::Colorize::dimmed("... (truncated)"));
+                    }
+                }
+            }
+            AgentEvent::ToolProgress { ref content, .. } => {
+                // Stream output is printed as it arrives
+                print!("{}", content);
+                let _ = std::io::stdout().flush();
+            }
+            AgentEvent::AgentStart | AgentEvent::TurnStart | AgentEvent::TurnEnd => {}
+            AgentEvent::ToolCallArgsUpdate { .. } => {
+                // Progressive args update - no-op in print mode
+            }
+            AgentEvent::UserMessage { ref content } => {
+                // In print mode, show injected queue messages
+                eprintln!(
+                    "{} {}",
+                    colored::Colorize::dimmed("→"),
+                    colored::Colorize::dimmed(content.as_str())
+                );
+            }
+            AgentEvent::Aborted { ref reason } => {
                 eprintln!(
                     "{} {}",
                     colored::Colorize::red("✗"),
-                    colored::Colorize::red(content.as_str())
+                    colored::Colorize::red(reason.as_str())
                 );
-            } else {
-                let truncated: String = content.chars().take(500).collect();
-                eprintln!(
-                    "{} {}",
-                    colored::Colorize::dimmed("✓"),
-                    colored::Colorize::dimmed(truncated.as_str())
-                );
-                if content.len() > 500 {
-                    eprintln!("{}", colored::Colorize::dimmed("... (truncated)"));
-                }
             }
-        }
-        AgentEvent::ToolProgress { ref content, .. } => {
-            // Stream output is printed as it arrives
-            print!("{}", content);
-            let _ = std::io::stdout().flush();
-        }
-        AgentEvent::AgentStart | AgentEvent::TurnStart | AgentEvent::TurnEnd => {}
-        AgentEvent::ToolCallArgsUpdate { .. } => {
-            // Progressive args update - no-op in print mode
-        }
-        AgentEvent::UserMessage { ref content } => {
-            // In print mode, show injected queue messages
-            eprintln!(
-                "{} {}",
-                colored::Colorize::dimmed("→"),
-                colored::Colorize::dimmed(content.as_str())
-            );
-        }
-        AgentEvent::Aborted { ref reason } => {
-            eprintln!(
-                "{} {}",
-                colored::Colorize::red("✗"),
-                colored::Colorize::red(reason.as_str())
-            );
-        }
-        AgentEvent::AgentEnd { .. } => {
-            eprintln!();
+            AgentEvent::AgentEnd { .. } => {
+                eprintln!();
+            }
         }
     };
 

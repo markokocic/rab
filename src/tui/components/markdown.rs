@@ -1515,7 +1515,7 @@ fn split_newline_apply(text: &str, apply: &dyn Fn(&str) -> String) -> String {
 ///      content is non-blank, to close any open list.
 ///
 /// Fenced code blocks (``` … ``` and ~~~ … ~~~) are preserved as-is.
-fn normalize_markdown_headings(text: &str) -> String {
+pub fn normalize_markdown_headings(text: &str) -> String {
     let mut result = String::with_capacity(text.len());
     let mut in_code_block = false;
     let lines: Vec<&str> = text.split('\n').collect();
