@@ -1,5 +1,5 @@
 use crate::tui::Component;
-use crate::tui::component::RenderCache;
+use crate::tui::component::{RenderCache, RenderCacheKey};
 use crate::tui::overlay::{OverlayEntry, OverlayLayout, OverlayOptions, SizeValue};
 use crate::tui::util::{extract_segments, slice_by_column, visible_width};
 
@@ -117,7 +117,6 @@ impl Container {
         self.overlay_stack.push(OverlayEntry {
             component,
             options,
-            pre_focus: None,
             hidden: false,
             focus_order: id,
             id,
@@ -399,8 +398,26 @@ impl Container {
 impl Component for Container {
     fn render(&mut self, width: usize) -> Vec<String> {
         let mut lines = Vec::new();
-        for child in self.children.iter_mut() {
+        for (idx, child) in self.children.iter_mut().enumerate() {
+            let cache = &mut self.child_caches[idx];
+            // Use cached output if child is not dirty and cache is valid
+            if !cache.dirty
+                && let Some(ref cached) = cache.cache
+                && cached.key.width == width
+            {
+                lines.extend(cached.lines.clone());
+                continue;
+            }
             let child_lines = child.render(width);
+            cache.cache = Some(RenderCache {
+                key: RenderCacheKey {
+                    width,
+                    expanded: false,
+                    state_hash: 0,
+                },
+                lines: child_lines.clone(),
+            });
+            cache.dirty = false;
             lines.extend(child_lines);
         }
         // Composite overlays on top of base content

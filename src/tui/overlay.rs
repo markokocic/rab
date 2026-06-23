@@ -96,8 +96,6 @@ pub struct OverlayOptions {
 pub struct OverlayEntry {
     pub component: Box<dyn Component>,
     pub options: OverlayOptions,
-    /// Focus target before this overlay was shown
-    pub pre_focus: Option<usize>,
     /// Whether this overlay is temporarily hidden
     pub hidden: bool,
     /// Order for compositing (higher = on top)
