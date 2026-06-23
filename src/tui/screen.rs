@@ -46,8 +46,34 @@ impl Screen {
 
     /// Update the hardware cursor row after TUI repositions the cursor.
     /// This keeps Screen's delta calculations in sync with the actual cursor position.
+    /// Update the hardware cursor row tracking.
+    /// Called when TUI has positioned the cursor independently.
     pub fn set_hardware_cursor_row(&mut self, row: usize) {
         self.hardware_cursor_row = row;
+    }
+
+    /// Extract cursor marker from lines and return its (row, col) position.
+    /// Strips the marker from the line in-place.
+    /// Returns None if no marker is found.
+    pub(crate) fn extract_cursor_marker(
+        &self,
+        lines: &mut [String],
+        height: usize,
+    ) -> Option<(usize, usize)> {
+        let viewport_top = lines.len().saturating_sub(height);
+        for row in (viewport_top..lines.len()).rev() {
+            let line = &lines[row];
+            if let Some(marker_idx) = line.find(CURSOR_MARKER) {
+                use crate::tui::util::visible_width;
+                let col = visible_width(&line[..marker_idx]);
+                // Strip marker
+                let before = &line[..marker_idx];
+                let after = &line[marker_idx + CURSOR_MARKER.len()..];
+                lines[row] = format!("{}{}", before, after);
+                return Some((row, col));
+            }
+        }
+        None
     }
 
     pub fn prev_width(&self) -> usize {
@@ -174,15 +200,23 @@ impl Screen {
     /// Render new lines to the terminal using differential updates.
     /// `writer` should be the terminal's stdout (in raw mode).
     /// `width` and `height` are the current terminal dimensions.
+    ///
+    /// Lines may contain cursor markers (`CURSOR_MARKER`) which are extracted
+    /// and used for cursor tracking. Returns the cursor (row, col) position
+    /// if a marker was found, or None.
     pub fn render(
         &mut self,
-        new_lines: Vec<String>,
+        mut new_lines: Vec<String>,
         width: u16,
         height: u16,
         writer: &mut dyn Write,
-    ) -> io::Result<()> {
+    ) -> io::Result<Option<(usize, usize)>> {
         let width_usize = width as usize;
         let height_usize = height as usize;
+
+        // Extract cursor marker from lines before any rendering
+        let cursor_pos = self.extract_cursor_marker(&mut new_lines, height_usize);
+
         let width_changed = self.prev_width != 0 && self.prev_width as usize != width_usize;
         let height_changed = self.prev_height != 0 && self.prev_height as usize != height_usize;
         let prev_buffer_len = if self.prev_height > 0 {
@@ -199,17 +233,20 @@ impl Screen {
 
         // First render - output everything without clearing (assumes clean screen)
         if self.prev_lines.is_empty() && !width_changed && !height_changed {
-            return self.full_render(&new_lines, writer, false, width_usize, height_usize);
+            self.full_render(&new_lines, writer, false, width_usize, height_usize)?;
+            return Ok(cursor_pos);
         }
 
         // Width/height changes need a full redraw
         if width_changed || height_changed {
-            return self.full_render(&new_lines, writer, true, width_usize, height_usize);
+            self.full_render(&new_lines, writer, true, width_usize, height_usize)?;
+            return Ok(cursor_pos);
         }
 
         // Content shrunk - full redraw to clear empty rows
         if self.clear_on_shrink && new_lines.len() < self.max_lines_rendered {
-            return self.full_render(&new_lines, writer, true, width_usize, height_usize);
+            self.full_render(&new_lines, writer, true, width_usize, height_usize)?;
+            return Ok(cursor_pos);
         }
 
         // Find changed range
@@ -245,7 +282,7 @@ impl Screen {
         if first_changed == -1 {
             self.prev_height = height_usize as u16;
             self.prev_viewport_top = prev_viewport_top;
-            return Ok(());
+            return Ok(cursor_pos);
         }
 
         // All changes are in deleted lines
@@ -261,7 +298,8 @@ impl Screen {
                     - (self.hardware_cursor_row.saturating_sub(prev_viewport_top)) as i32
             } else {
                 // Target is above viewport - need full redraw
-                return self.full_render(&new_lines, writer, true, width_usize, height_usize);
+                self.full_render(&new_lines, writer, true, width_usize, height_usize)?;
+                return Ok(cursor_pos);
             };
 
             self.sync_begin(&mut buf);
@@ -276,7 +314,8 @@ impl Screen {
             // Clear extra lines
             let extra = self.prev_lines.len().saturating_sub(new_lines.len());
             if extra > height_usize {
-                return self.full_render(&new_lines, writer, true, width_usize, height_usize);
+                self.full_render(&new_lines, writer, true, width_usize, height_usize)?;
+                return Ok(cursor_pos);
             }
             if extra > 0 && !new_lines.is_empty() {
                 buf.push_str("\x1b[1B");
@@ -297,16 +336,17 @@ impl Screen {
             writer.flush()?;
 
             self.cursor_row = target_row;
-            self.hardware_cursor_row = target_row;
+            self.hardware_cursor_row = cursor_pos.map(|(r, _)| r).unwrap_or(target_row);
             self.prev_lines = new_lines;
             self.prev_viewport_top = prev_viewport_top;
             self.prev_height = height_usize as u16;
-            return Ok(());
+            return Ok(cursor_pos);
         }
 
         // First changed line is above viewport - need full redraw
         if first < prev_viewport_top {
-            return self.full_render(&new_lines, writer, true, width_usize, height_usize);
+            self.full_render(&new_lines, writer, true, width_usize, height_usize)?;
+            return Ok(cursor_pos);
         }
 
         // Differential render: update changed lines in place
@@ -359,7 +399,7 @@ impl Screen {
         }
 
         // Write changed lines
-        let mut render_end = last.min(new_lines.len() - 1);
+        let render_end = last.min(new_lines.len() - 1);
         for (i, line) in new_lines
             .iter()
             .enumerate()
@@ -393,7 +433,8 @@ impl Screen {
                 self.sync_end(&mut buf);
                 write!(writer, "{}", buf)?;
                 writer.flush()?;
-                return self.full_render(&new_lines, writer, true, width_usize, height_usize);
+                self.full_render(&new_lines, writer, true, width_usize, height_usize)?;
+                return Ok(cursor_pos);
             }
 
             // Move from render_end to the first extra line = new_lines.len()
@@ -412,10 +453,8 @@ impl Screen {
 
             // Move cursor back to new_lines.len() - 1 (end of new content).
             // After the last clear, cursor is at prev_lines.len() - 1.
-            // Set render_end to final cursor position since we're moving there.
             if extra > 0 {
                 buf.push_str(&format!("\x1b[{}A", extra));
-                render_end = new_lines.len().saturating_sub(1);
             }
         }
 
@@ -423,17 +462,22 @@ impl Screen {
         write!(writer, "{}", buf)?;
         writer.flush()?;
 
-        self.cursor_row = new_lines.len().saturating_sub(1);
-        self.hardware_cursor_row = render_end;
+        let new_cursor_row = cursor_pos
+            .map(|(r, _)| r)
+            .unwrap_or_else(|| new_lines.len().saturating_sub(1));
+        self.cursor_row = new_cursor_row;
+        self.hardware_cursor_row = new_cursor_row;
         self.max_lines_rendered = self.max_lines_rendered.max(new_lines.len());
         self.prev_lines = new_lines;
         // Advance viewport_top if cursor ended up below the viewport
         // (matching pi's Math.max(prevViewportTop, finalCursorRow - height + 1)).
-        self.prev_viewport_top = viewport_top.max(render_end.saturating_sub(height_usize - 1));
+        let hw_row_for_viewport = new_cursor_row;
+        self.prev_viewport_top =
+            viewport_top.max(hw_row_for_viewport.saturating_sub(height_usize - 1));
         self.prev_height = height_usize as u16;
         self.prev_width = width_usize as u16;
 
-        Ok(())
+        Ok(cursor_pos)
     }
 }
 

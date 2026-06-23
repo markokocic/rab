@@ -252,23 +252,23 @@ impl TUI {
             lines = self.composite_overlays(&lines, width, height);
         }
 
-        // 3. Extract cursor marker and strip it from lines
-        let cursor_pos = self.extract_cursor_position(&mut lines, height);
-
         // 4. Apply segment reset (normalize terminal output)
+        //    Lines may still contain cursor markers; normalization appends
+        //    reset after any marker sequence, which is fine.
         for line in lines.iter_mut() {
             *line = normalize_terminal_output(line);
         }
 
-        // 5. Delegate to Screen for diff rendering
-        self.screen
+        // 5. Delegate to Screen for diff rendering.
+        //    Screen extracts cursor markers internally, strips them from output,
+        //    and returns the cursor position for TUI to position the hardware cursor.
+        let cursor_pos = self
+            .screen
             .render(lines.clone(), width as u16, height as u16, writer)?;
 
         // 6. Position hardware cursor if marker was found
         if let Some((row, col)) = cursor_pos {
             self.position_hard_cursor(row, col, writer)?;
-            // Sync Screen's cursor tracking with actual hardware cursor position
-            self.screen.set_hardware_cursor_row(row);
         }
 
         self.dirty = false;
@@ -551,26 +551,6 @@ impl TUI {
     /// Find and extract cursor position from rendered lines.
     /// Searches for CURSOR_MARKER, calculates its position, and strips it.
     /// Only scans the bottom `height` lines (visible viewport).
-    fn extract_cursor_position(
-        &self,
-        lines: &mut [String],
-        height: usize,
-    ) -> Option<(usize, usize)> {
-        let viewport_top = lines.len().saturating_sub(height);
-        for row in (viewport_top..lines.len()).rev() {
-            let line = &lines[row];
-            if let Some(marker_idx) = line.find(CURSOR_MARKER) {
-                let col = visible_width(&line[..marker_idx]);
-                // Strip marker
-                let before = &line[..marker_idx];
-                let after = &line[marker_idx + CURSOR_MARKER.len()..];
-                lines[row] = format!("{}{}", before, after);
-                return Some((row, col));
-            }
-        }
-        None
-    }
-
     /// Position hardware cursor at the given row/col (relative to viewport).
     fn position_hard_cursor(
         &self,
@@ -664,13 +644,14 @@ mod tests {
 
     #[test]
     fn test_cursor_marker_extraction() {
-        let tui = TUI::new();
+        use crate::tui::screen::Screen;
+        let screen = Screen::new();
         let mut lines = vec![
             "line 1".to_string(),
             format!("before{}after", CURSOR_MARKER),
             "line 3".to_string(),
         ];
-        let pos = tui.extract_cursor_position(&mut lines, 10);
+        let pos = screen.extract_cursor_marker(&mut lines, 10);
         assert!(pos.is_some());
         let (row, col) = pos.unwrap();
         assert_eq!(row, 1);
@@ -681,7 +662,8 @@ mod tests {
 
     #[test]
     fn test_cursor_marker_outside_viewport() {
-        let tui = TUI::new();
+        use crate::tui::screen::Screen;
+        let screen = Screen::new();
         // Marker on line 0 but viewport is last 2 lines of 5
         let mut lines = vec![
             format!("{}marker", CURSOR_MARKER),
@@ -690,7 +672,7 @@ mod tests {
             "d".to_string(),
             "e".to_string(),
         ];
-        let pos = tui.extract_cursor_position(&mut lines, 2);
+        let pos = screen.extract_cursor_marker(&mut lines, 2);
         assert!(pos.is_none()); // line 0 is not in last 2 of 5
     }
 
