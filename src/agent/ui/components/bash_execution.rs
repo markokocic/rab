@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use crate::agent::ui::theme::ThemeKey;
 use crate::tui::Component;
 use crate::tui::components::loader::Loader;
@@ -34,6 +36,8 @@ pub struct BashExecution {
     was_truncated: bool,
     /// Execution duration in seconds (parsed from result content or set externally).
     duration_secs: Option<f64>,
+    /// When execution started, for live duration computation during streaming.
+    started_at: Option<Instant>,
     /// Loader component for spinner animation.
     loader: Loader,
 }
@@ -70,6 +74,7 @@ impl BashExecution {
             full_output_path: None,
             was_truncated: false,
             duration_secs: None,
+            started_at: None,
             loader,
         }
     }
@@ -134,6 +139,11 @@ impl BashExecution {
 
     pub fn set_truncated(&mut self, truncated: bool) {
         self.was_truncated = truncated;
+    }
+
+    /// Set the execution start time (for live duration display during streaming).
+    pub fn set_started_at(&mut self, instant: Instant) {
+        self.started_at = Some(instant);
     }
 
     /// Set the execution duration in seconds.
@@ -290,7 +300,14 @@ impl Component for BashExecution {
         }
 
         // Duration (pi: "Elapsed X.Xs" during, "Took X.Xs" after)
-        if let Some(secs) = self.duration_secs {
+        let display_duration = self.duration_secs.or_else(|| {
+            if matches!(self.status, BashStatus::Running) {
+                self.started_at.map(|t| t.elapsed().as_secs_f64())
+            } else {
+                None
+            }
+        });
+        if let Some(secs) = display_duration {
             let label = match self.status {
                 BashStatus::Running => "Elapsed",
                 _ => "Took",

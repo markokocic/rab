@@ -256,7 +256,7 @@ impl ToolRenderer for WriteRenderer {
     fn render_call(
         &self,
         args: &serde_json::Value,
-        _width: usize,
+        width: usize,
         theme: &dyn Theme,
         ctx: &ToolRenderContext,
     ) -> Vec<String> {
@@ -313,10 +313,18 @@ impl ToolRenderer for WriteRenderer {
 
                 for line in &display {
                     // Pi: only apply toolOutput styling when not syntax-highlighted
-                    if has_highlighting {
-                        lines.push(line.clone());
+                    let styled = if has_highlighting {
+                        line.clone()
                     } else {
-                        lines.push(theme.fg_key(ThemeKey::ToolOutput, line));
+                        theme.fg_key(ThemeKey::ToolOutput, line)
+                    };
+                    // Truncate long lines to terminal width to avoid overflow
+                    if crate::tui::util::visible_width(&styled) > width {
+                        lines.push(crate::tui::util::truncate_to_width(
+                            &styled, width, "…", false,
+                        ));
+                    } else {
+                        lines.push(styled);
                     }
                 }
 

@@ -37,7 +37,7 @@ pub fn render_diff(diff_text: &str, theme: &dyn Theme) -> Vec<String> {
         match prefix {
             "-" => {
                 if prev_removed.is_some() {
-                    // Multiple removed lines — push previous and start new
+                    // Multiple removed lines - push previous and start new
                     if let Some(prev) = prev_removed.take() {
                         let styled = color_line(&prev, "toolDiffRemoved", theme);
                         lines.push(styled);
@@ -134,48 +134,100 @@ enum Change {
     Added(String),
 }
 
-/// Compute a character-level diff between two strings.
-/// Groups consecutive same-type changes into tokens (matching pi's diffWords style).
+/// Compute a word-level diff between two strings.
+/// Splits text into word tokens (alphanumeric sequences) and computes LCS.
+/// Groups consecutive same-type changes for compact output.
+/// Matches pi's `diffWords` behavior.
 fn compute_word_diff(old: &str, new: &str) -> Vec<Change> {
-    let changeset = diff::chars(old, new);
+    let old_tokens = split_words(old);
+    let new_tokens = split_words(new);
+    let n = old_tokens.len();
+    let m = new_tokens.len();
 
-    let mut merged: Vec<Change> = Vec::new();
-    for change in &changeset {
-        let (tag, ch) = match change {
-            diff::Result::Left(c) => ("-", *c),
-            diff::Result::Right(c) => ("+", *c),
-            diff::Result::Both(c, _) => ("=", *c),
-        };
-
-        // Try to merge with the last change
-        if let Some(last) = merged.last_mut() {
-            let last_tag = match last {
-                Change::Equal(_) => "=",
-                Change::Removed(_) => "-",
-                Change::Added(_) => "+",
-            };
-            if last_tag == tag {
-                // Merge character into last change
-                match last {
-                    Change::Equal(t) => t.push(ch),
-                    Change::Removed(t) => t.push(ch),
-                    Change::Added(t) => t.push(ch),
-                }
-                continue;
+    // Build LCS table (O(n*m), fine for short intra-line comparisons)
+    let mut dp = vec![vec![0usize; m + 1]; n + 1];
+    for i in 1..=n {
+        for j in 1..=m {
+            if old_tokens[i - 1] == new_tokens[j - 1] {
+                dp[i][j] = dp[i - 1][j - 1] + 1;
+            } else {
+                dp[i][j] = dp[i - 1][j].max(dp[i][j - 1]);
             }
         }
+    }
 
-        // New change group
-        let change = match tag {
-            "=" => Change::Equal(ch.to_string()),
-            "-" => Change::Removed(ch.to_string()),
-            "+" => Change::Added(ch.to_string()),
-            _ => unreachable!(),
-        };
-        merged.push(change);
+    // Backtrack to extract diff
+    let mut temp = Vec::new();
+    let mut i = n;
+    let mut j = m;
+    while i > 0 || j > 0 {
+        if i > 0 && j > 0 && old_tokens[i - 1] == new_tokens[j - 1] {
+            temp.push(Change::Equal(old_tokens[i - 1].clone()));
+            i -= 1;
+            j -= 1;
+        } else if j > 0 && (i == 0 || dp[i][j - 1] >= dp[i - 1][j]) {
+            temp.push(Change::Added(new_tokens[j - 1].clone()));
+            j -= 1;
+        } else {
+            temp.push(Change::Removed(old_tokens[i - 1].clone()));
+            i -= 1;
+        }
+    }
+    temp.reverse();
+
+    // Merge consecutive same-type changes
+    let mut merged: Vec<Change> = Vec::new();
+    for change in temp {
+        let should_merge = merged.last().is_some_and(|last| {
+            matches!(
+                (last, &change),
+                (Change::Equal(_), Change::Equal(_))
+                    | (Change::Removed(_), Change::Removed(_))
+                    | (Change::Added(_), Change::Added(_))
+            )
+        });
+
+        if should_merge {
+            if let Some(last) = merged.last_mut() {
+                let text = match change {
+                    Change::Equal(t) | Change::Removed(t) | Change::Added(t) => t,
+                };
+                match last {
+                    Change::Equal(t) => t.push_str(&text),
+                    Change::Removed(t) => t.push_str(&text),
+                    Change::Added(t) => t.push_str(&text),
+                }
+            }
+        } else {
+            merged.push(change);
+        }
     }
 
     merged
+}
+
+/// Split text into word tokens for diffing.
+/// Alphanumeric sequences (including `_`) are kept as whole words;
+/// everything else (whitespace, punctuation) becomes individual character tokens.
+fn split_words(text: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+
+    for ch in text.chars() {
+        if ch.is_alphanumeric() || ch == '_' {
+            current.push(ch);
+        } else {
+            if !current.is_empty() {
+                tokens.push(std::mem::take(&mut current));
+            }
+            tokens.push(ch.to_string());
+        }
+    }
+    if !current.is_empty() {
+        tokens.push(current);
+    }
+
+    tokens
 }
 
 #[cfg(test)]

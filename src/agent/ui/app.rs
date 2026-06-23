@@ -1471,6 +1471,9 @@ fn handle_bang_command(app: &mut App, command: String) {
     let bash_comp = Rc::new(RefCell::new(
         crate::agent::ui::components::BashExecution::new(&command),
     ));
+    bash_comp
+        .borrow_mut()
+        .set_started_at(std::time::Instant::now());
     app.bash_component = Some(Rc::downgrade(&bash_comp));
     chat_add(
         app,
