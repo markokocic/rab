@@ -44,15 +44,15 @@ pub struct Loader {
     started: bool,
     last_tick: Instant,
     message: String,
-    spinner_color_fn: Box<dyn Fn(&str) -> String>,
-    message_color_fn: Box<dyn Fn(&str) -> String>,
+    spinner_color_fn: crate::tui::Style,
+    message_color_fn: crate::tui::Style,
     render_indicator_verbatim: bool,
 }
 
 impl Loader {
     pub fn new(
-        spinner_color_fn: Box<dyn Fn(&str) -> String>,
-        message_color_fn: Box<dyn Fn(&str) -> String>,
+        spinner_color_fn: crate::tui::Style,
+        message_color_fn: crate::tui::Style,
         message: impl Into<String>,
     ) -> Self {
         let indicator = LoaderIndicatorOptions::default();
@@ -127,14 +127,18 @@ impl Loader {
         } else if self.render_indicator_verbatim {
             frame.to_string()
         } else {
-            (self.spinner_color_fn)(frame)
+            self.spinner_color_fn.apply(frame)
         };
         let indicator = if frame.is_empty() {
             String::new()
         } else {
             format!("{} ", rendered_frame)
         };
-        let display = format!("{}{}", indicator, (self.message_color_fn)(&self.message));
+        let display = format!(
+            "{}{}",
+            indicator,
+            self.message_color_fn.apply(&self.message)
+        );
         display
     }
 }
@@ -172,8 +176,8 @@ mod tests {
     #[test]
     fn test_loader_renders_with_spacing() {
         let mut loader = Loader::new(
-            Box::new(|s| s.to_string()),
-            Box::new(|s| s.to_string()),
+            crate::tui::Style::new(),
+            crate::tui::Style::new(),
             "Loading...",
         );
         let lines = loader.render(40);
@@ -184,8 +188,8 @@ mod tests {
     #[test]
     fn test_loader_message() {
         let mut loader = Loader::new(
-            Box::new(|s| s.to_string()),
-            Box::new(|s| s.to_string()),
+            crate::tui::Style::new(),
+            crate::tui::Style::new(),
             "Working...",
         );
         let lines = loader.render(40);
@@ -194,11 +198,7 @@ mod tests {
 
     #[test]
     fn test_loader_tick() {
-        let mut loader = Loader::new(
-            Box::new(|s| s.to_string()),
-            Box::new(|s| s.to_string()),
-            "test",
-        );
+        let mut loader = Loader::new(crate::tui::Style::new(), crate::tui::Style::new(), "test");
         loader.start();
         // Immediate tick should not change (interval not elapsed)
         assert!(!loader.tick());

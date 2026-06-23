@@ -42,9 +42,9 @@ pub struct SelectListTheme {
     pub selected_text: Box<dyn Fn(&str) -> String>,
     pub normal_text: Box<dyn Fn(&str) -> String>,
     pub description: Box<dyn Fn(&str) -> String>,
-    pub scroll_info: Box<dyn Fn(&str) -> String>,
-    pub no_match: Box<dyn Fn(&str) -> String>,
-    pub hint: Box<dyn Fn(&str) -> String>,
+    pub scroll_info: crate::tui::Style,
+    pub no_match: crate::tui::Style,
+    pub hint: crate::tui::Style,
 }
 
 impl Default for SelectListTheme {
@@ -54,9 +54,9 @@ impl Default for SelectListTheme {
             selected_text: Box::new(|s| format!("\x1b[1m{}\x1b[0m", s)),
             normal_text: Box::new(|s| format!("  {}", s)),
             description: Box::new(|s| format!("    {}", s)),
-            scroll_info: Box::new(|s| s.to_string()),
-            no_match: Box::new(|s| s.to_string()),
-            hint: Box::new(|s| s.to_string()),
+            scroll_info: crate::tui::Style::new(),
+            no_match: crate::tui::Style::new(),
+            hint: crate::tui::Style::new(),
         }
     }
 }
@@ -228,7 +228,7 @@ impl Component for SelectList {
 
         if self.filtered_indices.is_empty() {
             if !self.search_query.is_empty() {
-                lines.push((self.theme.no_match)("No matches"));
+                lines.push(self.theme.no_match.apply("No matches"));
             }
             return lines;
         }
@@ -274,7 +274,7 @@ impl Component for SelectList {
                 self.selected_index + 1,
                 self.filtered_indices.len()
             );
-            lines.push((self.theme.scroll_info)(&indicator));
+            lines.push(self.theme.scroll_info.apply(&indicator));
         }
 
         lines

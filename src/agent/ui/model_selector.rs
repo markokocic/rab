@@ -29,9 +29,9 @@ impl ModelSelector {
             selected_text: Box::new(|s| format!("\x1b[38;2;138;190;183m\x1b[1m{}\x1b[0m", s)),
             normal_text: Box::new(|s| format!("  \x1b[38;2;212;212;212m{}\x1b[0m", s)),
             description: Box::new(|s| format!("\x1b[38;2;128;128;128m{}\x1b[0m", s)),
-            scroll_info: Box::new(|s| format!("\x1b[38;2;80;80;80m{}\x1b[0m", s)),
-            no_match: Box::new(|s| format!("\x1b[38;2;255;255;0m{}\x1b[0m", s)),
-            hint: Box::new(|s| format!("\x1b[38;2;128;128;128m{}\x1b[0m", s)),
+            scroll_info: crate::tui::Style::new().fg("\x1b[38;2;80;80;80m".to_string()),
+            no_match: crate::tui::Style::new().fg("\x1b[38;2;255;255;0m".to_string()),
+            hint: crate::tui::Style::new().fg("\x1b[38;2;128;128;128m".to_string()),
         };
 
         let max_visible = models.len().clamp(5, 20);

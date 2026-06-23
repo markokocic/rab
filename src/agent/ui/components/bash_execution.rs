@@ -56,8 +56,8 @@ impl BashExecution {
         let msg_ansi = theme.fg_ansi_key(ThemeKey::Muted).to_string();
         drop(theme);
         let loader = Loader::new(
-            Box::new(move |s| format!("{}{}\x1b[39m", spinner_ansi, s)),
-            Box::new(move |s| format!("{}{}\x1b[39m", msg_ansi, s)),
+            crate::tui::Style::new().fg(spinner_ansi),
+            crate::tui::Style::new().fg(msg_ansi),
             "Running... (Esc to cancel)",
         );
 

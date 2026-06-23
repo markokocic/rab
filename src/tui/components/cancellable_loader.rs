@@ -12,8 +12,8 @@ pub struct CancellableLoader {
 
 impl CancellableLoader {
     pub fn new(
-        spinner_color_fn: Box<dyn Fn(&str) -> String>,
-        message_color_fn: Box<dyn Fn(&str) -> String>,
+        spinner_color_fn: crate::tui::Style,
+        message_color_fn: crate::tui::Style,
         message: impl Into<String>,
     ) -> Self {
         Self {
@@ -79,8 +79,8 @@ mod tests {
     #[test]
     fn test_cancel_on_escape() {
         let mut cl = CancellableLoader::new(
-            Box::new(|s| s.to_string()),
-            Box::new(|s| s.to_string()),
+            crate::tui::Style::new(),
+            crate::tui::Style::new(),
             "Working...",
         );
         let escape = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
@@ -92,8 +92,8 @@ mod tests {
     #[test]
     fn test_dispose_stops() {
         let mut cl = CancellableLoader::new(
-            Box::new(|s| s.to_string()),
-            Box::new(|s| s.to_string()),
+            crate::tui::Style::new(),
+            crate::tui::Style::new(),
             "Working...",
         );
         cl.start();

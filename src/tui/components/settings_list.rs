@@ -62,10 +62,10 @@ pub struct SettingsListTheme {
     pub selected_prefix: Box<dyn Fn(&str) -> String>,
     pub selected_label: Box<dyn Fn(&str) -> String>,
     pub normal_label: Box<dyn Fn(&str) -> String>,
-    pub value_text: Box<dyn Fn(&str) -> String>,
+    pub value_text: crate::tui::Style,
     pub description: Box<dyn Fn(&str) -> String>,
-    pub scroll_info: Box<dyn Fn(&str) -> String>,
-    pub hint: Box<dyn Fn(&str) -> String>,
+    pub scroll_info: crate::tui::Style,
+    pub hint: crate::tui::Style,
 }
 
 impl Default for SettingsListTheme {
@@ -74,10 +74,10 @@ impl Default for SettingsListTheme {
             selected_prefix: Box::new(|s| format!("\x1b[1m> {}\x1b[0m", s)),
             selected_label: Box::new(|s| format!("\x1b[1m{}\x1b[0m", s)),
             normal_label: Box::new(|s| format!("  {}", s)),
-            value_text: Box::new(|s| s.to_string()),
+            value_text: crate::tui::Style::new(),
             description: Box::new(|s| format!("  {}", s)),
-            scroll_info: Box::new(|s| s.to_string()),
-            hint: Box::new(|s| s.to_string()),
+            scroll_info: crate::tui::Style::new(),
+            hint: crate::tui::Style::new(),
         }
     }
 }
@@ -231,7 +231,7 @@ impl SettingsList {
     fn add_hint_line(&self, lines: &mut Vec<String>, width: usize) {
         lines.push(String::new());
         lines.push(truncate_to_width(
-            &(self.theme.hint)(if self.enable_search {
+            &self.theme.hint.apply(if self.enable_search {
                 "  Type to search · Enter/Space to change · Esc to cancel"
             } else {
                 "  Enter/Space to change · Esc to cancel"
@@ -260,7 +260,7 @@ impl Component for SettingsList {
 
         if self.filtered_indices.is_empty() {
             if !self.search_input.get_value().is_empty() {
-                lines.push((self.theme.hint)("No matching settings"));
+                lines.push(self.theme.hint.apply("No matching settings"));
             }
             self.add_hint_line(&mut lines, width);
             return lines;
@@ -306,7 +306,7 @@ impl Component for SettingsList {
             let separator = "  ";
             let used = prefix_width + max_label_width + visible_width(separator);
             let value_max = width.saturating_sub(used + 2);
-            let value = (self.theme.value_text)(&truncate_to_width(
+            let value = self.theme.value_text.apply(&truncate_to_width(
                 &item.current_value,
                 value_max,
                 "",
@@ -324,7 +324,7 @@ impl Component for SettingsList {
                 self.selected_index + 1,
                 self.filtered_indices.len()
             );
-            lines.push((self.theme.scroll_info)(&indicator));
+            lines.push(self.theme.scroll_info.apply(&indicator));
         }
 
         // Description of selected item

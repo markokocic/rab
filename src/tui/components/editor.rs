@@ -29,29 +29,6 @@ use crate::tui::word_nav::{
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use unicode_segmentation::UnicodeSegmentation;
 
-/// Theme for the Editor component.
-pub struct EditorTheme {
-    pub text: Box<dyn Fn(&str) -> String>,
-    pub cursor: Box<dyn Fn(&str) -> String>,
-    pub border: Box<dyn Fn(&str) -> String>,
-    pub scroll_indicator: Box<dyn Fn(&str) -> String>,
-    pub autocomplete_selected: Box<dyn Fn(&str) -> String>,
-    pub autocomplete_normal: Box<dyn Fn(&str) -> String>,
-}
-
-impl Default for EditorTheme {
-    fn default() -> Self {
-        Self {
-            text: Box::new(|s| s.to_string()),
-            cursor: Box::new(|s| format!("\x1b[7m{}\x1b[27m", s)),
-            border: Box::new(|s| s.to_string()),
-            scroll_indicator: Box::new(|s| s.to_string()),
-            autocomplete_selected: Box::new(|s| format!("\x1b[7m{}\x1b[27m", s)),
-            autocomplete_normal: Box::new(|s| s.to_string()),
-        }
-    }
-}
-
 /// Direction for character jump mode (pi-style).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum JumpDirection {
@@ -83,7 +60,7 @@ pub struct Editor {
     #[allow(dead_code)]
     max_visible_lines: usize,
     scroll_offset: usize,
-    _theme: EditorTheme,
+
     focused: bool,
     kill_ring: KillRing,
     undo_stack: UndoStack<EditorSnapshot>,
@@ -96,7 +73,7 @@ pub struct Editor {
     pub on_submit: Option<Box<dyn FnMut(String) + Send>>,
     pub on_change: Option<Box<dyn FnMut(&str)>>,
     pub disable_submit: bool,
-    pub border_color: Box<dyn Fn(&str) -> String>,
+    pub border_color: crate::tui::Style,
 
     // Character jump mode (pi-style: await next printable char to jump to)
     jump_mode: Option<JumpDirection>,
@@ -134,7 +111,7 @@ struct EditorSnapshot {
 }
 
 impl Editor {
-    pub fn new(theme: EditorTheme, options: EditorOptions) -> Self {
+    pub fn new(options: EditorOptions) -> Self {
         Self {
             lines: vec![String::new()],
             cursor_line: 0,
@@ -142,7 +119,7 @@ impl Editor {
             padding_x: options.padding_x,
             max_visible_lines: options.max_visible_lines.max(3),
             scroll_offset: 0,
-            _theme: theme,
+
             focused: false,
             kill_ring: KillRing::new(),
             undo_stack: UndoStack::new(),
@@ -161,7 +138,7 @@ impl Editor {
             autocomplete_active: false,
             autocomplete_prefix: String::new(),
             last_autocomplete_trigger: std::time::Instant::now(),
-            border_color: Box::new(|s| s.to_string()),
+            border_color: crate::tui::Style::default(),
             autocomplete_provider: None,
             pastes: HashMap::new(),
             paste_counter: 0,
@@ -284,9 +261,9 @@ impl Editor {
             }),
             normal_text: Box::new(|s| format!("\x1b[38;2;128;128;128m{}\x1b[39m", s)),
             description: Box::new(|s| format!("\x1b[38;2;128;128;128m{}\x1b[39m", s)),
-            scroll_info: Box::new(|s| format!("\x1b[38;2;128;128;128m{}\x1b[39m", s)),
-            no_match: Box::new(|s| s.to_string()),
-            hint: Box::new(|s| s.to_string()),
+            scroll_info: crate::tui::Style::new().fg("\x1b[38;2;128;128;128m".to_string()),
+            no_match: crate::tui::Style::new(),
+            hint: crate::tui::Style::new(),
         };
         // Pi-style: pre-select the best matching item (exact match > prefix match)
         let best = self.best_autocomplete_index(&items);
@@ -1481,9 +1458,9 @@ impl Component for Editor {
             } else {
                 String::new()
             };
-            result.push((self.border_color)(&format!("{}{}", indicator, fill)));
+            result.push(self.border_color.apply(&format!("{}{}", indicator, fill)));
         } else {
-            result.push((self.border_color)(&horizontal.repeat(width)));
+            result.push(self.border_color.apply(&horizontal.repeat(width)));
         }
 
         // ── Content lines ──
@@ -1548,9 +1525,9 @@ impl Component for Editor {
             } else {
                 String::new()
             };
-            result.push((self.border_color)(&format!("{}{}", indicator, fill)));
+            result.push(self.border_color.apply(&format!("{}{}", indicator, fill)));
         } else {
-            result.push((self.border_color)(&horizontal.repeat(width)));
+            result.push(self.border_color.apply(&horizontal.repeat(width)));
         }
 
         // ── Autocomplete dropdown (pi-style: renders SelectList below bottom border) ──
@@ -2065,7 +2042,7 @@ mod tests {
     // ── Autocomplete tests ──
 
     fn make_editor_with_slash_provider(commands: Vec<&str>) -> Editor {
-        let mut editor = Editor::new(EditorTheme::default(), EditorOptions::default());
+        let mut editor = Editor::new(EditorOptions::default());
         let provider = Box::new(MockSlashProvider::new(commands));
         editor.set_autocomplete_provider(provider);
         editor
@@ -2327,20 +2304,20 @@ mod tests {
 
     #[test]
     fn test_new_editor() {
-        let editor = Editor::new(EditorTheme::default(), EditorOptions::default());
+        let editor = Editor::new(EditorOptions::default());
         assert_eq!(editor.get_text(), "");
     }
 
     #[test]
     fn test_set_text() {
-        let mut editor = Editor::new(EditorTheme::default(), EditorOptions::default());
+        let mut editor = Editor::new(EditorOptions::default());
         editor.set_text("hello world");
         assert_eq!(editor.get_text(), "hello world");
     }
 
     #[test]
     fn test_insert_and_move() {
-        let mut editor = Editor::new(EditorTheme::default(), EditorOptions::default());
+        let mut editor = Editor::new(EditorOptions::default());
         editor.insert_character("h");
         editor.insert_character("i");
         assert_eq!(editor.get_text(), "hi");
@@ -2352,7 +2329,7 @@ mod tests {
 
     #[test]
     fn test_backspace() {
-        let mut editor = Editor::new(EditorTheme::default(), EditorOptions::default());
+        let mut editor = Editor::new(EditorOptions::default());
         editor.set_text("hello");
         editor.backspace();
         assert_eq!(editor.get_text(), "hell");
@@ -2360,14 +2337,14 @@ mod tests {
 
     #[test]
     fn test_multiline() {
-        let mut editor = Editor::new(EditorTheme::default(), EditorOptions::default());
+        let mut editor = Editor::new(EditorOptions::default());
         editor.set_text("line1\nline2");
         assert_eq!(editor.get_lines().len(), 2);
     }
 
     #[test]
     fn test_undo() {
-        let mut editor = Editor::new(EditorTheme::default(), EditorOptions::default());
+        let mut editor = Editor::new(EditorOptions::default());
         editor.push_undo();
         editor.insert_text_internal("a");
         editor.push_undo();
@@ -2381,7 +2358,7 @@ mod tests {
 
     #[test]
     fn test_submit_clears() {
-        let mut editor = Editor::new(EditorTheme::default(), EditorOptions::default());
+        let mut editor = Editor::new(EditorOptions::default());
         editor.set_text("hello");
         let result = editor.lines.join("\n");
         editor.lines = vec![String::new()];
@@ -2393,7 +2370,7 @@ mod tests {
 
     #[test]
     fn test_render_borders() {
-        let mut editor = Editor::new(EditorTheme::default(), EditorOptions::default());
+        let mut editor = Editor::new(EditorOptions::default());
         let lines = editor.render(80);
         assert!(lines.len() >= 3);
         assert!(lines[0].contains('─'));
@@ -2402,13 +2379,10 @@ mod tests {
 
     #[test]
     fn test_scroll_indicator() {
-        let mut editor = Editor::new(
-            EditorTheme::default(),
-            EditorOptions {
-                padding_x: 1,
-                max_visible_lines: 10,
-            },
-        );
+        let mut editor = Editor::new(EditorOptions {
+            padding_x: 1,
+            max_visible_lines: 10,
+        });
         // Set terminal_rows=6 → max_vis = max(5, 1) = 5.
         // With 6 content lines and cursor at the bottom, scroll offset of 2
         // should produce an up-arrow indicator at the top.
@@ -2427,7 +2401,7 @@ mod tests {
 
     #[test]
     fn test_newline() {
-        let mut editor = Editor::new(EditorTheme::default(), EditorOptions::default());
+        let mut editor = Editor::new(EditorOptions::default());
         editor.set_text("hello");
         editor.add_newline();
         assert_eq!(editor.get_text(), "hello\n");
@@ -2437,7 +2411,7 @@ mod tests {
 
     #[test]
     fn test_cursor_in_layout() {
-        let editor = Editor::new(EditorTheme::default(), EditorOptions::default());
+        let editor = Editor::new(EditorOptions::default());
         // Empty editor - cursor should be in visual line 0
         let vl = layout_text(&editor.lines, 80, editor.cursor_line, editor.cursor_col);
         assert!(vl[0].has_cursor);
@@ -2446,7 +2420,7 @@ mod tests {
 
     #[test]
     fn test_cursor_in_layout_with_text() {
-        let mut editor = Editor::new(EditorTheme::default(), EditorOptions::default());
+        let mut editor = Editor::new(EditorOptions::default());
         editor.set_text("abc");
         editor.cursor_col = 1;
         let vl = layout_text(&editor.lines, 80, editor.cursor_line, editor.cursor_col);
@@ -2477,14 +2451,14 @@ mod tests {
 
     #[test]
     fn test_history_empty_up_does_nothing() {
-        let mut editor = Editor::new(EditorTheme::default(), EditorOptions::default());
+        let mut editor = Editor::new(EditorOptions::default());
         editor.handle_input(&up_key());
         assert_eq!(editor.get_text(), "");
     }
 
     #[test]
     fn test_history_up_shows_most_recent() {
-        let mut editor = Editor::new(EditorTheme::default(), EditorOptions::default());
+        let mut editor = Editor::new(EditorOptions::default());
         editor.add_to_history("first");
         editor.add_to_history("second");
         editor.handle_input(&up_key());
@@ -2493,7 +2467,7 @@ mod tests {
 
     #[test]
     fn test_history_cycles() {
-        let mut editor = Editor::new(EditorTheme::default(), EditorOptions::default());
+        let mut editor = Editor::new(EditorOptions::default());
         editor.add_to_history("first");
         editor.add_to_history("second");
         editor.add_to_history("third");
@@ -2509,7 +2483,7 @@ mod tests {
 
     #[test]
     fn test_history_exits_on_type() {
-        let mut editor = Editor::new(EditorTheme::default(), EditorOptions::default());
+        let mut editor = Editor::new(EditorOptions::default());
         editor.add_to_history("old");
         editor.handle_input(&up_key());
         assert_eq!(editor.get_text(), "old");
@@ -2519,7 +2493,7 @@ mod tests {
 
     #[test]
     fn test_backslash_enter_newline() {
-        let mut editor = Editor::new(EditorTheme::default(), EditorOptions::default());
+        let mut editor = Editor::new(EditorOptions::default());
         editor.handle_input(&char_key('\\'));
         assert_eq!(editor.get_text(), "\\");
         editor.handle_input(&enter_key());
@@ -2528,7 +2502,7 @@ mod tests {
 
     #[test]
     fn test_move_cursor_over_emoji() {
-        let mut editor = Editor::new(EditorTheme::default(), EditorOptions::default());
+        let mut editor = Editor::new(EditorOptions::default());
         editor.set_text("a😀b");
         editor.cursor_col = 0;
         editor.move_right();
@@ -2541,7 +2515,7 @@ mod tests {
 
     #[test]
     fn test_backspace_emoji() {
-        let mut editor = Editor::new(EditorTheme::default(), EditorOptions::default());
+        let mut editor = Editor::new(EditorOptions::default());
         editor.set_text("a😀b");
         editor.cursor_col = 6;
         editor.backspace();
@@ -2552,7 +2526,7 @@ mod tests {
 
     #[test]
     fn test_render_cursor_visible() {
-        let mut editor = Editor::new(EditorTheme::default(), EditorOptions::default());
+        let mut editor = Editor::new(EditorOptions::default());
         editor.focused = true;
         editor.insert_character("x");
         let lines = editor.render(40);
@@ -2562,7 +2536,7 @@ mod tests {
 
     #[test]
     fn test_render_borders_always_present() {
-        let mut editor = Editor::new(EditorTheme::default(), EditorOptions::default());
+        let mut editor = Editor::new(EditorOptions::default());
         let lines = editor.render(80);
         assert_eq!(lines.len(), 3, "Empty editor should have 3 lines");
         assert!(lines[0].contains('─'), "Top border missing");
@@ -2583,13 +2557,10 @@ mod tests {
 
     #[test]
     fn test_content_width_respected() {
-        let mut editor = Editor::new(
-            EditorTheme::default(),
-            EditorOptions {
-                padding_x: 1,
-                max_visible_lines: 10,
-            },
-        );
+        let mut editor = Editor::new(EditorOptions {
+            padding_x: 1,
+            max_visible_lines: 10,
+        });
         editor.set_text("hello world this is a test");
         let lines = editor.render(20);
         for line in &lines {
@@ -2655,7 +2626,7 @@ mod tests {
     #[test]
     fn test_cursor_in_wrapped_text_first_chunk() {
         // Cursor at position within first wrapped chunk
-        let mut editor = Editor::new(EditorTheme::default(), EditorOptions::default());
+        let mut editor = Editor::new(EditorOptions::default());
         let text = "hello world this is a test";
         editor.set_text(text);
         // cursor at position 3 ('l' in "hello")
@@ -2674,7 +2645,7 @@ mod tests {
     #[test]
     fn test_cursor_in_wrapped_text_middle_chunk() {
         // Cursor at position within the middle chunk
-        let mut editor = Editor::new(EditorTheme::default(), EditorOptions::default());
+        let mut editor = Editor::new(EditorOptions::default());
         let text = "hello world this is a test";
         editor.set_text(text);
         // "hello world this" = 16 chars, cursor at col 16 = end of "hello world this"
@@ -2693,7 +2664,7 @@ mod tests {
     #[test]
     fn test_cursor_last_chunk_on_boundary() {
         // Cursor at last byte of text - should be in the last visual line
-        let mut editor = Editor::new(EditorTheme::default(), EditorOptions::default());
+        let mut editor = Editor::new(EditorOptions::default());
         let text = "hello world this is a test";
         editor.set_text(text);
         editor.cursor_col = text.len();
@@ -2780,7 +2751,7 @@ mod tests {
 
     #[test]
     fn test_large_paste_creates_marker() {
-        let mut editor = Editor::new(EditorTheme::default(), EditorOptions::default());
+        let mut editor = Editor::new(EditorOptions::default());
         let large = "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\nline11";
         editor.handle_paste(large);
         let text = editor.get_text();
@@ -2794,7 +2765,7 @@ mod tests {
 
     #[test]
     fn test_small_paste_no_marker() {
-        let mut editor = Editor::new(EditorTheme::default(), EditorOptions::default());
+        let mut editor = Editor::new(EditorOptions::default());
         editor.handle_paste("hello");
         let text = editor.get_text();
         assert!(
@@ -2806,7 +2777,7 @@ mod tests {
 
     #[test]
     fn test_expand_paste_markers() {
-        let mut editor = Editor::new(EditorTheme::default(), EditorOptions::default());
+        let mut editor = Editor::new(EditorOptions::default());
         editor.handle_paste(
             "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\nline11",
         );
@@ -2823,7 +2794,7 @@ mod tests {
 
     #[test]
     fn test_submit_expands_markers() {
-        let mut editor = Editor::new(EditorTheme::default(), EditorOptions::default());
+        let mut editor = Editor::new(EditorOptions::default());
         editor.handle_paste(
             "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\nline11",
         );
@@ -2848,7 +2819,7 @@ mod tests {
 
     #[test]
     fn test_get_expanded_text() {
-        let mut editor = Editor::new(EditorTheme::default(), EditorOptions::default());
+        let mut editor = Editor::new(EditorOptions::default());
         editor.handle_paste(
             "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\nline11",
         );
@@ -2867,7 +2838,7 @@ mod tests {
 
     #[test]
     fn test_multiline_render_no_duplicate_content() {
-        let mut editor = Editor::new(EditorTheme::default(), EditorOptions::default());
+        let mut editor = Editor::new(EditorOptions::default());
         // Simulate: type "hello", add newline, type "world"
         editor.set_text("hello");
         editor.add_newline();
@@ -2916,7 +2887,7 @@ mod tests {
 
     #[test]
     fn test_editor_add_newline_adds_one_visual_line() {
-        let mut editor = Editor::new(EditorTheme::default(), EditorOptions::default());
+        let mut editor = Editor::new(EditorOptions::default());
         editor.set_text("hello");
 
         let before = editor.render(80).len();
@@ -3037,7 +3008,7 @@ mod tests {
     fn test_wrap_typing_detailed_trace() {
         // Simulate typing character by character into the editor,
         // checking the visual line layout after each character.
-        let mut editor = Editor::new(EditorTheme::default(), EditorOptions::default());
+        let mut editor = Editor::new(EditorOptions::default());
 
         // Type a sentence that exceeds width 10, checking after each char
         let sentence = "hello world";
@@ -3075,7 +3046,7 @@ mod tests {
     fn test_wrap_long_continuous_string_no_duplicates() {
         // A very long continuous string (like a URL or path) with no spaces.
         // Must not produce duplicate chunks when word-broken across lines.
-        let mut editor = Editor::new(EditorTheme::default(), EditorOptions::default());
+        let mut editor = Editor::new(EditorOptions::default());
 
         // Simulate typing a long URL character by character
         let url = "https://very-long-url-with-no-spaces.example.com/path/to/resource";
@@ -3116,7 +3087,7 @@ mod tests {
     fn test_editor_typing_past_width_no_duplicate_render() {
         // Simulate typing characters one at a time until the line exceeds the width.
         // The rendered output must never show the same content line twice.
-        let mut editor = Editor::new(EditorTheme::default(), EditorOptions::default());
+        let mut editor = Editor::new(EditorOptions::default());
 
         // Type characters to build up a line longer than the render width
         let input = "hello world this is a test of the emergency broadcast system";

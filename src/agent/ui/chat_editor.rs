@@ -7,7 +7,7 @@ use crate::tui::Component;
 use crate::tui::Theme;
 use crate::tui::autocomplete::{CombinedAutocompleteProvider, SlashCommand};
 use crate::tui::components::Editor;
-use crate::tui::components::editor::{EditorOptions, EditorTheme};
+use crate::tui::components::editor::EditorOptions;
 use crate::tui::keybindings::{
     ACTION_APP_CLEAR, ACTION_APP_COMPACT_TOGGLE, ACTION_APP_EDITOR_EXTERNAL, ACTION_APP_ESCAPE,
     ACTION_APP_EXIT, ACTION_APP_HELP, ACTION_APP_MESSAGE_DEQUEUE, ACTION_APP_MESSAGE_FOLLOW_UP,
@@ -82,35 +82,11 @@ pub struct ChatEditor {
 }
 
 impl ChatEditor {
-    pub fn new(theme: &dyn Theme, cwd: std::path::PathBuf) -> Self {
-        let editor_theme = EditorTheme {
-            text: {
-                let theme_text = theme.fg_key(ThemeKey::Text, "").to_string();
-                Box::new(move |s| {
-                    if !theme_text.is_empty() && theme_text.starts_with('\x1b') {
-                        let prefix = &theme_text[..theme_text.len().saturating_sub(1)];
-                        format!("{}m{}", &prefix[2..prefix.len()], s)
-                    } else {
-                        s.to_string()
-                    }
-                })
-            },
-            cursor: Box::new(|s| format!("\x1b[7m{}\x1b[27m", s)),
-            border: Box::new(move |s| format!("\x1b[38;2;138;190;183m{}\x1b[39m", s)),
-            scroll_indicator: Box::new(move |s| format!("\x1b[38;2;128;128;128m{}\x1b[39m", s)),
-            autocomplete_selected: Box::new(|s| {
-                format!("\x1b[7m\x1b[38;2;138;190;183m{}\x1b[27m\x1b[39m", s)
-            }),
-            autocomplete_normal: Box::new(|s| format!("\x1b[38;2;128;128;128m{}\x1b[39m", s)),
-        };
-
-        let editor = Editor::new(
-            editor_theme,
-            EditorOptions {
-                padding_x: 0,
-                max_visible_lines: 10,
-            },
-        );
+    pub fn new(_theme: &dyn Theme, cwd: std::path::PathBuf) -> Self {
+        let editor = Editor::new(EditorOptions {
+            padding_x: 0,
+            max_visible_lines: 10,
+        });
 
         Self {
             editor,
@@ -206,8 +182,7 @@ impl ChatEditor {
             } else {
                 ansi
             };
-            let prefix2 = prefix.clone();
-            self.editor.border_color = Box::new(move |s| format!("{}{}\x1b[39m", prefix2, s));
+            self.editor.border_color = crate::tui::Style::new().fg(prefix);
         } else {
             let level = thinking_level.unwrap_or("off");
             let color_name = match level {
@@ -226,8 +201,7 @@ impl ChatEditor {
             } else {
                 ansi
             };
-            let prefix2 = prefix.clone();
-            self.editor.border_color = Box::new(move |s| format!("{}{}\x1b[39m", prefix2, s));
+            self.editor.border_color = crate::tui::Style::new().fg(prefix);
         }
     }
 

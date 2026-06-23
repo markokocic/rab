@@ -12,9 +12,11 @@ pub struct Style {
     fg: Option<String>,
     bg: Option<String>,
     bold: bool,
+    dim: bool,
     italic: bool,
     underline: bool,
     strikethrough: bool,
+    reverse: bool,
 }
 
 impl Style {
@@ -40,6 +42,12 @@ impl Style {
         self
     }
 
+    /// Enable dim.
+    pub fn dim(mut self) -> Self {
+        self.dim = true;
+        self
+    }
+
     /// Enable italic.
     pub fn italic(mut self) -> Self {
         self.italic = true;
@@ -55,6 +63,12 @@ impl Style {
     /// Enable strikethrough.
     pub fn strikethrough(mut self) -> Self {
         self.strikethrough = true;
+        self
+    }
+
+    /// Enable reverse video.
+    pub fn reverse(mut self) -> Self {
+        self.reverse = true;
         self
     }
 
@@ -85,9 +99,17 @@ impl Style {
             prefix.push_str("\x1b[4m");
             suffix.push_str("\x1b[24m");
         }
+        if self.dim {
+            prefix.push_str("\x1b[2m");
+            suffix.push_str("\x1b[22m");
+        }
         if self.strikethrough {
             prefix.push_str("\x1b[9m");
             suffix.push_str("\x1b[29m");
+        }
+        if self.reverse {
+            prefix.push_str("\x1b[7m");
+            suffix.push_str("\x1b[27m");
         }
 
         format!("{}{}{}", prefix, text, suffix)
