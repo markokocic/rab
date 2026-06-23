@@ -280,18 +280,35 @@ impl ToolExecComponent {
             expand_key,
         };
 
-        // For `renderShell: "self"` tools (like edit), no colored box wrapping
+        // For `renderShell: "self"` tools (like edit), wrap call in a TuiBox with
+        // the appropriate background, then append result lines after.
+        // Pi's pattern: renderCall returns a Box (with bg/padding), renderResult
+        // returns a plain Text — both go in selfRenderContainer (a Container).
         if renderer.render_self() {
             let mut lines: Vec<String> = Vec::new();
-            // Spacer above
+            // Spacer above (matches pi's Spacer(1) in ToolExecutionComponent constructor)
             lines.push(String::new());
+
+            // Wrap call in a colored box (matching pi where renderCall returns a Box)
+            let bg_key = if !self.is_complete {
+                "toolPendingBg"
+            } else if self.is_error {
+                "toolErrorBg"
+            } else {
+                "toolSuccessBg"
+            };
+            let bg_ansi = theme.bg_ansi(bg_key).to_string();
+            let mut call_box = TuiBox::new(1, 0, Some(crate::tui::Style::new().bg(bg_ansi)));
 
             let call_lines = renderer.render_call(&self.args, width, theme, &ctx);
             if !call_lines.is_empty() {
-                lines.extend(call_lines);
+                let call_text = Text::new(call_lines.join("\n"), 0, 0, None);
+                call_box.add_child(std::boxed::Box::new(call_text));
+                lines.extend(call_box.render(width));
             }
 
-            // Result body
+            // Result body (no box, just raw lines — matches pi where renderResult
+            // returns a plain Text, not a Box)
             if let Some(ref output) = self.output {
                 let result_lines = renderer.render_result(output, width, theme, &ctx);
                 if !result_lines.is_empty() {
@@ -312,16 +329,19 @@ impl ToolExecComponent {
         let bg_ansi = theme.bg_ansi(bg_key).to_string();
         let theme_clone = theme.clone();
 
+        let padding_x = 1;
+        let content_width = width.saturating_sub(2 * padding_x).max(1);
         let mut msg_box = TuiBox::new(1, 1, Some(crate::tui::Style::new().bg(bg_ansi)));
 
-        // Call header
-        let call_lines = renderer.render_call(&self.args, width, &theme_clone, &ctx);
+        // Call header (pass content_width so renderers can do width-dependent
+        // formatting like truncate_to_visual_lines)
+        let call_lines = renderer.render_call(&self.args, content_width, &theme_clone, &ctx);
         let header_text = Text::new(call_lines.join("\n"), 0, 0, None);
         msg_box.add_child(std::boxed::Box::new(header_text));
 
         // Result body
         if let Some(ref output) = self.output {
-            let result_lines = renderer.render_result(output, width, &theme_clone, &ctx);
+            let result_lines = renderer.render_result(output, content_width, &theme_clone, &ctx);
             if !result_lines.is_empty() {
                 let result_text = Text::new(result_lines.join("\n"), 0, 0, None);
                 msg_box.add_child(std::boxed::Box::new(result_text));

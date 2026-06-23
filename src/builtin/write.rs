@@ -7,6 +7,9 @@ use async_trait::async_trait;
 use std::borrow::Cow;
 use tokio::sync::mpsc::UnboundedSender;
 
+/// Number of preview lines when collapsed (matching pi's WRITE_PARTIAL_FULL_HIGHLIGHT_LINES).
+const PREVIEW_LINES: usize = 10;
+
 pub struct WriteExtension {
     cwd: std::path::PathBuf,
 }
@@ -152,10 +155,12 @@ struct WriteRenderer {
 struct WriteCache {
     /// Cache key: (content_hash, expanded, preview_lines_count)
     key: Option<(u64, bool, usize)>,
-    /// Cached highlighted lines (without the leading \n prefix)
+    /// Cached highlighted lines
     lines: Vec<String>,
     /// Cached remaining count
     remaining: usize,
+    /// Whether syntax highlighting was applied
+    has_highlighting: bool,
 }
 
 impl WriteRenderer {
@@ -165,6 +170,7 @@ impl WriteRenderer {
                 key: None,
                 lines: Vec::new(),
                 remaining: 0,
+                has_highlighting: false,
             }),
         }
     }
@@ -184,10 +190,12 @@ impl WriteRenderer {
         content: &str,
         path: &str,
         expanded: bool,
-    ) -> (Vec<String>, usize) {
+    ) -> (Vec<String>, usize, bool) {
         let hash = Self::content_hash(content);
-        let max_preview = if expanded { usize::MAX } else { 5 };
-        let content_lines: Vec<&str> = content.lines().collect();
+        // Pi: normalize (remove \r) and replace tabs with 3 spaces before highlighting
+        let normalized = content.replace('\r', "").replace('\t', "   ");
+        let max_preview = if expanded { usize::MAX } else { PREVIEW_LINES };
+        let content_lines: Vec<&str> = normalized.lines().collect();
         let preview_count = content_lines.len().min(max_preview);
         let remaining = content_lines.len().saturating_sub(preview_count);
 
@@ -200,7 +208,7 @@ impl WriteRenderer {
                 && *cached_key == key
                 && !cache.lines.is_empty()
             {
-                return (cache.lines.clone(), cache.remaining);
+                return (cache.lines.clone(), cache.remaining, cache.has_highlighting);
             }
         }
 
@@ -213,6 +221,7 @@ impl WriteRenderer {
         };
 
         let mut highlighted = Vec::new();
+        let mut has_highlighting = false;
 
         #[cfg(feature = "syntect")]
         if let Some(lang) = lang {
@@ -220,6 +229,7 @@ impl WriteRenderer {
             let hl = crate::tui::components::highlight_code(&text, Some(lang));
             if !hl.is_empty() {
                 highlighted = hl;
+                has_highlighting = true;
             }
         }
 
@@ -228,15 +238,21 @@ impl WriteRenderer {
             highlighted = display.iter().map(|l| l.to_string()).collect();
         }
 
+        // Pi: trim trailing empty lines (matching trimTrailingEmptyLines)
+        while highlighted.last().is_some_and(|l| l.is_empty()) {
+            highlighted.pop();
+        }
+
         // Update cache (write lock)
         {
             let mut cache = self.cache.write().unwrap();
             cache.key = Some(key);
             cache.lines = highlighted.clone();
             cache.remaining = remaining;
+            cache.has_highlighting = has_highlighting;
         }
 
-        (highlighted, remaining)
+        (highlighted, remaining, has_highlighting)
     }
 }
 
@@ -253,7 +269,7 @@ impl ToolRenderer for WriteRenderer {
             .or_else(|| args.get("path"))
             .and_then(|v| v.as_str())
             .unwrap_or("");
-        let content = args.get("content").and_then(|v| v.as_str()).unwrap_or("");
+        let content = args.get("content");
 
         let short = if let Ok(home) = std::env::var("HOME") {
             path.replacen(&home, "~", 1)
@@ -274,24 +290,54 @@ impl ToolRenderer for WriteRenderer {
 
         let mut lines = vec![header];
 
-        // Show content preview (first few lines) when not expanded
-        if !content.is_empty() {
-            let (display, remaining) = self.get_highlighted_lines(content, path, ctx.expanded);
+        // Match pi's `str(value)` helper:
+        // - String → use as-is (even empty)
+        // - null/undefined → treat as empty string
+        // - other types (number, array, etc.) → null (invalid)
+        let content_str = match content {
+            Some(content_val) => content_val.as_str(),
+            None => Some(""),
+        };
 
-            for line in &display {
-                lines.push(format!("\n{}", theme.fg_key(ThemeKey::ToolOutput, line)));
+        match content_str {
+            // Pi: invalid type (not a string) → show error
+            None => {
+                lines.push(String::new());
+                lines
+                    .push(theme.fg_key(ThemeKey::Error, "[invalid content arg - expected string]"));
             }
+            // Pi: valid string → show preview if non-empty
+            Some("") => {}
+            Some(text) => {
+                let (display, remaining, has_highlighting) =
+                    self.get_highlighted_lines(text, path, ctx.expanded);
 
-            if remaining > 0 {
-                lines.push(theme.fg(
-                    "muted",
-                    &format!(
-                        "... ({} more lines, {} total, {} to expand)",
-                        remaining,
-                        content.lines().count(),
-                        ctx.expand_key
-                    ),
-                ));
+                // Pi: empty line between header and content
+                lines.push(String::new());
+
+                for line in &display {
+                    // Pi: only apply toolOutput styling when not syntax-highlighted
+                    if has_highlighting {
+                        lines.push(line.clone());
+                    } else {
+                        lines.push(theme.fg_key(ThemeKey::ToolOutput, line));
+                    }
+                }
+
+                if remaining > 0 {
+                    // Pi-style: "... (X more lines, Y total, <dim key> <muted to expand>)"
+                    let total = display.len() + remaining;
+                    let dim_key = theme.fg_key(ThemeKey::Dim, &ctx.expand_key);
+                    let muted_rest = theme.fg_key(
+                        ThemeKey::Muted,
+                        &format!("... ({} more lines, {} total, ", remaining, total),
+                    );
+                    let muted_paren = theme.fg_key(ThemeKey::Muted, ")");
+                    lines.push(format!(
+                        "{}{} to expand{}",
+                        muted_rest, dim_key, muted_paren
+                    ));
+                }
             }
         }
 
