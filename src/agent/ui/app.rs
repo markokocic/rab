@@ -1310,11 +1310,29 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
             ));
         }
         CommandResult::NewSession => {
+            // Create a new session in the SessionManager (new ID, new file)
+            if let Some(ref mut session) = app.session {
+                session.new_session(None);
+            }
             // Clear conversation and messages
             app.conversation.clear();
             app.messages.retain(|m| matches!(m, DisplayMsg::Info(_)));
             // Clear chat container children (keep header, etc.)
             app.chat_container.borrow_mut().clear();
+            // Clear streaming state (pi's renderCurrentSessionState)
+            app.streaming_component = None;
+            app.pending_text = None;
+            app.pending_thinking = None;
+            // Clear pending tool state
+            app.pending_tools.clear();
+            app.tool_call_start_times.clear();
+            // Add info message like pi does
+            chat_add(
+                app,
+                std::boxed::Box::new(InfoMessageComponent::new(
+                    "New session started.".to_string(),
+                )),
+            );
             app.status_text = Some("New session started.".into());
         }
         CommandResult::SessionSwitched { path } => {

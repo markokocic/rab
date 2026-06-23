@@ -29,7 +29,7 @@ pub struct SessionHeader {
 
 // ── Entry types ─────────────────────────────────────────────────────
 
-/// A session entry — one JSON line in the session file.
+/// A session entry - one JSON line in the session file.
 ///
 /// Uses serde's internally-tagged enum with `type` field for discrimination.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -284,14 +284,14 @@ pub fn load_entries_from_file(path: &Path) -> Vec<SessionEntry> {
     // We check this by ensuring at least one entry exists and is not a non-header type.
     // Header entries have type="session" which is parsed as a serde error for SessionEntry
     // since we use tagged enum. The header line will fail to parse as SessionEntry.
-    // That's fine — load_entries_from_file returns only SessionEntry items, not the header.
+    // That's fine - load_entries_from_file returns only SessionEntry items, not the header.
     // The caller uses read_session_header() separately for the header.
 
     entries
 }
 
 /// Write entries to a session file (used for initial write / rewrite).
-/// Does NOT write the session header — caller must include it.
+/// Does NOT write the session header - caller must include it.
 pub fn write_entries_to_file(
     path: &Path,
     header: &SessionHeader,
@@ -433,7 +433,7 @@ impl SessionManager {
                 return;
             }
 
-            // Entries exist (or header exists but no entries yet — keep the session)
+            // Entries exist (or header exists but no entries yet - keep the session)
             self.session_id = header
                 .map(|h| h.id)
                 .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
@@ -441,7 +441,7 @@ impl SessionManager {
             self._build_index();
             self.flushed = true;
         } else {
-            // File doesn't exist — create new session at this path
+            // File doesn't exist - create new session at this path
             let explicit_path = self.session_file.clone();
             self.new_session(None);
             self.session_file = explicit_path;
@@ -449,7 +449,7 @@ impl SessionManager {
     }
 
     /// Create a new session (overwrites current entries).
-    fn new_session(&mut self, id: Option<&str>) {
+    pub fn new_session(&mut self, id: Option<&str>) {
         self.session_id = id
             .map(|s| s.to_string())
             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
@@ -1353,7 +1353,7 @@ mod tests {
 
     #[test]
     fn test_generate_entry_id_collision_fallback() {
-        // Create a map that has all possible 8-char hex IDs — impossible
+        // Create a map that has all possible 8-char hex IDs - impossible
         // but we test the fallback behavior by only having a collision
         // on the first generated ID (unlikely but the code handles it).
         // This is more of a smoke test that the function doesn't panic.
@@ -1546,7 +1546,7 @@ mod tests {
         let new_id = sm2.session_id().to_string();
         drop(sm2);
 
-        // Continue recent — should get the new one
+        // Continue recent - should get the new one
         let sm3 = SessionManager::continue_recent(&cwd, Some(&sessions_dir));
         assert_eq!(sm3.session_id(), &new_id);
         let context = sm3.build_session_context();
@@ -1561,7 +1561,7 @@ mod tests {
         std::fs::create_dir_all(&sessions_dir).unwrap();
         std::fs::create_dir_all(&cwd).unwrap();
 
-        // No sessions exist — should create new
+        // No sessions exist - should create new
         let sm = SessionManager::continue_recent(&cwd, Some(&sessions_dir));
         assert!(!sm.session_id().is_empty());
         assert!(sm.entries().is_empty());
@@ -1691,7 +1691,7 @@ mod tests {
         // We now have 5 entries (original 4 + new branch entry)
         assert_eq!(sm.entries().len(), 5);
 
-        // Build context from current leaf — should have 3 messages (m1, branch asst, nothing after)
+        // Build context from current leaf - should have 3 messages (m1, branch asst, nothing after)
         let context = sm.build_session_context();
         assert_eq!(context.messages.len(), 2); // user "one" + assistant "alternate response"
     }
@@ -1816,7 +1816,7 @@ mod tests {
         let file_path = sessions_dir.join("empty.jsonl");
         std::fs::write(&file_path, "").unwrap();
 
-        // Opening an empty file should not panic — should start fresh
+        // Opening an empty file should not panic - should start fresh
         let sm = SessionManager::open(&file_path, Some(&sessions_dir), None);
         assert!(!sm.session_id().is_empty());
         assert!(sm.entries().is_empty());
@@ -1866,7 +1866,7 @@ mod tests {
         let header_line = content.lines().next().unwrap();
         std::fs::write(&file_path, format!("{}\n", header_line)).unwrap();
 
-        // Open — should keep the session (header exists, just no entries)
+        // Open - should keep the session (header exists, just no entries)
         let sm = SessionManager::open(&file_path, Some(&sessions_dir), None);
         assert_eq!(sm.session_id(), &original_id);
         assert!(sm.entries().is_empty());
@@ -1894,7 +1894,7 @@ mod tests {
         content.push('\n'); // blank line
         std::fs::write(&file_path, &content).unwrap();
 
-        // Open — valid entries should be loaded, garbage skipped
+        // Open - valid entries should be loaded, garbage skipped
         let sm = SessionManager::open(&file_path, Some(&sessions_dir), None);
         let ctx = sm.build_session_context();
         assert_eq!(ctx.messages.len(), 2);
@@ -1921,7 +1921,7 @@ mod tests {
         let file_path = sessions_dir.join("no_header.jsonl");
         std::fs::write(&file_path, format!("{}\n", json)).unwrap();
 
-        // Open — should generate new ID, load entries
+        // Open - should generate new ID, load entries
         let sm = SessionManager::open(&file_path, Some(&sessions_dir), None);
         assert!(!sm.session_id().is_empty());
         assert_eq!(sm.entries().len(), 1);
@@ -1939,7 +1939,7 @@ mod tests {
         let file_path = sessions_dir.join("recovered.jsonl");
         std::fs::write(&file_path, "garbage\nmore garbage\n").unwrap();
 
-        // Open — recovers
+        // Open - recovers
         let mut sm = SessionManager::open(&file_path, Some(&sessions_dir), None);
         assert!(sm.entries().is_empty());
 
