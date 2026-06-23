@@ -121,6 +121,9 @@ pub struct App {
     /// Timestamp of last Ctrl+C for double-press detection (pi-style).
     last_clear_time: std::time::Instant,
 
+    /// Main loop iteration counter for diagnostic tracking.
+    loop_count: u64,
+
     /// Exit flag.
     should_quit: bool,
 
@@ -310,6 +313,7 @@ impl App {
             tools_expanded: !config.collapse_tool_output,
             scroll_offset: 0,
             last_clear_time: std::time::Instant::now(),
+            loop_count: 0,
 
             should_quit: false,
             last_usage: None,
@@ -365,6 +369,7 @@ pub async fn run(config: AppConfig, session: SessionManager) -> anyhow::Result<(
 
     let mut term = ProcessTerminal::new();
     let mut stdout = std::io::stdout();
+    let (mut bg_writer, _writer_thread) = crate::tui::tui_core::BackgroundWriter::new();
 
     // Main-screen mode (like pi) - no alternate screen, no clear.
     // Content writes from current cursor position (after shell prompt).
@@ -372,6 +377,9 @@ pub async fn run(config: AppConfig, session: SessionManager) -> anyhow::Result<(
     term.start(&mut stdout)?;
     term.hide_cursor(&mut stdout)?;
     term.set_color_scheme_notifications(&mut stdout, true)?;
+    // Start background stdin reader so crossterm parser bugs don't freeze
+    // the main event loop.
+    crate::tui::terminal::start_stdin_reader();
 
     let mut tui = TUI::new();
     // Disable clear_on_shrink to avoid full redraws during streaming
@@ -470,6 +478,9 @@ pub async fn run(config: AppConfig, session: SessionManager) -> anyhow::Result<(
             dirty = true;
         }
 
+        // Increment loop counter
+        app.loop_count = app.loop_count.wrapping_add(1);
+
         // Check terminal size only when we're about to render
         // (avoids expensive ioctl syscall on idle frames)
         if dirty && let Ok((w, h)) = term.size() {
@@ -503,7 +514,7 @@ pub async fn run(config: AppConfig, session: SessionManager) -> anyhow::Result<(
             // Update section components from compose_ui
             compose_ui(&mut app, cols as usize);
             tui.set_dimensions(cols as usize, rows as usize);
-            tui.render(cols as usize, rows as usize, &mut stdout)?;
+            tui.render(cols as usize, rows as usize, &mut bg_writer)?;
             dirty = false;
         }
 
@@ -819,7 +830,7 @@ fn handle_tools_expand(app: &mut App) {
     app.tools_expanded = !app.tools_expanded;
     app.collapse_tool_output = !app.tools_expanded;
 
-    // Expand/collapse header (welcome/onboarding) — matching pi's setToolsExpanded
+    // Expand/collapse header (welcome/onboarding) - matching pi's setToolsExpanded
     // which expands both the active header and all expandable chat children.
     app.header.borrow_mut().set_expanded(app.tools_expanded);
 
@@ -1533,6 +1544,8 @@ fn handle_agent_event(app: &mut App, event: AgentEvent) {
                 weak.borrow_mut().append_text(&delta);
             } else {
                 // First text delta - create streaming component
+                // Direct addChild matching pi's `this.chatContainer.addChild(this.streamingComponent)`
+                // without a spacer — the component handles its own leading Spacer(1) internally.
                 use crate::tui::components::rc_ref_cell_component::RcRefCellComponent;
                 let comp = Rc::new(RefCell::new(
                     crate::agent::ui::components::AssistantMessageComponent::new(&delta),
@@ -1541,7 +1554,9 @@ fn handle_agent_event(app: &mut App, event: AgentEvent) {
                     comp.borrow_mut().set_hide_thinking(true);
                 }
                 app.streaming_component = Some(Rc::downgrade(&comp));
-                chat_add(app, std::boxed::Box::new(RcRefCellComponent(comp)));
+                app.chat_container
+                    .borrow_mut()
+                    .add_child(std::boxed::Box::new(RcRefCellComponent(comp)));
             }
         }
         AgentEvent::ThinkingDelta { delta } => {
@@ -1551,6 +1566,7 @@ fn handle_agent_event(app: &mut App, event: AgentEvent) {
                     .add_thinking(&delta, app.thinking_level.clone());
             } else {
                 // First thinking delta without text - create component with just thinking
+                // Direct addChild matching pi — no spacer, component handles its own spacing.
                 use crate::tui::components::rc_ref_cell_component::RcRefCellComponent;
                 let mut comp = crate::agent::ui::components::AssistantMessageComponent::new("");
                 comp.add_thinking(&delta, app.thinking_level.clone());
@@ -1559,7 +1575,9 @@ fn handle_agent_event(app: &mut App, event: AgentEvent) {
                 }
                 let comp = Rc::new(RefCell::new(comp));
                 app.streaming_component = Some(Rc::downgrade(&comp));
-                chat_add(app, std::boxed::Box::new(RcRefCellComponent(comp)));
+                app.chat_container
+                    .borrow_mut()
+                    .add_child(std::boxed::Box::new(RcRefCellComponent(comp)));
             }
         }
         AgentEvent::ToolCall { id, name, args, .. } => {
@@ -2357,7 +2375,7 @@ mod tests {
         app.is_streaming = true;
         app.working.start();
 
-        // AgentEnd no longer processes follow-up queue — the agent loop handles it.
+        // AgentEnd no longer processes follow-up queue - the agent loop handles it.
         // The queue should remain intact.
         handle_agent_event(&mut app, AgentEvent::AgentEnd { messages: vec![] });
 

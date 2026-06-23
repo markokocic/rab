@@ -375,6 +375,14 @@ impl Theme for RabTheme {
     fn italic(&self, text: &str) -> String {
         self.italic(text)
     }
+
+    fn fg_ansi(&self, color: &str) -> &str {
+        self.fg_ansi(color)
+    }
+
+    fn fg_ansi_key(&self, key: ThemeKey) -> &str {
+        self.fg_ansi_key(key)
+    }
 }
 
 // ── Global Theme State ───────────────────────────────────────────

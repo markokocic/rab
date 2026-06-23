@@ -550,7 +550,7 @@ impl ToolRenderer for EditRenderer {
                     .lines()
                     .any(|l| l.starts_with('-') || l.starts_with('+') || l.starts_with(' '));
                 if has_diff {
-                    let rendered = crate::tui::components::diff::render_diff(diff_text);
+                    let rendered = crate::tui::components::diff::render_diff(diff_text, theme);
                     return rendered;
                 }
             }

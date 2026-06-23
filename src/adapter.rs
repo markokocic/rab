@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use crate::agent::provider::{Provider, StreamEvent, ToolDef};
 use crate::agent::types::{AgentMessage, Role, ToolCall};
 use crate::auth::AuthStorage;
@@ -165,27 +167,73 @@ impl Provider for GenaiProvider {
             options = options.with_reasoning_effort(effort.clone());
         }
 
-        let genai_response = self
-            .client
-            .exec_chat_stream(&full_model, req, Some(&options))
-            .await?;
+        // Pi-compatible streaming timeout configuration:
+        // - Initial response (exec_chat_stream): 30s timeout.
+        //   The genai crate creates the request builder but the actual HTTP
+        //   request is lazily sent when the stream is first polled. However,
+        //   adapter dispatch and auth resolution happen here, so a timeout
+        //   prevents hangs at this stage too (matching pi's approach of
+        //   having timeouts at every boundary).
+        let genai_response = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            self.client
+                .exec_chat_stream(&full_model, req, Some(&options)),
+        )
+        .await
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "Initial chat stream request timed out after 30s — provider did not respond"
+            )
+        })?
+        .map_err(|e| anyhow::anyhow!("{:#}", e))?;
 
         let mut genai_stream = genai_response.stream;
 
+        // Pi-compatible per-chunk idle timeout configuration:
+        // - First-event timeout: 20s (matching pi's DEFAULT_SSE_HEADER_TIMEOUT_MS)
+        //   Prevents zero-event SSE streams from leaving callers stuck on "Working...".
+        // - Per-chunk idle timeout: 60s between subsequent events.
+        //   If the stream stalls mid-response (no tokens, no done, no error),
+        //   this ensures we eventually error out instead of hanging forever.
+        const FIRST_EVENT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+        const CHUNK_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
         let stream = async_stream::stream! {
-            while let Some(result) = genai_stream.next().await {
+            // When the last yielded event arrived (or None if nothing yielded yet).
+            // We track this separately from raw stream events because some providers
+            // send keep-alive chunks (e.g. ThoughtSignatureChunk) that should NOT
+            // reset the idle timer. Only yielded events count as progress.
+            let mut last_yield: Option<Instant> = None;
+            let started = Instant::now();
+
+            loop {
+                // Quick poll (500ms) so we detect stream end / next event
+                // promptly while still giving the runtime breathing room.
+                let result = tokio::time::timeout(
+                    std::time::Duration::from_millis(500),
+                    genai_stream.next(),
+                ).await;
+
                 match result {
-                    Ok(event) => {
+                    Ok(Some(Ok(event))) => {
+                        let mut yielded = false;
                         match event {
                             genai::chat::ChatStreamEvent::Start => {},
                             genai::chat::ChatStreamEvent::Chunk(chunk) => {
+                                yielded = true;
                                 yield StreamEvent::TextDelta { text: chunk.content };
                             }
                             genai::chat::ChatStreamEvent::ReasoningChunk(chunk) => {
+                                yielded = true;
                                 yield StreamEvent::ThinkingDelta { text: chunk.content };
                             }
+                            // ThoughtSignatureChunk is a keep-alive that the
+                            // provider sends while still thinking. It does NOT
+                            // count as progress — if only these arrive we still
+                            // time out after FIRST_EVENT_TIMEOUT (20s).
                             genai::chat::ChatStreamEvent::ThoughtSignatureChunk(_) => {},
                             genai::chat::ChatStreamEvent::ToolCallChunk(tool_chunk) => {
+                                yielded = true;
                                 let tc = &tool_chunk.tool_call;
                                 yield StreamEvent::ToolCall {
                                     id: tc.call_id.clone(),
@@ -195,6 +243,7 @@ impl Provider for GenaiProvider {
                                 };
                             }
                             genai::chat::ChatStreamEvent::End(end) => {
+                                yielded = true;
                                 let text = end.captured_first_text().unwrap_or("").to_string();
                                 let tool_calls: Vec<ToolCall> = end
                                     .captured_tool_calls()
@@ -230,11 +279,47 @@ impl Provider for GenaiProvider {
                                 };
                             }
                         }
+                        if yielded {
+                            last_yield = Some(Instant::now());
+                        }
                     }
-                    Err(e) => {
+                    Ok(Some(Err(e))) => {
+                        last_yield = Some(Instant::now());
                         yield StreamEvent::Error {
                             message: format!("{:#}", e),
                         };
+                    }
+                    Ok(None) => {
+                        // Stream ended cleanly (no more events)
+                        break;
+                    }
+                    Err(_elapsed) => {
+                        // 500ms wire poll timed out — no raw event arrived.
+                        // Check the idle timeout against last meaningful yield.
+                        let idle = last_yield
+                            .map(|t| t.elapsed())
+                            .unwrap_or_else(|| started.elapsed());
+                        // First-event timeout: 20s (matching pi's
+                        // DEFAULT_SSE_HEADER_TIMEOUT_MS). Prevents zero-event
+                        // streams from leaving callers stuck on "Working...".
+                        // Per-chunk idle timeout: 60s between yielded events.
+                        // If only keep-alive chunks arrive, this still fires.
+                        let limit = if last_yield.is_none() {
+                            FIRST_EVENT_TIMEOUT
+                        } else {
+                            CHUNK_IDLE_TIMEOUT
+                        };
+                        if idle >= limit {
+                            yield StreamEvent::Error {
+                                message: format!(
+                                    "No response from provider after {}s — connection may be stalled",
+                                    idle.as_secs(),
+                                ),
+                            };
+                            break;
+                        }
+                        // idle < limit: poll expired without data but within
+                        // the allowed window — loop again.
                     }
                 }
             }

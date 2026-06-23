@@ -1,5 +1,5 @@
 use crate::agent::ui::theme::ThemeKey;
-use crate::agent::ui::theme::current_theme;
+use crate::tui::Theme;
 
 /// Render a unified diff string with colored lines and intra-line change highlighting.
 /// Matches pi's `renderDiff()` in `diff.ts`.
@@ -12,7 +12,10 @@ use crate::agent::ui::theme::current_theme;
 /// - `+` lines: `toolDiffAdded` (green)
 /// - ` ` lines: `toolDiffContext` (gray)
 /// - Single-line changes: intra-line diff with inverse highlighting
-pub fn render_diff(diff_text: &str) -> Vec<String> {
+///
+/// Takes a `&dyn Theme` parameter to avoid calling `current_theme()` which
+/// would deadlock if the theme lock is already held by a caller.
+pub fn render_diff(diff_text: &str, theme: &dyn Theme) -> Vec<String> {
     let mut lines: Vec<String> = Vec::new();
     let mut prev_removed: Option<String> = None;
 
@@ -36,7 +39,7 @@ pub fn render_diff(diff_text: &str) -> Vec<String> {
                 if prev_removed.is_some() {
                     // Multiple removed lines — push previous and start new
                     if let Some(prev) = prev_removed.take() {
-                        let styled = color_line(&prev, "toolDiffRemoved");
+                        let styled = color_line(&prev, "toolDiffRemoved", theme);
                         lines.push(styled);
                     }
                 }
@@ -46,16 +49,16 @@ pub fn render_diff(diff_text: &str) -> Vec<String> {
                 if let Some(ref removed_full) = prev_removed.take() {
                     let removed_content = &removed_full[1..]; // strip '-'
                     // Intra-line diff: single removed + single added
-                    render_intra_line_diff(removed_content, content, &mut lines);
+                    render_intra_line_diff(removed_content, content, &mut lines, theme);
                 } else {
                     // Standalone added line (multiple adds after removes)
-                    let styled = color_line(line, "toolDiffAdded");
+                    let styled = color_line(line, "toolDiffAdded", theme);
                     lines.push(styled);
                 }
             }
             _ => {
                 prev_removed = None;
-                let styled = color_line(line, "toolDiffContext");
+                let styled = color_line(line, "toolDiffContext", theme);
                 lines.push(styled);
             }
         }
@@ -63,7 +66,7 @@ pub fn render_diff(diff_text: &str) -> Vec<String> {
 
     // Flush remaining removed line
     if let Some(prev) = prev_removed.take() {
-        let styled = color_line(&prev, "toolDiffRemoved");
+        let styled = color_line(&prev, "toolDiffRemoved", theme);
         lines.push(styled);
     }
 
@@ -71,10 +74,8 @@ pub fn render_diff(diff_text: &str) -> Vec<String> {
 }
 
 /// Color a single diff line with the given theme color.
-fn color_line(line: &str, color: &str) -> String {
-    let theme = current_theme();
+fn color_line(line: &str, color: &str, theme: &dyn Theme) -> String {
     let ansi = theme.fg_ansi(color).to_string();
-    drop(theme);
     format!("{}{}\x1b[39m", ansi, line)
 }
 
@@ -83,16 +84,13 @@ fn color_line(line: &str, color: &str) -> String {
 ///
 /// Matches pi's `renderIntraLineDiff()` which uses `diffWords` to find changed
 /// tokens and applies `theme.inverse()` on them.
-fn render_intra_line_diff(old: &str, new: &str, output: &mut Vec<String>) {
+fn render_intra_line_diff(old: &str, new: &str, output: &mut Vec<String>, theme: &dyn Theme) {
     let changes: Vec<Change> = compute_word_diff(old, new);
-
-    let theme = current_theme();
     let added_ansi = theme.fg_ansi_key(ThemeKey::ToolDiffAdded).to_string();
     let removed_ansi = theme.fg_ansi_key(ThemeKey::ToolDiffRemoved).to_string();
     let inverse_on = "\x1b[7m"; // reverse video
     let inverse_off = "\x1b[27m"; // reverse video off
     let reset = "\x1b[39m";
-    drop(theme);
 
     let mut removed_line = String::new();
     let mut added_line = String::new();
@@ -183,24 +181,32 @@ fn compute_word_diff(old: &str, new: &str) -> Vec<Change> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_theme() -> crate::agent::ui::theme::RabTheme {
+        crate::agent::ui::theme::current_theme().clone()
+    }
+
     #[test]
     fn test_empty_diff() {
-        let result = render_diff("");
+        let theme = test_theme();
+        let result = render_diff("", &theme);
         assert!(result.is_empty());
     }
 
     #[test]
     fn test_skips_headers() {
+        let theme = test_theme();
         let diff = "--- a/file.rs\n+++ b/file.rs\n@@ -1,3 +1,4 @@\n";
-        let result = render_diff(diff);
+        let result = render_diff(diff, &theme);
         assert!(result.is_empty(), "should skip all headers");
     }
 
     #[test]
     fn test_context_lines() {
         crate::agent::ui::theme::init_theme(Some("dark"), false);
+        let theme = test_theme();
         let diff = " line1\n line2\n";
-        let result = render_diff(diff);
+        let result = render_diff(diff, &theme);
         assert_eq!(result.len(), 2);
         assert!(result[0].contains("line1"));
         assert!(result[0].starts_with("\x1b")); // has ANSI color
@@ -210,8 +216,9 @@ mod tests {
     #[test]
     fn test_removed_line() {
         crate::agent::ui::theme::init_theme(Some("dark"), false);
+        let theme = test_theme();
         let diff = "-old_line\n";
-        let result = render_diff(diff);
+        let result = render_diff(diff, &theme);
         assert_eq!(result.len(), 1);
         assert!(result[0].contains('-')); // prefix preserved
         assert!(result[0].contains("old_line"));
@@ -220,8 +227,9 @@ mod tests {
     #[test]
     fn test_added_line() {
         crate::agent::ui::theme::init_theme(Some("dark"), false);
+        let theme = test_theme();
         let diff = "+new_line\n";
-        let result = render_diff(diff);
+        let result = render_diff(diff, &theme);
         assert_eq!(result.len(), 1);
         assert!(result[0].contains('+'));
         assert!(result[0].contains("new_line"));
@@ -230,8 +238,9 @@ mod tests {
     #[test]
     fn test_single_line_modification() {
         crate::agent::ui::theme::init_theme(Some("dark"), false);
+        let theme = test_theme();
         let diff = "-foo\n+bar\n";
-        let result = render_diff(diff);
+        let result = render_diff(diff, &theme);
         assert_eq!(result.len(), 2);
         assert!(result[0].contains('-'));
         assert!(result[1].contains('+'));
@@ -249,8 +258,9 @@ mod tests {
     #[test]
     fn test_multi_line_removes() {
         crate::agent::ui::theme::init_theme(Some("dark"), false);
+        let theme = test_theme();
         let diff = "-a\n-b\n+c\n";
-        let result = render_diff(diff);
+        let result = render_diff(diff, &theme);
         // Two removed lines, then one added
         assert!(result.len() >= 2);
         // The first two should be - lines
