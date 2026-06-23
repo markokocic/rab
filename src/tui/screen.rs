@@ -47,7 +47,8 @@ impl Screen {
     /// Update the hardware cursor row after TUI repositions the cursor.
     /// This keeps Screen's delta calculations in sync with the actual cursor position.
     /// Update the hardware cursor row tracking.
-    /// Called when TUI has positioned the cursor independently.
+    /// No longer needed during normal operation — Screen extracts cursor
+    /// markers from lines during render(). Kept for backward compat in tests.
     pub fn set_hardware_cursor_row(&mut self, row: usize) {
         self.hardware_cursor_row = row;
     }

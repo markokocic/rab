@@ -548,9 +548,6 @@ impl TUI {
         }
     }
 
-    /// Find and extract cursor position from rendered lines.
-    /// Searches for CURSOR_MARKER, calculates its position, and strips it.
-    /// Only scans the bottom `height` lines (visible viewport).
     /// Position hardware cursor at the given row/col (relative to viewport).
     fn position_hard_cursor(
         &self,
