@@ -170,9 +170,21 @@ pub async fn run_agent_loop(
                     "Agent loop exceeded maximum iterations ({}). Last response may be incomplete.",
                     MAX_TOOL_ITERATIONS
                 );
-                emit(AgentEvent::Aborted {
-                    reason: msg.clone(),
-                });
+                // Pi-style: create an error assistant message so the failure is always visible
+                emit(AgentEvent::TextDelta { delta: msg.clone() });
+                let error_assistant = AgentMessage {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    parent_id: None,
+                    role: Role::Assistant,
+                    content: msg.clone(),
+                    tool_calls: vec![],
+                    tool_call_id: None,
+                    usage: None,
+                    is_error: true,
+                    timestamp: chrono::Utc::now().timestamp_millis(),
+                };
+                messages.push(error_assistant.clone());
+                new_messages.push(error_assistant);
                 emit(AgentEvent::AgentEnd {
                     messages: new_messages.clone(),
                 });
@@ -254,19 +266,23 @@ pub async fn run_agent_loop(
                         }
                     }
                     StreamEvent::Error { message } => {
-                        emit(AgentEvent::Aborted {
-                            reason: message.clone(),
+                        // Pi-style: create an error assistant message so the failure is always visible
+                        emit(AgentEvent::TextDelta {
+                            delta: message.clone(),
                         });
-                        emit(AgentEvent::ToolResult {
-                            id: String::new(),
-                            name: String::new(),
+                        let error_assistant = AgentMessage {
+                            id: uuid::Uuid::new_v4().to_string(),
+                            parent_id: None,
+                            role: Role::Assistant,
                             content: message.clone(),
-                            compact: None,
+                            tool_calls: vec![],
+                            tool_call_id: None,
+                            usage: None,
                             is_error: true,
-                        });
-                        let error_msg =
-                            AgentMessage::tool_result(String::new(), message.clone(), true);
-                        new_messages.push(error_msg);
+                            timestamp: chrono::Utc::now().timestamp_millis(),
+                        };
+                        messages.push(error_assistant.clone());
+                        new_messages.push(error_assistant);
                         emit(AgentEvent::AgentEnd {
                             messages: new_messages.clone(),
                         });
@@ -291,8 +307,19 @@ pub async fn run_agent_loop(
             messages.push(assistant_msg.clone());
             new_messages.push(assistant_msg);
 
-            // Handle errors
+            // Handle errors — pi-style: mark the assistant message as error
+            // so the consumer (TUI/print mode) can always detect the failure.
             if stop_reason == StopReason::Error {
+                if let Some(last) = messages.last_mut()
+                    && last.role == Role::Assistant
+                {
+                    last.is_error = true;
+                }
+                if let Some(last) = new_messages.last_mut()
+                    && last.role == Role::Assistant
+                {
+                    last.is_error = true;
+                }
                 emit(AgentEvent::AgentEnd {
                     messages: new_messages.clone(),
                 });

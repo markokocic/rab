@@ -1077,7 +1077,9 @@ fn start_agent_loop(app: &mut App, message: String) {
     // Ensure AgentEnd is always emitted, even on panic inside the spawned task.
     // Without this, is_streaming would remain true forever, blocking new submissions.
     let handle = tokio::spawn(async move {
-        // Drop guard sends AgentEnd on scope exit (normal, error, or panic)
+        // Drop guard sends AgentEnd on scope exit (normal, error, or panic).
+        // Pi-compatible: always deliver an error assistant message so the
+        // consumer (TUI/print mode) sees the failure.
         struct Guard<'a> {
             tx: &'a mpsc::UnboundedSender<AgentEvent>,
             sent: bool,
@@ -1085,7 +1087,23 @@ fn start_agent_loop(app: &mut App, message: String) {
         impl Drop for Guard<'_> {
             fn drop(&mut self) {
                 if !self.sent {
-                    let _ = self.tx.send(AgentEvent::AgentEnd { messages: vec![] });
+                    let error_assistant = crate::agent::types::AgentMessage {
+                        id: uuid::Uuid::new_v4().to_string(),
+                        parent_id: None,
+                        role: crate::agent::types::Role::Assistant,
+                        content: "Agent loop terminated unexpectedly (panic or abort). Check stderr for details.".into(),
+                        tool_calls: vec![],
+                        tool_call_id: None,
+                        usage: None,
+                        is_error: true,
+                        timestamp: chrono::Utc::now().timestamp_millis(),
+                    };
+                    let _ = self.tx.send(AgentEvent::TextDelta {
+                        delta: error_assistant.content.clone(),
+                    });
+                    let _ = self.tx.send(AgentEvent::AgentEnd {
+                        messages: vec![error_assistant],
+                    });
                 }
             }
         }
@@ -1119,14 +1137,25 @@ fn start_agent_loop(app: &mut App, message: String) {
                 guard.sent = true;
             }
             Err(e) => {
-                emit(AgentEvent::ToolResult {
-                    id: String::new(),
-                    name: "error".into(),
-                    content: format!("Error: {:#}", e),
-                    compact: None,
-                    is_error: true,
+                // Pi-style: create an error assistant message so the failure is always visible
+                let error_text = format!("Error: {:#}", e);
+                let _ = tx.send(AgentEvent::TextDelta {
+                    delta: error_text.clone(),
                 });
-                emit(AgentEvent::AgentEnd { messages: vec![] });
+                let error_assistant = AgentMessage {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    parent_id: None,
+                    role: crate::agent::types::Role::Assistant,
+                    content: error_text,
+                    tool_calls: vec![],
+                    tool_call_id: None,
+                    usage: None,
+                    is_error: true,
+                    timestamp: chrono::Utc::now().timestamp_millis(),
+                };
+                let _ = tx.send(AgentEvent::AgentEnd {
+                    messages: vec![error_assistant],
+                });
                 guard.sent = true;
             }
         }

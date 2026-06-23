@@ -369,14 +369,25 @@ async fn run_print_mode(
         }
     }
 
+    // Pi-style: explicitly check the last assistant message after the loop completes.
+    // This handles errors that may not have been fully visible during streaming,
+    // and ensures proper exit code on failure.
     if let Some(last_assistant) = new_messages
         .iter()
         .rev()
         .find(|m| m.role == rab::agent::types::Role::Assistant)
-        && !last_assistant.content.is_empty()
-        && !last_assistant.content.ends_with('\n')
     {
-        println!();
+        if last_assistant.is_error {
+            eprintln!(
+                "{} {}",
+                colored::Colorize::red("✗"),
+                colored::Colorize::red(last_assistant.content.as_str())
+            );
+            // Still return Ok — the error message is in the session.
+            // Caller can check last message is_error if needed.
+        } else if !last_assistant.content.is_empty() && !last_assistant.content.ends_with('\n') {
+            println!();
+        }
     }
 
     Ok(())
