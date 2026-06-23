@@ -469,7 +469,7 @@ pub async fn run(config: AppConfig, session: SessionManager) -> anyhow::Result<(
         // Poll for events (pi-style: process input before rendering)
         // Reduced poll frequency: 16ms active (~60fps), 50ms idle - terminal UI
         // doesn't benefit from >60fps and lower frequency saves CPU/battery.
-        let timeout = if dirty || app.is_streaming || app.working.active {
+        let timeout = if dirty || app.is_streaming || app.working.should_show() {
             Duration::from_millis(16)
         } else {
             Duration::from_millis(50)
@@ -1675,6 +1675,7 @@ fn handle_agent_event(app: &mut App, event: AgentEvent) {
     match event {
         AgentEvent::AgentStart => {
             app.is_streaming = true;
+            app.working.start();
             app.pending_text = None;
             app.pending_thinking = None;
             app.last_streaming_event = std::time::Instant::now();

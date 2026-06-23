@@ -40,6 +40,11 @@ pub struct WorkingIndicator {
     theme: RabTheme,
     pub active: bool,
     message: String,
+    /// Ensures the indicator renders for at least one frame after `start()`,
+    /// even if `stop()` is called before the next `render()`. This prevents
+    /// a race where a fast agent loop dispatches both AgentStart and AgentEnd
+    /// in the same event batch, causing the spinner to never appear.
+    show_once: bool,
 }
 
 impl WorkingIndicator {
@@ -51,23 +56,31 @@ impl WorkingIndicator {
             last_tick: std::time::Instant::now(),
             theme,
             active: false,
+            show_once: false,
             message: "Working...".into(),
         }
     }
 
     pub fn start(&mut self) {
         self.active = true;
+        self.show_once = true;
         self.last_tick = std::time::Instant::now();
     }
 
     pub fn stop(&mut self) {
         self.active = false;
+        // show_once remains set if start() was called - ensures at least one render
     }
 
     /// Set the message shown alongside the spinner (e.g. "Working...").
     /// Mirrors pi's `Loader::setMessage()`.
     pub fn set_message(&mut self, message: String) {
         self.message = message;
+    }
+
+    /// Returns true if the indicator should be shown (active or show_once).
+    pub fn should_show(&self) -> bool {
+        (self.active || self.show_once) && !self.options.frames.is_empty()
     }
 
     /// Configure the indicator frames and interval.
@@ -100,7 +113,7 @@ impl Default for WorkingIndicator {
 
 impl Component for WorkingIndicator {
     fn render(&mut self, _width: usize) -> Vec<String> {
-        if !self.active || self.options.frames.is_empty() {
+        if (!self.active && !self.show_once) || self.options.frames.is_empty() {
             return vec![];
         }
         let frame = &self.options.frames[self.frame % self.options.frames.len()];
@@ -112,6 +125,7 @@ impl Component for WorkingIndicator {
             self.theme.accent(frame),
             self.theme.muted(&self.message)
         );
+        self.show_once = false;
         // pi's Loader.render() prepends a blank line: ["", " ⠋ Working... "]
         vec![String::new(), line]
     }
