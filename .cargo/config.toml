@@ -1,4 +1,0 @@
-# Termux (Android): if rustls-tls (default) panics due to rustls-platform-verifier
-# requiring JVM init, switch to native-tls and set OPENSSL_DIR:
-#   cargo build --no-default-features --features native-tls
-#   (with: export OPENSSL_DIR="$PREFIX")
