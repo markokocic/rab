@@ -5,7 +5,6 @@ use std::pin::Pin;
 
 /// Events emitted during a streaming LLM request.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub enum StreamEvent {
     TextDelta {
         text: String,

@@ -36,12 +36,6 @@ pub struct Input {
 
     // Undo coalescing (pi fish-style)
     last_action: Option<&'static str>,
-
-    // Bracketed paste buffering (reserved for future Event::Paste wiring)
-    #[allow(dead_code)]
-    paste_buffer: String,
-    #[allow(dead_code)]
-    is_in_paste: bool,
 }
 
 impl Input {
@@ -57,8 +51,6 @@ impl Input {
             on_escape: None,
             on_change: None,
             last_action: None,
-            paste_buffer: String::new(),
-            is_in_paste: false,
         }
     }
 
@@ -119,7 +111,6 @@ impl Input {
 
     // ── Bracketed paste ──
 
-    #[allow(dead_code)]
     fn handle_paste(&mut self, pasted_text: &str) {
         self.last_action = None;
         self.save_undo();

@@ -104,12 +104,10 @@ fn get_compact_read_classification(path: &str, cwd: &Path) -> Option<(CompactRea
 // ── Truncation ──────────────────────────────────────────────────
 
 /// Truncation result, mirroring pi's `TruncationResult`.
-#[allow(dead_code)]
 struct TruncationResult {
     content: String,
     truncated: bool,
     truncated_by: &'static str, // "lines" | "bytes"
-    total_lines: usize,
     output_lines: usize,
     first_line_exceeds_limit: bool,
 }
@@ -128,7 +126,6 @@ fn truncate_head(content: &str, max_lines: usize, max_bytes: usize) -> Truncatio
             content: content.to_string(),
             truncated: false,
             truncated_by: "",
-            total_lines,
             output_lines: total_lines,
             first_line_exceeds_limit: false,
         };
@@ -142,7 +139,6 @@ fn truncate_head(content: &str, max_lines: usize, max_bytes: usize) -> Truncatio
             content: String::new(),
             truncated: true,
             truncated_by: "bytes",
-            total_lines,
             output_lines: 0,
             first_line_exceeds_limit: true,
         };
@@ -178,7 +174,6 @@ fn truncate_head(content: &str, max_lines: usize, max_bytes: usize) -> Truncatio
         content: output.join("\n"),
         truncated: true,
         truncated_by,
-        total_lines,
         output_lines: output.len(),
         first_line_exceeds_limit: false,
     }
@@ -222,10 +217,6 @@ impl AgentTool for ReadTool {
 
     fn prompt_guidelines(&self) -> Vec<String> {
         vec!["Use read to examine files instead of cat or sed.".into()]
-    }
-
-    fn label(&self) -> &str {
-        "Read file contents"
     }
 
     fn renderer(&self) -> Option<Box<dyn ToolRenderer>> {

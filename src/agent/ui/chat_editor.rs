@@ -83,10 +83,7 @@ pub struct ChatEditor {
 
 impl ChatEditor {
     pub fn new(_theme: &dyn Theme, cwd: std::path::PathBuf) -> Self {
-        let editor = Editor::new(EditorOptions {
-            padding_x: 0,
-            max_visible_lines: 10,
-        });
+        let editor = Editor::new(EditorOptions { padding_x: 0 });
 
         Self {
             editor,

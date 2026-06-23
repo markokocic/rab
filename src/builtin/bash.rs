@@ -319,10 +319,6 @@ impl AgentTool for BashTool {
         })
     }
 
-    fn label(&self) -> &str {
-        "Execute bash commands (ls, grep, find, etc.)"
-    }
-
     fn renderer(&self) -> Option<Box<dyn ToolRenderer>> {
         Some(Box::new(BashRenderer))
     }

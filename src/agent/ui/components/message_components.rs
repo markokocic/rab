@@ -9,7 +9,7 @@ use crate::tui::Component;
 use crate::tui::components::Spacer;
 use crate::tui::components::Text;
 use crate::tui::components::r#box::TuiBox;
-/// Convert a single DisplayMsg to a Box<dyn Component> for use in chat_container.
+/// Convert a single DisplayMsg to a `Box<dyn Component>` for use in chat_container.
 /// This is used for initial session message loading.
 /// New messages during the session should be added as Components directly in handle_agent_event.
 pub fn display_msg_to_component(msg: &DisplayMsg) -> Option<std::boxed::Box<dyn Component>> {

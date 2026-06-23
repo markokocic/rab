@@ -72,16 +72,7 @@ pub fn render_messages(
                     strikethrough: false,
                     underline: false,
                 };
-                let md = Markdown::new(
-                    text.clone(),
-                    0,
-                    0,
-                    md_theme,
-                    Some(default_style),
-                    Some(crate::tui::components::markdown::MarkdownOptions {
-                        preserve_ordered_list_markers: true,
-                    }),
-                );
+                let md = Markdown::new(text.clone(), 0, 0, md_theme, Some(default_style));
                 let mut msg_box = crate::tui::components::r#box::TuiBox::new(
                     1,
                     1,
@@ -109,7 +100,7 @@ pub fn render_messages(
                 }
                 let asst_start = lines.len();
                 let md_theme = get_md_theme();
-                let mut md = Markdown::new(text.clone(), 1, 0, md_theme, None, None);
+                let mut md = Markdown::new(text.clone(), 1, 0, md_theme, None);
                 lines.extend(md.render(width));
                 if let Some(first) = lines.get_mut(asst_start) {
                     *first = format!("{}{}", OSC133_ZONE_START, first);
@@ -148,7 +139,7 @@ pub fn render_messages(
                         underline: false,
                     };
                     let md_theme = get_md_theme();
-                    let md = Markdown::new(text.clone(), 1, 0, md_theme, Some(default_style), None);
+                    let md = Markdown::new(text.clone(), 1, 0, md_theme, Some(default_style));
                     let mut md_box = crate::tui::components::r#box::TuiBox::new(
                         1,
                         0,

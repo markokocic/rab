@@ -11,7 +11,6 @@ use tokio::sync::mpsc::UnboundedSender;
 
 /// Reason a tool call was blocked.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub enum BlockReason {
     Security(String),
     Policy(String),
@@ -235,8 +234,6 @@ pub trait AgentTool: Send + Sync {
     fn name(&self) -> &str;
     fn description(&self) -> &str;
     fn parameters(&self) -> serde_json::Value;
-    #[allow(dead_code)]
-    fn label(&self) -> &str;
 
     /// Execution mode for this tool. When set to `Sequential`, a batch of tool calls
     /// containing this tool will execute sequentially (one-at-a-time) even when the
@@ -278,7 +275,6 @@ pub trait AgentTool: Send + Sync {
 }
 
 #[async_trait]
-#[allow(dead_code)]
 pub trait Extension: Send + Sync {
     fn name(&self) -> Cow<'static, str>;
 

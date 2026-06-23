@@ -22,7 +22,6 @@ pub fn collect_tool_defs(extensions: &[Box<dyn Extension>]) -> Vec<ToolDef> {
 
 /// Emitted by the loop for consumers (print mode writes to stdout; TUI later renders).
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub enum AgentEvent {
     AgentStart,
     TurnStart,
@@ -822,9 +821,6 @@ mod tests {
         fn parameters(&self) -> serde_json::Value {
             serde_json::json!({})
         }
-        fn label(&self) -> &str {
-            &self.name
-        }
         fn execution_mode(&self) -> ToolExecutionMode {
             self.execution_mode
         }
@@ -1049,9 +1045,6 @@ mod tests {
             fn parameters(&self) -> serde_json::Value {
                 serde_json::json!({})
             }
-            fn label(&self) -> &str {
-                self.inner.name()
-            }
             async fn execute(
                 &self,
                 tool_call_id: String,
@@ -1156,9 +1149,6 @@ mod tests {
                 fn parameters(&self) -> serde_json::Value {
                     serde_json::json!({})
                 }
-                fn label(&self) -> &str {
-                    "sequential_tool"
-                }
                 fn execution_mode(&self) -> ToolExecutionMode {
                     ToolExecutionMode::Sequential
                 }
@@ -1188,9 +1178,6 @@ mod tests {
                 }
                 fn parameters(&self) -> serde_json::Value {
                     serde_json::json!({})
-                }
-                fn label(&self) -> &str {
-                    "parallel_tool"
                 }
                 async fn execute(
                     &self,
@@ -1637,9 +1624,6 @@ mod tests {
             fn parameters(&self) -> serde_json::Value {
                 serde_json::json!({})
             }
-            fn label(&self) -> &str {
-                "prep_tool"
-            }
             fn prepare_arguments(&self, args: serde_json::Value) -> serde_json::Value {
                 let mut m = serde_json::Map::new();
                 m.insert("prepared".to_string(), serde_json::json!(true));
@@ -1844,9 +1828,6 @@ mod tests {
             }
             fn parameters(&self) -> serde_json::Value {
                 serde_json::json!({})
-            }
-            fn label(&self) -> &str {
-                "error_tool"
             }
             async fn execute(
                 &self,

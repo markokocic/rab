@@ -152,7 +152,6 @@ impl Component for AssistantMessageComponent {
                     0,
                     crate::agent::ui::theme::get_markdown_theme(),
                     Some(default_style),
-                    None,
                 );
                 lines.extend(md.render(width));
             }
@@ -165,7 +164,7 @@ impl Component for AssistantMessageComponent {
 
         // Render main text content through Markdown (matching pi)
         if has_text {
-            let mut md = Markdown::new(self.text.trim().to_string(), 1, 0, md_theme, None, None);
+            let mut md = Markdown::new(self.text.trim().to_string(), 1, 0, md_theme, None);
             lines.extend(md.render(width));
         }
 

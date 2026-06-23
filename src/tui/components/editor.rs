@@ -38,15 +38,11 @@ enum JumpDirection {
 
 pub struct EditorOptions {
     pub padding_x: usize,
-    pub max_visible_lines: usize,
 }
 
 impl Default for EditorOptions {
     fn default() -> Self {
-        Self {
-            padding_x: 1,
-            max_visible_lines: 10,
-        }
+        Self { padding_x: 1 }
     }
 }
 
@@ -57,8 +53,6 @@ pub struct Editor {
     cursor_line: usize,
     cursor_col: usize,
     padding_x: usize,
-    #[allow(dead_code)]
-    max_visible_lines: usize,
     scroll_offset: usize,
 
     focused: bool,
@@ -117,7 +111,6 @@ impl Editor {
             cursor_line: 0,
             cursor_col: 0,
             padding_x: options.padding_x,
-            max_visible_lines: options.max_visible_lines.max(3),
             scroll_offset: 0,
 
             focused: false,
@@ -1217,7 +1210,7 @@ impl Editor {
 
     /// Handle a paste: normalizes line endings, filters non-printable chars,
     /// CSI-u decodes control bytes, and for large pastes (>10 lines or >1000 chars)
-    /// stores the content with a marker like "[paste #1 +123 lines]".
+    /// stores the content with a marker like "\[paste #1 +123 lines\]".
     /// Matches pi's Editor.handlePaste().
     pub fn handle_paste(&mut self, text: &str) {
         self.clear_autocomplete();
@@ -2379,10 +2372,7 @@ mod tests {
 
     #[test]
     fn test_scroll_indicator() {
-        let mut editor = Editor::new(EditorOptions {
-            padding_x: 1,
-            max_visible_lines: 10,
-        });
+        let mut editor = Editor::new(EditorOptions { padding_x: 1 });
         // Set terminal_rows=6 → max_vis = max(5, 1) = 5.
         // With 6 content lines and cursor at the bottom, scroll offset of 2
         // should produce an up-arrow indicator at the top.
@@ -2583,10 +2573,7 @@ mod tests {
 
     #[test]
     fn test_content_width_respected() {
-        let mut editor = Editor::new(EditorOptions {
-            padding_x: 1,
-            max_visible_lines: 10,
-        });
+        let mut editor = Editor::new(EditorOptions { padding_x: 1 });
         editor.set_text("hello world this is a test");
         let lines = editor.render(20);
         for line in &lines {

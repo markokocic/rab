@@ -294,10 +294,6 @@ impl AgentTool for EditTool {
         ]
     }
 
-    fn label(&self) -> &str {
-        "Make precise file edits with exact text replacement, including multiple disjoint edits in one call"
-    }
-
     fn renderer(&self) -> Option<Box<dyn ToolRenderer>> {
         Some(Box::new(EditRenderer))
     }

@@ -261,24 +261,6 @@ fn parse_completion_prefix(prefix: &str) -> (&str, bool, bool) {
     }
 }
 
-/// Build the completion value with appropriate quoting (pi-style).
-#[allow(dead_code)]
-fn build_completion_value(
-    path: &str,
-    is_directory: bool,
-    is_at_prefix: bool,
-    is_quoted_prefix: bool,
-) -> String {
-    let needs_quotes = is_quoted_prefix || path.contains(' ');
-    let at = if is_at_prefix { "@" } else { "" };
-    let suffix = if is_directory { "/" } else { "" };
-    if needs_quotes {
-        format!("{}\"{}{}\"", at, path, suffix)
-    } else {
-        format!("{}{}{}", at, path, suffix)
-    }
-}
-
 /// Resolve a scoped fd query: split `src/au` into base_dir=`CWD/src/` and query=`au`.
 fn resolve_scoped_fd_query(raw_query: &str, base_path: &str) -> Option<(String, String, String)> {
     let normalized = raw_query.replace('\\', "/");
@@ -716,6 +698,22 @@ impl AutocompleteProvider for CombinedAutocompleteProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn build_completion_value(
+        path: &str,
+        is_directory: bool,
+        is_at_prefix: bool,
+        is_quoted_prefix: bool,
+    ) -> String {
+        let needs_quotes = is_quoted_prefix || path.contains(' ');
+        let at = if is_at_prefix { "@" } else { "" };
+        let suffix = if is_directory { "/" } else { "" };
+        if needs_quotes {
+            format!("{}\"{}{}\"", at, path, suffix)
+        } else {
+            format!("{}{}{}", at, path, suffix)
+        }
+    }
 
     #[test]
     fn test_slash_suggestions() {

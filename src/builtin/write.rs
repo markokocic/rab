@@ -68,10 +68,6 @@ impl AgentTool for WriteTool {
         vec!["Use write only for new files or complete rewrites.".into()]
     }
 
-    fn label(&self) -> &str {
-        "Create or overwrite files"
-    }
-
     fn renderer(&self) -> Option<Box<dyn ToolRenderer>> {
         Some(Box::new(WriteRenderer::new()))
     }

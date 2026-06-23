@@ -64,14 +64,12 @@ pub struct AppConfig {
 pub struct App {
     cwd: PathBuf,
     model: String,
-    #[allow(dead_code)]
     thinking_level: Option<String>,
     system_prompt: String,
     provider: Arc<dyn Provider>,
     theme: RabTheme,
 
     /// Slash commands from all extensions.
-    #[allow(dead_code)]
     commands: Vec<(String, String)>,
 
     /// Available models for the model selector.
@@ -181,7 +179,7 @@ pub struct App {
     /// Settings reference for persisting toggle changes.
     settings: crate::agent::settings::Settings,
 
-    /// Header component (welcome/onboarding). Stored as Rc<RefCell> so
+    /// Header component (welcome/onboarding). Stored as `Rc<RefCell>` so
     /// handle_tools_expand can toggle its expanded state (matching pi's
     /// behavior where setToolsExpanded expands both the header and all
     /// expandable chat children).
@@ -1374,145 +1372,6 @@ pub fn chat_add(app: &mut App, component: std::boxed::Box<dyn Component>) {
         chat.add_child(std::boxed::Box::new(Spacer::new(1)));
     }
     chat.add_child(component);
-}
-
-/// Format a tool call header matching pi's per-tool renderCall patterns.
-#[allow(dead_code)]
-fn format_tool_call_header(name: &str, args: &serde_json::Value) -> String {
-    let theme = crate::agent::ui::theme::current_theme();
-    match name {
-        "bash" => {
-            let cmd = args
-                .get("command")
-                .and_then(|v| v.as_str())
-                .unwrap_or("...");
-            let timeout = args.get("timeout").and_then(|v| v.as_i64());
-            let timeout_suffix = timeout
-                .map(|t| theme.fg_key(ThemeKey::Muted, &format!(" (timeout {}s)", t)))
-                .unwrap_or_default();
-            format!(
-                "{}{}",
-                theme.fg("toolTitle", &theme.bold(&format!("$ {}", cmd))),
-                timeout_suffix
-            )
-        }
-        "read" => {
-            let path = args
-                .get("file_path")
-                .or_else(|| args.get("path"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            let offset = args.get("offset").and_then(|v| v.as_u64()).unwrap_or(0);
-            let limit = args.get("limit").and_then(|v| v.as_u64());
-            let short = if let Ok(home) = std::env::var("HOME") {
-                path.replacen(&home, "~", 1)
-            } else {
-                path.to_string()
-            };
-            let path_disp = if short.is_empty() {
-                String::new()
-            } else {
-                theme.fg_key(ThemeKey::Accent, &short)
-            };
-            let range = if offset > 0 || limit.is_some() {
-                let start = if offset > 0 { offset } else { 1 };
-                let range_str = match limit {
-                    Some(l) => format!(":{}-{}", start, start + l - 1),
-                    None => format!(":{}", start),
-                };
-                theme.fg_key(ThemeKey::Warning, &range_str)
-            } else {
-                String::new()
-            };
-            let is_docs = path.contains("docs/") || path.ends_with("README.md");
-            let is_resource = path.ends_with("AGENTS.md") || path.ends_with("CLAUDE.md");
-            if is_docs {
-                format!(
-                    "{} {}{}",
-                    theme.fg("toolTitle", &theme.bold("read docs")),
-                    path_disp,
-                    range
-                )
-            } else if is_resource {
-                format!(
-                    "{} {}{}",
-                    theme.fg("toolTitle", &theme.bold("read resource")),
-                    path_disp,
-                    range
-                )
-            } else {
-                format!(
-                    "{} {}{}",
-                    theme.fg("toolTitle", &theme.bold("read")),
-                    path_disp,
-                    range
-                )
-            }
-        }
-        "write" => {
-            let path = args
-                .get("file_path")
-                .or_else(|| args.get("path"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            let short = if let Ok(home) = std::env::var("HOME") {
-                path.replacen(&home, "~", 1)
-            } else {
-                path.to_string()
-            };
-            format!(
-                "{} {}",
-                theme.fg("toolTitle", &theme.bold("write")),
-                theme.fg_key(ThemeKey::Accent, &short)
-            )
-        }
-        "edit" => {
-            let path = args
-                .get("file_path")
-                .or_else(|| args.get("path"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            let short = if let Ok(home) = std::env::var("HOME") {
-                path.replacen(&home, "~", 1)
-            } else {
-                path.to_string()
-            };
-            format!(
-                "{} {}",
-                theme.fg("toolTitle", &theme.bold("edit")),
-                theme.fg_key(ThemeKey::Accent, &short)
-            )
-        }
-        "ls" => {
-            let path = args
-                .get("file_path")
-                .or_else(|| args.get("path"))
-                .and_then(|v| v.as_str())
-                .unwrap_or(".");
-            let limit = args.get("limit").and_then(|v| v.as_u64());
-            let short = if let Ok(home) = std::env::var("HOME") {
-                path.replacen(&home, "~", 1)
-            } else {
-                path.to_string()
-            };
-            let limit_str = limit.map(|l| format!(" (limit {})", l)).unwrap_or_default();
-            format!(
-                "{} {}{}",
-                theme.fg("toolTitle", &theme.bold("ls")),
-                theme.fg_key(ThemeKey::Accent, &short),
-                limit_str
-            )
-        }
-        _ => {
-            let args_str = serde_json::to_string(args).unwrap_or_default();
-            let suffix = if args_str.is_empty() || args_str == "{}" {
-                String::new()
-            } else {
-                format!("  {}", theme.fg_key(ThemeKey::Muted, &args_str))
-            };
-            format!("{}{}", theme.fg("toolTitle", &theme.bold(name)), suffix)
-        }
-    }
 }
 
 /// Handle agent events from the channel.

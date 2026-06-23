@@ -2,7 +2,7 @@ use crate::agent::ui::theme::ThemeKey;
 use crate::agent::ui::theme::current_theme;
 use crate::tui::Component;
 use crate::tui::components::r#box::TuiBox;
-use crate::tui::components::markdown::{DefaultTextStyle, Markdown, MarkdownOptions};
+use crate::tui::components::markdown::{DefaultTextStyle, Markdown};
 const OSC133_ZONE_START: &str = "\x1b]133;A\x07";
 const OSC133_ZONE_END: &str = "\x1b]133;B\x07";
 const OSC133_ZONE_FINAL: &str = "\x1b]133;C\x07";
@@ -36,16 +36,7 @@ impl UserMessageComponent {
             strikethrough: false,
             underline: false,
         };
-        let md = Markdown::new(
-            text.clone(),
-            0,
-            0,
-            md_theme,
-            Some(default_style),
-            Some(MarkdownOptions {
-                preserve_ordered_list_markers: true,
-            }),
-        );
+        let md = Markdown::new(text.clone(), 0, 0, md_theme, Some(default_style));
         msg_box.add_child(std::boxed::Box::new(md));
 
         Self {

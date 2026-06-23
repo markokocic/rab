@@ -89,14 +89,6 @@ pub struct DefaultTextStyle {
     pub underline: bool,
 }
 
-// ── MarkdownOptions ──────────────────────────────────────────────
-
-#[derive(Clone, Default)]
-pub struct MarkdownOptions {
-    /// Preserve source list markers instead of normalizing them.
-    pub preserve_ordered_list_markers: bool,
-}
-
 // ── Internal helpers ─────────────────────────────────────────────
 
 /// Context for inline rendering, carrying the parent-style functions
@@ -174,8 +166,6 @@ pub struct Markdown {
     padding_y: usize,
     theme: MarkdownTheme,
     default_text_style: Option<DefaultTextStyle>,
-    #[allow(dead_code)]
-    options: MarkdownOptions,
 
     // Cache
     cached_text: Option<String>,
@@ -184,14 +174,12 @@ pub struct Markdown {
 }
 
 impl Markdown {
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         text: impl Into<String>,
         padding_x: usize,
         padding_y: usize,
         theme: MarkdownTheme,
         default_text_style: Option<DefaultTextStyle>,
-        options: Option<MarkdownOptions>,
     ) -> Self {
         Self {
             text: text.into(),
@@ -199,7 +187,6 @@ impl Markdown {
             padding_y,
             theme,
             default_text_style,
-            options: options.unwrap_or_default(),
             cached_text: None,
             cached_width: None,
             cached_lines: Vec::new(),
@@ -1726,7 +1713,7 @@ mod tests {
     #[test]
     fn test_basic_paragraph() {
         let theme = test_theme();
-        let mut md = Markdown::new("hello world", 0, 0, theme, None, None);
+        let mut md = Markdown::new("hello world", 0, 0, theme, None);
         let lines = md.render(80);
         let all = lines.join("\n");
         assert!(all.contains("hello world"));
@@ -1736,7 +1723,7 @@ mod tests {
     #[test]
     fn test_heading_h1() {
         let theme = test_theme();
-        let mut md = Markdown::new("# Heading 1", 0, 0, theme, None, None);
+        let mut md = Markdown::new("# Heading 1", 0, 0, theme, None);
         let lines = md.render(80);
         let all = lines.join("\n");
         assert!(all.contains("Heading 1"), "Should contain heading text");
@@ -1747,7 +1734,7 @@ mod tests {
     #[test]
     fn test_heading_h3_marker() {
         let theme = test_theme();
-        let mut md = Markdown::new("### Heading 3", 0, 0, theme, None, None);
+        let mut md = Markdown::new("### Heading 3", 0, 0, theme, None);
         let lines = md.render(80);
         let all = lines.join("\n");
         assert!(all.contains("### Heading 3") || all.contains("Heading 3"));
@@ -1761,7 +1748,7 @@ mod tests {
     #[test]
     fn test_bold_italic() {
         let theme = test_theme();
-        let mut md = Markdown::new("**bold** and *italic*", 0, 0, theme, None, None);
+        let mut md = Markdown::new("**bold** and *italic*", 0, 0, theme, None);
         let lines = md.render(80);
         let all = lines.join("\n");
         assert!(all.contains("bold"), "Should contain bold text");
@@ -1773,7 +1760,7 @@ mod tests {
     #[test]
     fn test_codespan() {
         let theme = test_theme();
-        let mut md = Markdown::new("use `code` here", 0, 0, theme, None, None);
+        let mut md = Markdown::new("use `code` here", 0, 0, theme, None);
         let lines = md.render(80);
         let all = lines.join("\n");
         assert!(all.contains("code"), "Should contain code text");
@@ -1783,7 +1770,7 @@ mod tests {
     #[test]
     fn test_inline_code_style_restore() {
         let theme = test_theme();
-        let mut md = Markdown::new("**bold `code` end**", 0, 0, theme, None, None);
+        let mut md = Markdown::new("**bold `code` end**", 0, 0, theme, None);
         let lines = md.render(80);
         let all = lines.join("\n");
         assert!(all.contains("bold"), "Should contain bold text");
@@ -1795,7 +1782,7 @@ mod tests {
     #[test]
     fn test_code_block() {
         let theme = test_theme();
-        let mut md = Markdown::new("```\nlet x = 1;\n```", 0, 0, theme, None, None);
+        let mut md = Markdown::new("```\nlet x = 1;\n```", 0, 0, theme, None);
         let lines = md.render(80);
         let all = lines.join("\n");
         assert!(all.contains("let x = 1;"), "Should contain code");
@@ -1806,7 +1793,7 @@ mod tests {
     #[test]
     fn test_fenced_code_with_language() {
         let theme = test_theme();
-        let mut md = Markdown::new("```rust\nfn main() {}\n```", 0, 0, theme, None, None);
+        let mut md = Markdown::new("```rust\nfn main() {}\n```", 0, 0, theme, None);
         let lines = md.render(80);
         let all = lines.join("\n");
         assert!(all.contains("```rust"), "Should show language tag");
@@ -1816,7 +1803,7 @@ mod tests {
     #[test]
     fn test_unordered_list() {
         let theme = test_theme();
-        let mut md = Markdown::new("- item 1\n- item 2\n- item 3", 0, 0, theme, None, None);
+        let mut md = Markdown::new("- item 1\n- item 2\n- item 3", 0, 0, theme, None);
         let lines = md.render(80);
         let all = lines.join("\n");
         assert!(all.contains("item 1"), "Should contain first item");
@@ -1827,7 +1814,7 @@ mod tests {
     #[test]
     fn test_strikethrough() {
         let theme = test_theme();
-        let mut md = Markdown::new("~~struck~~", 0, 0, theme, None, None);
+        let mut md = Markdown::new("~~struck~~", 0, 0, theme, None);
         let lines = md.render(80);
         let all = lines.join("\n");
         assert!(all.contains("struck"), "Should contain text");
@@ -1837,7 +1824,7 @@ mod tests {
     #[test]
     fn test_link_inline() {
         let theme = test_theme();
-        let mut md = Markdown::new("[text](https://example.com)", 0, 0, theme, None, None);
+        let mut md = Markdown::new("[text](https://example.com)", 0, 0, theme, None);
         let lines = md.render(80);
         let all = lines.join("\n");
         assert!(all.contains("text"), "Should contain link text");
@@ -1850,7 +1837,7 @@ mod tests {
     #[test]
     fn test_empty_text() {
         let theme = test_theme();
-        let mut md = Markdown::new("", 0, 0, theme, None, None);
+        let mut md = Markdown::new("", 0, 0, theme, None);
         let lines = md.render(80);
         assert!(lines.is_empty() || (lines.len() == 1 && lines[0].is_empty()));
     }
@@ -1858,7 +1845,7 @@ mod tests {
     #[test]
     fn test_whitespace_only() {
         let theme = test_theme();
-        let mut md = Markdown::new("   ", 0, 0, theme, None, None);
+        let mut md = Markdown::new("   ", 0, 0, theme, None);
         let lines = md.render(80);
         assert!(lines.is_empty() || (lines.len() == 1 && lines[0].is_empty()));
     }
@@ -1866,7 +1853,7 @@ mod tests {
     #[test]
     fn test_horizontal_rule() {
         let theme = test_theme();
-        let mut md = Markdown::new("---", 0, 0, theme, None, None);
+        let mut md = Markdown::new("---", 0, 0, theme, None);
         let lines = md.render(80);
         let all = lines.join("\n");
         assert!(all.contains('─'), "Should have horizontal rule");
@@ -1875,7 +1862,7 @@ mod tests {
     #[test]
     fn test_padding_x() {
         let theme = test_theme();
-        let mut md = Markdown::new("hello", 2, 0, theme, None, None);
+        let mut md = Markdown::new("hello", 2, 0, theme, None);
         let lines = md.render(20);
         assert_eq!(
             visible_width(&lines[0]),
@@ -1888,7 +1875,7 @@ mod tests {
     #[test]
     fn test_padding_y() {
         let theme = test_theme();
-        let mut md = Markdown::new("hello", 0, 1, theme, None, None);
+        let mut md = Markdown::new("hello", 0, 1, theme, None);
         let lines = md.render(20);
         assert_eq!(
             lines.len(),
@@ -1900,7 +1887,7 @@ mod tests {
     #[test]
     fn test_cache_hit() {
         let theme = test_theme();
-        let mut md = Markdown::new("hello", 1, 0, theme, None, None);
+        let mut md = Markdown::new("hello", 1, 0, theme, None);
         let a = md.render(20);
         let b = md.render(20);
         assert_eq!(a, b, "Cache should return same result");
@@ -1909,7 +1896,7 @@ mod tests {
     #[test]
     fn test_cache_invalidation() {
         let theme = test_theme();
-        let mut md = Markdown::new("hello", 1, 0, theme, None, None);
+        let mut md = Markdown::new("hello", 1, 0, theme, None);
         let a = md.render(20);
         md.set_text("world");
         let b = md.render(20);
@@ -1920,7 +1907,7 @@ mod tests {
     fn test_strikethrough_not_enabled_without_tilde() {
         // Without the ~ markers, strikethrough shouldn't trigger
         let theme = test_theme();
-        let mut md = Markdown::new("~not struck~", 0, 0, theme, None, None);
+        let mut md = Markdown::new("~not struck~", 0, 0, theme, None);
         let lines = md.render(80);
         let all = lines.join("\n");
         // With ENABLE_STRIKETHROUGH, ~ should work as strikethrough in pulldown-cmark
@@ -1934,7 +1921,7 @@ mod tests {
     #[test]
     fn test_blockquote() {
         let theme = test_theme();
-        let mut md = Markdown::new("> quoted text", 0, 0, theme, None, None);
+        let mut md = Markdown::new("> quoted text", 0, 0, theme, None);
         let lines = md.render(80);
         let all = lines.join("\n");
         assert!(all.contains("quoted text"), "Should contain quote text");
@@ -1944,7 +1931,7 @@ mod tests {
     #[test]
     fn test_task_list() {
         let theme = test_theme();
-        let mut md = Markdown::new("- [x] done\n- [ ] todo", 0, 0, theme, None, None);
+        let mut md = Markdown::new("- [x] done\n- [ ] todo", 0, 0, theme, None);
         let lines = md.render(80);
         let all = lines.join("\n");
         assert!(all.contains("[x]"), "Should show done marker");
@@ -1956,7 +1943,7 @@ mod tests {
     #[test]
     fn test_paragraph_spacing() {
         let theme = test_theme();
-        let mut md = Markdown::new("para one\n\npara two", 0, 0, theme, None, None);
+        let mut md = Markdown::new("para one\n\npara two", 0, 0, theme, None);
         let lines = md.render(80);
         assert!(lines.len() >= 2, "Should have multiple lines");
     }
@@ -1964,7 +1951,7 @@ mod tests {
     #[test]
     fn test_tabs_replaced() {
         let theme = test_theme();
-        let mut md = Markdown::new("\tindented", 0, 0, theme, None, None);
+        let mut md = Markdown::new("\tindented", 0, 0, theme, None);
         let lines = md.render(80);
         let all = lines.join("\n");
         assert!(
@@ -1983,7 +1970,7 @@ mod tests {
             strikethrough: false,
             underline: false,
         };
-        let mut md = Markdown::new("styled text", 0, 0, theme, Some(default_style), None);
+        let mut md = Markdown::new("styled text", 0, 0, theme, Some(default_style));
         let lines = md.render(80);
         let all = lines.join("\n");
         assert!(all.contains("styled text"));
@@ -2006,7 +1993,6 @@ mod tests {
             0,
             theme,
             None,
-            None,
         );
         let lines = md.render(80);
         let all = lines.join("\n");
@@ -2022,14 +2008,7 @@ mod tests {
     #[test]
     fn test_table_narrow_fallback() {
         let theme = test_theme();
-        let mut md = Markdown::new(
-            "| A | B |\n| --- | --- |\n| 1 | 2 |",
-            0,
-            0,
-            theme,
-            None,
-            None,
-        );
+        let mut md = Markdown::new("| A | B |\n| --- | --- |\n| 1 | 2 |", 0, 0, theme, None);
         // Render at very narrow width
         let lines = md.render(10);
         // Should not panic, either renders tiny table or nothing
@@ -2039,7 +2018,7 @@ mod tests {
     #[test]
     fn test_ordered_list() {
         let theme = test_theme();
-        let mut md = Markdown::new("1. first\n2. second\n3. third", 0, 0, theme, None, None);
+        let mut md = Markdown::new("1. first\n2. second\n3. third", 0, 0, theme, None);
         let lines = md.render(80);
         let all = lines.join("\n");
         assert!(all.contains("first"), "Should contain first");
@@ -2050,7 +2029,7 @@ mod tests {
     #[test]
     fn test_nested_list() {
         let theme = test_theme();
-        let mut md = Markdown::new("- outer\n  - inner\n- more", 0, 0, theme, None, None);
+        let mut md = Markdown::new("- outer\n  - inner\n- more", 0, 0, theme, None);
         let lines = md.render(80);
         let all = lines.join("\n");
         assert!(all.contains("outer"), "Should contain outer");
@@ -2061,7 +2040,7 @@ mod tests {
     #[test]
     fn test_blockquote_nested() {
         let theme = test_theme();
-        let mut md = Markdown::new("> outer\n> > nested\n> back", 0, 0, theme, None, None);
+        let mut md = Markdown::new("> outer\n> > nested\n> back", 0, 0, theme, None);
         let lines = md.render(80);
         let all = lines.join("\n");
         assert!(all.contains("outer"), "Should contain outer text");
@@ -2073,14 +2052,7 @@ mod tests {
     #[test]
     fn test_link_with_dest() {
         let theme = test_theme();
-        let mut md = Markdown::new(
-            "[example](https://example.com/page)",
-            0,
-            0,
-            theme,
-            None,
-            None,
-        );
+        let mut md = Markdown::new("[example](https://example.com/page)", 0, 0, theme, None);
         let lines = md.render(80);
         let all = lines.join("\n");
         assert!(all.contains("example"), "Should contain link text");
@@ -2090,7 +2062,7 @@ mod tests {
     #[test]
     fn test_autolink() {
         let theme = test_theme();
-        let mut md = Markdown::new("<https://example.com>", 0, 0, theme, None, None);
+        let mut md = Markdown::new("<https://example.com>", 0, 0, theme, None);
         let lines = md.render(80);
         let all = lines.join("\n");
         assert!(all.contains("example.com"), "Should contain URL");
@@ -2099,7 +2071,7 @@ mod tests {
     #[test]
     fn test_heading_h2_spacing() {
         let theme = test_theme();
-        let mut md = Markdown::new("## Heading\n\nParagraph", 0, 0, theme, None, None);
+        let mut md = Markdown::new("## Heading\n\nParagraph", 0, 0, theme, None);
         let lines = md.render(80);
         let all = lines.join("\n");
         assert!(all.contains("Heading"), "Should contain heading");
@@ -2109,7 +2081,7 @@ mod tests {
     #[test]
     fn test_code_block_markers() {
         let theme = test_theme();
-        let mut md = Markdown::new("```rust\nfn hello() {}\n```", 0, 0, theme, None, None);
+        let mut md = Markdown::new("```rust\nfn hello() {}\n```", 0, 0, theme, None);
         let lines = md.render(80);
         let all = lines.join("\n");
         assert!(all.contains("```rust"), "Should show language in fence");
@@ -2119,7 +2091,7 @@ mod tests {
     #[test]
     fn test_strikethrough_markers() {
         let theme = test_theme();
-        let mut md = Markdown::new("~~struck text~~", 0, 0, theme, None, None);
+        let mut md = Markdown::new("~~struck text~~", 0, 0, theme, None);
         let lines = md.render(80);
         let all = lines.join("\n");
         assert!(all.contains("struck text"), "Should contain text");
@@ -2130,7 +2102,7 @@ mod tests {
     fn test_wrap_long_text() {
         let theme = test_theme();
         let long = "this is a very long line that should definitely wrap to multiple lines when rendered in a narrow terminal column";
-        let mut md = Markdown::new(long, 0, 0, theme, None, None);
+        let mut md = Markdown::new(long, 0, 0, theme, None);
         let lines = md.render(30);
         assert!(lines.len() > 1, "Long text should wrap");
         for line in &lines {
@@ -2141,7 +2113,7 @@ mod tests {
     #[test]
     fn test_cache_different_width() {
         let theme = test_theme();
-        let mut md = Markdown::new("hello world", 1, 0, theme, None, None);
+        let mut md = Markdown::new("hello world", 1, 0, theme, None);
         let a = md.render(30);
         let b = md.render(50);
         assert_ne!(a, b, "Different widths should produce different output");
@@ -2150,7 +2122,7 @@ mod tests {
     #[test]
     fn test_html_block_plain() {
         let theme = test_theme();
-        let mut md = Markdown::new("<div>plain html</div>", 0, 0, theme, None, None);
+        let mut md = Markdown::new("<div>plain html</div>", 0, 0, theme, None);
         let lines = md.render(80);
         let all = lines.join("\n");
         assert!(
@@ -2162,7 +2134,7 @@ mod tests {
     #[test]
     fn test_bold_italic_style_restore() {
         let theme = test_theme();
-        let mut md = Markdown::new("**bold `code` more bold**", 0, 0, theme, None, None);
+        let mut md = Markdown::new("**bold `code` more bold**", 0, 0, theme, None);
         let lines = md.render(80);
         let all = lines.join("\n");
         assert!(all.contains("bold"), "Should contain bold text");
@@ -2178,7 +2150,7 @@ mod tests {
     #[test]
     fn test_heading_h4_marker() {
         let theme = test_theme();
-        let mut md = Markdown::new("#### Heading 4", 0, 0, theme, None, None);
+        let mut md = Markdown::new("#### Heading 4", 0, 0, theme, None);
         let lines = md.render(80);
         let all = lines.join("\n");
         assert!(all.contains("####"), "h4 should show prefix marker");
@@ -2188,7 +2160,7 @@ mod tests {
     #[test]
     fn test_heading_h5_marker() {
         let theme = test_theme();
-        let mut md = Markdown::new("##### Heading 5", 0, 0, theme, None, None);
+        let mut md = Markdown::new("##### Heading 5", 0, 0, theme, None);
         let lines = md.render(80);
         let all = lines.join("\n");
         assert!(all.contains("#####"), "h5 should show prefix marker");
@@ -2198,7 +2170,7 @@ mod tests {
     #[test]
     fn test_heading_h6_marker() {
         let theme = test_theme();
-        let mut md = Markdown::new("###### Heading 6", 0, 0, theme, None, None);
+        let mut md = Markdown::new("###### Heading 6", 0, 0, theme, None);
         let lines = md.render(80);
         let all = lines.join("\n");
         assert!(all.contains("######"), "h6 should show prefix marker");
