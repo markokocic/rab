@@ -163,6 +163,46 @@ fn replace_tabs(text: &str) -> String {
     text.replace('\t', "   ")
 }
 
+/// Map changes made in fuzzy-normalized space back to the original (LF-normalized)
+/// content, preserving the original bytes of unchanged lines. This matches pi's
+/// `applyReplacementsPreservingUnchangedLines` behavior.
+///
+/// When fuzzy matching is used, trailing whitespace in the original is preserved
+/// for lines that are not part of any change.
+fn map_fuzzy_to_original(original: &str, fuzzy_base: &str, fuzzy_modified: &str) -> String {
+    let orig_lines: Vec<&str> = original.lines().collect();
+    let fuzzy_base_lines: Vec<&str> = fuzzy_base.lines().collect();
+    let fuzzy_mod_lines: Vec<&str> = fuzzy_modified.lines().collect();
+
+    if orig_lines.len() != fuzzy_base_lines.len() {
+        // Line count mismatch — can't map precisely, return fuzzy version
+        return if fuzzy_modified.ends_with('\n') {
+            format!("{}\n", fuzzy_modified.trim_end())
+        } else {
+            fuzzy_modified.to_string()
+        };
+    }
+
+    let mut result = String::new();
+    for i in 0..orig_lines.len() {
+        if i >= fuzzy_mod_lines.len() {
+            break;
+        }
+        if fuzzy_base_lines[i] != fuzzy_mod_lines[i] {
+            // This line was changed — use the modified version (from fuzzy space)
+            result.push_str(fuzzy_mod_lines[i]);
+        } else {
+            // Unchanged line — preserve original bytes (including trailing whitespace)
+            result.push_str(orig_lines[i]);
+        }
+        if i < orig_lines.len() - 1 || original.ends_with('\n') {
+            result.push('\n');
+        }
+    }
+
+    result
+}
+
 /// Compute a display-oriented diff string with line numbers and context.
 /// Produces pi-compatible format:
 /// `+{lineNum} {content}` / `-{lineNum} {content}` / ` {lineNum} {content}` / `  ...`
@@ -267,7 +307,23 @@ fn compute_diff(original: &str, modified: &str, _path: &str) -> String {
                         }
                     }
                 } else if has_leading_change {
-                    // Context after a change: show CONTEXT_LINES trailing
+                    // Context after a change (change before context): show CONTEXT_LINES leading
+                    let shown = ctx_buffer.len().min(CONTEXT_LINES);
+                    let skipped = ctx_buffer.len() - shown;
+
+                    for &line in &ctx_buffer[..shown] {
+                        output.push(format!(" {} {}", pad(old_line_num), replace_tabs(line)));
+                        old_line_num += 1;
+                        new_line_num += 1;
+                    }
+
+                    if skipped > 0 {
+                        output.push(format!(" {} ...", " ".repeat(line_num_width)));
+                        old_line_num += skipped;
+                        new_line_num += skipped;
+                    }
+                } else if has_trailing_change {
+                    // Context before a change (change after context): show CONTEXT_LINES trailing
                     let shown = ctx_buffer.len().min(CONTEXT_LINES);
                     let skipped = ctx_buffer.len() - shown;
 
@@ -278,22 +334,6 @@ fn compute_diff(original: &str, modified: &str, _path: &str) -> String {
                     }
 
                     for &line in &ctx_buffer[ctx_buffer.len() - shown..] {
-                        output.push(format!(" {} {}", pad(old_line_num), replace_tabs(line)));
-                        old_line_num += 1;
-                        new_line_num += 1;
-                    }
-                } else if has_trailing_change {
-                    // Context before a change: show CONTEXT_LINES leading
-                    let shown = ctx_buffer.len().min(CONTEXT_LINES);
-                    let skipped = ctx_buffer.len() - shown;
-
-                    if skipped > 0 {
-                        output.push(format!(" {} ...", " ".repeat(line_num_width)));
-                        old_line_num += skipped;
-                        new_line_num += skipped;
-                    }
-
-                    for &line in &ctx_buffer[..shown] {
                         output.push(format!(" {} {}", pad(old_line_num), replace_tabs(line)));
                         old_line_num += 1;
                         new_line_num += 1;
@@ -439,10 +479,29 @@ impl AgentTool for EditTool {
                 let original_ending = detect_line_ending(content);
                 let normalized = normalize_to_lf(content);
 
-                // ── 3. Work in fuzzy-normalized space ──
-                let work_content = normalize_for_fuzzy_match(&normalized);
+                // ── 3. Only use fuzzy normalization when needed (matching pi behavior) ──
+                // First, try exact matches for all edits. If all match exactly, no fuzzy needed.
+                // If any edit requires fuzzy matching, normalize everything and also preserve
+                // original lines for unchanged regions (matching pi's
+                // applyReplacementsPreservingUnchangedLines).
+                let mut needs_fuzzy = false;
+                for edit in &edits {
+                    let old_lf = normalize_to_lf(&edit.old_text);
+                    if !normalized.contains(&old_lf) {
+                        needs_fuzzy = true;
+                        break;
+                    }
+                }
 
-                // ── 4. Validate and find each edit ──
+                // ── 4. Build work content: exact or fuzzy-normalized ──
+                let fuzzy_owned;
+                let (work_content, is_fuzzy_space) = if needs_fuzzy {
+                    fuzzy_owned = normalize_for_fuzzy_match(&normalized);
+                    (fuzzy_owned.as_str(), true)
+                } else {
+                    (normalized.as_str(), false)
+                };
+
                 let mut matched_indices: Vec<(usize, usize)> = Vec::new();
 
                 for (i, edit) in edits.iter().enumerate() {
@@ -458,8 +517,12 @@ impl AgentTool for EditTool {
                         };
                     }
 
-                    let fuzzy_old = normalize_for_fuzzy_match(&edit.old_text);
-                    let count = work_content.matches(&fuzzy_old).count();
+                    let search_text = if is_fuzzy_space {
+                        normalize_for_fuzzy_match(&normalize_to_lf(&edit.old_text))
+                    } else {
+                        normalize_to_lf(&edit.old_text)
+                    };
+                    let count = work_content.matches(&search_text).count();
 
                     if count == 0 {
                         return if edits.len() == 1 {
@@ -497,8 +560,8 @@ impl AgentTool for EditTool {
                         };
                     }
 
-                    let pos = work_content.find(&fuzzy_old).unwrap();
-                    matched_indices.push((pos, pos + fuzzy_old.len()));
+                    let pos = work_content.find(&search_text).unwrap();
+                    matched_indices.push((pos, pos + search_text.len()));
                 }
 
                 // ── 5. Check for overlapping edits ──
@@ -506,9 +569,10 @@ impl AgentTool for EditTool {
                     for (idx_j, &(pos_j, end_j)) in matched_indices.iter().enumerate().skip(idx_i + 1) {
                         if pos_i < end_j && pos_j < end_i {
                             return Err(anyhow::anyhow!(
-                                "edits[{}] and edits[{}] overlap. Merge them into one edit.",
+                                "edits[{}] and edits[{}] overlap in {}. Merge them into one edit or target disjoint regions.",
                                 idx_i,
-                                idx_j
+                                idx_j,
+                                path_str
                             ));
                         }
                     }
@@ -522,25 +586,65 @@ impl AgentTool for EditTool {
                     .collect();
                 sorted.sort_by_key(|(pos, _, _)| *pos);
 
-                let mut modified = String::new();
-                let mut cursor = 0;
-                for (start, end, edit) in &sorted {
-                    modified.push_str(&work_content[cursor..*start]);
-                    modified.push_str(&edit.new_text);
-                    cursor = *end;
-                }
-                modified.push_str(&work_content[cursor..]);
+                // When using fuzzy matching, apply edits to the normalized content
+                // and then map back to preserve original unchanged line bytes (matching pi's
+                // applyReplacementsPreservingUnchangedLines).
+                let modified = if is_fuzzy_space {
+                    // Apply edits in fuzzy space
+                    let mut fuzzy_modified = String::new();
+                    let mut cursor = 0usize;
+                    for (start, end, edit) in &sorted {
+                        fuzzy_modified.push_str(&work_content[cursor..*start]);
+                        fuzzy_modified.push_str(&normalize_to_lf(&edit.new_text));
+                        cursor = *end;
+                    }
+                    fuzzy_modified.push_str(&work_content[cursor..]);
 
-                // ── 7. Compute diff ──
+                    // Map back to original content, preserving unchanged line bytes.
+                    // Split both versions into lines and reconstruct, keeping original
+                    // lines for unchanged regions.
+                    map_fuzzy_to_original(&normalized, work_content, &fuzzy_modified)
+                } else {
+                    let mut modified = String::new();
+                    let mut cursor = 0usize;
+                    for (start, end, edit) in &sorted {
+                        modified.push_str(&normalized[cursor..*start]);
+                        modified.push_str(&normalize_to_lf(&edit.new_text));
+                        cursor = *end;
+                    }
+                    modified.push_str(&normalized[cursor..]);
+                    modified
+                };
+
+                // ── 7. No-change detection (matching pi behavior) ──
+                if normalized == modified {
+                    return if edits.len() == 1 {
+                        Err(anyhow::anyhow!(
+                            "No changes made to {}. The replacement produced identical content. \
+                             This might indicate an issue with special characters or the text not \
+                             existing as expected.",
+                            path_str
+                        ))
+                    } else {
+                        Err(anyhow::anyhow!(
+                            "No changes made to {}. The replacements produced identical content.",
+                            path_str
+                        ))
+                    };
+                }
+
+                // ── 8. Compute diff ──
                 let diff = compute_diff(&normalized, &modified, &path_str);
 
-                // ── 8. Write back with original line endings and BOM ──
+                // ── 9. Write back with original line endings and BOM ──
                 let final_content =
                     bom.to_string() + &restore_line_endings(&modified, original_ending);
                 std::fs::write(&abs_path, &final_content)
                     .with_context(|| format!("Failed to write {}", abs_path.display()))?;
 
-                // ── 9. Return result ──
+                // ── 10. Return result ──
+                // The diff is included in the content for UI rendering (via ```diff block).
+                // The success message comes first so the model sees it in context.
                 let noun = if edits.len() == 1 { "block" } else { "blocks" };
                 Ok(format!(
                     "Successfully replaced {} {} in {}.\n```diff\n{}```",
@@ -570,7 +674,7 @@ impl ToolRenderer for EditRenderer {
     fn render_call(
         &self,
         args: &serde_json::Value,
-        width: usize,
+        _width: usize,
         theme: &dyn Theme,
         _ctx: &ToolRenderContext,
     ) -> Vec<String> {
@@ -590,42 +694,15 @@ impl ToolRenderer for EditRenderer {
             theme.fg_key(ThemeKey::Accent, &short)
         };
 
-        let mut lines = vec![format!(
+        // Pi's initial render_call shows just the edit header (no preview).
+        // The async diff preview (computed via computeEditsDiff) would appear
+        // on re-render, but our synchronous architecture shows the diff only
+        // when the result is available via render_result.
+        vec![format!(
             "{} {}",
             theme.fg_key(ThemeKey::ToolTitle, &theme.bold("edit")),
             path_disp
-        )];
-
-        // Show edit preview (compact summary of changes).
-        // Matches Pi's buildEditCallComponent which always includes the preview
-        // when available, regardless of expanded state.
-        if let Some(edits) = args.get("edits") {
-            let edits_arr = if let Some(arr) = edits.as_array() {
-                arr.as_slice()
-            } else {
-                static EMPTY: [serde_json::Value; 0] = [];
-                &EMPTY // Can't parse here, skip preview
-            };
-
-            for edit in edits_arr.iter().take(3) {
-                if let (Some(old), new) = (edit.get("oldText"), edit.get("newText"))
-                    && let (Some(old_str), Some(new_str)) =
-                        (old.as_str(), new.and_then(|v| v.as_str()))
-                {
-                    let preview = format_edit_preview(old_str, new_str, width, theme);
-                    lines.extend(preview);
-                }
-            }
-
-            if edits_arr.len() > 3 {
-                lines.push(theme.fg(
-                    "muted",
-                    &format!("... and {} more edits", edits_arr.len() - 3),
-                ));
-            }
-        }
-
-        lines
+        )]
     }
 
     fn render_result(
@@ -635,52 +712,34 @@ impl ToolRenderer for EditRenderer {
         theme: &dyn Theme,
         _ctx: &ToolRenderContext,
     ) -> Vec<String> {
-        // Extract diff from ```diff ... ``` block in the result
+        // Parse result content: message before ```diff block + diff inside it.
+        // Pi renders the message OUTSIDE the colored box (via renderResult returning
+        // a Container). In our architecture, both message and diff are inside the same
+        // TuiBox, so we render the message first, then the diff.
+        let mut lines: Vec<String> = Vec::new();
+
         if let Some(start) = content.find("```diff\n") {
+            // Text before the diff block is the success message
+            let msg = content[..start].trim_end();
+            if !msg.is_empty() {
+                lines.push(theme.fg_key(ThemeKey::ToolOutput, msg));
+            }
+
+            // Extract and render the diff
             let after = &content[start + 8..];
             if let Some(end) = after.find("```") {
                 let diff_text = &after[..end];
-                let has_diff = diff_text
-                    .lines()
-                    .any(|l| l.starts_with('-') || l.starts_with('+') || l.starts_with(' '));
-                if has_diff {
-                    let rendered = crate::tui::components::diff::render_diff(diff_text, theme);
-                    return rendered;
-                }
+                let rendered = crate::tui::components::diff::render_diff(diff_text, theme);
+                lines.extend(rendered);
+            }
+        } else {
+            // No diff block — show content as-is
+            if !content.is_empty() {
+                lines.push(theme.fg_key(ThemeKey::ToolOutput, content));
             }
         }
-        // Fallback: show content as-is
-        if content.is_empty() {
-            return vec![];
-        }
-        vec![theme.fg_key(ThemeKey::ToolOutput, content)]
-    }
-}
 
-/// Format a compact preview of a single edit operation.
-/// Shows first N chars of oldText → first N chars of newText as separate lines.
-fn format_edit_preview(old: &str, new: &str, _width: usize, theme: &dyn Theme) -> Vec<String> {
-    let max_preview = 30;
-    let old_first_line = old.lines().next().unwrap_or("");
-    let new_first_line = new.lines().next().unwrap_or("");
-
-    let old_preview = truncate_simple(old_first_line, max_preview);
-    let new_preview = truncate_simple(new_first_line, max_preview);
-
-    let old_styled = theme.fg_key(ThemeKey::ToolDiffRemoved, &format!("-{}", old_preview));
-    let new_styled = theme.fg_key(ThemeKey::ToolDiffAdded, &format!("+{}", new_preview));
-    vec![format!("  {}", old_styled), format!("  {}", new_styled)]
-}
-
-/// Truncate a string to max_chars (characters), adding "..." if truncated.
-fn truncate_simple(s: &str, max_chars: usize) -> String {
-    if s.chars().count() <= max_chars {
-        s.to_string()
-    } else if max_chars > 3 {
-        let truncated: String = s.chars().take(max_chars - 3).collect();
-        format!("{}...", truncated)
-    } else {
-        s.chars().take(max_chars).collect()
+        lines
     }
 }
 
@@ -953,7 +1012,9 @@ mod tests {
         .await;
 
         let content = std::fs::read_to_string(&path).unwrap();
-        assert_eq!(content, "hi there\nnext line\n");
+        // Pi behavior: exact match ("hello world" is a substring of "hello world  "),
+        // so trailing whitespace on unchanged suffix is preserved.
+        assert_eq!(content, "hi there  \nnext line\n");
     }
 
     #[tokio::test]
@@ -992,6 +1053,29 @@ mod tests {
 
         let content = std::fs::read_to_string(&path).unwrap();
         assert_eq!(content, "baz\n");
+    }
+
+    // ── No-change detection ──────────────────────────────────
+
+    #[tokio::test]
+    async fn no_change_identical_edit_errors() {
+        let (tool, tmp) = make_tool();
+        let path = tmp.join("nochange.txt");
+        std::fs::write(&path, "hello\nworld\n").unwrap();
+
+        let err = exec_err(
+            &tool,
+            serde_json::json!({
+                "path": path.to_str().unwrap(),
+                "edits": [{"oldText": "hello", "newText": "hello"}]
+            }),
+        )
+        .await;
+        assert!(
+            err.contains("No changes made"),
+            "expected no-change error but got: {}",
+            err
+        );
     }
 
     // ── Input normalization ──────────────────────────────────
@@ -1064,6 +1148,34 @@ mod tests {
             result
         );
         assert!(result.contains("Successfully replaced 1 block"));
+    }
+
+    // ── Fuzzy matching preserves unchanged lines ─────────────
+
+    #[tokio::test]
+    async fn fuzzy_preserves_unchanged_line_trailing_whitespace() {
+        let (tool, tmp) = make_tool();
+        let path = tmp.join("fuzzy_preserve.txt");
+        // First line has trailing spaces, second has smart quotes (forces fuzzy)
+        std::fs::write(&path, "keep this line  \nchange \u{201C}this\u{201D}\n").unwrap();
+
+        exec_ok(
+            &tool,
+            serde_json::json!({
+                "path": path.to_str().unwrap(),
+                "edits": [{"oldText": "change \"this\"", "newText": "changed"}]
+            }),
+        )
+        .await;
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        // Unchanged first line preserves trailing spaces (pi behavior)
+        assert!(
+            content.starts_with("keep this line  "),
+            "expected preserved trailing spaces but got: {:?}",
+            content
+        );
+        assert!(content.contains("changed\n"), "got: {:?}", content);
     }
 
     // ── Empty oldText ────────────────────────────────────────
