@@ -19,6 +19,7 @@ use crate::agent::ui::model_selector::ModelSelector;
 use crate::agent::ui::theme::RabTheme;
 use crate::agent::ui::working::WorkingIndicator;
 use crate::agent::{AgentEvent, LoopConfig, run_agent_loop};
+use crate::builtin::commands::SessionInfoInternal;
 use crate::tui::Component;
 use crate::tui::TUI;
 use crate::tui::focusable::Focusable;
@@ -59,6 +60,8 @@ pub struct AppConfig {
     pub skills: Vec<crate::agent::Skill>,
     /// Whether the current model supports reasoning (for showing thinking level in footer).
     pub model_supports_reasoning: bool,
+    /// Session info Arc for /session command (shared with CommandsExtension).
+    pub session_info: Option<std::sync::Arc<std::sync::Mutex<Option<SessionInfoInternal>>>>,
 }
 
 /// Main application state.
@@ -183,6 +186,8 @@ pub struct App {
 
     /// Skills loaded for the session (/skill:name expansion).
     skills: Vec<crate::agent::Skill>,
+    /// Session info updater for /session command.
+    session_info: Option<std::sync::Arc<std::sync::Mutex<Option<SessionInfoInternal>>>>,
 
     /// Auto-compact toggle state.
     auto_compact: bool,
@@ -311,7 +316,7 @@ impl App {
             }
         }
 
-        Self {
+        let result = Self {
             cwd: config.cwd,
             model: config.model,
             thinking_level: config.thinking_level,
@@ -370,12 +375,30 @@ impl App {
             ))),
             tool_execution: config.tool_execution,
             skills: config.skills,
+            session_info: config.session_info,
             settings: config.settings,
             auto_compact: true,
             status_text: None,
             header: Rc::new(RefCell::new(
                 crate::agent::ui::components::HeaderComponent::new(),
             )),
+        };
+
+        // Initial session info for /session command
+        result.update_session_info();
+
+        result
+    }
+
+    /// Update the session info shared with CommandsExtension for /session display.
+    fn update_session_info(&self) {
+        if let Some(ref session) = self.session
+            && let Some(ref info) = self.session_info
+        {
+            let si = crate::builtin::commands::compute_session_info(session);
+            if let Ok(mut guard) = info.lock() {
+                *guard = Some(si);
+            }
         }
     }
 
@@ -1467,6 +1490,9 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
         }
         CommandResult::SessionNamed { name } => {
             app.status_text = Some(format!("Session name: {}", name));
+
+            // Update session info for /session command
+            app.update_session_info();
         }
         CommandResult::OpenSettings => {
             // Needs TUI overlay - defer
@@ -2021,6 +2047,9 @@ fn handle_agent_event(app: &mut App, event: AgentEvent) {
                     .accumulate_usage(last.usage.as_ref().unwrap());
             }
 
+            // Update session info for /session command
+            app.update_session_info();
+
             // Note: follow-up messages are handled internally by the agent loop
             // (outer loop in run_agent_loop drains the follow-up queue).
             // Queued messages from when the agent was idle will be submitted
@@ -2199,6 +2228,7 @@ mod tests {
             skills: vec![],
             model_supports_reasoning: true,
             tool_execution: ToolExecutionMode::Parallel,
+            session_info: None,
         };
 
         let mut app = App::new(config, session);
@@ -2358,6 +2388,7 @@ mod tests {
             skills: vec![],
             model_supports_reasoning: true,
             tool_execution: ToolExecutionMode::Parallel,
+            session_info: None,
         };
 
         let mut app = App::new(config, session);
@@ -2404,6 +2435,7 @@ mod tests {
             skills: vec![],
             model_supports_reasoning: true,
             tool_execution: ToolExecutionMode::Parallel,
+            session_info: None,
         };
 
         let mut app = App::new(config, session);
@@ -2444,6 +2476,7 @@ mod tests {
             skills: vec![],
             model_supports_reasoning: true,
             tool_execution: ToolExecutionMode::Parallel,
+            session_info: None,
         };
 
         let mut app = App::new(config, session);
@@ -2491,6 +2524,7 @@ mod tests {
             skills: vec![],
             model_supports_reasoning: true,
             tool_execution: ToolExecutionMode::Parallel,
+            session_info: None,
         };
 
         let mut app = App::new(config, session);
@@ -2529,6 +2563,7 @@ mod tests {
             skills: vec![],
             model_supports_reasoning: true,
             tool_execution: ToolExecutionMode::Parallel,
+            session_info: None,
         };
 
         let mut app = App::new(config, session);
@@ -2567,6 +2602,7 @@ mod tests {
             skills: vec![],
             model_supports_reasoning: true,
             tool_execution: ToolExecutionMode::Parallel,
+            session_info: None,
         };
 
         let mut app = App::new(config, session);
@@ -2605,6 +2641,7 @@ mod tests {
             skills: vec![],
             model_supports_reasoning: true,
             tool_execution: ToolExecutionMode::Parallel,
+            session_info: None,
         };
 
         let mut app = App::new(config, session);
@@ -2649,6 +2686,7 @@ mod tests {
             skills: vec![],
             model_supports_reasoning: true,
             tool_execution: ToolExecutionMode::Parallel,
+            session_info: None,
         };
 
         let mut app = App::new(config, session);
@@ -2742,6 +2780,7 @@ mod tests {
             skills: vec![],
             model_supports_reasoning: true,
             tool_execution: ToolExecutionMode::Parallel,
+            session_info: None,
         };
 
         let mut app = App::new(config, session);
@@ -2797,6 +2836,7 @@ mod tests {
             skills: vec![],
             model_supports_reasoning: true,
             tool_execution: ToolExecutionMode::Parallel,
+            session_info: None,
         };
 
         let mut app = App::new(config, session);
@@ -2850,6 +2890,7 @@ mod tests {
             skills: vec![],
             model_supports_reasoning: true,
             tool_execution: ToolExecutionMode::Parallel,
+            session_info: None,
         };
 
         let mut app = App::new(config, session);
@@ -2919,6 +2960,7 @@ mod tests {
             skills: vec![],
             model_supports_reasoning: true,
             tool_execution: ToolExecutionMode::Parallel,
+            session_info: None,
         };
 
         let mut app = App::new(config, session);
@@ -3026,6 +3068,7 @@ mod tests {
             model: "model".into(),
             model_supports_reasoning: true,
             tool_execution: ToolExecutionMode::Parallel,
+            session_info: None,
             ..make_config(cwd.clone())
         };
         let mut app = App::new(config, session);
@@ -3059,6 +3102,7 @@ mod tests {
             model: "A".into(),
             model_supports_reasoning: true,
             tool_execution: ToolExecutionMode::Parallel,
+            session_info: None,
             ..make_config(cwd.clone())
         };
         let mut app = App::new(config, session);
@@ -3083,6 +3127,7 @@ mod tests {
             model: "A".into(),
             model_supports_reasoning: true,
             tool_execution: ToolExecutionMode::Parallel,
+            session_info: None,
             ..make_config(cwd.clone())
         };
         let mut app = App::new(config, session);
@@ -3267,6 +3312,7 @@ mod tests {
             skills: vec![],
             model_supports_reasoning: false,
             tool_execution: ToolExecutionMode::Parallel,
+            session_info: None,
         }
     }
 }

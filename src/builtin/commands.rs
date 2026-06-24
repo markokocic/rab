@@ -1,6 +1,8 @@
 use crate::agent::extension::{
     AutocompleteItem, CommandHandler, CommandResult, Extension, SlashCommand,
 };
+use crate::agent::session::SessionManager;
+use crate::agent::types::Role;
 use std::borrow::Cow;
 use std::sync::{Arc, Mutex};
 
@@ -46,6 +48,68 @@ impl CommandsExtension {
         if let Ok(mut guard) = self.session_info.lock() {
             *guard = Some(info);
         }
+    }
+}
+
+/// Compute session info from a SessionManager.
+pub fn compute_session_info(session: &SessionManager) -> SessionInfoInternal {
+    let entries = session.entries();
+    let mut message_count: usize = 0;
+    let mut user_messages: usize = 0;
+    let mut assistant_messages: usize = 0;
+    let mut tool_calls: usize = 0;
+    let mut tool_results: usize = 0;
+    let mut total_tokens: u64 = 0;
+    let mut input_tokens: u64 = 0;
+    let mut output_tokens: u64 = 0;
+    let cache_read_tokens: u64 = 0;
+    let mut cache_write_tokens: u64 = 0;
+    let mut cost: f64 = 0.0;
+
+    for entry in entries {
+        if let super::super::agent::session::SessionEntry::Message(m) = entry {
+            message_count += 1;
+            match m.message.role {
+                Role::User => user_messages += 1,
+                Role::Assistant => {
+                    assistant_messages += 1;
+                    if !m.message.tool_calls.is_empty() {
+                        tool_calls += m.message.tool_calls.len();
+                    }
+                }
+                Role::ToolResult => {
+                    tool_results += 1;
+                }
+            }
+            if let Some(ref usage) = m.message.usage {
+                let inp = usage.input_tokens.unwrap_or(0) as u64;
+                let outp = usage.output_tokens.unwrap_or(0) as u64;
+                let cache = usage.cache_tokens.unwrap_or(0) as u64;
+                input_tokens += inp;
+                output_tokens += outp;
+                total_tokens += inp + outp;
+                cache_write_tokens += cache;
+                // Rough cost estimate: $2/M input, $8/M output (deepseek pricing)
+                cost += inp as f64 * 2.0 / 1_000_000.0 + outp as f64 * 8.0 / 1_000_000.0;
+            }
+        }
+    }
+
+    SessionInfoInternal {
+        session_id: session.session_id().to_string(),
+        file_path: session.session_file().map(|p| p.to_path_buf()),
+        name: session.session_name().map(|s| s.to_string()),
+        message_count,
+        user_messages,
+        assistant_messages,
+        tool_calls,
+        tool_results,
+        total_tokens,
+        input_tokens,
+        output_tokens,
+        cache_read_tokens,
+        cache_write_tokens,
+        cost,
     }
 }
 

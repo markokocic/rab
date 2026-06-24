@@ -139,6 +139,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Build extensions with session info for /session command
     let commands_ext = CommandsExtension::new(available_models.clone());
+    let session_info = commands_ext.session_info.clone();
 
     let extensions: Vec<Box<dyn Extension>> = vec![
         Box::new(commands_ext),
@@ -231,6 +232,7 @@ async fn main() -> anyhow::Result<()> {
             skills,
             model_supports_reasoning: true,
             tool_execution: rab::agent::ToolExecutionMode::Parallel,
+            session_info: Some(session_info),
         };
         ui::run(config, session).await
     } else {
