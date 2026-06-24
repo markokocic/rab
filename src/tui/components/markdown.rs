@@ -599,15 +599,16 @@ impl Markdown {
                 let lang_label = info.unwrap_or("");
                 let mut lines = vec![border(&format!("```{}", lang_label))];
 
+                let cb_indent = &self.theme.code_block_indent;
                 // Syntax highlighting or plain
                 if let Some(ref highlight) = self.theme.highlight_code {
                     let hl_lines = highlight(&code_text, info);
                     for hl in hl_lines {
-                        lines.push(hl);
+                        lines.push(format!("{}{}", cb_indent, hl));
                     }
                 } else {
                     for code_line in code_text.split('\n') {
-                        lines.push(code_fn(code_line));
+                        lines.push(format!("{}{}", cb_indent, code_fn(code_line)));
                     }
                 }
 
