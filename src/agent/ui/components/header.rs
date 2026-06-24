@@ -62,14 +62,6 @@ impl HeaderComponent {
             )
         };
 
-        let onboarding = {
-            let theme = current_theme();
-            theme.fg(
-                "dim",
-                "rab can explain its own features and look up its docs. Ask it how to use or extend rab.",
-            )
-        };
-
         if self.expanded {
             // Expanded: full keybinding hints (matching pi's expandedInstructions)
             let mut lines: Vec<String> = Vec::new();
@@ -108,10 +100,6 @@ impl HeaderComponent {
             ));
             lines.push(raw_key_hint("drop files", "to attach"));
 
-            // Blank line + onboarding text (matching pi)
-            lines.push(String::new());
-            lines.push(onboarding);
-
             lines
         } else {
             // Compact: single-line key hints joined by " · " (matching pi's compactInstructions)
@@ -142,14 +130,7 @@ impl HeaderComponent {
                 )
             };
 
-            vec![
-                logo,
-                compact_line,
-                String::new(),
-                compact_onboarding,
-                String::new(),
-                onboarding,
-            ]
+            vec![logo, compact_line, String::new(), compact_onboarding]
         }
     }
 }
