@@ -2,7 +2,7 @@
 
 ## Active / Pi alignment
 
-- [ ] When I press ESC while agent loop is active, it displays "Agent loop terminated unexpectedly (panic or abort). Check stderr for details.". Instaed, it should just abort normally, as Pi does.
+- [ ] When I press ESC key while agent loop is active, it displays "Agent loop terminated unexpectedly (panic or abort). Check stderr for details.". Instaed, it should just abort normally, as Pi does.
 - [ ] **Enter key in slash command completion doesn't execute:** When selecting a slash command from the autocomplete dropdown, pressing Enter should execute the command immediately (matching pi behaviour), not just insert the text.
 - [ ] **Markdown indentation inside code blocks:** Indentation compounds on each render, not matching pi.
 - [ ] **Write tool output:** Lines don't match screen width, styling/wrapping differ from pi. Needs 1:1 alignment.

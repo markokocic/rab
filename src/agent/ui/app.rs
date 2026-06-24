@@ -129,8 +129,11 @@ pub struct App {
     /// Token usage from last response.
     last_usage: Option<Usage>,
 
-    /// Agent abort handle for Ctrl+C.
-    agent_abort: Option<tokio::task::AbortHandle>,
+    /// Agent cancellation sender for Ctrl+C / ESC.
+    cancel_tx: Option<tokio::sync::watch::Sender<bool>>,
+
+    /// Bash abort handle for bang (!) commands.
+    bash_abort_handle: Option<tokio::task::AbortHandle>,
 
     /// Session persistence.
     session: Option<SessionManager>,
@@ -352,7 +355,8 @@ impl App {
             should_quit: false,
             last_streaming_event: std::time::Instant::now(),
             last_usage: None,
-            agent_abort: None,
+            cancel_tx: None,
+            bash_abort_handle: None,
             session: Some(session),
             footer,
             working: WorkingIndicator::new(),
@@ -1039,7 +1043,10 @@ fn handle_compact_toggle(app: &mut App) {
 
 /// Interrupt streaming agent and restore queued messages to editor.
 fn interrupt_streaming(app: &mut App) {
-    if let Some(handle) = app.agent_abort.take() {
+    if let Some(tx) = app.cancel_tx.take() {
+        let _ = tx.send(true);
+    }
+    if let Some(handle) = app.bash_abort_handle.take() {
         handle.abort();
     }
     app.is_streaming = false;
@@ -1167,44 +1174,10 @@ fn start_agent_loop(app: &mut App, message: String) {
     app.pending_text = None;
     app.pending_thinking = None;
 
-    // Ensure AgentEnd is always emitted, even on panic inside the spawned task.
-    // Without this, is_streaming would remain true forever, blocking new submissions.
-    let handle = tokio::spawn(async move {
-        // Drop guard sends AgentEnd on scope exit (normal, error, or panic).
-        // Pi-compatible: always deliver an error assistant message so the
-        // consumer (TUI/print mode) sees the failure.
-        struct Guard<'a> {
-            tx: &'a mpsc::UnboundedSender<AgentEvent>,
-            sent: bool,
-        }
-        impl Drop for Guard<'_> {
-            fn drop(&mut self) {
-                if !self.sent {
-                    let error_assistant = crate::agent::types::AgentMessage {
-                        id: uuid::Uuid::new_v4().to_string(),
-                        parent_id: None,
-                        role: crate::agent::types::Role::Assistant,
-                        content: "Agent loop terminated unexpectedly (panic or abort). Check stderr for details.".into(),
-                        tool_calls: vec![],
-                        tool_call_id: None,
-                        usage: None,
-                        is_error: true,
-                        timestamp: chrono::Utc::now().timestamp_millis(),
-                    };
-                    let _ = self.tx.send(AgentEvent::TextDelta {
-                        delta: error_assistant.content.clone(),
-                    });
-                    let _ = self.tx.send(AgentEvent::AgentEnd {
-                        messages: vec![error_assistant],
-                    });
-                }
-            }
-        }
-        let mut guard = Guard {
-            tx: &tx,
-            sent: false,
-        };
+    let (cancel_tx, mut cancel_rx) = tokio::sync::watch::channel(false);
+    app.cancel_tx = Some(cancel_tx);
 
+    tokio::spawn(async move {
         let config = LoopConfig {
             model: model.clone(),
             system_prompt,
@@ -1224,36 +1197,44 @@ fn start_agent_loop(app: &mut App, message: String) {
         };
 
         let prompt = AgentMessage::user(message);
-        match run_agent_loop(vec![prompt], history, &config, &*provider, &mut emit).await {
-            Ok(_) => {
-                // AgentEnd already sent by run_agent_loop on success
-                guard.sent = true;
+
+        tokio::select! {
+            result = run_agent_loop(vec![prompt], history, &config, &*provider, &mut emit) => {
+                match result {
+                    Ok(_) => {
+                        // AgentEnd already sent by run_agent_loop on success
+                    }
+                    Err(e) => {
+                        // Pi-style: create an error assistant message so the failure is always visible
+                        let error_text = format!("Error: {:#}", e);
+                        let _ = tx.send(AgentEvent::TextDelta {
+                            delta: error_text.clone(),
+                        });
+                        let error_assistant = AgentMessage {
+                            id: uuid::Uuid::new_v4().to_string(),
+                            parent_id: None,
+                            role: crate::agent::types::Role::Assistant,
+                            content: error_text,
+                            tool_calls: vec![],
+                            tool_call_id: None,
+                            usage: None,
+                            is_error: true,
+                            timestamp: chrono::Utc::now().timestamp_millis(),
+                        };
+                        let _ = tx.send(AgentEvent::AgentEnd {
+                            messages: vec![error_assistant],
+                        });
+                    }
+                }
             }
-            Err(e) => {
-                // Pi-style: create an error assistant message so the failure is always visible
-                let error_text = format!("Error: {:#}", e);
-                let _ = tx.send(AgentEvent::TextDelta {
-                    delta: error_text.clone(),
-                });
-                let error_assistant = AgentMessage {
-                    id: uuid::Uuid::new_v4().to_string(),
-                    parent_id: None,
-                    role: crate::agent::types::Role::Assistant,
-                    content: error_text,
-                    tool_calls: vec![],
-                    tool_call_id: None,
-                    usage: None,
-                    is_error: true,
-                    timestamp: chrono::Utc::now().timestamp_millis(),
-                };
+            _ = cancel_rx.changed() => {
+                // Cancelled by user (ESC/Ctrl+C). Send a clean AgentEnd without error text.
                 let _ = tx.send(AgentEvent::AgentEnd {
-                    messages: vec![error_assistant],
+                    messages: Vec::new(),
                 });
-                guard.sent = true;
             }
         }
     });
-    app.agent_abort = Some(handle.abort_handle());
 }
 
 /// Handle slash commands by dispatching through extension command handlers.
@@ -1744,7 +1725,7 @@ fn handle_bang_command(app: &mut App, command: String) {
         guard.sent = true;
         let _ = tx.send(AgentEvent::AgentEnd { messages: vec![] });
     });
-    app.agent_abort = Some(handle.abort_handle());
+    app.bash_abort_handle = Some(handle.abort_handle());
 }
 
 /// Add a Component to chat_container with a spacer before it if chat_container is not empty.
@@ -2016,7 +1997,7 @@ fn handle_agent_event(app: &mut App, event: AgentEvent) {
             app.is_streaming = false;
             app.working.stop();
             app.footer.borrow_mut().set_streaming(false);
-            app.agent_abort = None;
+            app.cancel_tx = None;
 
             // Persist new messages to session and update conversation state
             // (user message is in prompts, not duplicated in app.conversation)
