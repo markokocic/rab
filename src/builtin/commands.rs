@@ -121,9 +121,9 @@ impl Extension for CommandsExtension {
     fn commands(&self) -> Vec<SlashCommand> {
         vec![
             SlashCommand {
-                name: "quit".to_string(),
-                description: "Exit rab".to_string(),
-                handler: Box::new(QuitCommand),
+                name: "settings".to_string(),
+                description: "Open settings menu".to_string(),
+                handler: Box::new(SettingsCommand),
             },
             SlashCommand {
                 name: "model".to_string(),
@@ -131,11 +131,6 @@ impl Extension for CommandsExtension {
                 handler: Box::new(ModelCommand {
                     available_models: self.available_models.clone(),
                 }),
-            },
-            SlashCommand {
-                name: "settings".to_string(),
-                description: "Open settings menu".to_string(),
-                handler: Box::new(SettingsCommand),
             },
             SlashCommand {
                 name: "scoped-models".to_string(),
@@ -148,22 +143,22 @@ impl Extension for CommandsExtension {
                 name: "export".to_string(),
                 description: "Export session (HTML default, or specify path: .html/.jsonl)"
                     .to_string(),
-                handler: Box::new(ExportCommand),
+                handler: Box::new(NotImplementedCommand),
             },
             SlashCommand {
                 name: "import".to_string(),
                 description: "Import and resume a session from a JSONL file".to_string(),
-                handler: Box::new(ImportCommand),
+                handler: Box::new(NotImplementedCommand),
             },
             SlashCommand {
                 name: "share".to_string(),
                 description: "Share session as a secret GitHub gist".to_string(),
-                handler: Box::new(ShareCommand),
+                handler: Box::new(NotImplementedCommand),
             },
             SlashCommand {
                 name: "copy".to_string(),
                 description: "Copy last agent message to clipboard".to_string(),
-                handler: Box::new(CopyCommand),
+                handler: Box::new(NotImplementedCommand),
             },
             SlashCommand {
                 name: "name".to_string(),
@@ -180,7 +175,7 @@ impl Extension for CommandsExtension {
             SlashCommand {
                 name: "changelog".to_string(),
                 description: "Show changelog entries".to_string(),
-                handler: Box::new(ChangelogCommand),
+                handler: Box::new(NotImplementedCommand),
             },
             SlashCommand {
                 name: "hotkeys".to_string(),
@@ -190,17 +185,17 @@ impl Extension for CommandsExtension {
             SlashCommand {
                 name: "fork".to_string(),
                 description: "Create a new fork from a previous user message".to_string(),
-                handler: Box::new(ForkCommand),
+                handler: Box::new(NotImplementedCommand),
             },
             SlashCommand {
                 name: "clone".to_string(),
                 description: "Duplicate the current session at the current position".to_string(),
-                handler: Box::new(CloneCommand),
+                handler: Box::new(NotImplementedCommand),
             },
             SlashCommand {
                 name: "tree".to_string(),
                 description: "Navigate session tree (switch branches)".to_string(),
-                handler: Box::new(TreeCommand),
+                handler: Box::new(NotImplementedCommand),
             },
             SlashCommand {
                 name: "trust".to_string(),
@@ -215,7 +210,7 @@ impl Extension for CommandsExtension {
             SlashCommand {
                 name: "logout".to_string(),
                 description: "Remove provider authentication".to_string(),
-                handler: Box::new(LogoutCommand),
+                handler: Box::new(NotImplementedCommand),
             },
             SlashCommand {
                 name: "new".to_string(),
@@ -225,7 +220,7 @@ impl Extension for CommandsExtension {
             SlashCommand {
                 name: "compact".to_string(),
                 description: "Manually compact the session context".to_string(),
-                handler: Box::new(CompactCommand),
+                handler: Box::new(NotImplementedCommand),
             },
             SlashCommand {
                 name: "resume".to_string(),
@@ -237,6 +232,11 @@ impl Extension for CommandsExtension {
                 description: "Reload keybindings, extensions, skills, prompts, and themes"
                     .to_string(),
                 handler: Box::new(ReloadCommand),
+            },
+            SlashCommand {
+                name: "quit".to_string(),
+                description: "Exit rab".to_string(),
+                handler: Box::new(QuitCommand),
             },
         ]
     }
@@ -326,63 +326,6 @@ impl CommandHandler for ScopedModelsCommand {
                 description: None,
             })
             .collect()
-    }
-}
-
-// ── /export ───────────────────────────────────────────────────────
-
-struct ExportCommand;
-
-impl CommandHandler for ExportCommand {
-    fn execute(&self, args: &str) -> anyhow::Result<CommandResult> {
-        let path = args.trim();
-        Ok(CommandResult::ExportSession {
-            path: if path.is_empty() {
-                None
-            } else {
-                Some(path.to_string())
-            },
-        })
-    }
-}
-
-// ── /import ───────────────────────────────────────────────────────
-
-struct ImportCommand;
-
-impl CommandHandler for ImportCommand {
-    fn execute(&self, args: &str) -> anyhow::Result<CommandResult> {
-        let path = args.trim();
-        if path.is_empty() {
-            Ok(CommandResult::Info(
-                "Usage: /import <path-to-jsonl> - import and resume a session from a JSONL file"
-                    .to_string(),
-            ))
-        } else {
-            Ok(CommandResult::ImportSession {
-                path: path.to_string(),
-            })
-        }
-    }
-}
-
-// ── /share ────────────────────────────────────────────────────────
-
-struct ShareCommand;
-
-impl CommandHandler for ShareCommand {
-    fn execute(&self, _args: &str) -> anyhow::Result<CommandResult> {
-        Ok(CommandResult::ShareSession)
-    }
-}
-
-// ── /copy ─────────────────────────────────────────────────────────
-
-struct CopyCommand;
-
-impl CommandHandler for CopyCommand {
-    fn execute(&self, _args: &str) -> anyhow::Result<CommandResult> {
-        Ok(CommandResult::CopyLastMessage)
     }
 }
 
@@ -477,53 +420,6 @@ impl CommandHandler for NameCommand {
     }
 }
 
-// ── /changelog ────────────────────────────────────────────────────
-
-struct ChangelogCommand;
-
-impl CommandHandler for ChangelogCommand {
-    fn execute(&self, _args: &str) -> anyhow::Result<CommandResult> {
-        Ok(CommandResult::ShowChangelog)
-    }
-}
-
-// ── /fork ─────────────────────────────────────────────────────────
-
-struct ForkCommand;
-
-impl CommandHandler for ForkCommand {
-    fn execute(&self, args: &str) -> anyhow::Result<CommandResult> {
-        let msg = args.trim();
-        Ok(CommandResult::ForkSession {
-            message_id: if msg.is_empty() {
-                None
-            } else {
-                Some(msg.to_string())
-            },
-        })
-    }
-}
-
-// ── /clone ────────────────────────────────────────────────────────
-
-struct CloneCommand;
-
-impl CommandHandler for CloneCommand {
-    fn execute(&self, _args: &str) -> anyhow::Result<CommandResult> {
-        Ok(CommandResult::CloneSession)
-    }
-}
-
-// ── /tree ─────────────────────────────────────────────────────────
-
-struct TreeCommand;
-
-impl CommandHandler for TreeCommand {
-    fn execute(&self, _args: &str) -> anyhow::Result<CommandResult> {
-        Ok(CommandResult::SessionTree)
-    }
-}
-
 // ── /trust ────────────────────────────────────────────────────────
 
 struct TrustCommand;
@@ -563,27 +459,12 @@ impl CommandHandler for LoginCommand {
 
 // ── /logout ───────────────────────────────────────────────────────
 
-struct LogoutCommand;
+// ── Not Implemented fallback ─────────────────────────────────────
 
-impl CommandHandler for LogoutCommand {
-    fn execute(&self, args: &str) -> anyhow::Result<CommandResult> {
-        let provider = args.trim();
-        Ok(CommandResult::Logout {
-            provider: if provider.is_empty() {
-                None
-            } else {
-                Some(provider.to_string())
-            },
-        })
-    }
-}
+struct NotImplementedCommand;
 
-// ── /compact ──────────────────────────────────────────────────────
-
-struct CompactCommand;
-
-impl CommandHandler for CompactCommand {
+impl CommandHandler for NotImplementedCommand {
     fn execute(&self, _args: &str) -> anyhow::Result<CommandResult> {
-        Ok(CommandResult::CompactSession)
+        Ok(CommandResult::Info("Not implemented yet.".to_string()))
     }
 }
