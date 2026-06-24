@@ -81,6 +81,8 @@ pub struct Editor {
 
     /// True after submit() is called, reset when checked.
     pub just_submitted: bool,
+    /// Text that was submitted in the last submit() call, captured before clearing.
+    pub last_submitted_text: String,
 
     // Pi-style autocomplete state (uses SelectList)
     /// Terminal height for dynamic max-visible-lines (pi: 30% of rows, min 5).
@@ -136,6 +138,7 @@ impl Editor {
             pastes: HashMap::new(),
             paste_counter: 0,
             just_submitted: false,
+            last_submitted_text: String::new(),
             jump_mode: None,
         }
     }
@@ -289,6 +292,43 @@ impl Editor {
         self.autocomplete_active = false;
         self.autocomplete_list = None;
         self.autocomplete_prefix.clear();
+    }
+
+    /// Apply completion using a pre-selected value.
+    fn apply_autocomplete_completion_value(&mut self, val: &str) {
+        if let Some(ref provider) = self.autocomplete_provider {
+            let prefix = if !self.autocomplete_prefix.is_empty() {
+                self.autocomplete_prefix.clone()
+            } else {
+                self.get_autocomplete_prefix()
+            };
+            let item = crate::tui::autocomplete::AutocompleteItem {
+                value: val.to_string(),
+                label: val.to_string(),
+                description: None,
+            };
+            let (new_lines, new_line, new_col) = provider.apply_completion(
+                &self.lines,
+                self.cursor_line,
+                self.cursor_col,
+                &item,
+                &prefix,
+            );
+            self.lines = new_lines;
+            self.cursor_line = new_line;
+            self.cursor_col = new_col;
+        } else {
+            self.set_text(&format!("/{} ", val));
+        }
+    }
+
+    /// Apply the currently selected autocomplete item using the provider.
+    /// This extracts the repeated logic shared by Tab and Enter handlers.
+    #[allow(dead_code)]
+    fn apply_autocomplete_completion(&mut self, list: &mut SelectList) {
+        if let Some(val) = list.selected_item().map(|i| i.value.clone()) {
+            self.apply_autocomplete_completion_value(&val);
+        }
     }
 
     /// After cursor movement, re-query autocomplete if active (pi-style).
@@ -1340,6 +1380,7 @@ impl Editor {
         // Pi: expand paste markers before submitting
         let raw = self.lines.join("\n");
         let result = self.expand_paste_markers(&raw);
+        self.last_submitted_text = result.clone();
         self.lines = vec![String::new()];
         self.cursor_line = 0;
         self.cursor_col = 0;
@@ -1563,48 +1604,46 @@ impl Component for Editor {
         // All other keys (including printable chars and backspace) fall through
         // to the normal handler so the character is inserted/deleted first, then
         // autocomplete is re-queried via update_autocomplete().
+        //
+        // We capture state inside the borrow (list) and apply completion outside
+        // to avoid borrow checker conflicts with self methods.
+        let mut ac_selected: Option<String> = None;
+        let mut ac_complete_and_return = false;
+
         if let Some(ref mut list) = self.autocomplete_list {
             if kb.matches(key, ACTION_SELECT_CANCEL) {
-                self.clear_autocomplete();
+                self.autocomplete_active = false;
+                self.autocomplete_list = None;
+                self.autocomplete_prefix.clear();
                 return true;
             }
-            if kb.matches(key, ACTION_SELECT_CONFIRM) || kb.matches(key, ACTION_INPUT_TAB) {
-                if let Some(val) = list.selected_item().map(|i| i.value.clone()) {
-                    // Use provider to apply completion (pi-style), fallback to set_text
-                    if let Some(ref provider) = self.autocomplete_provider {
-                        let prefix = if !self.autocomplete_prefix.is_empty() {
-                            self.autocomplete_prefix.clone()
-                        } else {
-                            self.get_autocomplete_prefix()
-                        };
-                        let item = crate::tui::autocomplete::AutocompleteItem {
-                            value: val.clone(),
-                            label: val.clone(),
-                            description: None,
-                        };
-                        let (new_lines, new_line, new_col) = provider.apply_completion(
-                            &self.lines,
-                            self.cursor_line,
-                            self.cursor_col,
-                            &item,
-                            &prefix,
-                        );
-                        self.lines = new_lines;
-                        self.cursor_line = new_line;
-                        self.cursor_col = new_col;
-                    } else {
-                        self.set_text(&format!("/{} ", val));
-                    }
+
+            if kb.matches(key, ACTION_INPUT_TAB) {
+                ac_selected = list.selected_item().map(|i| i.value.clone());
+                ac_complete_and_return = true;
+            } else if kb.matches(key, ACTION_SELECT_CONFIRM) {
+                ac_selected = list.selected_item().map(|i| i.value.clone());
+                let is_slash = self.autocomplete_prefix.starts_with('/');
+                if !is_slash {
+                    ac_complete_and_return = true;
                 }
-                self.clear_autocomplete();
-                return true;
-            }
-            if kb.matches(key, ACTION_SELECT_UP) || kb.matches(key, ACTION_SELECT_DOWN) {
+                // Slash command: apply completion and fall through to submit
+            } else if kb.matches(key, ACTION_SELECT_UP) || kb.matches(key, ACTION_SELECT_DOWN) {
                 list.handle_input(key);
                 return true;
             }
-            // For all other keys, fall through to normal handling without clearing.
+            // For all other keys, fall through to normal handling.
             // autocomplete will be updated after the key is processed.
+        }
+
+        // Handle deferred completion (outside the borrow on self.autocomplete_list)
+        if let Some(val) = ac_selected {
+            self.apply_autocomplete_completion_value(&val);
+            self.clear_autocomplete();
+            if ac_complete_and_return {
+                return true;
+            }
+            // ac_complete_and_submit: fall through to submit handler below
         }
 
         // ── Tab: trigger autocomplete via provider (pi-style) ──

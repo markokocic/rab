@@ -313,18 +313,23 @@ impl ChatEditor {
         // ═══════════════════════════════════════════════════════════════════
         // The Editor's handle_input processes Enter via submit(), which:
         //   1. Expands paste markers
-        //   2. Clears editor state (pastes, undo, history browsing)
-        //   3. Calls on_submit callback
-        //   4. Sets just_submitted flag
+        //   2. Stores the text in last_submitted_text
+        //   3. Clears editor state (pastes, undo, history browsing)
+        //   4. Calls on_submit callback
+        //   5. Sets just_submitted flag
         //
         // We check just_submitted after handle_input to detect submission.
+        // For slash command completion via Enter, the completion is applied
+        // inside handle_input before submit() is called, so last_submitted_text
+        // contains the completed command text.
         if kb.matches(key, ACTION_INPUT_SUBMIT) {
-            let text = self.editor.get_expanded_text();
-            let has_content = !text.trim().is_empty();
             self.editor.just_submitted = false;
             self.editor.handle_input(key);
             if self.editor.just_submitted {
-                // Editor processed the submit - record history and return text
+                // Editor processed the submit - use last_submitted_text (captured
+                // before clearing) so slash command completions are included.
+                let text = self.editor.last_submitted_text.clone();
+                let has_content = !text.trim().is_empty();
                 if has_content {
                     self.editor.add_to_history(&text);
                 }
