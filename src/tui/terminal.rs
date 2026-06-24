@@ -55,6 +55,7 @@ pub trait TerminalTrait {
 // on partial escape sequences) cannot freeze the main event loop.
 // =============================================================================
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 
 static EVENT_TX: LazyLock<Mutex<Option<mpsc::Sender<TerminalEvent>>>> =
@@ -63,35 +64,85 @@ static EVENT_TX: LazyLock<Mutex<Option<mpsc::Sender<TerminalEvent>>>> =
 static EVENT_RX: LazyLock<Mutex<Option<mpsc::Receiver<TerminalEvent>>>> =
     LazyLock::new(|| Mutex::new(None));
 
+static STDIN_THREAD_HANDLE: LazyLock<Mutex<Option<std::thread::JoinHandle<()>>>> =
+    LazyLock::new(|| Mutex::new(None));
+
+static STDIN_RUNNING: AtomicBool = AtomicBool::new(false);
+
 /// Start the background stdin reader thread.
 /// Must be called once after raw mode is enabled.
 pub fn start_stdin_reader() {
     let (tx, rx) = mpsc::channel();
     *EVENT_TX.lock().unwrap() = Some(tx.clone());
     *EVENT_RX.lock().unwrap() = Some(rx);
+    STDIN_RUNNING.store(true, Ordering::SeqCst);
 
-    std::thread::spawn(move || {
-        // Read events in a loop. If crossterm's parser blocks, only this
-        // background thread is affected — the main loop remains responsive.
-        loop {
-            match event::read() {
-                Ok(Event::Key(key)) => {
-                    let _ = tx.send(TerminalEvent::Key(key));
+    let handle = std::thread::spawn(move || {
+        // Use poll() with a timeout so we can check the stop flag regularly.
+        // 100ms interval is short enough for responsive shutdown but long
+        // enough to not waste CPU.
+        while STDIN_RUNNING.load(Ordering::SeqCst) {
+            match event::poll(std::time::Duration::from_millis(100)) {
+                Ok(true) => {
+                    // Data available — read it
+                    match event::read() {
+                        Ok(Event::Key(key)) => {
+                            let _ = tx.send(TerminalEvent::Key(key));
+                        }
+                        Ok(Event::Paste(content)) => {
+                            let _ = tx.send(TerminalEvent::Paste(content));
+                        }
+                        Ok(Event::Resize(w, h)) => {
+                            let _ = tx.send(TerminalEvent::Resize(w, h));
+                        }
+                        Ok(_) => {}
+                        Err(_) => {
+                            // Stdin error — terminal likely closed. Exit thread.
+                            break;
+                        }
+                    }
                 }
-                Ok(Event::Paste(content)) => {
-                    let _ = tx.send(TerminalEvent::Paste(content));
+                Ok(false) => {
+                    // Timeout — loop back and check stop flag
                 }
-                Ok(Event::Resize(w, h)) => {
-                    let _ = tx.send(TerminalEvent::Resize(w, h));
-                }
-                Ok(_) => {}
                 Err(_) => {
-                    // Stdin error — terminal likely closed. Exit thread.
+                    // poll error — exit
                     break;
                 }
             }
         }
     });
+
+    *STDIN_THREAD_HANDLE.lock().unwrap() = Some(handle);
+}
+
+/// Initiate stopping the background stdin reader thread.
+/// Sets the running flag and drops sender/receiver.
+/// The thread will exit on the next event::read() that completes after
+/// the flag is cleared. Call `join_stdin_reader()` to wait for exit.
+pub fn stop_stdin_reader() {
+    STDIN_RUNNING.store(false, Ordering::SeqCst);
+    let mut guard = EVENT_TX.lock().unwrap();
+    *guard = None;
+    drop(guard);
+    let mut rx_guard = EVENT_RX.lock().unwrap();
+    *rx_guard = None;
+}
+
+/// Wait for the stdin reader thread to exit.
+pub fn join_stdin_reader() {
+    let mut guard = STDIN_THREAD_HANDLE.lock().unwrap();
+    if let Some(handle) = guard.take() {
+        let _ = handle.join();
+    }
+}
+
+/// Drain all pending events from the stdin reader channel.
+pub fn drain_stdin_events() {
+    let rx_guard = EVENT_RX.lock().unwrap();
+    if let Some(rx) = rx_guard.as_ref() {
+        while rx.try_recv().is_ok() {}
+    }
 }
 
 /// Poll for any terminal event (key, paste, resize) with a timeout.

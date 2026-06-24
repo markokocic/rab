@@ -1,5 +1,6 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::io::Write;
 use std::path::PathBuf;
 use std::rc::{Rc, Weak};
 use std::sync::Arc;
@@ -508,7 +509,7 @@ pub async fn run(config: AppConfig, session: SessionManager) -> anyhow::Result<(
                 terminal::TerminalEvent::Key(key) => {
                     // TUI overlay routing first (overlays get first crack at input)
                     if !tui.route_input(&key) {
-                        handle_input(&mut app, &mut tui, &key);
+                        handle_input(&mut app, &mut tui, &mut term, &key);
                     }
                 }
                 terminal::TerminalEvent::Paste(content) => {
@@ -753,7 +754,7 @@ fn compose_ui(app: &mut App, width: usize) {
 ///
 /// This keeps text-editing logic in the Editor component (via ChatEditor)
 /// and app-level side effects (aborting agents, toggling settings, etc.) here.
-fn handle_input(app: &mut App, tui: &mut TUI, key: &KeyEvent) {
+fn handle_input(app: &mut App, tui: &mut TUI, term: &mut ProcessTerminal, key: &KeyEvent) {
     // ── Check if any TUI overlay is active (help, model selector, etc.) ──
     if tui.has_overlays() {
         tui.pop_overlay();
@@ -830,7 +831,7 @@ fn handle_input(app: &mut App, tui: &mut TUI, key: &KeyEvent) {
             handle_tools_expand(app);
         }
         InputAction::EditorExternal => {
-            handle_editor_external(app);
+            handle_editor_external(app, tui, term);
         }
         InputAction::Help => {
             show_help_overlay(app, tui);
@@ -958,7 +959,8 @@ fn handle_tools_expand(app: &mut App) {
 }
 
 /// Open external editor ($VISUAL / $EDITOR) for current editor content.
-fn handle_editor_external(app: &mut App) {
+/// Suspends the TUI (disables raw mode), runs the editor, then resumes.
+fn handle_editor_external(app: &mut App, tui: &mut TUI, term: &mut ProcessTerminal) {
     let editor_cmd = std::env::var("VISUAL")
         .or_else(|_| std::env::var("EDITOR"))
         .unwrap_or_default();
@@ -983,19 +985,45 @@ fn handle_editor_external(app: &mut App) {
         return;
     }
 
-    // Fork and exec the editor
     let parts: Vec<&str> = editor_cmd.split(' ').collect();
     let (editor, args) = parts.split_first().unwrap_or((&"", &[]));
 
-    // Stop TUI, run editor, resume
-    // For simplicity, we use std::process::Command which blocks
+    // ── Suspend TUI ──
     app.status_text = Some(format!("Opening {} ...", editor_cmd));
+    let mut suspend_buf = Vec::new();
+    let _ = term.stop(&mut suspend_buf);
+    let _ = term.show_cursor(&mut suspend_buf);
+    if !suspend_buf.is_empty() {
+        let stdout = std::io::stdout();
+        let mut handle = stdout.lock();
+        let _ = handle.write_all(&suspend_buf);
+        let _ = handle.flush();
+    }
 
-    // Use std::process since we need to block the async runtime
+    // Stop the stdin reader thread (uses poll() with timeout, exits cleanly).
+    crate::tui::terminal::stop_stdin_reader();
+    crate::tui::terminal::join_stdin_reader();
+
+    // ── Run editor ──
     let status = std::process::Command::new(editor)
         .args(args)
         .arg(&tmp_file)
         .status();
+
+    // ── Resume TUI ──
+    let mut resume_buf = Vec::new();
+    let _ = term.start(&mut resume_buf);
+    let _ = term.hide_cursor(&mut resume_buf);
+    if !resume_buf.is_empty() {
+        let stdout = std::io::stdout();
+        let mut handle = stdout.lock();
+        let _ = handle.write_all(&resume_buf);
+        let _ = handle.flush();
+    }
+    // Restart stdin reader (after raw mode is active)
+    crate::tui::terminal::start_stdin_reader();
+    // Force full redraw
+    tui.request_render();
 
     match status {
         Ok(status) if status.success() => {

@@ -1521,16 +1521,11 @@ impl Component for Editor {
                         visible_width(text),
                     )
                 } else if !before.is_empty() {
-                    // Cursor at end: highlight the last character of before.
-                    // This makes trailing spaces visible (they show as a highlighted block)
-                    // instead of being an invisible character between text and cursor block.
-                    let before_graphemes: Vec<&str> = before.graphemes(true).collect();
-                    let last_g = before_graphemes.last().copied().unwrap_or(" ");
-                    let rest_before = &before[..before.len() - last_g.len()];
-                    let cursor = format!("\x1b[7m{}\x1b[0m", last_g);
+                    // Cursor at end: show a block cursor after the last character.
+                    let cursor_block = "\x1b[7m \x1b[0m";
                     (
-                        format!("{}{}{}", rest_before, cursor, marker),
-                        visible_width(text),
+                        format!("{}{}{}", before, cursor_block, marker),
+                        visible_width(text) + 1,
                     )
                 } else {
                     // Empty text: show block cursor
