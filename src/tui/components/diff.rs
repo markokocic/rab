@@ -8,89 +8,112 @@ use crate::tui::Theme;
 /// `--- a/path` / `+++ b/path` / `@@ -1,5 +1,6 @@` / ` context` / `-removed` / `+added`
 ///
 /// Output: ANSI-styled lines with:
-/// - `-` lines: `toolDiffRemoved` (red)
-/// - `+` lines: `toolDiffAdded` (green)
+/// - `-` lines: `toolDiffRemoved` (red), with inverse on changed tokens for single-line changes
+/// - `+` lines: `toolDiffAdded` (green), with inverse on changed tokens for single-line changes
 /// - ` ` lines: `toolDiffContext` (gray)
-/// - Single-line changes: intra-line diff with inverse highlighting
+///
+/// Multi-line changes show all removed lines first, then all added lines (no intra-line diff).
+/// Single-line changes (1 removed + 1 added) render intra-line word-diff with inverse.
 ///
 /// Takes a `&dyn Theme` parameter to avoid calling `current_theme()` which
 /// would deadlock if the theme lock is already held by a caller.
 pub fn render_diff(diff_text: &str, theme: &dyn Theme) -> Vec<String> {
     let mut lines: Vec<String> = Vec::new();
-    let mut prev_removed: Option<String> = None;
+    let diff_lines: Vec<&str> = diff_text.lines().collect();
+    let mut i = 0;
 
-    for line in diff_text.lines() {
+    while i < diff_lines.len() {
+        let line = diff_lines[i];
+
         // Skip unified diff headers
         if line.starts_with("---") || line.starts_with("+++") || line.starts_with("@@") {
-            prev_removed = None;
+            i += 1;
             continue;
         }
 
         if line.is_empty() {
-            prev_removed = None;
+            i += 1;
             continue;
         }
 
-        let (prefix, content) = line.split_at(1);
-        let content = content.trim_end_matches('\r');
+        let first = line.chars().next().unwrap_or(' ');
 
-        match prefix {
-            "-" => {
-                if prev_removed.is_some() {
-                    // Multiple removed lines - push previous and start new
-                    if let Some(prev) = prev_removed.take() {
-                        let styled = color_line(&prev, "toolDiffRemoved", theme);
-                        lines.push(styled);
-                    }
-                }
-                prev_removed = Some(line.to_string());
-            }
-            "+" => {
-                if let Some(ref removed_full) = prev_removed.take() {
-                    let removed_content = &removed_full[1..]; // strip '-'
-                    // Intra-line diff: single removed + single added
-                    render_intra_line_diff(removed_content, content, &mut lines, theme);
+        if first == '-' {
+            // Collect consecutive removed lines
+            let mut removed: Vec<&str> = Vec::new();
+            while i < diff_lines.len() {
+                let l = diff_lines[i];
+                if let Some(stripped) = l.strip_prefix('-') {
+                    removed.push(stripped);
+                    i += 1;
+                } else if l.starts_with("---") {
+                    // Skip hunk header prefix that could match
+                    i += 1;
                 } else {
-                    // Standalone added line (multiple adds after removes)
-                    let styled = color_line(line, "toolDiffAdded", theme);
-                    lines.push(styled);
+                    break;
                 }
             }
-            _ => {
-                prev_removed = None;
-                let styled = color_line(line, "toolDiffContext", theme);
-                lines.push(styled);
-            }
-        }
-    }
 
-    // Flush remaining removed line
-    if let Some(prev) = prev_removed.take() {
-        let styled = color_line(&prev, "toolDiffRemoved", theme);
-        lines.push(styled);
+            // Collect consecutive added lines
+            let mut added: Vec<&str> = Vec::new();
+            while i < diff_lines.len() {
+                let l = diff_lines[i];
+                if let Some(stripped) = l.strip_prefix('+') {
+                    added.push(stripped);
+                    i += 1;
+                } else {
+                    break;
+                }
+            }
+
+            // Single-line change: intra-line word diff
+            if removed.len() == 1 && added.len() == 1 {
+                render_intra_line_diff(
+                    &replace_tabs(removed[0]),
+                    &replace_tabs(added[0]),
+                    &mut lines,
+                    theme,
+                );
+            } else {
+                // Multi-line change: show all removed, then all added
+                for r in &removed {
+                    let content = replace_tabs(r);
+                    lines.push(theme.fg_key(ThemeKey::ToolDiffRemoved, &format!("-{}", content)));
+                }
+                for a in &added {
+                    let content = replace_tabs(a);
+                    lines.push(theme.fg_key(ThemeKey::ToolDiffAdded, &format!("+{}", content)));
+                }
+            }
+        } else if first == '+' {
+            // Standalone added line (no preceding removal)
+            let content = replace_tabs(&line[1..]);
+            lines.push(theme.fg_key(ThemeKey::ToolDiffAdded, &format!("+{}", content)));
+            i += 1;
+        } else {
+            // Context line
+            let content = replace_tabs(&line[1..]);
+            lines.push(theme.fg_key(ThemeKey::ToolDiffContext, &format!(" {}", content)));
+            i += 1;
+        }
     }
 
     lines
 }
 
-/// Color a single diff line with the given theme color.
-fn color_line(line: &str, color: &str, theme: &dyn Theme) -> String {
-    let ansi = theme.fg_ansi(color).to_string();
-    format!("{}{}\x1b[39m", ansi, line)
+/// Replace tabs with spaces for consistent rendering (matching pi's `replaceTabs`).
+fn replace_tabs(text: &str) -> String {
+    text.replace('\t', "   ")
 }
 
 /// Render intra-line diff for a single-line change (one removed, one added).
-/// Uses character-level diff and applies inverse (reverse video) on changed parts.
+/// Uses word-level diff and applies inverse (reverse video) on changed parts.
 ///
 /// Matches pi's `renderIntraLineDiff()` which uses `diffWords` to find changed
 /// tokens and applies `theme.inverse()` on them.
+/// Strips leading whitespace from inverse to avoid highlighting indentation.
 fn render_intra_line_diff(old: &str, new: &str, output: &mut Vec<String>, theme: &dyn Theme) {
-    let changes: Vec<Change> = compute_word_diff(old, new);
-    let added_ansi = theme.fg_ansi_key(ThemeKey::ToolDiffAdded).to_string();
-    let removed_ansi = theme.fg_ansi_key(ThemeKey::ToolDiffRemoved).to_string();
-    let inverse_on = "\x1b[7m"; // reverse video
-    let inverse_off = "\x1b[27m"; // reverse video off
-    let reset = "\x1b[39m";
+    let changes = compute_word_diff(old, new);
 
     let mut removed_line = String::new();
     let mut added_line = String::new();
@@ -108,7 +131,9 @@ fn render_intra_line_diff(old: &str, new: &str, output: &mut Vec<String>, theme:
                     let ws = &text[..text.len() - trimmed.len()];
                     removed_line.push_str(ws);
                 }
-                removed_line.push_str(&format!("{}{}{}", inverse_on, trimmed, inverse_off));
+                if !trimmed.is_empty() {
+                    removed_line.push_str(&theme.inverse(trimmed));
+                }
             }
             Change::Added(text) => {
                 // Strip leading whitespace
@@ -117,13 +142,15 @@ fn render_intra_line_diff(old: &str, new: &str, output: &mut Vec<String>, theme:
                     let ws = &text[..text.len() - trimmed.len()];
                     added_line.push_str(ws);
                 }
-                added_line.push_str(&format!("{}{}{}", inverse_on, trimmed, inverse_off));
+                if !trimmed.is_empty() {
+                    added_line.push_str(&theme.inverse(trimmed));
+                }
             }
         }
     }
 
-    output.push(format!("-{}{}{}", removed_ansi, removed_line, reset));
-    output.push(format!("+{}{}{}", added_ansi, added_line, reset));
+    output.push(theme.fg_key(ThemeKey::ToolDiffRemoved, &format!("-{}", removed_line)));
+    output.push(theme.fg_key(ThemeKey::ToolDiffAdded, &format!("+{}", added_line)));
 }
 
 /// A change in a diff: equal, removed, or added.
@@ -209,6 +236,7 @@ fn compute_word_diff(old: &str, new: &str) -> Vec<Change> {
 /// Split text into word tokens for diffing.
 /// Alphanumeric sequences (including `_`) are kept as whole words;
 /// everything else (whitespace, punctuation) becomes individual character tokens.
+/// Matches pi's `diff.diffWords` behavior.
 fn split_words(text: &str) -> Vec<String> {
     let mut tokens = Vec::new();
     let mut current = String::new();
@@ -272,7 +300,8 @@ mod tests {
         let diff = "-old_line\n";
         let result = render_diff(diff, &theme);
         assert_eq!(result.len(), 1);
-        assert!(result[0].contains('-')); // prefix preserved
+        // Prefix should be preserved
+        assert!(result[0].contains('-'));
         assert!(result[0].contains("old_line"));
     }
 
@@ -314,10 +343,24 @@ mod tests {
         let diff = "-a\n-b\n+c\n";
         let result = render_diff(diff, &theme);
         // Two removed lines, then one added
-        assert!(result.len() >= 2);
-        // The first two should be - lines
-        assert!(result[0].contains("-a") || result[0].contains("-a"));
-        // The last should be a + line or intra-line diff
+        assert_eq!(result.len(), 3);
+        assert!(result[0].contains("-a"));
+        assert!(result[1].contains("-b"));
+        assert!(result[2].contains("+c"));
+    }
+
+    #[test]
+    fn test_multi_line_removes_no_intra_diff() {
+        crate::agent::ui::theme::init_theme(Some("dark"), false);
+        let theme = test_theme();
+        let diff = "-aaa\n-bbb\n+ccc\n+ddd\n";
+        let result = render_diff(diff, &theme);
+        assert_eq!(result.len(), 4);
+        // No intra-line diff for multi-line changes - no inverse markers
+        assert!(
+            !result[0].contains("\x1b[7m"),
+            "no inverse on multi-line remove"
+        );
     }
 
     #[test]
@@ -331,5 +374,26 @@ mod tests {
         let changes = compute_word_diff("hello", "hello");
         assert_eq!(changes.len(), 1);
         assert!(matches!(changes[0], Change::Equal(_)));
+    }
+
+    #[test]
+    fn test_tabs_replaced() {
+        crate::agent::ui::theme::init_theme(Some("dark"), false);
+        let theme = test_theme();
+        let diff = "-\tindented\n";
+        let result = render_diff(diff, &theme);
+        assert_eq!(result.len(), 1);
+        assert!(!result[0].contains('\t'), "tabs should be replaced");
+    }
+
+    #[test]
+    fn test_context_line_format() {
+        crate::agent::ui::theme::init_theme(Some("dark"), false);
+        let theme = test_theme();
+        let diff = " context\n";
+        let result = render_diff(diff, &theme);
+        assert_eq!(result.len(), 1);
+        assert!(result[0].contains("context"));
+        assert!(result[0].starts_with("\x1b"));
     }
 }

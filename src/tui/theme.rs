@@ -329,6 +329,9 @@ pub trait Theme {
     /// Apply italic styling (used for thinking blocks, matching pi).
     fn italic(&self, text: &str) -> String;
 
+    /// Apply reverse/inverse video styling (used for intra-line diff highlighting).
+    fn inverse(&self, text: &str) -> String;
+
     /// Apply a foreground color from a `ThemeKey`.
     fn fg_key(&self, key: ThemeKey, text: &str) -> String {
         self.fg(key.as_str(), text)
@@ -370,6 +373,10 @@ impl Theme for NoopTheme {
     }
 
     fn italic(&self, text: &str) -> String {
+        text.to_string()
+    }
+
+    fn inverse(&self, text: &str) -> String {
         text.to_string()
     }
 }

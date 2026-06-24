@@ -238,6 +238,11 @@ impl RabTheme {
         format!("\x1b[3m{}\x1b[23m", text)
     }
 
+    /// Apply reverse/inverse video styling (used for intra-line diff highlighting).
+    pub fn inverse(&self, text: &str) -> String {
+        format!("\x1b[7m{}\x1b[27m", text)
+    }
+
     /// Apply underline styling.
     pub fn underline(&self, text: &str) -> String {
         format!("\x1b[4m{}\x1b[24m", text)
@@ -374,6 +379,10 @@ impl Theme for RabTheme {
 
     fn italic(&self, text: &str) -> String {
         self.italic(text)
+    }
+
+    fn inverse(&self, text: &str) -> String {
+        self.inverse(text)
     }
 
     fn fg_ansi(&self, color: &str) -> &str {
