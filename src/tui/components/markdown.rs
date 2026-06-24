@@ -12,11 +12,11 @@ pub type StyleFn = Arc<dyn Fn(&str) -> String>;
 /// Type alias for code highlighting function.
 pub type HighlightFn = Arc<dyn Fn(&str, Option<&str>) -> Vec<String>>;
 
-// ── Code block indent (kept for backward compat, always "") ──
+// ── Code block indent ──
 
-/// DEPRECATED: Code blocks inherit padding from the component's padding_x.
-/// This constant is kept only for API compatibility and is always empty.
-pub const CODE_BLOCK_INDENT: &str = "";
+/// Indent prefix applied to each code line inside a fenced code block.
+/// Defaults to two spaces for visual inset from the backtick fence.
+pub const CODE_BLOCK_INDENT: &str = "  ";
 
 // ── MarkdownTheme ────────────────────────────────────────────────
 
@@ -39,9 +39,8 @@ pub struct MarkdownTheme {
     pub underline: StyleFn,
     /// If set, used for syntax-highlighted code blocks.
     pub highlight_code: Option<HighlightFn>,
-    /// DEPRECATED: Code blocks inherit padding from the component's padding_x.
-    /// Kept for API compatibility but should always be empty.
-    /// Use the component's padding_x for visual inset of code blocks.
+    /// Indent prefix applied to each code line inside a fenced code block.
+    /// Defaults to two spaces for visual inset from the backtick fence.
     pub code_block_indent: String,
 }
 
@@ -79,7 +78,7 @@ impl MarkdownTheme {
             strikethrough,
             underline,
             highlight_code: None,
-            code_block_indent: String::new(),
+            code_block_indent: "  ".to_string(),
         }
     }
 }
@@ -302,11 +301,8 @@ impl Component for Markdown {
         // Calculate available width for content
         let content_width = width.saturating_sub(2 * self.padding_x).max(1);
 
-        // Replace tabs with 3 spaces and normalize headings to prevent
-        // progressive indentation from LLM outputs (CommonMark interprets
-        // indented headings as nested inside list items).
+        // Replace tabs with 3 spaces for consistent rendering
         let normalized = self.text.replace('\t', "   ");
-        let normalized = normalize_markdown_headings(&normalized);
 
         // Parse with pulldown-cmark
         let md_options = Options::ENABLE_STRIKETHROUGH
@@ -1492,109 +1488,6 @@ fn split_newline_apply(text: &str, apply: &dyn Fn(&str) -> String) -> String {
             }
         })
         .collect()
-}
-
-/// Normalize markdown by floating headings to column 0 and dedenting
-/// the lines that follow them.
-///
-/// Some LLM outputs use progressive indentation like:
-/// ```markdown
-/// - item
-///   ### heading
-///   - sub-item
-///     ### deeper
-///     - deeper-item
-/// ```
-///
-/// CommonMark parsers treat indented headings as inside the previous
-/// list item, causing progressive nesting in the rendered output.
-/// This function prevents that by:
-///   1. Ensuring headings always start at column 0.
-///   2. Dedenting the lines that follow a heading by the same amount
-///      the heading was indented, so they remain at the correct level.
-///   3. Inserting a blank line before a heading when the preceding
-///      content is non-blank, to close any open list.
-///
-/// Fenced code blocks (``` … ``` and ~~~ … ~~~) are preserved as-is.
-pub fn normalize_markdown_headings(text: &str) -> String {
-    let mut result = String::with_capacity(text.len());
-    let mut in_code_block = false;
-    // Use lines() to avoid trailing empty element when input ends with newline.
-    // split('\n') on "...\n" produces [..., ""], which gets rendered as extra blank line.
-    let lines: Vec<&str> = text.lines().collect();
-    let mut i = 0;
-
-    while i < lines.len() {
-        let line = lines[i];
-        let trimmed_start = line.trim_start();
-
-        // Track code block state (fenced with ``` or ~~~)
-        if trimmed_start.starts_with("```") || trimmed_start.starts_with("~~~") {
-            in_code_block = !in_code_block;
-            result.push_str(line);
-            result.push('\n');
-            i += 1;
-            continue;
-        }
-
-        if !in_code_block && is_heading_line(trimmed_start) {
-            let indent = line.len() - trimmed_start.len();
-
-            // Insert blank line before heading if preceding line is non-blank
-            // to close any open list / blockquote.
-            if i > 0 && !lines[i - 1].trim().is_empty() {
-                result.push('\n');
-            }
-
-            // Float heading to column 0
-            result.push_str(trimmed_start);
-            result.push('\n');
-            i += 1;
-
-            // Dedent subsequent lines by the same amount, stopping at blank
-            // lines, next headings, or code fences.
-            while i < lines.len() {
-                let next = lines[i];
-                let next_trimmed = next.trim_start();
-
-                if next.trim().is_empty()
-                    || is_heading_line(next_trimmed)
-                    || next_trimmed.starts_with("```")
-                    || next_trimmed.starts_with("~~~")
-                {
-                    break;
-                }
-
-                let to_remove = indent.min(next.len() - next_trimmed.len());
-                result.push_str(&next[to_remove..]);
-                result.push('\n');
-                i += 1;
-            }
-            continue;
-        }
-
-        result.push_str(line);
-        result.push('\n');
-        i += 1;
-    }
-
-    // Preserve original trailing newline semantics (text.lines() strips
-    // trailing empty strings, causing us to always add a trailing newline).
-    if !text.ends_with('\n') && result.ends_with('\n') {
-        result.pop();
-    }
-
-    result
-}
-
-/// Check if a trimmed line is a markdown ATX heading (starts with `# ` etc.).
-fn is_heading_line(s: &str) -> bool {
-    s.starts_with("# ")
-        || s.starts_with("## ")
-        || s.starts_with("### ")
-        || s.starts_with("#### ")
-        || s.starts_with("##### ")
-        || s.starts_with("###### ")
 }
 
 // ── Syntax Highlighting (feature-gated) ─────────────────────────
