@@ -206,6 +206,17 @@ impl Markdown {
         self.invalidate();
     }
 
+    /// Check if the cached text matches the given text.
+    /// Used by parent components to decide whether to call set_text().
+    pub fn cached_text_matches(&self, other: &str) -> bool {
+        self.cached_text.as_deref() == Some(&self.text) && self.text == other
+    }
+
+    /// Access the current text content (for comparison).
+    pub fn get_text(&self) -> &str {
+        &self.text
+    }
+
     fn build_default_ctx(&self) -> InlineCtx {
         InlineCtx::new(self.build_default_apply_fn())
     }

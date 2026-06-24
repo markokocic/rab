@@ -3,6 +3,7 @@ use std::sync::Arc;
 use crate::agent::ui::theme::ThemeKey;
 use crate::agent::ui::theme::current_theme;
 use crate::tui::Component;
+use crate::tui::component::RenderCacheKey;
 use crate::tui::components::markdown::{DefaultTextStyle, Markdown, StyleFn};
 const OSC133_ZONE_START: &str = "\x1b]133;A\x07";
 const OSC133_ZONE_END: &str = "\x1b]133;B\x07";
@@ -16,6 +17,12 @@ pub struct AssistantMessageComponent {
     hide_thinking: bool,
     cached_lines: Option<Vec<String>>,
     cached_width: usize,
+    /// Persistent Markdown instance for the text content.
+    /// Reused across renders so its internal cache (cached_text + cached_lines)
+    /// avoids re-parsing when text hasn't changed (e.g. spinner ticks between deltas).
+    text_md: Option<Markdown>,
+    /// Persistent Markdown instances for each thinking block.
+    thinking_md: Vec<Markdown>,
 }
 
 pub struct ThinkingBlock {
@@ -31,7 +38,87 @@ impl AssistantMessageComponent {
             hide_thinking: false,
             cached_lines: None,
             cached_width: 0,
+            text_md: None,
+            thinking_md: Vec::new(),
         }
+    }
+
+    /// Ensure the persistent text Markdown instance matches the current text.
+    fn sync_text_md(&mut self) {
+        if self.text.is_empty() {
+            self.text_md = None;
+            return;
+        }
+        let md_theme = crate::agent::ui::theme::get_markdown_theme();
+        let should_recreate = match self.text_md {
+            Some(ref mut md) => {
+                let needs_update = !md.cached_text_matches(&self.text);
+                if needs_update {
+                    md.set_text(&self.text);
+                }
+                false // reuse existing
+            }
+            None => true, // create new
+        };
+        if should_recreate {
+            self.text_md = Some(Markdown::new(self.text.clone(), 1, 0, md_theme, None));
+        }
+    }
+
+    /// Ensure the persistent thinking Markdown instances match current thinking blocks.
+    fn sync_thinking_md(&mut self) {
+        // Remove excess cached instances
+        while self.thinking_md.len() > self.thinking.len() {
+            self.thinking_md.pop();
+        }
+        for (i, block) in self.thinking.iter().enumerate() {
+            if block.text.trim().is_empty() {
+                continue;
+            }
+            if i >= self.thinking_md.len() {
+                // Create new Markdown for this block
+                let color_fn: StyleFn = Arc::new(|s: &str| -> String {
+                    crate::agent::ui::theme::current_theme().fg_key(ThemeKey::ThinkingText, s)
+                });
+                let default_style = DefaultTextStyle {
+                    color: Some(color_fn),
+                    bold: false,
+                    italic: true,
+                    strikethrough: false,
+                    underline: false,
+                };
+                let mut md = Markdown::new(
+                    block.text.clone(),
+                    1,
+                    0,
+                    crate::agent::ui::theme::get_markdown_theme(),
+                    Some(default_style),
+                );
+                // Mark dirty since text may have already changed by the time
+                // this instance is created (the block was pushed earlier).
+                md.invalidate();
+                self.thinking_md.push(md);
+            } else {
+                let needs_update = !self.thinking_md[i].cached_text_matches(&block.text);
+                if needs_update {
+                    self.thinking_md[i].set_text(&block.text);
+                }
+            }
+        }
+    }
+
+    /// Compute a hash of the current state for cache_key.
+    fn state_hash(&self) -> u64 {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut hasher = DefaultHasher::new();
+        self.text.hash(&mut hasher);
+        self.hide_thinking.hash(&mut hasher);
+        for block in &self.thinking {
+            block.text.hash(&mut hasher);
+            block.level.hash(&mut hasher);
+        }
+        hasher.finish()
     }
 
     pub fn add_thinking(&mut self, text: impl Into<String>, level: Option<String>) {
@@ -109,35 +196,18 @@ impl Component for AssistantMessageComponent {
             return lines.clone();
         }
 
+        // Sync persistent Markdown instances before rendering so they
+        // can leverage their own text-based caching.
+        self.sync_text_md();
+        if !self.thinking.is_empty() {
+            self.sync_thinking_md();
+        }
+
         let mut lines: Vec<String> = Vec::new();
 
-        // Collect visible content blocks (thinking + text) matching pi's message.content array.
-        // Pi iterates over message.content[type="thinking"|type="text"] and adds a leading
-        // Spacer(1) if any visible content exists, then per-block conditional spacers.
-        struct ContentItem {
-            is_thinking: bool,
-            text: String,
-        }
-
-        let mut items: Vec<ContentItem> = Vec::new();
-        for block in &self.thinking {
-            let trimmed = block.text.trim().to_string();
-            if !trimmed.is_empty() {
-                items.push(ContentItem {
-                    is_thinking: true,
-                    text: trimmed,
-                });
-            }
-        }
-        let text_trimmed = self.text.trim().to_string();
-        if !text_trimmed.is_empty() {
-            items.push(ContentItem {
-                is_thinking: false,
-                text: text_trimmed,
-            });
-        }
-
-        if items.is_empty() {
+        let has_thinking = self.thinking.iter().any(|b| !b.text.trim().is_empty());
+        let has_text = !self.text.trim().is_empty();
+        if !has_thinking && !has_text {
             self.cached_lines = Some(Vec::new());
             self.cached_width = width;
             return Vec::new();
@@ -146,54 +216,42 @@ impl Component for AssistantMessageComponent {
         // Leading blank line before any content (matching pi's leading Spacer(1))
         lines.push(String::new());
 
-        for (i, item) in items.iter().enumerate() {
-            if item.is_thinking {
-                if self.hide_thinking {
-                    // Match pi: Text with padding_x=1, italic, thinkingText color (no bg)
-                    let theme = current_theme();
-                    let label = theme.italic(&theme.fg_key(ThemeKey::ThinkingText, "Thinking..."));
-                    let padded = format!(" {} ", label);
-                    lines.push(padded);
-                } else {
-                    // Pi always uses thinkingText color for ALL thinking blocks (not per-level)
-                    let color_fn: StyleFn = Arc::new(|s: &str| -> String {
-                        crate::agent::ui::theme::current_theme().fg_key(ThemeKey::ThinkingText, s)
-                    });
-                    let default_style = DefaultTextStyle {
-                        color: Some(color_fn),
-                        bold: false,
-                        italic: true,
-                        strikethrough: false,
-                        underline: false,
-                    };
-                    // Match pi: padding_x=1, padding_y=0, thinkingText + italic
-                    let mut md = Markdown::new(
-                        item.text.clone(),
-                        1,
-                        0,
-                        crate::agent::ui::theme::get_markdown_theme(),
-                        Some(default_style),
-                    );
+        let mut think_idx = 0;
+        for (block_idx, block) in self.thinking.iter().enumerate() {
+            let trimmed = block.text.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            if self.hide_thinking {
+                let theme = current_theme();
+                let label = theme.italic(&theme.fg_key(ThemeKey::ThinkingText, "Thinking..."));
+                let padded = format!(" {} ", label);
+                lines.push(padded);
+            } else {
+                // Use persistent Markdown instance for this thinking block
+                if let Some(md) = self.thinking_md.get_mut(think_idx) {
                     lines.extend(md.render(width));
                 }
-            } else {
-                // Render main text content through Markdown (matching pi)
-                let md_theme = crate::agent::ui::theme::get_markdown_theme();
-                let mut md = Markdown::new(item.text.clone(), 1, 0, md_theme, None);
-                lines.extend(md.render(width));
+                think_idx += 1;
             }
 
-            // Pi: after each block, add Spacer(1) if there's visible content after this block
-            let has_content_after = items[i + 1..].iter().any(|next| {
-                if next.is_thinking && self.hide_thinking {
-                    // Hidden thinking is always visible as a label
+            // Pi: after each block, add Spacer(1) if there's visible content after
+            let has_content_after = self.thinking.iter().skip(block_idx + 1).any(|b| {
+                if self.hide_thinking {
                     true
                 } else {
-                    !next.text.is_empty()
+                    !b.text.trim().is_empty()
                 }
-            });
+            }) || has_text;
             if has_content_after {
                 lines.push(String::new());
+            }
+        }
+
+        if has_text {
+            // Use persistent text Markdown instance
+            if let Some(ref mut md) = self.text_md {
+                lines.extend(md.render(width));
             }
         }
 
@@ -210,6 +268,14 @@ impl Component for AssistantMessageComponent {
         self.cached_lines = Some(lines);
         self.cached_width = width;
         result
+    }
+
+    fn cache_key(&self, width: usize) -> Option<RenderCacheKey> {
+        Some(RenderCacheKey {
+            width,
+            expanded: false,
+            state_hash: self.state_hash(),
+        })
     }
 
     fn set_hide_thinking(&mut self, hide: bool) {
