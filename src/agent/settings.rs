@@ -1,43 +1,92 @@
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::path::PathBuf;
+
+/// Helper: skip serializing `false` for `verbose`.
+fn is_false(v: &bool) -> bool {
+    !*v
+}
 
 /// Settings schema matching pi's settings.json format.
 /// API keys live in auth.json, not here.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct Settings {
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_provider: Option<String>,
 
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_model: Option<String>,
 
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_thinking_level: Option<String>,
 
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<String>,
 
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub exclude_tools: Vec<String>,
 
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub theme: Option<String>,
 
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_false")]
     pub verbose: bool,
 
     /// Hide thinking blocks (Ctrl+T toggle). Persisted to settings.json.
-    #[serde(default, rename = "hideThinkingBlock")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "hideThinkingBlock"
+    )]
     pub hide_thinking: Option<bool>,
 
     /// Collapse tool output (Ctrl+O toggle). Persisted to settings.json.
-    #[serde(default, rename = "collapseToolOutput")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "collapseToolOutput"
+    )]
     pub collapse_tool_output: Option<bool>,
+
+    /// Tracks which fields were explicitly modified during this session.
+    /// Only modified fields are written when saving, preventing unset/default
+    /// fields and project-level overrides from leaking into the global file.
+    #[serde(skip)]
+    pub(crate) modified_fields: HashSet<String>,
 }
 
 impl Settings {
+    // ── Setters that track modification ────────────────────────────────
+
+    /// Set hide_thinking and mark it as modified.
+    pub fn set_hide_thinking(&mut self, value: Option<bool>) {
+        self.hide_thinking = value;
+        self.modified_fields.insert("hideThinkingBlock".into());
+    }
+
+    /// Set collapse_tool_output and mark it as modified.
+    pub fn set_collapse_tool_output(&mut self, value: Option<bool>) {
+        self.collapse_tool_output = value;
+        self.modified_fields.insert("collapseToolOutput".into());
+    }
+
+    /// Set default_thinking_level and mark it as modified.
+    pub fn set_default_thinking_level(&mut self, value: Option<String>) {
+        self.default_thinking_level = value;
+        self.modified_fields.insert("defaultThinkingLevel".into());
+    }
+
+    /// Mark a field as modified (for use with the setters or external callers).
+    /// The field name must match the camelCase JSON key (e.g. "hideThinkingBlock").
+    #[doc(hidden)]
+    pub fn mark_modified(&mut self, field: &str) {
+        self.modified_fields.insert(field.to_string());
+    }
+
+    // ── Loading ─────────────────────────────────────────────────────────
+
     /// Load settings from the global agent config path and project-local path.
     pub fn load(cwd: &std::path::Path) -> anyhow::Result<Self> {
         let global_path = Self::global_path()?;
@@ -95,23 +144,60 @@ impl Settings {
             verbose: project.verbose || global.verbose,
             hide_thinking: project.hide_thinking.or(global.hide_thinking),
             collapse_tool_output: project.collapse_tool_output.or(global.collapse_tool_output),
+            modified_fields: HashSet::new(),
         }
     }
 
-    /// Save settings to the global config path.
+    // ── Saving ──────────────────────────────────────────────────────────
+
+    /// Save only the modified fields to the global config path.
+    /// Unmodified fields are never written, preventing project-level
+    /// overrides and default values from leaking into the global file.
     pub fn save(&self) -> anyhow::Result<()> {
         let path = Self::global_path()?;
         self.save_to(path)
     }
 
-    /// Save settings to a specific path (for testing).
+    /// Save only the modified fields to a specific path (for testing).
     /// Uses atomic write (temp file + rename) to prevent partial writes.
     pub fn save_to(&self, path: std::path::PathBuf) -> anyhow::Result<()> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let content = serde_json::to_string_pretty(self)
+
+        // Read existing file content (if any)
+        let mut current: serde_json::Value = if path.exists() {
+            let content = std::fs::read_to_string(&path)
+                .with_context(|| format!("Failed to read {}", path.display()))?;
+            serde_json::from_str(&content)
+                .unwrap_or(serde_json::Value::Object(serde_json::Map::new()))
+        } else {
+            serde_json::Value::Object(serde_json::Map::new())
+        };
+
+        // Serialize self - with skip_serializing_if, only explicitly-set
+        // (non-default) fields appear in the output.
+        let self_value = serde_json::to_value(self)
             .with_context(|| format!("Failed to serialize settings to {}", path.display()))?;
+
+        // Apply only the modified fields on top of the existing file content.
+        if let (Some(current_obj), Some(self_obj)) =
+            (current.as_object_mut(), self_value.as_object())
+        {
+            for key in &self.modified_fields {
+                if let Some(value) = self_obj.get(key) {
+                    // Field is set (non-default) - write it
+                    current_obj.insert(key.clone(), value.clone());
+                } else {
+                    // Field was un-set (returned to default) - remove from file
+                    current_obj.remove(key);
+                }
+            }
+        }
+
+        let content = serde_json::to_string_pretty(&current)
+            .with_context(|| format!("Failed to serialize settings to {}", path.display()))?;
+
         // Atomic write: write to temp file, then rename to prevent partial writes.
         let tmp_path = path.with_extension("json.tmp");
         std::fs::write(&tmp_path, &content)

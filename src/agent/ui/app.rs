@@ -790,7 +790,7 @@ fn handle_input(app: &mut App, tui: &mut TUI, key: &KeyEvent) {
                 weak.borrow_mut().set_hide_thinking(app.hide_thinking);
             }
             // Persist only the affected field (incremental save)
-            app.settings.hide_thinking = Some(app.hide_thinking);
+            app.settings.set_hide_thinking(Some(app.hide_thinking));
             if let Err(e) = app.settings.save() {
                 app.status_text = Some(format!("Failed to save thinking visibility: {}", e));
             }
@@ -868,7 +868,8 @@ fn handle_thinking_cycle(app: &mut App) {
     app.editor
         .borrow_mut()
         .update_border_color(Some(next), &app.theme as &dyn crate::tui::Theme);
-    app.settings.default_thinking_level = Some(next.to_string());
+    app.settings
+        .set_default_thinking_level(Some(next.to_string()));
     if let Err(e) = app.settings.save() {
         app.status_text = Some(format!("Failed to save thinking level: {}", e));
     }
@@ -918,7 +919,8 @@ fn handle_tools_expand(app: &mut App) {
     }
     drop(chat);
 
-    app.settings.collapse_tool_output = Some(app.collapse_tool_output);
+    app.settings
+        .set_collapse_tool_output(Some(app.collapse_tool_output));
     if let Err(e) = app.settings.save() {
         app.status_text = Some(format!("Failed to save tool output setting: {}", e));
     }

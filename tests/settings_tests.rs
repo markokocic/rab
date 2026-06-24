@@ -23,6 +23,8 @@ fn tmp_dir() -> std::path::PathBuf {
     d
 }
 
+// ── Loading / defaults ────────────────────────────────────────────
+
 #[test]
 fn defaults_when_no_config() {
     let tmp = tmp_dir();
@@ -211,12 +213,9 @@ fn save_writes_hide_thinking_block() {
     let global = tmp.join("global.json");
     write_file(&global, r#"{}"#);
 
-    Settings {
-        hide_thinking: Some(true),
-        ..Default::default()
-    }
-    .save_to(global.clone())
-    .unwrap();
+    let mut s = Settings::default();
+    s.set_hide_thinking(Some(true));
+    s.save_to(global.clone()).unwrap();
 
     let content = read_file(&global);
     assert!(content.contains(r#"hideThinkingBlock"#));
@@ -229,12 +228,9 @@ fn save_writes_collapse_tool_output() {
     let global = tmp.join("global.json");
     write_file(&global, r#"{}"#);
 
-    Settings {
-        collapse_tool_output: Some(true),
-        ..Default::default()
-    }
-    .save_to(global.clone())
-    .unwrap();
+    let mut s = Settings::default();
+    s.set_collapse_tool_output(Some(true));
+    s.save_to(global.clone()).unwrap();
 
     let content = read_file(&global);
     assert!(content.contains(r#"collapseToolOutput"#));
@@ -265,19 +261,96 @@ fn save_roundtrip_preserves_all_fields() {
 }
 
 #[test]
-fn save_creates_parent_directory() {
+fn save_creates_parent_directory_and_writes_modified_fields() {
     let tmp = tmp_dir();
-    // Use a path in a non-existent subdirectory
     let deep_path = tmp.join("sub").join("dir").join("settings.json");
 
-    let s = Settings::default();
+    let mut s = Settings::default();
+    s.set_hide_thinking(Some(true));
+    s.set_collapse_tool_output(Some(true));
     s.save_to(deep_path.clone()).unwrap();
     assert!(deep_path.exists());
 
     let content = read_file(&deep_path);
-    // Should contain all default fields
+    // Only the modified fields should be present
     assert!(content.contains(r#"hideThinkingBlock"#));
     assert!(content.contains(r#"collapseToolOutput"#));
+    // Default/unset fields should NOT be present
+    assert!(!content.contains(r#"defaultProvider"#));
+    assert!(!content.contains(r#"defaultModel"#));
+    assert!(!content.contains(r#"verbose"#));
+    assert!(!content.contains(r#"tools"#));
+    assert!(!content.contains(r#"excludeTools"#));
+    assert!(!content.contains(r#"theme"#));
+}
+
+#[test]
+fn save_does_not_write_default_fields() {
+    let tmp = tmp_dir();
+    let global = tmp.join("global.json");
+    write_file(&global, r#"{}"#);
+
+    // Set only one field and save
+    let mut s = Settings::default();
+    s.set_hide_thinking(Some(true));
+    s.save_to(global.clone()).unwrap();
+
+    let content = read_file(&global);
+    // The modified field should be present
+    assert!(content.contains(r#"hideThinkingBlock"#));
+    // Other fields should NOT be written
+    assert!(!content.contains(r#"defaultProvider"#));
+    assert!(!content.contains(r#"defaultModel"#));
+    assert!(!content.contains(r#"defaultThinkingLevel"#));
+    assert!(!content.contains(r#"tools"#));
+    assert!(!content.contains(r#"excludeTools"#));
+    assert!(!content.contains(r#"theme"#));
+    assert!(!content.contains(r#"verbose"#));
+    assert!(!content.contains(r#"collapseToolOutput"#));
+}
+
+#[test]
+fn save_resets_field_when_set_to_default() {
+    let tmp = tmp_dir();
+    let global = tmp.join("global.json");
+    write_file(&global, r#"{"hideThinkingBlock": true}"#);
+
+    // Set hide_thinking to None (unset) and save
+    let mut s = Settings::load_from(global.clone(), &tmp).unwrap();
+    s.set_hide_thinking(None);
+    s.save_to(global.clone()).unwrap();
+
+    let content = read_file(&global);
+    // hideThinkingBlock should have been removed from the file
+    assert!(!content.contains(r#"hideThinkingBlock"#));
+}
+
+#[test]
+fn project_values_do_not_leak_into_global_file() {
+    let tmp = tmp_dir();
+    let global = tmp.join("global.json");
+    // Global has no defaultModel
+    write_file(&global, r#"{"hideThinkingBlock": true}"#);
+    // Project has a defaultModel (should NOT leak to global on save)
+    write_file(
+        &tmp.join(".rab").join("settings.json"),
+        r#"{"defaultModel": "project-model"}"#,
+    );
+
+    // Load merges project into settings, but modified_fields is empty
+    let mut s = Settings::load_from(global.clone(), &tmp).unwrap();
+    assert_eq!(s.model(), "project-model");
+
+    // Now toggle hide_thinking and save
+    s.set_hide_thinking(Some(false));
+    s.save_to(global.clone()).unwrap();
+
+    let content = read_file(&global);
+    // hideThinkingBlock should be updated
+    assert!(content.contains(r#"hideThinkingBlock"#));
+    assert!(content.contains(r#"false"#));
+    // defaultModel should NOT have leaked from project to global
+    assert!(!content.contains(r#"defaultModel"#));
 }
 
 // ── Model persistence ──────────────────────────────────────────────
@@ -288,12 +361,10 @@ fn model_save_persists_default_model() {
     let global = tmp.join("global.json");
     write_file(&global, r#"{}"#);
 
-    Settings {
-        default_model: Some("deepseek-v4-pro".into()),
-        ..Default::default()
-    }
-    .save_to(global.clone())
-    .unwrap();
+    let mut s = Settings::default();
+    s.mark_modified("defaultModel");
+    s.default_model = Some("deepseek-v4-pro".into());
+    s.save_to(global.clone()).unwrap();
 
     let content = read_file(&global);
     assert!(content.contains(r#"defaultModel"#));
@@ -305,12 +376,10 @@ fn model_save_roundtrip() {
     let tmp = tmp_dir();
     let global = tmp.join("global.json");
 
-    Settings {
-        default_model: Some("deepseek-v4-flash".into()),
-        ..Default::default()
-    }
-    .save_to(global.clone())
-    .unwrap();
+    let mut s = Settings::default();
+    s.mark_modified("defaultModel");
+    s.default_model = Some("deepseek-v4-flash".into());
+    s.save_to(global.clone()).unwrap();
 
     let loaded = Settings::load_from(global, &tmp).unwrap();
     assert_eq!(loaded.model(), "deepseek-v4-flash");
