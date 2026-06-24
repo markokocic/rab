@@ -1378,17 +1378,100 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
             session_id,
             file_path,
             name,
-            message_count,
+            message_count: _,
+            user_messages: _,
+            assistant_messages: _,
+            tool_calls: _,
+            tool_results: _,
+            total_tokens: _,
+            input_tokens: _,
+            output_tokens: _,
+            cache_read_tokens: _,
+            cache_write_tokens: _,
+            cost: _,
         } => {
-            let name_display = name.as_deref().unwrap_or("unnamed");
+            // Compute live stats from app.conversation (always fresh)
+            let name_display = name
+                .as_deref()
+                .or_else(|| app.session.as_ref().and_then(|s| s.session_name()))
+                .unwrap_or("unnamed");
             let file_display = file_path
                 .as_ref()
                 .map(|p| p.display().to_string())
                 .unwrap_or_else(|| "in-memory".to_string());
-            let info = format!(
-                "Session: {} ({})\nID: {}\nMessages: {}",
-                name_display, file_display, session_id, message_count
+            let sid = if session_id.is_empty() {
+                app.session
+                    .as_ref()
+                    .map(|s| s.session_id().to_string())
+                    .unwrap_or_default()
+            } else {
+                session_id
+            };
+
+            let user_messages = app
+                .conversation
+                .iter()
+                .filter(|m| m.role == crate::agent::types::Role::User)
+                .count();
+            let assistant_messages = app
+                .conversation
+                .iter()
+                .filter(|m| m.role == crate::agent::types::Role::Assistant)
+                .count();
+            let tool_results = app
+                .conversation
+                .iter()
+                .filter(|m| m.role == crate::agent::types::Role::ToolResult)
+                .count();
+            let tool_calls: usize = app
+                .conversation
+                .iter()
+                .flat_map(|m| m.tool_calls.iter())
+                .count();
+            let total_messages = user_messages + assistant_messages + tool_results;
+
+            let mut input_tokens: u64 = 0;
+            let mut output_tokens: u64 = 0;
+            let mut cache_read_tokens: u64 = 0;
+            let cost: f64 = 0.0;
+            for msg in &app.conversation {
+                if let Some(ref usage) = msg.usage {
+                    input_tokens += usage.input_tokens.unwrap_or(0) as u64;
+                    output_tokens += usage.output_tokens.unwrap_or(0) as u64;
+                    cache_read_tokens += usage.cache_tokens.unwrap_or(0) as u64;
+                }
+            }
+            let total_tokens = input_tokens + output_tokens + cache_read_tokens;
+
+            // Build info display matching pi's handleSessionCommand
+            let mut info = format!(
+                "Session Info\n\n\
+                 Name: {name_display}\n\
+                 File: {file_display}\n\
+                 ID: {sid}\n\
+                 \n\
+                 Messages\n\
+                 User: {user_messages}\n\
+                 Assistant: {assistant_messages}\n\
+                 Tool Calls: {tool_calls}\n\
+                 Tool Results: {tool_results}\n\
+                 Total: {total_messages}\n\
+                 \n\
+                 Tokens\n\
+                 Input: {}\n\
+                 Output: {}\n\
+                 Total: {}",
+                format_number(input_tokens),
+                format_number(output_tokens),
+                format_number(total_tokens),
             );
+            if cache_read_tokens > 0 {
+                info += &format!("\nCache Read: {}", format_number(cache_read_tokens));
+            }
+            if cost > 0.0 {
+                info += &format!("\n\nCost\nTotal: {:.4}", cost);
+            }
+
             chat_add(
                 app,
                 std::boxed::Box::new(InfoMessageComponent::new(info.clone())),
@@ -2067,6 +2150,19 @@ fn extract_full_output_path(content: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// Format a number with locale-style thousands separators (e.g. 1234 -> "1,234").
+fn format_number(n: u64) -> String {
+    let s = n.to_string();
+    let mut result = String::new();
+    for (i, c) in s.chars().rev().enumerate() {
+        if i > 0 && i % 3 == 0 {
+            result.push(',');
+        }
+        result.push(c);
+    }
+    result.chars().rev().collect()
 }
 
 #[cfg(test)]

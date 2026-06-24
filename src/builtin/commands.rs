@@ -21,6 +21,16 @@ pub struct SessionInfoInternal {
     pub file_path: Option<std::path::PathBuf>,
     pub name: Option<String>,
     pub message_count: usize,
+    pub user_messages: usize,
+    pub assistant_messages: usize,
+    pub tool_calls: usize,
+    pub tool_results: usize,
+    pub total_tokens: u64,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cache_write_tokens: u64,
+    pub cost: f64,
 }
 
 impl CommandsExtension {
@@ -367,6 +377,16 @@ impl CommandHandler for SessionInfoCommand {
                 file_path: si.file_path.clone(),
                 name: si.name.clone(),
                 message_count: si.message_count,
+                user_messages: si.user_messages,
+                assistant_messages: si.assistant_messages,
+                tool_calls: si.tool_calls,
+                tool_results: si.tool_results,
+                total_tokens: si.total_tokens,
+                input_tokens: si.input_tokens,
+                output_tokens: si.output_tokens,
+                cache_read_tokens: si.cache_read_tokens,
+                cache_write_tokens: si.cache_write_tokens,
+                cost: si.cost,
             }),
             None => Ok(CommandResult::Info(
                 "No active session (use --no-session?)".to_string(),

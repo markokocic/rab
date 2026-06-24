@@ -306,6 +306,16 @@ fn session_command_with_info() {
         file_path: Some(std::path::PathBuf::from("/tmp/test.jsonl")),
         name: Some("Test".to_string()),
         message_count: 42,
+        user_messages: 10,
+        assistant_messages: 8,
+        tool_calls: 15,
+        tool_results: 12,
+        total_tokens: 5000,
+        input_tokens: 3000,
+        output_tokens: 1500,
+        cache_read_tokens: 500,
+        cache_write_tokens: 0,
+        cost: 0.0123,
     });
     let cmds = ext.commands();
     let cmd = cmds.iter().find(|c| c.name == "session").unwrap();
@@ -317,6 +327,7 @@ fn session_command_with_info() {
             file_path,
             name,
             message_count,
+            ..
         } => {
             assert_eq!(session_id, "abc123");
             assert_eq!(file_path, Some(std::path::PathBuf::from("/tmp/test.jsonl")));
