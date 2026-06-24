@@ -302,8 +302,11 @@ impl Component for Markdown {
         // Calculate available width for content
         let content_width = width.saturating_sub(2 * self.padding_x).max(1);
 
-        // Replace tabs with 3 spaces (only pre-processing needed)
+        // Replace tabs with 3 spaces and normalize headings to prevent
+        // progressive indentation from LLM outputs (CommonMark interprets
+        // indented headings as nested inside list items).
         let normalized = self.text.replace('\t', "   ");
+        let normalized = normalize_markdown_headings(&normalized);
 
         // Parse with pulldown-cmark
         let md_options = Options::ENABLE_STRIKETHROUGH
@@ -918,7 +921,9 @@ impl Markdown {
         depth: usize,
     ) -> Vec<String> {
         let mut lines: Vec<String> = Vec::new();
-        let indent_str = "    ".repeat(depth);
+        // Cap nesting depth to prevent absurd indentation from deeply
+        // nested lists (max 8 levels = 32 spaces indent).
+        let indent_str = "    ".repeat(depth.min(8));
         let start_number = start.unwrap_or(1);
         let mut item_index: u64 = 0;
 
@@ -1571,6 +1576,12 @@ pub fn normalize_markdown_headings(text: &str) -> String {
         result.push_str(line);
         result.push('\n');
         i += 1;
+    }
+
+    // Preserve original trailing newline semantics (text.lines() strips
+    // trailing empty strings, causing us to always add a trailing newline).
+    if !text.ends_with('\n') && result.ends_with('\n') {
+        result.pop();
     }
 
     result

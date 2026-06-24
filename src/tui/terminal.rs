@@ -148,25 +148,37 @@ pub fn drain_stdin_events() {
 /// Poll for any terminal event (key, paste, resize) with a timeout.
 /// Blocks the calling thread until either an event arrives or the timeout
 /// expires. Uses `recv_timeout` internally so zero CPU is consumed while
-/// waiting — unlike the previous spin-loop with 2ms sleeps.
+/// waiting.
+///
+/// The receiver is taken out of the mutex before the blocking call so
+/// `EVENT_RX` is never held during the wait — other code (e.g.
+/// `stop_stdin_reader`) can always lock it without contention.
 pub fn poll_terminal_event(timeout: Option<Duration>) -> io::Result<Option<TerminalEvent>> {
     use mpsc::RecvTimeoutError;
-    let rx_guard = EVENT_RX.lock().unwrap();
-    let rx = match rx_guard.as_ref() {
+    // Take the receiver out so we can block without holding EVENT_RX.
+    let rx_opt = EVENT_RX.lock().unwrap().take();
+    let rx = match rx_opt.as_ref() {
         Some(rx) => rx,
         None => return Ok(None),
     };
-    match timeout {
+    let (event, keep) = match timeout {
         Some(dur) => match rx.recv_timeout(dur) {
-            Ok(event) => Ok(Some(event)),
-            Err(RecvTimeoutError::Timeout) => Ok(None),
-            Err(RecvTimeoutError::Disconnected) => Ok(None),
+            Ok(event) => (Some(event), true),
+            Err(RecvTimeoutError::Timeout) => (None, true),
+            Err(RecvTimeoutError::Disconnected) => (None, false),
         },
         None => match rx.recv() {
-            Ok(event) => Ok(Some(event)),
-            Err(_) => Ok(None),
+            Ok(event) => (Some(event), true),
+            Err(_) => (None, false),
         },
+    };
+    // Drop the reference so we can move rx_opt
+    let _ = rx;
+    if keep {
+        // Channel still alive — put receiver back
+        *EVENT_RX.lock().unwrap() = rx_opt;
     }
+    Ok(event)
 }
 
 pub fn poll_key_event(timeout: Option<Duration>) -> io::Result<Option<KeyEvent>> {
