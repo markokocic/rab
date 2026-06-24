@@ -8,17 +8,17 @@ lets it act on your codebase.
 
 | pi (`packages/`) | rab equivalent | Status |
 |---|---|---|
-| `pi-tui` (terminal UI, components, editor) | `src/tui/` + `src/agent/ui/` | ✅ **1/1 complete** — 30 modules, 662 tests. Direct Rust port on crossterm. See [`tui.md`](tui.md). |
+| `pi-tui` (terminal UI, components, editor) | `src/tui/` + `src/agent/ui/` | ✅ **1/1 complete** - 30 modules, 662 tests. Direct Rust port on crossterm. |
 | `pi-agent-core` (agent loop, session, compaction, skills) | `src/agent/` | ✅ loop, session, skills, types, provider, extension done. ⬜ compaction not implemented. ⬜ steering/follow-up queues infrastructure exists but not actively used. |
-| `coding-agent` (CLI, extensions, tools, settings, commands) | `cli.rs`, `builtin/`, `settings.rs`, `commands.rs` | ✅ tools, settings, auth, CLI done. ⬜ models.json not implemented. ✅ hook pipeline (before/after tool call) wired. ✅ 8 slash commands implemented. |
-| `pi-ai` (providers, streaming) | `Provider` trait + `adapter/genai.rs` | ⬜ Single backend (OpenCode Go). Needs multi-backend support (claude→Anthropic, gpt→OpenAI, gemini→Gemini, fallback→Ollama). |
+| `coding-agent` (CLI, extensions, tools, settings, commands) | `main.rs`, `builtin/`, `settings.rs`, `commands.rs` | ✅ tools, settings, auth, CLI done. ⬜ models.json not implemented. ✅ hook pipeline (before/after tool call) wired. ✅ 22 slash commands implemented. |
+| `pi-ai` (providers, streaming) | `Provider` trait + `adapter.rs` | ⬜ Single backend (OpenCode Go). Needs multi-backend support (claude→Anthropic, gpt→OpenAI, gemini→Gemini, fallback→Ollama). |
 | `coding-agent/modes/interactive/theme/` | `src/agent/ui/theme.rs` | ✅ JSON theme system with resolution, fallback, detection (698 lines) |
 | `coding-agent/resource-loader.ts` | `src/agent/context_files.rs` | ✅ AGENTS.md/CLAUDE.md discovery |
 | `coding-agent/skills.ts` | `src/agent/skills.rs` | ✅ Skill loading, frontmatter, prompt formatting (825 lines) |
-| `tui/src/components/image.ts` | `src/tui/image.rs` | ⬜ Basic Kitty protocol support (data URL encoding, sequence generation). No TUI Component, no capabilities detection, no iTerm2, no cell dimensions. |
-| `tui/src/terminal-image.ts` | `src/tui/image.rs` (partial) | ⬜ Missing: capabilities detection, iTerm2, cell dimensions, resize, convert, paste |
-| `coding-agent/utils/image-resize.ts` | — | ⬜ Not implemented |
-| `coding-agent/utils/clipboard-image.ts` | — | ⬜ Not implemented |
+| `tui/src/components/image.ts` | - | ⬜ Not implemented |
+| `tui/src/terminal-image.ts` | - | ⬜ Not implemented |
+| `coding-agent/utils/image-resize.ts` | - | ⬜ Not implemented |
+| `coding-agent/utils/clipboard-image.ts` | - | ⬜ Not implemented |
 | MCP extensions | `pi-mcp-adapter` (planned) | ⬜ Phase 2 |
 | Config files | `~/.rab/` | ✅ Same schema as pi |
 
@@ -51,8 +51,8 @@ isolated behind a trait - replaceable with no changes to core logic.
 │                     rab (EPL-2.0)                        │
 │                                                          │
 │  ┌──────────────────────────────────────────────────┐   │
-│  │                 cli.rs                            │   │
-│  │  clap-based arg parsing, env reading,             │   │
+│  │                 main.rs (manual arg parsing)      │   │
+│  │  arg parsing, env reading,                         │   │
 │  │  mode dispatch (print / interactive)              │   │
 │  └────────────────────┬─────────────────────────────┘   │
 │                       │                                   │
@@ -66,11 +66,13 @@ isolated behind a trait - replaceable with no changes to core logic.
 │  ┌────▼──┐ ┌────▼──┐ ┌────▼──┐ ┌────▼──┐ ┌────▼──┐      │
 │  │builtin│ │  tui/  │ │commands│ │settings│ │ sys   │      │
 │  │read   │ │ agent/ │ │.rs     │ │.rs     │ │prompt │      │
-│  │write  │ │ ui/    │ │/quit   │ │~/.rab/ │ │.rs    │      │
-│  │edit   │ │screen  │ │/model  │ │settings│ │AGENTS │      │
-│  │bash   │ │editor  │ │/new    │ │        │ │.md    │      │
-│  │commands│  list   │ │/resume │ └────────┘ └───────┘      │
-│  └──┬────┘ └───┬────┘ │/session│                           │
+│  │write  │ │ ui/    │ │22 slash│ │~/.rab/ │ │.rs    │      │
+│  │edit   │ │screen  │ │commands│ │settings│ │AGENTS │      │
+│  │find   │ │editor  │ │        │ │        │ │.md    │      │
+│  │grep   │ │list    │ │        │ └────────┘ └───────┘      │
+│  │ls     │ └───────┘ │        │                           │
+│  │commands│          │        │                           │
+│  └──┬────┘          │        │                           │
 │     │          │ crossterm (0.29)                           │
 │     │          │ unicode-segmentation, unicode-width        │
 │  └──┬────┘  impl agent::extension::Extension trait        │         │
@@ -96,9 +98,9 @@ isolated behind a trait - replaceable with no changes to core logic.
 │  └────────────────────┬─────────────────────────────┘   │
 │                       │                                   │
 │  ┌────────────────────▼─────────────────────────────┐   │
-│  │          adapter/genai.rs  (impl Provider)         │   │
-│  │  struct GenaiAdapter { client: genai::Client }     │   │
-│  │  impl Provider for GenaiAdapter { ... }            │   │
+│  │          adapter.rs  (impl Provider)               │   │
+│  │  struct GenaiProvider { client: genai::Client }    │   │
+│  │  impl Provider for GenaiProvider { ... }           │   │
 │  │  The only file that imports genai                  │   │
 │  └────────────────────┬─────────────────────────────┘   │
 │                       │                                   │
@@ -170,14 +172,14 @@ AgentEvent
 ├── TurnStart
 ├── TextDelta { delta: String }
 ├── ThinkingDelta { delta: String }
-├── ToolCall { id, name, args }
-├── ToolCallArgsUpdate { id, name, args }
-├── ToolProgress { id, content, is_error, is_complete }
-├── ToolResult { id, name, content, is_error, terminated }
+├── ToolCall { id: String, name: String, args: serde_json::Value }
+├── ToolCallArgsUpdate { id: String, args: serde_json::Value }
+├── ToolProgress { content: String, is_error: bool }
+├── ToolResult { id: String, name: String, content: String, compact: Option<String>, is_error: bool }
 ├── TurnEnd
 ├── AgentEnd { messages: Vec<AgentMessage> }
-├── Aborted
-├── UserMessage { text: String }
+├── Aborted { reason: String }
+├── UserMessage { content: String }
 ```
 
 ### PendingMessageQueue & QueueMode
@@ -357,7 +359,7 @@ A tool can override the global mode via `AgentTool::execution_mode()`.
 
 ---
 
-## Session layer (`src/agent/session.rs`) — ✅ 1985 lines
+## Session layer (`src/agent/session.rs`) - ✅ 1985 lines
 
 ### Format
 
@@ -414,7 +416,7 @@ are resolved by walking from the root along the active branch. Branching
 happens when a new entry points to a non-tail parent - no format changes
 needed.
 
-## Compaction (`compaction.rs`) — ⬜ NOT IMPLEMENTED
+## Compaction (`compaction.rs`) - ⬜ NOT IMPLEMENTED
 
 When the conversation approaches the model's context window, older messages
 are summarized to free space. Ported from pi's compaction algorithm.
@@ -510,7 +512,7 @@ still load. `--no-extensions` skips both.
 Each built-in is an `Extension` that provides tools or commands. They serve
 as the reference implementation for user extensions.
 
-### commands — ✅ 8 commands implemented
+### commands - ✅ 22 commands implemented
 
 Provides core slash commands via the `CommandHandler` trait.
 Same interface as user-provided commands - no special path for built-ins.
@@ -519,12 +521,26 @@ Same interface as user-provided commands - no special path for built-ins.
 |---------|---------|-------------|
 | `/quit` | `QuitCommand` | Returns `CommandResult::Quit`, TUI breaks event loop |
 | `/model <name>` | `ModelCommand` | Switches active model; no args shows available models. Provides argument completions. |
-| `/hotkeys` | `HotkeysCommand` | Shows keyboard shortcuts overlay |
-| `/reload` | `ReloadCommand` | Reloads settings and auth from disk |
-| `/new` | `NewCommand` | Clears conversation, starts new session |
-| `/resume` | `ResumeCommand` | Opens session selector |
-| `/session` | `SessionInfoCommand` | Shows session info (ID, file, message count) |
+| `/settings` | `SettingsCommand` | Opens settings menu overlay |
+| `/scoped-models` | `ScopedModelsCommand` | Enable/disable models for Ctrl+P cycling |
+| `/export [path]` | `ExportCommand` | Export session (HTML default, or .jsonl) |
+| `/import <path>` | `ImportCommand` | Import and resume a session from JSONL |
+| `/share` | `ShareCommand` | Share session as secret GitHub gist |
+| `/copy` | `CopyCommand` | Copy last assistant message to clipboard |
 | `/name <name>` | `NameCommand` | Sets session display name |
+| `/session` | `SessionInfoCommand` | Shows session info (ID, file, message count, tokens, cost) |
+| `/changelog` | `ChangelogCommand` | Shows changelog overlay |
+| `/hotkeys` | `HotkeysCommand` | Shows keyboard shortcuts overlay |
+| `/fork [msg-id]` | `ForkCommand` | Fork session from a previous message |
+| `/clone` | `CloneCommand` | Duplicate current session |
+| `/tree` | `TreeCommand` | Navigate session tree (switch branches) |
+| `/trust <decision>` | `TrustCommand` | Save project trust decision |
+| `/login [provider]` | `LoginCommand` | Configure provider authentication |
+| `/logout [provider]` | `LogoutCommand` | Remove provider authentication |
+| `/new` | `NewCommand` | Clears conversation, starts new session |
+| `/compact` | `CompactCommand` | Manually compact the session context |
+| `/resume` | `ResumeCommand` | Opens session selector |
+| `/reload` | `ReloadCommand` | Reloads keybindings, extensions, skills, prompts, and themes |
 
 ### read
 
@@ -569,37 +585,32 @@ the TUI dispatches it to the matching `CommandHandler::execute()`. The result
 (`CommandResult`) determines what happens: show info, quit, switch models,
 open session selector, etc.
 
-### Built-in commands (via `CommandsExtension`) — ✅ 8 implemented
+### Built-in commands (via `CommandsExtension`) - ✅ 22 implemented
 
 | Command | Result | Description |
 |---------|--------|-------------|
 | `/quit` | `CommandResult::Quit` | Graceful shutdown |
 | `/model <name>` | `CommandResult::ModelChanged(name)` or `Info` | Switch model; no args lists available models |
+| `/settings` | `CommandResult::OpenSettings` | Open settings menu overlay |
+| `/scoped-models` | `CommandResult::ScopedModels` | Enable/disable models for Ctrl+P cycling |
+| `/export [path]` | `CommandResult::ExportSession { path }` | Export session (HTML or .jsonl) |
+| `/import <path>` | `CommandResult::ImportSession { path }` | Import and resume a session |
+| `/share` | `CommandResult::ShareSession` | Share as secret GitHub gist |
+| `/copy` | `CommandResult::CopyLastMessage` | Copy last assistant message to clipboard |
+| `/name <name>` | `CommandResult::SessionNamed { name }` | Set session display name |
+| `/session` | `CommandResult::SessionInfo { ... }` | Show session info and stats |
+| `/changelog` | `CommandResult::ShowChangelog` | Show changelog entries |
 | `/hotkeys` | `CommandResult::ShowHelp` | Show keyboard shortcuts |
-| `/reload` | `CommandResult::Reloaded` | Reload settings and auth |
+| `/fork [msg-id]` | `CommandResult::ForkSession { message_id }` | Fork from a previous user message |
+| `/clone` | `CommandResult::CloneSession` | Duplicate the current session |
+| `/tree` | `CommandResult::SessionTree` | Navigate session tree |
+| `/trust <decision>` | `CommandResult::TrustDecision { decision }` | Save project trust decision |
+| `/login [provider]` | `CommandResult::Login { provider }` | Configure provider auth |
+| `/logout [provider]` | `CommandResult::Logout { provider }` | Remove provider auth |
 | `/new` | `CommandResult::NewSession` | Clear conversation |
+| `/compact` | `CommandResult::CompactSession` | Manually compact session context |
 | `/resume` | `CommandResult::OpenSessionSelector` | Open session selector |
-| `/session` | `CommandResult::SessionInfo` | Show session info |
-| `/name <name>` | `CommandResult::SessionNamed` | Set session name |
-
-### Commands not yet implemented (14 of 22 pi built-ins)
-
-| Command | Priority | Notes |
-|---------|----------|-------|
-| `/settings` | high | Settings menu/overlay |
-| `/export` | high | Session export (.html/.jsonl) |
-| `/import` | high | Import and resume a session from JSONL |
-| `/copy` | high | Copy last assistant message to clipboard |
-| `/compact` | high | Manual session compaction |
-| `/changelog` | high | Changelog overlay |
-| `/scoped-models` | medium | Filter models for Ctrl+P cycling |
-| `/fork` | medium | Fork session from previous message |
-| `/clone` | medium | Duplicate current session |
-| `/trust` | medium | Project trust decision |
-| `/login` | medium | Provider auth config |
-| `/logout` | medium | Remove provider auth |
-| `/share` | low | Share as GitHub gist |
-| `/tree` | low | Session tree navigation |
+| `/reload` | `CommandResult::Reloaded` | Reload keybindings, extensions, skills, prompts, themes |
 
 ### Extension commands
 
@@ -686,9 +697,9 @@ pub trait Provider: Send + Sync {
 The trait takes `AgentMessage` directly - no intermediate conversion layer.
 Each adapter translates rab types into its own backend format internally.
 
-### Genai adapter (`adapter/genai.rs`) — ✅ single backend
+### Genai adapter (`adapter.rs`) - ✅ single backend
 
-The **only file** that imports genai. Wraps `genai::Client`, configured for the
+The **only file** that imports genai. Wraps `genai::Client` (via `GenaiProvider`), configured for the
 target provider.
 
 **Current:** Client configured for OpenCode Go (`https://opencode.ai/zen/go/v1`)
@@ -725,7 +736,7 @@ impl Provider for GenaiProvider {
 
 ---
 
-## Settings (`src/agent/settings.rs`) — ✅
+## Settings (`src/agent/settings.rs`) - ✅
 
 Same file names and format as pi, under `~/.rab/agent/`. Auth in `~/.rab/agent/auth.json`,
 settings in `~/.rab/agent/settings.json`. Keybindings in `~/.rab/keybindings.json`.
@@ -781,38 +792,30 @@ over both.
 
 ---
 
-## CLI (`cli.rs`) — ✅ 470 lines
+## CLI (inline in `main.rs`) - ✅ manual arg parsing
 
 ```
-rab [OPTIONS] [MESSAGE]...
+rab [MESSAGE]...
 
-Modes:
-  (default)        Print mode with piped stdin support
 Session:
-  -c, --continue   Continue most recent session in cwd
-  --session PATH   Open specific session file
-  --no-session     Ephemeral, don't save
+  -c, --continue             Continue most recent session in cwd
+  --session PATH             Open specific session file
+  --no-session               Ephemeral, don't save
+  -n, --name <name>          Set session name
 
 Model:
-  --model MODEL    Model name (provider auto-detected from name via adapter)
-  --thinking LEVEL off|minimal|low|medium|high
-
-Tools:
-  --no-tools       Disable all tools (chat-only mode)
-  -et, --exclude-tools <TOOLS>...  Exclude specific tools
+  --model MODEL              Model name
 
 Context:
-  -nc, --no-context-files      Skip AGENTS.md loading
-  --system-prompt <text>       Replace default system prompt
-  --append-system-prompt <text> Append to system prompt
+  -nc, --no-context-files    Skip AGENTS.md loading
+  --system-prompt <text>     Replace default system prompt
+  --append-system-prompt <text>  Append to system prompt
 
 Other:
-  -h, --help
-  -V, --version
+  --session-dir <path>       Session storage directory override
 ```
 
-Model auto-detection: `gpt*` → OpenAI, `claude*` → Anthropic, `gemini*` → Gemini,
-fallback → Ollama. **(Currently only OpenCode Go is implemented.)**
+**(Currently only OpenCode Go is implemented. Model auto-detection by prefix planned.)**
 
 ---
 
@@ -841,11 +844,9 @@ stdout. Same crate - no separate abstraction layer needed.
 
 ---
 
-## TUI (`src/tui/` + `src/agent/ui/`) — ✅ COMPLETE
+## TUI (`src/tui/` + `src/agent/ui/`) - ✅ COMPLETE
 
 The TUI library is a 1/1 port of pi's `@earendil-works/pi-tui` (30 modules, 662 tests).
-See [`tui.md`](tui.md) for the full design.
-
 **Core**: Component trait, Container, Focusable, Screen diff renderer, overlay
 system (show/hide/composite, anchor-based positioning), cursor marker extraction,
 hardware cursor positioning, synchronized output.
@@ -905,10 +906,10 @@ TUI.root (Container):
   │   ├── InfoMessageComponent (dim text)
   │   └── Spacer(1) between each (via chat_add helper)
   │
-  ├── pending_section (DynamicLines — streaming text/thinking)
-  ├── status_section (DynamicLines — transient status)
-  ├── queued_section (DynamicLines — ◷ queued messages)
-  ├── working_section (DynamicLines — ⠋ Working...)
+  ├── pending_section (DynamicLines - streaming text/thinking)
+  ├── status_section (DynamicLines - transient status)
+  ├── queued_section (DynamicLines - ◷ queued messages)
+  ├── working_section (DynamicLines - ⠋ Working...)
   ├── EditorComponent (border color: thinking level / bash mode)
   └── FooterComponent (cwd, git branch, token usage, model, auto-compact)
 ```
@@ -919,11 +920,11 @@ resulting lines are composited with overlays and diff-rendered via `Screen`.
 
 Tool execution components use `Rc<RefCell<>>` + `Weak` for in-place updates:
 - `streaming_component: Option<Weak<RefCell<AssistantMessageComponent>>>`
-  — created on first `TextDelta`, updated with `append_text()`/`add_thinking()`
+  - created on first `TextDelta`, updated with `append_text()`/`add_thinking()`
 - `pending_tools: HashMap<String, Weak<RefCell<ToolExecComponent>>>`
-  — created on `ToolCall`, updated with `set_result()` on `ToolResult`
+  - created on `ToolCall`, updated with `set_result()` on `ToolResult`
 - `bash_component: Option<Weak<RefCell<BashExecution>>>`
-  — created on bang command, updated with `append_chunk()` on `ToolProgress`
+  - created on bang command, updated with `append_chunk()` on `ToolProgress`
 
 ### Message queuing
 
@@ -962,7 +963,7 @@ if !args.no_extensions {
 }
 ```
 
-### Dynamic plugin system (WASM via wasmtime) — ⬜ NOT STARTED
+### Dynamic plugin system (WASM via wasmtime) - ⬜ NOT STARTED
 
 The primary mechanism for user plugins. Plugins are `.wasm` components loaded
 at runtime from `~/.rab/extensions/` (global) and `.rab/extensions/` (project).
@@ -1135,7 +1136,7 @@ Loaded from `~/.rab/skills/` and `.rab/skills/` via `src/agent/skills.rs` (825 l
 - `expand_skill_command()` - `/skill:name [args]` expansion in user input (pi-style)
 - Startup resource listing shows skill names in the welcome message
 
-### pi-mcp-adapter — ⬜ NOT STARTED
+### pi-mcp-adapter - ⬜ NOT STARTED
 
 An `Extension` that connects to MCP (Model Context Protocol) servers and
 exposes their tools to the agent. Uses the `rmcp` crate for client-side MCP
@@ -1195,7 +1196,7 @@ built-in Phase 2 extension.
 
 ```
 rab (EPL-2.0)
-├── genai 0.6              (Apache 2.0) - isolated: only adapter/genai.rs imports this
+├── genai 0.6              (Apache 2.0) - isolated: only adapter.rs imports this
 ├── clap 4                 (MIT)        - CLI parsing
 ├── tokio 1                (MIT)        - async runtime
 ├── serde + serde_json 1   (MIT)        - JSON serialization
@@ -1215,13 +1216,13 @@ rab (EPL-2.0)
 ├── diff 0.1               (MIT)        - diff algorithm for edit tool
 ├── base64 0.22            (MIT)        - image data URL encoding
 ├── async-stream 0.3       (MIT)        - async stream generation
-├── reqwest 0.12           (MIT)        - HTTP client
+├── reqwest 0.13           (MIT)        - HTTP client
 ├── rustls 0.23            (MIT)        - TLS
 ├── webpki-roots 1         (ISC)        - CA certificates
 ├── libc 0.2               (MIT)        - system calls
 ├── regex 1.12             (MIT)        - regex
-├── wasmtime 26+           (Apache 2.0) - WASM runtime for dynamic plugins (phase 2)
-├── notify 7               (CC0-1.0)    - file watcher for plugin hot reload (phase 2)
+# wasmtime 26+ (phase 2, Apache 2.0)
+# notify 7    (phase 2, CC0-1.0) - file watcher for plugin hot reload (phase 2)
 └── rmcp 1                 (MIT)        - MCP client for pi-mcp-adapter (phase 2)
 ```
 
