@@ -572,14 +572,10 @@ impl ToolRenderer for BashRenderer {
             lines.push(theme.fg_key(ThemeKey::Muted, &format!("{} {:.1}s", label, secs)));
         }
 
-        // Status
-        if ctx.cancelled {
-            lines.push(theme.fg_key(ThemeKey::Warning, "(cancelled)"));
-        } else if let Some(code) = ctx.exit_code
-            && code != 0
-        {
-            lines.push(theme.fg_key(ThemeKey::Warning, &format!("(exit {})", code)));
-        }
+        // Pi does not add separate exit code or cancelled status lines because
+        // the tool result content already includes "Command exited with code N" or
+        // "Command aborted" from the tool error response. The content is rendered
+        // as-is above, preserving the status at the end where truncation keeps it.
 
         // Truncation warnings
         if ctx.was_truncated {

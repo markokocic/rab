@@ -691,13 +691,9 @@ impl Component for BashResult {
             lines.push(duration_text);
         }
 
-        if self.cancelled {
-            lines.push(format!("{} (cancelled)\x1b[39m", warning_ansi));
-        } else if let Some(code) = self.exit_code
-            && code != 0
-        {
-            lines.push(format!("{} (exit {})\x1b[39m", warning_ansi, code));
-        }
+        // Pi does not add separate exit code or cancelled status lines because
+        // the tool result content already includes "Command exited with code N" or
+        // "Command aborted" from the tool error response.
 
         if self.was_truncated {
             if let Some(ref path) = self.full_output_path {
