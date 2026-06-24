@@ -25,6 +25,7 @@ use crate::tui::focusable::Focusable;
 
 use crate::agent::ui::theme::ThemeKey;
 use crate::tui::components::Spacer;
+use crate::tui::components::Text;
 use crate::tui::terminal::{self, ProcessTerminal, TerminalTrait};
 use crossterm::event::KeyEvent;
 use tokio::sync::mpsc;
@@ -785,12 +786,10 @@ fn handle_input(app: &mut App, tui: &mut TUI, key: &KeyEvent) {
                 weak.borrow_mut().set_hide_thinking(app.hide_thinking);
             }
             // Persist only the affected field (incremental save)
-            if let Err(e) =
-                crate::agent::settings::save_field("hideThinkingBlock", app.hide_thinking)
-            {
+            app.settings.hide_thinking = Some(app.hide_thinking);
+            if let Err(e) = app.settings.save() {
                 app.status_text = Some(format!("Failed to save thinking visibility: {}", e));
             }
-            app.settings.hide_thinking = Some(app.hide_thinking);
             chat_add(
                 app,
                 Box::new(InfoMessageComponent::new(if app.hide_thinking {
@@ -866,7 +865,7 @@ fn handle_thinking_cycle(app: &mut App) {
         .borrow_mut()
         .update_border_color(Some(next), &app.theme as &dyn crate::tui::Theme);
     app.settings.default_thinking_level = Some(next.to_string());
-    if let Err(e) = crate::agent::settings::save_field("defaultThinkingLevel", next) {
+    if let Err(e) = app.settings.save() {
         app.status_text = Some(format!("Failed to save thinking level: {}", e));
     }
     // Update provider's reasoning effort so API calls use the new level
@@ -916,9 +915,7 @@ fn handle_tools_expand(app: &mut App) {
     drop(chat);
 
     app.settings.collapse_tool_output = Some(app.collapse_tool_output);
-    if let Err(e) =
-        crate::agent::settings::save_field("collapseToolOutput", app.collapse_tool_output)
-    {
+    if let Err(e) = app.settings.save() {
         app.status_text = Some(format!("Failed to save tool output setting: {}", e));
     }
     chat_add(
@@ -1341,30 +1338,38 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
             ));
         }
         CommandResult::NewSession => {
+            // Matching pi's handleClearCommand:
+            //   1. Stop loading animation
+            //   2. Clear status container
+            //   3. runtimeHost.newSession() -> session.new_session()
+            //   4. renderCurrentSessionState() -> clear everything
+            //   5. Add "✓ New session started" with accent color + spacer
+
+            // Stop working indicator (matching pi's loadingAnimation.stop())
+            app.working.stop();
+
+            // Clear status section (matching pi's statusContainer.clear())
+            app.status_text = None;
+
             // Create a new session in the SessionManager (new ID, new file)
             if let Some(ref mut session) = app.session {
                 session.new_session(None);
             }
-            // Clear conversation and messages
+
+            // Clear everything (matching pi's renderCurrentSessionState)
             app.conversation.clear();
-            app.messages.retain(|m| matches!(m, DisplayMsg::Info(_)));
-            // Clear chat container children (keep header, etc.)
+            app.messages.clear();
             app.chat_container.borrow_mut().clear();
-            // Clear streaming state (pi's renderCurrentSessionState)
             app.streaming_component = None;
             app.pending_text = None;
             app.pending_thinking = None;
-            // Clear pending tool state
             app.pending_tools.clear();
             app.tool_call_start_times.clear();
-            // Add info message like pi does
-            chat_add(
-                app,
-                std::boxed::Box::new(InfoMessageComponent::new(
-                    "New session started.".to_string(),
-                )),
-            );
-            app.status_text = Some("New session started.".into());
+
+            // Add "✓ New session started" with accent color, matching pi's
+            // `new Text(theme.fg("accent", "✓ New session started"), 1, 1)`
+            let styled = app.theme.fg("accent", "✓ New session started");
+            chat_add(app, std::boxed::Box::new(Text::new(styled, 1, 1, None)));
         }
         CommandResult::SessionSwitched { path } => {
             app.status_text = Some(format!("Switched to session: {}", path.display()));

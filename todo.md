@@ -6,7 +6,6 @@
 - [ ] **Agentic loop freeze:** Sometimes after a few rounds the screen freezes and rab stops responding to any input. Only recoverable via `pkill -9 rab` from another terminal.
 - [ ] **Autocomplete of `/` commands - align to pi:** In pi, `/q<enter>` closes pi. In rab, `/q<enter>` autocompletes to `/quit` and needs a second enter. Should close immediately like pi.
 - [ ] **Enter key in slash command completion doesn't execute:** When selecting a slash command from the autocomplete dropdown, pressing Enter should execute the command immediately (matching pi behaviour), not just insert the text.
-- [ ] **Model thinking settings reset + editor borders:** Thinking setting gets reset to off intermittently. Editor border colors don't reflect the thinking setting. Should behave like pi.
 - [ ] **Markdown indentation inside code blocks:** Indentation compounds on each render, not matching pi.
 - [ ] **Write tool output:** Lines don't match screen width, styling/wrapping differ from pi. Needs 1:1 alignment.
 - [ ] **Edit tool diff:** Should be line-based, not character-based. Current diff is ugly.
@@ -51,7 +50,6 @@ These are feature gaps in the agent/tool functionality, not rendering:
 | C13 | Theme selector overlay | ❌ Open |
 | C14 | Thinking level selector | ❌ Open |
 | C15 | Extension editor / input / selector | ❌ Open |
-| C16 | Config / settings selector | ❌ Open |
 | C17 | Model selector improvements | ❌ Open (basic ModelSelector exists via SelectList overlay) |
 | C18 | OAuth login dialog | ❌ Open |
 | C19 | Trust selector | ❌ Open |

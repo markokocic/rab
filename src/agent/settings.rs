@@ -105,14 +105,24 @@ impl Settings {
     }
 
     /// Save settings to a specific path (for testing).
+    /// Uses atomic write (temp file + rename) to prevent partial writes.
     pub fn save_to(&self, path: std::path::PathBuf) -> anyhow::Result<()> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
         let content = serde_json::to_string_pretty(self)
             .with_context(|| format!("Failed to serialize settings to {}", path.display()))?;
-        std::fs::write(&path, &content)
-            .with_context(|| format!("Failed to write {}", path.display()))?;
+        // Atomic write: write to temp file, then rename to prevent partial writes.
+        let tmp_path = path.with_extension("json.tmp");
+        std::fs::write(&tmp_path, &content)
+            .with_context(|| format!("Failed to write {}", tmp_path.display()))?;
+        std::fs::rename(&tmp_path, &path).with_context(|| {
+            format!(
+                "Failed to rename {} to {}",
+                tmp_path.display(),
+                path.display()
+            )
+        })?;
         Ok(())
     }
 
@@ -120,60 +130,4 @@ impl Settings {
     pub fn model(&self) -> &str {
         self.default_model.as_deref().unwrap_or("deepseek-v4-flash")
     }
-}
-
-/// Save a single field to the global settings file without overwriting other fields.
-/// Reads the existing JSON, updates only `key` with `value`, and writes back atomically.
-/// If the file is corrupted, recovers by starting from an empty object.
-pub fn save_field(key: &str, value: impl serde::Serialize) -> anyhow::Result<()> {
-    let path = Settings::global_path()?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-
-    // Read existing settings; if the file is missing or corrupted, start fresh.
-    let mut data: serde_json::Value = if path.exists() {
-        match std::fs::read_to_string(&path) {
-            Ok(content) => serde_json::from_str(&content).unwrap_or_else(|e| {
-                eprintln!(
-                    "Warning: corrupted settings file ({}), resetting: {}",
-                    path.display(),
-                    e
-                );
-                serde_json::Value::Object(serde_json::Map::new())
-            }),
-            Err(e) => {
-                eprintln!(
-                    "Warning: could not read settings file ({}), resetting: {}",
-                    path.display(),
-                    e
-                );
-                serde_json::Value::Object(serde_json::Map::new())
-            }
-        }
-    } else {
-        serde_json::Value::Object(serde_json::Map::new())
-    };
-
-    if let serde_json::Value::Object(ref mut map) = data {
-        let json_val = serde_json::to_value(value)
-            .with_context(|| format!("Failed to serialize field {}", key))?;
-        map.insert(key.to_string(), json_val);
-    }
-
-    let content = serde_json::to_string_pretty(&data)
-        .with_context(|| format!("Failed to serialize {}", path.display()))?;
-
-    // Atomic write: write to temp file, then rename to prevent partial writes.
-    let tmp_path = path.with_extension("json.tmp");
-    std::fs::write(&tmp_path, &content)
-        .with_context(|| format!("Failed to write {}", tmp_path.display()))?;
-    std::fs::rename(&tmp_path, &path).with_context(|| {
-        format!(
-            "Failed to rename {} to {}",
-            tmp_path.display(),
-            path.display()
-        )
-    })?;
-    Ok(())
 }
