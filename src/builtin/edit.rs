@@ -158,85 +158,183 @@ fn prepare_edit_arguments(args: &serde_json::Value) -> Result<(String, Vec<Edit>
 
 // ── Diff computation ─────────────────────────────────────────────
 
-/// Compute a simple unified diff between original and modified content.
-fn compute_diff(original: &str, modified: &str, path: &str) -> String {
+/// Replace tabs with 3 spaces for consistent rendering.
+fn replace_tabs(text: &str) -> String {
+    text.replace('\t', "   ")
+}
+
+/// Compute a display-oriented diff string with line numbers and context.
+/// Produces pi-compatible format:
+/// `+{lineNum} {content}` / `-{lineNum} {content}` / ` {lineNum} {content}` / `  ...`
+/// With line numbers padded to the width of the max line number.
+fn compute_diff(original: &str, modified: &str, _path: &str) -> String {
     let orig_lines: Vec<&str> = original.lines().collect();
     let mod_lines: Vec<&str> = modified.lines().collect();
 
-    let mut diff = String::new();
-    diff.push_str("--- a/");
-    diff.push_str(path);
-    diff.push('\n');
-    diff.push_str("+++ b/");
-    diff.push_str(path);
-    diff.push('\n');
+    let max_line_num = orig_lines.len().max(mod_lines.len());
+    let line_num_width = max_line_num.to_string().len();
 
-    let mut i = 0;
-    let mut j = 0;
-    let mut hunk: Vec<(char, &str)> = Vec::new();
-    let mut hunk_start_orig = 0;
-    let mut hunk_start_mod = 0;
+    let mut output: Vec<String> = Vec::new();
 
-    while i < orig_lines.len() || j < mod_lines.len() {
-        let same = i < orig_lines.len() && j < mod_lines.len() && orig_lines[i] == mod_lines[j];
-
-        if same {
-            if !hunk.is_empty() && hunk.len() >= 3 {
-                // Emit context line within hunk
-                hunk.push((' ', orig_lines[i]));
+    // Use LCS to find the diff
+    let n = orig_lines.len();
+    let m = mod_lines.len();
+    let mut dp = vec![vec![0usize; m + 1]; n + 1];
+    for i in 1..=n {
+        for j in 1..=m {
+            if orig_lines[i - 1] == mod_lines[j - 1] {
+                dp[i][j] = dp[i - 1][j - 1] + 1;
             } else {
-                // Flush current hunk
-                if !hunk.is_empty() {
-                    flush_hunk(&mut diff, &mut hunk, hunk_start_orig, hunk_start_mod);
-                }
-                hunk_start_orig = i + 1;
-                hunk_start_mod = j + 1;
-            }
-            i += 1;
-            j += 1;
-        } else {
-            if hunk.is_empty() {
-                hunk_start_orig = i;
-                hunk_start_mod = j;
-            }
-            if i < orig_lines.len() {
-                hunk.push(('-', orig_lines[i]));
-                i += 1;
-            }
-            if j < mod_lines.len() {
-                hunk.push(('+', mod_lines[j]));
-                j += 1;
+                dp[i][j] = dp[i - 1][j].max(dp[i][j - 1]);
             }
         }
     }
 
-    if !hunk.is_empty() {
-        flush_hunk(&mut diff, &mut hunk, hunk_start_orig, hunk_start_mod);
+    // Backtrack to build sequence of changes
+    let mut changes: Vec<(char, &str)> = Vec::new();
+    let mut i = n;
+    let mut j = m;
+    while i > 0 || j > 0 {
+        if i > 0 && j > 0 && orig_lines[i - 1] == mod_lines[j - 1] {
+            changes.push((' ', orig_lines[i - 1]));
+            i -= 1;
+            j -= 1;
+        } else if j > 0 && (i == 0 || dp[i][j - 1] >= dp[i - 1][j]) {
+            changes.push(('+', mod_lines[j - 1]));
+            j -= 1;
+        } else {
+            changes.push(('-', orig_lines[i - 1]));
+            i -= 1;
+        }
+    }
+    changes.reverse();
+
+    // Group into hunks with context boundaries
+    const CONTEXT_LINES: usize = 4;
+    let mut old_line_num: usize = 1;
+    let mut new_line_num: usize = 1;
+    let mut _last_was_change = false;
+
+    let pad = |num: usize| -> String { format!("{:width$}", num, width = line_num_width) };
+
+    let mut k = 0;
+    while k < changes.len() {
+        let (tag, _text) = changes[k];
+
+        if tag == ' ' {
+            // Context line
+            let mut ctx_buffer: Vec<&str> = Vec::new();
+            let ctx_start = k;
+            while k < changes.len() && changes[k].0 == ' ' {
+                ctx_buffer.push(changes[k].1);
+                k += 1;
+            }
+            let ctx_end = k;
+            let has_leading_change = ctx_start > 0 && changes[ctx_start - 1].0 != ' ';
+            let has_trailing_change = ctx_end < changes.len() - 1;
+
+            if has_leading_change || has_trailing_change {
+                // Show context around changes (pi-style)
+                let total_ctx = ctx_buffer.len();
+
+                if has_leading_change && has_trailing_change {
+                    if total_ctx <= CONTEXT_LINES * 2 {
+                        // Show all
+                        for &line in &ctx_buffer {
+                            output.push(format!(" {} {}", pad(old_line_num), replace_tabs(line)));
+                            old_line_num += 1;
+                            new_line_num += 1;
+                        }
+                    } else {
+                        let leading = &ctx_buffer[..CONTEXT_LINES];
+                        let trailing = &ctx_buffer[total_ctx - CONTEXT_LINES..];
+                        let skipped = total_ctx - leading.len() - trailing.len();
+
+                        for &line in leading {
+                            output.push(format!(" {} {}", pad(old_line_num), replace_tabs(line)));
+                            old_line_num += 1;
+                            new_line_num += 1;
+                        }
+
+                        output.push(format!(" {} ...", " ".repeat(line_num_width)));
+                        old_line_num += skipped;
+                        new_line_num += skipped;
+
+                        for &line in trailing {
+                            output.push(format!(" {} {}", pad(old_line_num), replace_tabs(line)));
+                            old_line_num += 1;
+                            new_line_num += 1;
+                        }
+                    }
+                } else if has_leading_change {
+                    // Context after a change: show CONTEXT_LINES trailing
+                    let shown = ctx_buffer.len().min(CONTEXT_LINES);
+                    let skipped = ctx_buffer.len() - shown;
+
+                    if skipped > 0 {
+                        output.push(format!(" {} ...", " ".repeat(line_num_width)));
+                        old_line_num += skipped;
+                        new_line_num += skipped;
+                    }
+
+                    for &line in &ctx_buffer[ctx_buffer.len() - shown..] {
+                        output.push(format!(" {} {}", pad(old_line_num), replace_tabs(line)));
+                        old_line_num += 1;
+                        new_line_num += 1;
+                    }
+                } else if has_trailing_change {
+                    // Context before a change: show CONTEXT_LINES leading
+                    let shown = ctx_buffer.len().min(CONTEXT_LINES);
+                    let skipped = ctx_buffer.len() - shown;
+
+                    if skipped > 0 {
+                        output.push(format!(" {} ...", " ".repeat(line_num_width)));
+                        old_line_num += skipped;
+                        new_line_num += skipped;
+                    }
+
+                    for &line in &ctx_buffer[..shown] {
+                        output.push(format!(" {} {}", pad(old_line_num), replace_tabs(line)));
+                        old_line_num += 1;
+                        new_line_num += 1;
+                    }
+                }
+            } else {
+                // No surrounding changes - skip entirely
+                old_line_num += ctx_buffer.len();
+                new_line_num += ctx_buffer.len();
+            }
+
+            _last_was_change = false;
+        } else {
+            // Change (removed or added)
+            let mut removed: Vec<&str> = Vec::new();
+            while k < changes.len() && changes[k].0 == '-' {
+                removed.push(changes[k].1);
+                k += 1;
+            }
+            let mut added: Vec<&str> = Vec::new();
+            while k < changes.len() && changes[k].0 == '+' {
+                added.push(changes[k].1);
+                k += 1;
+            }
+
+            // Show all removed lines first
+            for &line in &removed {
+                output.push(format!("-{} {}", pad(old_line_num), replace_tabs(line)));
+                old_line_num += 1;
+            }
+            // Then all added lines
+            for &line in &added {
+                output.push(format!("+{} {}", pad(new_line_num), replace_tabs(line)));
+                new_line_num += 1;
+            }
+
+            _last_was_change = true;
+        }
     }
 
-    diff
-}
-
-fn flush_hunk(
-    diff: &mut String,
-    hunk: &mut Vec<(char, &str)>,
-    orig_start: usize,
-    mod_start: usize,
-) {
-    let orig_count = hunk.iter().filter(|(c, _)| *c == '-' || *c == ' ').count();
-    let mod_count = hunk.iter().filter(|(c, _)| *c == '+' || *c == ' ').count();
-    use std::fmt::Write;
-    let _ = writeln!(
-        diff,
-        "@@ -{},{} +{},{} @@",
-        orig_start + 1,
-        orig_count,
-        mod_start + 1,
-        mod_count
-    );
-    for (c, line) in hunk.drain(..) {
-        let _ = writeln!(diff, "{}{}", c, line);
-    }
+    output.join("\n")
 }
 
 // ── AgentTool implementation ─────────────────────────────────────
@@ -953,8 +1051,18 @@ mod tests {
         .await;
 
         assert!(result.contains("```diff"));
-        assert!(result.contains("-bbb"));
-        assert!(result.contains("+xxx"));
+        // Pi-style format with line numbers: "-2 bbb" and "+2 xxx"
+        // (bbb/xxx are on line 2 of the original/modified content)
+        assert!(
+            result.contains("-2 bbb"),
+            "expected '-2 bbb' in diff but got: {}",
+            result
+        );
+        assert!(
+            result.contains("+2 xxx"),
+            "expected '+2 xxx' in diff but got: {}",
+            result
+        );
         assert!(result.contains("Successfully replaced 1 block"));
     }
 
@@ -1048,19 +1156,23 @@ mod diff_tests {
         let orig = "aaa\nbbb\nccc\n";
         let modified = "aaa\nxxx\nccc\n";
         let diff = compute_diff(orig, modified, "test.txt");
-        assert!(diff.contains("--- a/test.txt"));
-        assert!(diff.contains("+++ b/test.txt"));
-        assert!(diff.contains("-bbb"));
-        assert!(diff.contains("+xxx"));
+        assert!(
+            diff.contains("-2 bbb"),
+            "diff should contain -2 bbb but got: {}",
+            diff
+        );
+        assert!(
+            diff.contains("+2 xxx"),
+            "diff should contain +2 xxx but got: {}",
+            diff
+        );
     }
 
     #[test]
     fn test_no_changes() {
         let text = "hello\nworld\n";
         let diff = compute_diff(text, text, "f.txt");
-        assert!(diff.contains("--- a/f.txt"));
-        assert!(diff.contains("+++ b/f.txt"));
-        assert!(!diff.contains("@@"));
+        assert!(diff.is_empty(), "no changes should produce empty diff");
     }
 
     #[test]
@@ -1068,9 +1180,25 @@ mod diff_tests {
         let orig = "a\nb\nc\nd\ne\nf\ng\nh\n";
         let modified = "a\nX\nc\nd\ne\nY\ng\nh\n";
         let diff = compute_diff(orig, modified, "f.txt");
-        assert!(diff.contains("-b"));
-        assert!(diff.contains("+X"));
-        assert!(diff.contains("-f"));
-        assert!(diff.contains("+Y"));
+        assert!(
+            diff.contains("-2 b"),
+            "should contain -2 b but got: {}",
+            diff
+        );
+        assert!(
+            diff.contains("+2 X"),
+            "should contain +2 X but got: {}",
+            diff
+        );
+        assert!(
+            diff.contains("-6 f"),
+            "should contain -6 f but got: {}",
+            diff
+        );
+        assert!(
+            diff.contains("+6 Y"),
+            "should contain +6 Y but got: {}",
+            diff
+        );
     }
 }

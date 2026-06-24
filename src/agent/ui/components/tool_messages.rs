@@ -281,15 +281,16 @@ impl ToolExecComponent {
         };
 
         // For `renderShell: "self"` tools (like edit), wrap call in a TuiBox with
-        // the appropriate background, then append result lines after.
-        // Pi's pattern: renderCall returns a Box (with bg/padding), renderResult
-        // returns a plain Text - both go in selfRenderContainer (a Container).
+        // the appropriate background (padding 1,1 matching pi's Box(1,1)),
+        // then append result lines after with a spacer before them.
+        // Pi's pattern: renderCall returns a Box (with bg/padding 1,1), renderResult
+        // returns a Container with optional Spacer + Text - both go in selfRenderContainer.
         if renderer.render_self() {
             let mut lines: Vec<String> = Vec::new();
             // Spacer above (matches pi's Spacer(1) in ToolExecutionComponent constructor)
             lines.push(String::new());
 
-            // Wrap call in a colored box (matching pi where renderCall returns a Box)
+            // Wrap call in a colored box with padding 1,1 (matching pi's Box(1,1))
             let bg_key = if !self.is_complete {
                 "toolPendingBg"
             } else if self.is_error {
@@ -298,7 +299,7 @@ impl ToolExecComponent {
                 "toolSuccessBg"
             };
             let bg_ansi = theme.bg_ansi(bg_key).to_string();
-            let mut call_box = TuiBox::new(1, 0, Some(crate::tui::Style::new().bg(bg_ansi)));
+            let mut call_box = TuiBox::new(1, 1, Some(crate::tui::Style::new().bg(bg_ansi)));
 
             let call_lines = renderer.render_call(&self.args, width, theme, &ctx);
             if !call_lines.is_empty() {
@@ -307,11 +308,12 @@ impl ToolExecComponent {
                 lines.extend(call_box.render(width));
             }
 
-            // Result body (no box, just raw lines - matches pi where renderResult
-            // returns a plain Text, not a Box)
+            // Result body with spacer before it (matching pi's renderResult which
+            // adds Spacer(1) before the diff text)
             if let Some(ref output) = self.output {
                 let result_lines = renderer.render_result(output, width, theme, &ctx);
                 if !result_lines.is_empty() {
+                    lines.push(String::new());
                     lines.extend(result_lines);
                 }
             }
