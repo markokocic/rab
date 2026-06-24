@@ -1529,7 +1529,7 @@ impl Component for Editor {
                     let rest_before = &before[..before.len() - last_g.len()];
                     let cursor = format!("\x1b[7m{}\x1b[0m", last_g);
                     (
-                        format!("{}{}{}", rest_before, marker, cursor),
+                        format!("{}{}{}", rest_before, cursor, marker),
                         visible_width(text),
                     )
                 } else {
