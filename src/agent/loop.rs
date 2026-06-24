@@ -1,6 +1,8 @@
 use crate::agent::extension::{Cancel, Extension, ToolOutput};
 use crate::agent::provider::{Provider, StopReason, StreamEvent, ToolDef};
-use crate::agent::types::{AgentMessage, PendingMessageQueue, Role, ToolCall, ToolExecutionMode};
+use crate::agent::types::{
+    AgentMessage, PendingMessageQueue, Role, ToolCall, ToolExecutionMode, Usage,
+};
 use futures::future::join_all;
 
 /// Collect tool definitions from all extensions.
@@ -187,6 +189,7 @@ pub async fn run_agent_loop(
             let mut response_text = String::new();
             let mut tool_calls: Vec<ToolCall> = Vec::new();
             let mut stop_reason = StopReason::EndTurn;
+            let mut usage = Usage::default();
 
             while let Some(event) = futures::StreamExt::next(&mut stream).await {
                 match event {
@@ -217,9 +220,9 @@ pub async fn run_agent_loop(
                     }
                     StreamEvent::Done {
                         text,
+                        usage: done_usage,
                         stop_reason: sr,
                         tool_calls: tcs,
-                        ..
                     } => {
                         if response_text.is_empty() && !text.is_empty() {
                             emit(AgentEvent::TextDelta {
@@ -228,6 +231,7 @@ pub async fn run_agent_loop(
                         }
                         response_text = text;
                         stop_reason = sr;
+                        usage = done_usage;
                         if !tcs.is_empty() {
                             tool_calls = tcs;
                         }
@@ -266,7 +270,7 @@ pub async fn run_agent_loop(
                 content: response_text.clone(),
                 tool_calls: tool_calls.clone(),
                 tool_call_id: None,
-                usage: None,
+                usage: Some(usage),
                 is_error: false,
                 timestamp: chrono::Utc::now().timestamp_millis(),
             };
