@@ -146,29 +146,26 @@ pub fn drain_stdin_events() {
 }
 
 /// Poll for any terminal event (key, paste, resize) with a timeout.
-/// Uses try_recv in a spin-loop with short sleeps so the mutex is never
-/// held during a blocking call — the main loop can always make progress.
+/// Blocks the calling thread until either an event arrives or the timeout
+/// expires. Uses `recv_timeout` internally so zero CPU is consumed while
+/// waiting — unlike the previous spin-loop with 2ms sleeps.
 pub fn poll_terminal_event(timeout: Option<Duration>) -> io::Result<Option<TerminalEvent>> {
-    let deadline = timeout.map(|t| std::time::Instant::now() + t);
-    loop {
-        {
-            let rx_guard = EVENT_RX.lock().unwrap();
-            if let Some(rx) = rx_guard.as_ref() {
-                match rx.try_recv() {
-                    Ok(event) => return Ok(Some(event)),
-                    Err(mpsc::TryRecvError::Empty) => {}
-                    Err(mpsc::TryRecvError::Disconnected) => return Ok(None),
-                }
-            }
-        } // MutexGuard dropped here
-        if let Some(deadline) = deadline
-            && std::time::Instant::now() >= deadline
-        {
-            return Ok(None);
-        }
-        // Brief sleep so we don't busy-spin, but responsive enough for the
-        // ~16ms poll interval.
-        std::thread::sleep(Duration::from_millis(2));
+    use mpsc::RecvTimeoutError;
+    let rx_guard = EVENT_RX.lock().unwrap();
+    let rx = match rx_guard.as_ref() {
+        Some(rx) => rx,
+        None => return Ok(None),
+    };
+    match timeout {
+        Some(dur) => match rx.recv_timeout(dur) {
+            Ok(event) => Ok(Some(event)),
+            Err(RecvTimeoutError::Timeout) => Ok(None),
+            Err(RecvTimeoutError::Disconnected) => Ok(None),
+        },
+        None => match rx.recv() {
+            Ok(event) => Ok(Some(event)),
+            Err(_) => Ok(None),
+        },
     }
 }
 

@@ -2730,9 +2730,11 @@ mod tests {
 
         // Simulate Ctrl+C
         let mut test_tui = crate::tui::TUI::new();
+        let mut test_term = crate::tui::terminal::ProcessTerminal::new();
         handle_input(
             &mut app,
             &mut test_tui,
+            &mut test_term,
             &KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
         );
 

@@ -52,7 +52,7 @@ fn kill_process_group(pid: u32) {
         let _ = std::process::Command::new("kill")
             .arg("--")
             .arg(format!("-{}", pid))
-            .spawn();
+            .status();
     }
 }
 
