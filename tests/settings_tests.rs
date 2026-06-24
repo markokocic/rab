@@ -251,7 +251,7 @@ fn save_roundtrip_preserves_all_fields() {
     );
 
     // Load, save, load again
-    let s1 = Settings::load_from(global.clone(), &tmp).unwrap();
+    let mut s1 = Settings::load_from(global.clone(), &tmp).unwrap();
     s1.save_to(global.clone()).unwrap();
 
     let s2 = Settings::load_from(global, &tmp).unwrap();

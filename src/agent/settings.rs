@@ -153,14 +153,26 @@ impl Settings {
     /// Save only the modified fields to the global config path.
     /// Unmodified fields are never written, preventing project-level
     /// overrides and default values from leaking into the global file.
-    pub fn save(&self) -> anyhow::Result<()> {
+    ///
+    /// After a successful save, `modified_fields` is cleared so that
+    /// subsequent saves only write fields that changed since the last
+    /// write. This prevents stale modifications from being re-applied
+    /// when a different field is toggled later.
+    pub fn save(&mut self) -> anyhow::Result<()> {
+        if self.modified_fields.is_empty() {
+            return Ok(());
+        }
         let path = Self::global_path()?;
         self.save_to(path)
     }
 
     /// Save only the modified fields to a specific path (for testing).
     /// Uses atomic write (temp file + rename) to prevent partial writes.
-    pub fn save_to(&self, path: std::path::PathBuf) -> anyhow::Result<()> {
+    pub fn save_to(&mut self, path: std::path::PathBuf) -> anyhow::Result<()> {
+        if self.modified_fields.is_empty() {
+            return Ok(());
+        }
+
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -177,7 +189,7 @@ impl Settings {
 
         // Serialize self - with skip_serializing_if, only explicitly-set
         // (non-default) fields appear in the output.
-        let self_value = serde_json::to_value(self)
+        let self_value = serde_json::to_value(&*self)
             .with_context(|| format!("Failed to serialize settings to {}", path.display()))?;
 
         // Apply only the modified fields on top of the existing file content.
@@ -209,6 +221,11 @@ impl Settings {
                 path.display()
             )
         })?;
+
+        // Clear modified fields after a successful write so that a later
+        // save of a *different* field does not re-apply this field's value
+        // (which may have been manually edited in the file in between).
+        self.modified_fields.clear();
         Ok(())
     }
 
