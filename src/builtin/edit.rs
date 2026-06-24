@@ -460,7 +460,7 @@ impl AgentTool for EditTool {
 }
 
 /// Tool renderer for the `edit` tool.
-/// Uses `renderShell: "self"` — renders its own framing without colored box.
+/// Uses `renderShell: "self"` - renders its own framing without colored box.
 /// Shows a preview of what will change in the call header.
 struct EditRenderer;
 
@@ -574,14 +574,15 @@ fn format_edit_preview(old: &str, new: &str, _width: usize, theme: &dyn Theme) -
     vec![format!("  {}", old_styled), format!("  {}", new_styled)]
 }
 
-/// Truncate a string to max_chars, adding "..." if truncated.
+/// Truncate a string to max_chars (characters), adding "..." if truncated.
 fn truncate_simple(s: &str, max_chars: usize) -> String {
-    if s.len() <= max_chars {
+    if s.chars().count() <= max_chars {
         s.to_string()
     } else if max_chars > 3 {
-        format!("{}...", &s[..max_chars - 3])
+        let truncated: String = s.chars().take(max_chars - 3).collect();
+        format!("{}...", truncated)
     } else {
-        s[..max_chars].to_string()
+        s.chars().take(max_chars).collect()
     }
 }
 
