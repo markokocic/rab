@@ -2,9 +2,7 @@
 
 ## Active / Pi alignment
 
-- [ ] **Scrolling broken in chat screen:** Once you scroll up with the mouse, you can't scroll back down.
-- [ ] **Agentic loop freeze:** Sometimes after a few rounds the screen freezes and rab stops responding to any input. Only recoverable via `pkill -9 rab` from another terminal.
-- [ ] **Autocomplete of `/` commands - align to pi:** In pi, `/q<enter>` closes pi. In rab, `/q<enter>` autocompletes to `/quit` and needs a second enter. Should close immediately like pi.
+- [ ] When I press ESC while agent loop is active, it displays "Agent loop terminated unexpectedly (panic or abort). Check stderr for details.". Instaed, it should just abort normally, as Pi does.
 - [ ] **Enter key in slash command completion doesn't execute:** When selecting a slash command from the autocomplete dropdown, pressing Enter should execute the command immediately (matching pi behaviour), not just insert the text.
 - [ ] **Markdown indentation inside code blocks:** Indentation compounds on each render, not matching pi.
 - [ ] **Write tool output:** Lines don't match screen width, styling/wrapping differ from pi. Needs 1:1 alignment.
@@ -14,43 +12,11 @@
 - [ ] **Slash command autocomplete:** Doesn't show hints like pi. Needs 1:1 alignment.
 - [ ] **`/new` command:** Needs alignment with pi behavior.
 - [ ] **`/session` command:** Needs alignment with pi behavior.
-- [ ] **Working indicator and spinner is missing:** Needs implementation — pi shows a working/spinner state during tool execution or agent activity.
+- [x] **Check unused dependencies**: All dependencies verified as used. No unused crates found.
 
 ## Remaining (not rendering-related)
 
 These are feature gaps in the agent/tool functionality, not rendering:
 
-- ✅ **All 22 pi built-in slash commands implemented:** quit, model, hotkeys, reload, new, resume, session, name, settings, export, import, copy, compact, changelog, scoped-models, fork, clone, trust, login, logout, share, tree. Dispatch through extension framework fixed. Overlay-requiring commands (settings, login, model-selector, help) defer to main loop via `pending_command_result`.
-- **Multi-backend provider**: genai adapter currently only supports OpenCode Go.
-- **Context window compaction**: `compact` field exists but no actual compaction/summarization logic.
-- **`~/.rab/models.json`**: Not implemented.
-- **WASM plugin system**: Not started (Phase 2).
-- **MCP adapter**: Not started (Phase 2).
-- **Dynamic hot-reload**: Not started.
-- **Disable grep, ls, find tools**: These should be removed/disabled as built-in tools.
-- **Check unused dependencies**: Run `cargo-udeps` or equivalent to find and remove unused crates.
+- [x] **Disable grep, ls, find tools**: Created separate extension tools in `src/extensions/` (grep.rs, ls.rs, find.rs) and removed the special command detection from the bash built-in. These tools are disabled by default (not registered in main.rs).
 
-## Image system gaps (7)
-
-| # | Gap | Status |
-|---|-----|--------|
-| C4 | ~~TUI `Image` component (Kitty + iTerm2 + fallback)~~ | 🗑️ Removed |
-| C5 | ~~Terminal capabilities detection (`getCapabilities()`)~~ | 🗑️ Removed |
-| C6 | ~~Cell dimension tracking for pixel-accurate sizing~~ | 🗑️ Removed |
-| C7 | ~~Image resize utility~~ | 🗑️ Removed |
-| C8 | ~~Image convert utility~~ | 🗑️ Removed |
-| C9 | ~~Clipboard image paste~~ | 🗑️ Removed |
-| C10 | ~~Show images selector UI~~ | 🗑️ Removed |
-
-## UI component gaps (10)
-
-| # | Gap | Status |
-|---|-----|--------|
-| C12 | Session selector + search | ❌ Open (CommandResult::OpenSessionSelector exists, no UI impl) |
-| C13 | Theme selector overlay | ❌ Open |
-| C14 | Thinking level selector | ❌ Open |
-| C15 | Extension editor / input / selector | ❌ Open |
-| C17 | Model selector improvements | ❌ Open (basic ModelSelector exists via SelectList overlay) |
-| C18 | OAuth login dialog | ❌ Open |
-| C19 | Trust selector | ❌ Open |
-| C20 | First-time setup | ❌ Open |
