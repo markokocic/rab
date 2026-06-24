@@ -522,9 +522,14 @@ impl ToolRenderer for BashRenderer {
     ) -> Vec<String> {
         let mut lines: Vec<String> = Vec::new();
 
-        // Strip truncation footer
-        let clean = strip_context_truncation_footer(content);
-        let all_lines: Vec<&str> = clean.split('\n').collect();
+        // Strip truncation footer and trim trailing whitespace/newlines
+        // (matching pi's output.trim() in rebuildBashResultRenderComponent)
+        let clean = strip_context_truncation_footer(content)
+            .trim_end()
+            .to_string();
+        // Use lines() instead of split('\n') to avoid trailing empty string
+        // from final newline (split would produce ["a", "b", ""] vs lines() ["a", "b"])
+        let all_lines: Vec<&str> = clean.lines().collect();
 
         if all_lines.is_empty() || (all_lines.len() == 1 && all_lines[0].is_empty()) {
             return lines;
@@ -565,8 +570,11 @@ impl ToolRenderer for BashRenderer {
             }
         }
 
-        // Duration
+        // Duration (with blank line separator before it, matching pi's `\n` prefix)
         if let Some(secs) = ctx.duration_secs {
+            if !lines.is_empty() {
+                lines.push(String::new());
+            }
             let is_complete = ctx.exit_code.is_some() || ctx.cancelled;
             let label = if is_complete { "Took" } else { "Elapsed" };
             lines.push(theme.fg_key(ThemeKey::Muted, &format!("{} {:.1}s", label, secs)));
@@ -577,8 +585,11 @@ impl ToolRenderer for BashRenderer {
         // "Command aborted" from the tool error response. The content is rendered
         // as-is above, preserving the status at the end where truncation keeps it.
 
-        // Truncation warnings
+        // Truncation warnings (with blank line separator, matching pi)
         if ctx.was_truncated {
+            if !lines.is_empty() {
+                lines.push(String::new());
+            }
             if let Some(ref path) = ctx.full_output_path {
                 lines.push(theme.fg(
                     "warning",

@@ -280,17 +280,18 @@ impl ToolExecComponent {
             expand_key,
         };
 
-        // For `renderShell: "self"` tools (like edit), wrap call in a TuiBox with
-        // the appropriate background (padding 1,1 matching pi's Box(1,1)),
-        // then append result lines after with a spacer before them.
-        // Pi's pattern: renderCall returns a Box (with bg/padding 1,1), renderResult
-        // returns a Container with optional Spacer + Text - both go in selfRenderContainer.
+        // For `renderShell: "self"` tools (like edit), wrap call + result in a
+        // single TuiBox with the appropriate background (padding 1,1 matching
+        // pi's Box(1,1)). Pi's pattern: both renderCall's call component (Box
+        // with bg) and renderResult's additional text go inside selfRenderContainer
+        // which is rendered as a single block. We combine them in one TuiBox so
+        // the diff preview / result shares the same background as the header.
         if renderer.render_self() {
             let mut lines: Vec<String> = Vec::new();
             // Spacer above (matches pi's Spacer(1) in ToolExecutionComponent constructor)
             lines.push(String::new());
 
-            // Wrap call in a colored box with padding 1,1 (matching pi's Box(1,1))
+            // Wrap call + result in a colored box with padding 1,1 (matching pi's Box(1,1))
             let bg_key = if !self.is_complete {
                 "toolPendingBg"
             } else if self.is_error {
@@ -301,21 +302,33 @@ impl ToolExecComponent {
             let bg_ansi = theme.bg_ansi(bg_key).to_string();
             let mut call_box = TuiBox::new(1, 1, Some(crate::tui::Style::new().bg(bg_ansi)));
 
+            let mut all_content = String::new();
+
+            // Call header
             let call_lines = renderer.render_call(&self.args, width, theme, &ctx);
             if !call_lines.is_empty() {
-                let call_text = Text::new(call_lines.join("\n"), 0, 0, None);
-                call_box.add_child(std::boxed::Box::new(call_text));
-                lines.extend(call_box.render(width));
+                all_content.push_str(&call_lines.join("\n"));
             }
 
-            // Result body with spacer before it (matching pi's renderResult which
-            // adds Spacer(1) before the diff text)
+            // Result body (in Pi, renderResult updates the call component's preview
+            // with the actual diff, so the diff stays inside the colored box)
             if let Some(ref output) = self.output {
                 let result_lines = renderer.render_result(output, width, theme, &ctx);
                 if !result_lines.is_empty() {
-                    lines.push(String::new());
-                    lines.extend(result_lines);
+                    if !all_content.is_empty() {
+                        all_content.push('\n');
+                        // Add a spacer blank line between header and result (matching Pi's
+                        // buildEditCallComponent which adds Spacer(1) before the diff body)
+                        all_content.push('\n');
+                    }
+                    all_content.push_str(&result_lines.join("\n"));
                 }
+            }
+
+            if !all_content.is_empty() {
+                let call_text = Text::new(all_content, 0, 0, None);
+                call_box.add_child(std::boxed::Box::new(call_text));
+                lines.extend(call_box.render(width));
             }
             return lines;
         }

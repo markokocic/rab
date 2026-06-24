@@ -572,7 +572,7 @@ impl ToolRenderer for EditRenderer {
         args: &serde_json::Value,
         width: usize,
         theme: &dyn Theme,
-        ctx: &ToolRenderContext,
+        _ctx: &ToolRenderContext,
     ) -> Vec<String> {
         let path = args
             .get("file_path")
@@ -596,10 +596,10 @@ impl ToolRenderer for EditRenderer {
             path_disp
         )];
 
-        // Show edit preview when collapsed (compact summary of changes)
-        if !ctx.expanded
-            && let Some(edits) = args.get("edits")
-        {
+        // Show edit preview (compact summary of changes).
+        // Matches Pi's buildEditCallComponent which always includes the preview
+        // when available, regardless of expanded state.
+        if let Some(edits) = args.get("edits") {
             let edits_arr = if let Some(arr) = edits.as_array() {
                 arr.as_slice()
             } else {
