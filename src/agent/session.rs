@@ -402,11 +402,35 @@ impl SessionManager {
         };
 
         if let Some(path) = session_file {
-            sm.set_session_file(&path);
             if create_new {
-                // Override: force new session even if file was loaded
-                sm.new_session(None);
-                sm.session_file = Some(path);
+                // Force a new session at the explicit path (don't load old data).
+                // Write header directly to the explicit path.
+                sm.session_file = Some(path.clone());
+                sm.session_id = uuid::Uuid::new_v4().to_string();
+                sm.file_entries = Vec::new();
+                sm.by_id.clear();
+                sm.labels_by_id.clear();
+                sm.leaf_id = None;
+                sm.flushed = false;
+                if sm.persist {
+                    if let Some(parent) = path.parent() {
+                        let _ = std::fs::create_dir_all(parent);
+                    }
+                    let header = SessionHeader {
+                        type_: "session".to_string(),
+                        version: Some(CURRENT_SESSION_VERSION),
+                        id: sm.session_id.clone(),
+                        timestamp: chrono::Utc::now().to_rfc3339(),
+                        cwd: sm.cwd.to_string_lossy().to_string(),
+                        parent_session: None,
+                    };
+                    if let Ok(json) = serde_json::to_string(&header) {
+                        let _ = std::fs::write(&path, json + "\n");
+                        sm.flushed = true;
+                    }
+                }
+            } else {
+                sm.set_session_file(&path);
             }
         } else if create_new {
             sm.new_session(None);
@@ -425,11 +449,29 @@ impl SessionManager {
             // If file is empty or has no valid header, treat as corrupted:
             // truncate and start fresh, preserving the file path.
             if self.file_entries.is_empty() && header.is_none() {
-                let explicit_path = self.session_file.clone();
-                self.new_session(None);
-                self.session_file = explicit_path;
-                self._rewrite_file();
-                self.flushed = true;
+                self.session_id = uuid::Uuid::new_v4().to_string();
+                self.file_entries = Vec::new();
+                self.by_id.clear();
+                self.labels_by_id.clear();
+                self.leaf_id = None;
+                // Write header directly to the explicit path
+                if self.persist {
+                    let header_line = SessionHeader {
+                        type_: "session".to_string(),
+                        version: Some(CURRENT_SESSION_VERSION),
+                        id: self.session_id.clone(),
+                        timestamp: chrono::Utc::now().to_rfc3339(),
+                        cwd: self.cwd.to_string_lossy().to_string(),
+                        parent_session: None,
+                    };
+                    if let Some(parent) = session_file.parent() {
+                        let _ = std::fs::create_dir_all(parent);
+                    }
+                    if let Ok(json) = serde_json::to_string(&header_line) {
+                        let _ = std::fs::write(session_file, json + "\n");
+                        self.flushed = true;
+                    }
+                }
                 return;
             }
 
@@ -441,10 +483,31 @@ impl SessionManager {
             self._build_index();
             self.flushed = true;
         } else {
-            // File doesn't exist - create new session at this path
-            let explicit_path = self.session_file.clone();
-            self.new_session(None);
-            self.session_file = explicit_path;
+            // File doesn't exist - create new session at this path,
+            // writing the header directly to the explicit path (not a timestamped one).
+            self.session_id = uuid::Uuid::new_v4().to_string();
+            self.file_entries = Vec::new();
+            self.by_id.clear();
+            self.labels_by_id.clear();
+            self.leaf_id = None;
+            self.flushed = false;
+            if self.persist {
+                if let Some(parent) = session_file.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                let header = SessionHeader {
+                    type_: "session".to_string(),
+                    version: Some(CURRENT_SESSION_VERSION),
+                    id: self.session_id.clone(),
+                    timestamp: chrono::Utc::now().to_rfc3339(),
+                    cwd: self.cwd.to_string_lossy().to_string(),
+                    parent_session: None,
+                };
+                if let Ok(json) = serde_json::to_string(&header) {
+                    let _ = std::fs::write(session_file, json + "\n");
+                    self.flushed = true;
+                }
+            }
         }
     }
 
@@ -478,8 +541,20 @@ impl SessionManager {
             );
         }
 
-        // Store header separately for rewrite
-        // We use a sentinel pattern: the header is reconstructed from fields
+        // Pi-compatible: write the session header to disk immediately so the session
+        // survives a crash even before any entries are appended.
+        if self.persist
+            && let Some(ref path) = self.session_file
+        {
+            if let Some(parent) = path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let _ = std::fs::write(
+                path,
+                serde_json::to_string(&header).unwrap_or_default() + "\n",
+            );
+            self.flushed = true;
+        }
     }
 
     fn _build_index(&mut self) {
@@ -499,49 +574,12 @@ impl SessionManager {
         }
     }
 
-    fn _rewrite_file(&self) {
-        if !self.persist {
-            return;
-        }
-        if let Some(ref path) = self.session_file {
-            let header = self._make_header();
-            let _ = write_entries_to_file(path, &header, &self.file_entries);
-        }
-    }
-
-    fn _make_header(&self) -> SessionHeader {
-        SessionHeader {
-            type_: "session".to_string(),
-            version: Some(CURRENT_SESSION_VERSION),
-            id: self.session_id.clone(),
-            timestamp: chrono::Utc::now().to_rfc3339(),
-            cwd: self.cwd.to_string_lossy().to_string(),
-            parent_session: None,
-        }
-    }
-
     fn _persist(&mut self) {
         if !self.persist {
             return;
         }
-        let has_assistant = self
-            .file_entries
-            .iter()
-            .any(|e| matches!(e, SessionEntry::Message(m) if m.message.role == crate::agent::types::Role::Assistant));
 
-        if !has_assistant {
-            // Don't create file until first assistant message
-            self.flushed = false;
-            return;
-        }
-
-        if !self.flushed {
-            if let Some(ref path) = self.session_file {
-                let header = self._make_header();
-                let _ = write_entries_to_file(path, &header, &self.file_entries);
-                self.flushed = true;
-            }
-        } else if let Some(ref path) = self.session_file
+        if let Some(ref path) = self.session_file
             && let Some(entry) = self.file_entries.last()
         {
             let _ = append_entry_to_file(path, entry);
@@ -1466,8 +1504,12 @@ mod tests {
         let sm = SessionManager::create(&cwd, Some(&sessions_dir));
         assert!(sm.is_persisted());
         assert!(!sm.session_id().is_empty());
-        // File not created yet (deferred until first assistant message)
+        // File should exist immediately (header written on creation)
         assert!(sm.session_file().is_some());
+        assert!(
+            sm.session_file().unwrap().exists(),
+            "session file should be created immediately"
+        );
     }
 
     #[test]
