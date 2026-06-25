@@ -51,6 +51,12 @@ pub fn link_path(styled_text: &str, raw_path: &str, cwd: &Path) -> String {
     crate::tui::components::markdown::hyperlink(styled_text, &format!("file://{}", url))
 }
 
+/// Decode a base64-encoded string to raw bytes.
+pub fn base64_decode(input: &str) -> Result<Vec<u8>, base64::DecodeError> {
+    use base64::Engine as _;
+    base64::engine::general_purpose::STANDARD.decode(input)
+}
+
 /// URL-encode a file path for use in a file:// URL.
 fn urlencoding(path: &str) -> String {
     let mut result = String::with_capacity(path.len());

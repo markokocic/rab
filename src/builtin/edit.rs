@@ -799,6 +799,10 @@ impl AgentTool for EditTool {
         })
     }
 
+    fn prompt_snippet(&self) -> Option<Cow<'static, str>> {
+        Some("Make precise file edits with exact text replacement, including multiple disjoint edits in one call".into())
+    }
+
     fn prompt_guidelines(&self) -> Vec<String> {
         vec![
             "Use edit for precise changes (edits[].oldText must match exactly)".into(),
@@ -806,6 +810,20 @@ impl AgentTool for EditTool {
             "Each edits[].oldText is matched against the original file, not after earlier edits are applied. Do not emit overlapping or nested edits. Merge nearby changes into one edit.".into(),
             "Keep edits[].oldText as small as possible while still being unique in the file. Do not pad with large unchanged regions.".into(),
         ]
+    }
+
+    fn prepare_arguments(&self, args: serde_json::Value) -> serde_json::Value {
+        let (path_str, edits) = match prepare_edit_arguments(&args) {
+            Ok(result) => result,
+            Err(_) => return args,
+        };
+        serde_json::json!({
+            "path": path_str,
+            "edits": edits.iter().map(|e| serde_json::json!({
+                "oldText": e.old_text,
+                "newText": e.new_text
+            })).collect::<Vec<_>>()
+        })
     }
 
     fn renderer(&self) -> Option<Box<dyn ToolRenderer>> {
@@ -820,8 +838,12 @@ impl AgentTool for EditTool {
         _on_update: Option<UnboundedSender<ToolOutput>>,
     ) -> anyhow::Result<ToolOutput> {
         let _ = tool_call_id;
-        let (path_str, edits) =
-            prepare_edit_arguments(&args).map_err(|e| anyhow::anyhow!("{}", e))?;
+        let path_str = args["path"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("Missing 'path' argument"))?
+            .to_string();
+        let edits: Vec<Edit> = serde_json::from_value(args["edits"].clone())
+            .map_err(|e| anyhow::anyhow!("Invalid edits: {}", e))?;
 
         cancel.check()?;
 
@@ -932,18 +954,28 @@ impl EditRenderer {
             preview: std::sync::Arc::new(Mutex::new(None)),
         }
     }
-
-    /// Set the cached preview.
-    fn set_preview(&self, preview: EditPreview) {
-        if let Ok(mut p) = self.preview.lock() {
-            *p = Some(preview);
-        }
-    }
 }
 
 impl ToolRenderer for EditRenderer {
     fn render_self(&self) -> bool {
         true
+    }
+
+    fn render_bg_key(&self) -> Option<&'static str> {
+        // Match pi's edit tool background management:
+        // - If preview exists and has an error → toolErrorBg
+        // - If preview exists and is valid → toolSuccessBg (preview succeeded)
+        // - If settled error (post-exec) → toolErrorBg
+        // - Otherwise → toolPendingBg (no preview yet)
+        if let Ok(p) = self.preview.lock()
+            && let Some(ref preview) = *p
+        {
+            if preview.error.is_some() {
+                return Some("toolErrorBg");
+            }
+            return Some("toolSuccessBg");
+        }
+        None // Let compute_bg_key use default (toolPendingBg)
     }
 
     fn render_call(
@@ -1001,8 +1033,7 @@ impl ToolRenderer for EditRenderer {
                 })
             })
         } else if ctx.args_complete && actual_diff.is_none() {
-            // Pending state: try to compute preview on the fly
-            // Check if preview is already cached
+            // Pending state: try to use cached preview or spawn async computation
             let cached = self.preview.lock().ok().and_then(|p| p.clone());
 
             if let Some(preview) = cached {
@@ -1012,25 +1043,56 @@ impl ToolRenderer for EditRenderer {
                     Some(preview.diff.clone())
                 }
             } else if let Some((path_str, edits)) = parse_path_edits(args) {
-                // Compute preview synchronously (file read is fast)
-                let result = compute_edits_diff(&path_str, &edits, std::path::Path::new(&ctx.cwd));
-                match result {
-                    Ok(diff) => {
-                        let p = EditPreview {
-                            diff: diff.clone(),
-                            error: None,
+                // If no cached preview, check if preview is already being computed
+                // (pending flag not started yet). If not, spawn async computation.
+                // First, check a "pending" flag to avoid duplicate spawns.
+                let mut preview_lock = self.preview.lock().unwrap();
+                if preview_lock.is_some() {
+                    // Preview was set between lock releases (race)
+                    drop(preview_lock);
+                    let cached = self.preview.lock().ok().and_then(|p| p.clone());
+                    cached.map(|preview| {
+                        if let Some(ref err) = preview.error {
+                            format!("error: {}", err)
+                        } else {
+                            preview.diff.clone()
+                        }
+                    })
+                } else {
+                    // Mark as pending (store a place-holder)
+                    *preview_lock = Some(EditPreview {
+                        diff: String::new(),
+                        error: Some("pending".to_string()),
+                    });
+                    drop(preview_lock);
+
+                    // Spawn async computation (matching pi's computeEditsDiff called from renderCall)
+                    let preview_arc = self.preview.clone();
+                    let path_owned = path_str.clone();
+                    let edits_owned = edits.clone();
+                    let cwd_owned = ctx.cwd.clone();
+                    let invalidate_tx = ctx.invalidate.clone();
+                    tokio::spawn(async move {
+                        let result = compute_edits_diff(
+                            &path_owned,
+                            &edits_owned,
+                            std::path::Path::new(&cwd_owned),
+                        );
+                        let (diff, error) = match result {
+                            Ok(d) => (d, None),
+                            Err(e) => (String::new(), Some(e)),
                         };
-                        self.set_preview(p);
-                        Some(diff)
-                    }
-                    Err(e) => {
-                        let p = EditPreview {
-                            diff: String::new(),
-                            error: Some(e.clone()),
-                        };
-                        self.set_preview(p);
-                        Some(format!("error: {}", e))
-                    }
+                        if let Ok(mut p) = preview_arc.lock() {
+                            *p = Some(EditPreview { diff, error });
+                        }
+                        // Notify UI to re-render
+                        if let Some(ref tx) = invalidate_tx {
+                            let _ = tx.send(());
+                        }
+                    });
+
+                    // No diff to show yet (pending)
+                    None
                 }
             } else {
                 None
@@ -1254,6 +1316,7 @@ mod tests {
     }
 
     async fn exec_ok(tool: &EditTool, args: serde_json::Value) -> String {
+        let args = tool.prepare_arguments(args);
         tool.execute("id".into(), args, Cancel::new(), None)
             .await
             .unwrap()
@@ -1264,6 +1327,7 @@ mod tests {
         tool: &EditTool,
         args: serde_json::Value,
     ) -> (String, Option<serde_json::Value>) {
+        let args = tool.prepare_arguments(args);
         let result = tool
             .execute("id".into(), args, Cancel::new(), None)
             .await
@@ -1272,6 +1336,7 @@ mod tests {
     }
 
     async fn exec_err(tool: &EditTool, args: serde_json::Value) -> String {
+        let args = tool.prepare_arguments(args);
         tool.execute("id".into(), args, Cancel::new(), None)
             .await
             .unwrap_err()
@@ -1279,6 +1344,7 @@ mod tests {
     }
 
     async fn is_err(tool: &EditTool, args: serde_json::Value) -> bool {
+        let args = tool.prepare_arguments(args);
         tool.execute("id".into(), args, Cancel::new(), None)
             .await
             .is_err()

@@ -14,10 +14,27 @@ use crate::agent::skills::{Skill, format_skills_for_prompt};
 use std::path::Path;
 
 /// A one-line description of a tool for the "Available tools" section.
+/// Uses prompt_snippet() when available, falling back to description().
 #[derive(Debug, Clone)]
 pub struct ToolSnippet {
     pub name: String,
     pub description: String,
+}
+
+impl ToolSnippet {
+    /// Create a ToolSnippet from an AgentTool.
+    /// Uses the tool's prompt_snippet() as the one-liner when available,
+    /// falling back to the full description().
+    pub fn from_tool(tool: &dyn crate::agent::extension::AgentTool) -> Self {
+        let description = tool
+            .prompt_snippet()
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| tool.description().to_string());
+        Self {
+            name: tool.name().to_string(),
+            description,
+        }
+    }
 }
 
 /// Builder for constructing the full system prompt.

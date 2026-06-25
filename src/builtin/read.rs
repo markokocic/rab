@@ -4,6 +4,7 @@ use crate::tui::Theme;
 use crate::tui::ThemeKey;
 use anyhow::Context;
 use async_trait::async_trait;
+use base64::Engine as _;
 use std::borrow::Cow;
 use std::path::Path;
 use tokio::sync::mpsc::UnboundedSender;
@@ -138,25 +139,28 @@ fn resolve_read_path(path: &str, cwd: &Path) -> std::path::PathBuf {
     resolved
 }
 
-// ── Image detection (basic) ───────────────────────────────────────────
+// ── Image detection (magic bytes) ─────────────────────────────────────
 
-/// Detect common image MIME types from file extension.
-/// Returns the MIME type if the file extension matches a known image format,
-/// or None otherwise.
-fn guess_image_mime_from_extension(path: &Path) -> Option<&'static str> {
-    let ext = path.extension()?.to_str()?.to_lowercase();
-    match ext.as_str() {
-        "png" => Some("image/png"),
-        "jpg" | "jpeg" => Some("image/jpeg"),
-        "gif" => Some("image/gif"),
-        "webp" => Some("image/webp"),
-        "bmp" => Some("image/bmp"),
-        "ico" => Some("image/x-icon"),
-        "svg" => Some("image/svg+xml"),
-        "tiff" | "tif" => Some("image/tiff"),
-        "avif" => Some("image/avif"),
-        _ => None,
+/// Detect image MIME type from file magic bytes (matching pi's
+/// `detectSupportedImageMimeTypeFromFile`). Uses the first 12 bytes
+/// of the file to identify the format.
+#[allow(clippy::redundant_guards)]
+fn detect_image_mime(path: &Path) -> std::io::Result<Option<&'static str>> {
+    use std::io::Read;
+    let mut file = std::fs::File::open(path)?;
+    let mut buf = [0u8; 12];
+    let n = file.read(&mut buf)?;
+    if n < 4 {
+        return Ok(None);
     }
+    Ok(match &buf[..n] {
+        b if b.starts_with(b"\x89PNG\r\n\x1a\n") && n >= 8 => Some("image/png"),
+        b if b.starts_with(&[0xFF, 0xD8, 0xFF]) => Some("image/jpeg"),
+        b if b.starts_with(b"GIF87a") || b.starts_with(b"GIF89a") => Some("image/gif"),
+        b if n >= 12 && b.starts_with(b"RIFF") && &b[8..12] == b"WEBP" => Some("image/webp"),
+        b if b.starts_with(b"\x89\x50\x4E\x47\x0D\x0A\x1A\x0A") => Some("image/png"),
+        _ => None,
+    })
 }
 
 /// Compact read classification matching pi's `CompactReadClassification`.
@@ -333,6 +337,10 @@ impl AgentTool for ReadTool {
         })
     }
 
+    fn prompt_snippet(&self) -> Option<Cow<'static, str>> {
+        Some("Read file contents".into())
+    }
+
     fn prompt_guidelines(&self) -> Vec<String> {
         vec!["Use read to examine files instead of cat or sed.".into()]
     }
@@ -361,27 +369,41 @@ impl AgentTool for ReadTool {
 
         cancel.check()?;
 
-        // Check if the file is an image (basic extension-based detection)
-        if let Some(mime) = guess_image_mime_from_extension(&abs_path) {
-            // Image file detected - check readability and return a descriptive note
-            std::fs::metadata(&abs_path)
-                .with_context(|| format!("Failed to read image {}", abs_path.display()))?;
+        // Check if the file is an image (magic byte detection, matching pi)
+        if let Ok(Some(mime)) = detect_image_mime(&abs_path) {
+            // Image file detected — read binary data and include as base64 data URL
             let file_name = abs_path
                 .file_name()
                 .map(|n| n.to_string_lossy())
                 .unwrap_or_default()
                 .to_string();
-            let file_size = std::fs::metadata(&abs_path)
+            let file_len = std::fs::metadata(&abs_path)
                 .ok()
-                .map(|m| format_size(m.len() as usize))
-                .unwrap_or_default();
+                .map(|m| m.len() as usize)
+                .unwrap_or(0);
+            let binary = std::fs::read(&abs_path)
+                .with_context(|| format!("Failed to read image {}", abs_path.display()))?;
+            let b64 = base64::engine::general_purpose::STANDARD.encode(&binary);
+            let data_url = format!("data:{};base64,{}", mime, b64);
             let msg = format!(
-                "Read image file [{}] - {} ({})\n[Image display not yet supported in rab.]",
-                mime, file_name, file_size,
+                "Read image file [{}] - {} ({})\n{}",
+                mime,
+                file_name,
+                format_size(file_len),
+                data_url,
             );
-            // Read to verify the file is accessible
-            let _ = std::fs::read(&abs_path)?;
-            return Ok(ToolOutput::ok(msg));
+            return Ok(ToolOutput {
+                content: msg,
+                compact: None,
+                is_error: false,
+                terminate: false,
+                details: Some(serde_json::json!({
+                    "mimeType": mime,
+                    "fileName": file_name,
+                    "fileSize": file_len,
+                    "imageData": b64,
+                })),
+            });
         }
 
         let content = std::fs::read_to_string(&abs_path)
@@ -588,9 +610,9 @@ impl ToolRenderer for ReadRenderer {
             String::new()
         };
 
-        // Expand hint (matching pi's ` (Ctrl+O to expand)` in `dim` color)
+        // Expand hint (matching pi's compact read: `theme.fg("dim", " (${keyText} to expand)")`)
         let expand_hint = if !ctx.expanded && !ctx.expand_key.is_empty() {
-            theme.fg_key(ThemeKey::Muted, &format!(" ({}) to expand", ctx.expand_key))
+            theme.fg_key(ThemeKey::Dim, &format!(" ({} to expand)", ctx.expand_key))
         } else {
             String::new()
         };
@@ -652,6 +674,46 @@ impl ToolRenderer for ReadRenderer {
         // Pi: return empty when collapsed and not error (result is hidden until expanded)
         if !ctx.expanded && !ctx.is_error {
             return vec![];
+        }
+
+        // If this is an image read, show image inline (Kitty protocol) or text fallback
+        if let Some(ref details) = ctx.details
+            && let Some(mime) = details.get("mimeType").and_then(|v| v.as_str())
+        {
+            let file_name = details
+                .get("fileName")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let file_size = details
+                .get("fileSize")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let size_str = format_size(file_size as usize);
+
+            // Try Kitty protocol image display (inline)
+            if crate::tui::components::markdown::kitty_images_supported()
+                && let Some(b64) = details.get("imageData").and_then(|v| v.as_str())
+                && let Ok(binary) = crate::builtin::base64_decode(b64)
+            {
+                let kitty_seq =
+                    crate::tui::components::markdown::kitty_image_sequence(&binary, mime);
+                return vec![
+                    String::new(),
+                    kitty_seq,
+                    theme.fg_key(
+                        ThemeKey::ToolOutput,
+                        &format!("Read image file [{}] - {} ({})", mime, file_name, size_str),
+                    ),
+                ];
+            }
+
+            // Fallback: text summary
+            return vec![
+                String::new(),
+                theme.fg_key(ThemeKey::ToolOutput, &format!("Read image file [{}]", mime)),
+                theme.fg_key(ThemeKey::ToolOutput, &format!("  File: {}", file_name)),
+                theme.fg_key(ThemeKey::ToolOutput, &format!("  Size: {}", size_str)),
+            ];
         }
 
         let path = ctx.file_path.as_deref().unwrap_or("");
@@ -934,7 +996,6 @@ mod tests {
     }
 
     // ── Integration tests ────────────────────────────────────
-
     #[tokio::test]
     async fn reads_file_content() {
         let (tool, tmp) = make_tool();

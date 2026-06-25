@@ -167,6 +167,44 @@ pub(crate) fn hyperlink(text: &str, url: &str) -> String {
     format!("\x1b]8;;{}\x07{}\x1b]8;;\x07", url, text)
 }
 
+// ── Image Display Support (Kitty Protocol) ───────────────────────
+
+/// Check whether the terminal supports the Kitty image protocol.
+pub(crate) fn kitty_images_supported() -> bool {
+    // Kitty, iTerm2, and WezTerm all support the Kitty image protocol.
+    if let Ok(prog) = std::env::var("TERM_PROGRAM")
+        && (prog == "iTerm.app" || prog == "kitty" || prog == "WezTerm")
+    {
+        return true;
+    }
+    if let Ok(term) = std::env::var("TERM")
+        && term.contains("kitty")
+    {
+        return true;
+    }
+    false
+}
+
+/// Generate a Kitty image protocol sequence for inline display.
+///
+/// The image is displayed inline at the cursor position. After the sequence,
+/// the cursor moves to the end of the image (which occupies one line in the
+/// terminal, with height calculated from aspect ratio).
+///
+/// Format: `\x1b_Ga=T,f=<format>,m=0;<base64>\x1b\\`
+pub(crate) fn kitty_image_sequence(data: &[u8], mime_type: &str) -> String {
+    use base64::Engine as _;
+    let format = match mime_type {
+        "image/png" => 100,
+        "image/jpeg" | "image/jpg" => 101,
+        "image/gif" => 102,
+        "image/webp" => 103,
+        _ => 100, // default to PNG
+    };
+    let b64 = base64::engine::general_purpose::STANDARD.encode(data);
+    format!("\x1b_Ga=T,f={},m=0;{}\x1b\\", format, b64)
+}
+
 // ── Markdown Component ───────────────────────────────────────────
 
 /// Markdown rendering component.

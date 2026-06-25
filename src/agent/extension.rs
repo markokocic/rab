@@ -258,6 +258,11 @@ pub struct ToolRenderContext {
     /// Structured rendering details from the tool execution (pi-compatible).
     /// Set by tool renderers for preview/actual diff data. Not sent to the LLM.
     pub details: Option<serde_json::Value>,
+    /// Callback for renderers to request re-render (e.g. after async preview computation).
+    /// Pi-compatible: `context.invalidate()` in renderCall/renderResult.
+    /// Cloned from the original at context construction time.
+    /// Uses a channel sender internally to bridge from async to UI thread.
+    pub invalidate: Option<tokio::sync::mpsc::UnboundedSender<()>>,
 }
 
 /// Tool-specific rendering interface (matching pi's renderCall/renderResult pattern).
@@ -289,6 +294,15 @@ pub trait ToolRenderer: Send + Sync {
     fn render_self(&self) -> bool {
         false
     }
+
+    /// Optional hint for the background color key when `render_self()` is false.
+    /// Return a theme key name (e.g. "toolPendingBg", "toolSuccessBg", "toolErrorBg")
+    /// to override the default background selection. Return None to let the
+    /// ToolExecComponent decide based on is_complete/is_error state.
+    /// Used by edit tool to show success/error bg during preview.
+    fn render_bg_key(&self) -> Option<&'static str> {
+        None
+    }
 }
 
 /// An LLM-callable tool.
@@ -310,6 +324,12 @@ pub trait AgentTool: Send + Sync {
     /// (possibly modified) arguments. Default is identity (no transformation).
     fn prepare_arguments(&self, args: serde_json::Value) -> serde_json::Value {
         args
+    }
+
+    /// One-line snippet shown in the "Available tools" section of the system prompt.
+    /// When None, falls back to description().
+    fn prompt_snippet(&self) -> Option<Cow<'static, str>> {
+        None
     }
 
     /// Provide a tool-specific renderer for the UI.

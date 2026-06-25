@@ -385,17 +385,14 @@ async fn main() -> anyhow::Result<()> {
         .map(|cf| format_context_path(&cf.path, &cwd))
         .collect();
 
-    // Build tool snippets from extensions
+    // Build tool snippets from extensions (uses prompt_snippet() when available)
     let tool_snippets: Vec<rab::agent::ToolSnippet> = extensions
         .iter()
         .flat_map(|ext| ext.tools())
-        .map(|tool| rab::agent::ToolSnippet {
-            name: tool.name().to_string(),
-            description: tool.description().to_string(),
-        })
+        .map(|tool| rab::agent::ToolSnippet::from_tool(tool.as_ref()))
         .collect();
 
-    // Collect prompt guidelines from all tools (pi-style promptSnippet/promptGuidelines)
+    // Collect prompt guidelines from all tools (pi-style promptGuidelines)
     let tool_guidelines: Vec<String> = extensions
         .iter()
         .flat_map(|ext| ext.tools())

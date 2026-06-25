@@ -52,6 +52,9 @@ pub struct ToolExecComponent {
     details: Option<serde_json::Value>,
     // ── Working directory for path resolution in renderers ──
     cwd: String,
+    // ── Invalidation sender (for async preview computation) ──
+    invalidate_tx: Option<tokio::sync::mpsc::UnboundedSender<()>>,
+
     // ── Dirty tracking for efficient re-render ──
     dirty: bool,
     // ── Render cache ──
@@ -84,6 +87,7 @@ impl ToolExecComponent {
             file_path: None,
             details: None,
             cwd,
+            invalidate_tx: None,
             dirty: true,
             cache: None,
         }
@@ -97,6 +101,13 @@ impl ToolExecComponent {
         // Initialize invalidation timer so first tick fires after ~1s
         self.last_timer_tick = Some(instant);
         self.mark_dirty();
+    }
+
+    /// Set the invalidation sender for async preview computation.
+    /// The sender is passed to ToolRenderContext and can be used by renderers
+    /// (e.g. edit tool) to trigger re-render after async work completes.
+    pub fn set_invalidate_tx(&mut self, tx: tokio::sync::mpsc::UnboundedSender<()>) {
+        self.invalidate_tx = Some(tx);
     }
 
     pub fn set_file_path(&mut self, path: impl Into<String>) {
@@ -159,6 +170,16 @@ impl ToolExecComponent {
     pub fn set_args(&mut self, args: serde_json::Value) {
         self.args = args;
         self.mark_dirty();
+    }
+
+    /// Create an invalidation channel pair for async preview computation.
+    /// The receiver side should be polled in the main UI loop to trigger re-render.
+    /// The sender is stored in the render context and used by renderers.
+    pub fn make_invalidation_channel() -> (
+        tokio::sync::mpsc::UnboundedSender<()>,
+        tokio::sync::mpsc::UnboundedReceiver<()>,
+    ) {
+        tokio::sync::mpsc::unbounded_channel()
     }
 
     /// Mark this component as needing re-render.
@@ -296,6 +317,7 @@ impl ToolExecComponent {
             file_path: self.file_path.clone(),
             expand_key,
             details: self.details.clone(),
+            invalidate: self.invalidate_tx.clone(),
         };
 
         // For `renderShell: "self"` tools (like edit), wrap call + result in a
@@ -310,13 +332,8 @@ impl ToolExecComponent {
             lines.push(String::new());
 
             // Wrap call + result in a colored box with padding 1,1 (matching pi's Box(1,1))
-            let bg_key = if !self.is_complete {
-                "toolPendingBg"
-            } else if self.is_error {
-                "toolErrorBg"
-            } else {
-                "toolSuccessBg"
-            };
+            // Allow the renderer to override the bg (e.g. edit tool shows success/error during preview)
+            let bg_key = self.compute_bg_key(Some(renderer));
             let bg_ansi = theme.bg_ansi(bg_key).to_string();
             let mut call_box = TuiBox::new(1, 1, Some(crate::tui::Style::new().bg(bg_ansi)));
 
@@ -352,13 +369,7 @@ impl ToolExecComponent {
         }
 
         // ── Default shell: colored box wrapping ──
-        let bg_key = if !self.is_complete {
-            "toolPendingBg"
-        } else if self.is_error {
-            "toolErrorBg"
-        } else {
-            "toolSuccessBg"
-        };
+        let bg_key = self.compute_bg_key(Some(renderer));
         let bg_ansi = theme.bg_ansi(bg_key).to_string();
         let theme_clone = theme.clone();
 
@@ -386,13 +397,8 @@ impl ToolExecComponent {
 
     /// Generic fallback rendering (no tool-specific renderer).
     fn render_generic(&self, theme: &RabTheme, width: usize) -> Vec<String> {
-        let bg_key = if !self.is_complete {
-            "toolPendingBg"
-        } else if self.is_error {
-            "toolErrorBg"
-        } else {
-            "toolSuccessBg"
-        };
+        // Generic fallback has no renderer, so no override
+        let bg_key = self.compute_bg_key(None);
         let bg_ansi = theme.bg_ansi(bg_key).to_string();
 
         let mut msg_box = TuiBox::new(1, 1, Some(crate::tui::Style::new().bg(bg_ansi)));
@@ -479,6 +485,25 @@ impl ToolExecComponent {
         }
 
         msg_box.render(width)
+    }
+
+    /// Choose the background key name for the colored tool box.
+    /// Uses the renderer's hint if available, otherwise falls back to
+    /// the default pending/success/error logic.
+    fn compute_bg_key(&self, renderer: Option<&dyn ToolRenderer>) -> &'static str {
+        // Allow renderer to override (e.g. edit tool shows success/error during preview)
+        if let Some(r) = renderer
+            && let Some(hint) = r.render_bg_key()
+        {
+            return hint;
+        }
+        if !self.is_complete {
+            "toolPendingBg"
+        } else if self.is_error {
+            "toolErrorBg"
+        } else {
+            "toolSuccessBg"
+        }
     }
 }
 

@@ -122,6 +122,10 @@ impl AgentTool for WriteTool {
         })
     }
 
+    fn prompt_snippet(&self) -> Option<Cow<'static, str>> {
+        Some("Create or overwrite files".into())
+    }
+
     fn prompt_guidelines(&self) -> Vec<String> {
         vec!["Use write only for new files or complete rewrites.".into()]
     }
@@ -479,16 +483,20 @@ impl ToolRenderer for WriteRenderer {
                 }
 
                 // Pi-style truncation hint with total line count
+                // Matching pi's: theme.fg("muted", "... (X more, Y total, ") +
+                //   keyHint("app.tools.expand", "to expand") + theme.fg("muted", ")")
+                // where keyHint = theme.fg("dim", key) + theme.fg("muted", " description")
                 if remaining > 0 {
                     let dim_key = theme.fg_key(ThemeKey::Dim, &ctx.expand_key);
                     let muted_rest = theme.fg_key(
                         ThemeKey::Muted,
                         &format!("... ({} more lines, {} total, ", remaining, total_lines),
                     );
+                    let muted_to_expand = theme.fg_key(ThemeKey::Muted, " to expand");
                     let muted_paren = theme.fg_key(ThemeKey::Muted, ")");
                     lines.push(format!(
-                        "{}{} to expand{}",
-                        muted_rest, dim_key, muted_paren
+                        "{}{}{}{}",
+                        muted_rest, dim_key, muted_to_expand, muted_paren
                     ));
                 }
             }

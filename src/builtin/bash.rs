@@ -501,6 +501,10 @@ impl AgentTool for BashTool {
         })
     }
 
+    fn prompt_snippet(&self) -> Option<Cow<'static, str>> {
+        Some("Execute bash commands (ls, grep, find, etc.)".into())
+    }
+
     fn renderer(&self) -> Option<Box<dyn ToolRenderer>> {
         Some(Box::new(BashRenderer))
     }

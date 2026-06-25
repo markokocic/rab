@@ -154,6 +154,10 @@ pub struct App {
     /// Used to compute duration for bash and other tools.
     tool_call_start_times: HashMap<String, std::time::Instant>,
 
+    /// Receivers for async invalidation notifications (edit tool preview).
+    /// Polled on each render cycle to trigger re-render of tool components.
+    invalidate_rxs: Vec<tokio::sync::mpsc::UnboundedReceiver<()>>,
+
     /// Streaming assistant message component (pi's `streamingComponent`).
     /// Created on first TextDelta, updated in-place, cleared on TurnEnd/AgentEnd.
     streaming_component:
@@ -407,6 +411,7 @@ impl App {
             chat_container,
             pending_tools: HashMap::new(),
             tool_call_start_times: HashMap::new(),
+            invalidate_rxs: Vec::new(),
             streaming_component: None,
             bash_component: None,
             pending_section: std::rc::Rc::new(std::cell::RefCell::new(
@@ -649,6 +654,16 @@ pub async fn run(config: AppConfig, session: SessionManager) -> anyhow::Result<(
             }
             dirty = true;
         }
+
+        // Poll async invalidation receivers (edit tool preview, etc.)
+        app.invalidate_rxs.retain_mut(|rx| {
+            if rx.try_recv().is_ok() {
+                dirty = true;
+                true
+            } else {
+                !rx.is_closed()
+            }
+        });
 
         // Check terminal size only when we're about to render
         // (avoids expensive ioctl syscall on idle frames)
@@ -2313,7 +2328,13 @@ fn handle_agent_event(app: &mut App, event: AgentEvent) {
 
             // Create a combined ToolExecComponent with renderer, handling per-tool setup
             let started_at = std::time::Instant::now();
-            let comp = if name == "bash" {
+            // Create invalidation channel for async preview computation (edit tool)
+            let (invalidate_tx, invalidate_rx) =
+                crate::agent::ui::components::ToolExecComponent::make_invalidation_channel();
+            // Store receiver in the app for polling during render loop
+            app.invalidate_rxs.push(invalidate_rx);
+
+            let comp: Rc<RefCell<_>> = if name == "bash" {
                 let mut tool = crate::agent::ui::components::ToolExecComponent::new(
                     &name,
                     renderer,
@@ -2321,6 +2342,7 @@ fn handle_agent_event(app: &mut App, event: AgentEvent) {
                     app.cwd.to_string_lossy().to_string(),
                 );
                 tool.set_started_at(std::time::Instant::now());
+                tool.set_invalidate_tx(invalidate_tx);
                 Rc::new(RefCell::new(tool))
             } else if name == "read" {
                 let path = args
@@ -2339,6 +2361,7 @@ fn handle_agent_event(app: &mut App, event: AgentEvent) {
                 );
                 comp.set_file_path(path.to_string());
                 comp.set_started_at(std::time::Instant::now());
+                comp.set_invalidate_tx(invalidate_tx);
                 Rc::new(RefCell::new(comp))
             } else {
                 let mut tool = crate::agent::ui::components::ToolExecComponent::new(
@@ -2348,6 +2371,7 @@ fn handle_agent_event(app: &mut App, event: AgentEvent) {
                     app.cwd.to_string_lossy().to_string(),
                 );
                 tool.set_started_at(std::time::Instant::now());
+                tool.set_invalidate_tx(invalidate_tx);
                 Rc::new(RefCell::new(tool))
             };
             comp.borrow_mut().set_expanded(app.tools_expanded);

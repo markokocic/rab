@@ -333,11 +333,14 @@ fn compute_word_diff(old: &str, new: &str) -> Vec<Change> {
     let n = old_tokens.len();
     let m = new_tokens.len();
 
-    // Build LCS table (O(n*m), fine for short intra-line comparisons)
+    // Build LCS table using trimmed equality (matching pi's diffWords.equals:
+    // `left.trim() === right.trim()`)
+    let tokens_equal = |a: &str, b: &str| a.trim() == b.trim();
+
     let mut dp = vec![vec![0usize; m + 1]; n + 1];
     for i in 1..=n {
         for j in 1..=m {
-            if old_tokens[i - 1] == new_tokens[j - 1] {
+            if tokens_equal(&old_tokens[i - 1], &new_tokens[j - 1]) {
                 dp[i][j] = dp[i - 1][j - 1] + 1;
             } else {
                 dp[i][j] = dp[i - 1][j].max(dp[i][j - 1]);
@@ -350,7 +353,7 @@ fn compute_word_diff(old: &str, new: &str) -> Vec<Change> {
     let mut i = n;
     let mut j = m;
     while i > 0 || j > 0 {
-        if i > 0 && j > 0 && old_tokens[i - 1] == new_tokens[j - 1] {
+        if i > 0 && j > 0 && tokens_equal(&old_tokens[i - 1], &new_tokens[j - 1]) {
             temp.push(Change::Equal(old_tokens[i - 1].clone()));
             i -= 1;
             j -= 1;
@@ -395,26 +398,100 @@ fn compute_word_diff(old: &str, new: &str) -> Vec<Change> {
     merged
 }
 
-/// Split text into word tokens for diffing.
-/// Alphanumeric sequences (including `_`) are kept as whole words;
-/// everything else (whitespace, punctuation) becomes individual character tokens.
-/// Matches pi's `diff.diffWords` behavior.
+/// Split text into word tokens for diffing, matching pi's `diff.diffWords`.
+///
+/// First, splits into runs of whitespace and runs of non-whitespace.
+/// Then stitches whitespace tokens onto adjacent non-whitespace tokens:
+/// - Whitespace after a non-whitespace token gets appended to it
+/// - Whitespace before a non-whitespace token gets prepended to it
+/// - Leading whitespace (no preceding non-whitespace) stays as its own token
+///
+/// This matches the `tokenize` method of jsdiff's `WordDiff` class,
+/// which uses `tokenizeIncludingWhitespace` regex then groups whitespace
+/// with neighboring word/punctuation tokens.
 fn split_words(text: &str) -> Vec<String> {
-    let mut tokens = Vec::new();
-    let mut current = String::new();
+    // Phase 1: split into alternating whitespace and non-whitespace runs
+    // pi's regex: /[^\S\n]+|\n|[^\s\n]+/g for each char class, but simplified:
+    // We split on runs of whitespace and non-whitespace characters.
+    let mut parts: Vec<String> = Vec::new();
+    let mut current: Vec<char> = Vec::new();
+    let mut in_whitespace = None;
 
     for ch in text.chars() {
-        if ch.is_alphanumeric() || ch == '_' {
-            current.push(ch);
-        } else {
-            if !current.is_empty() {
-                tokens.push(std::mem::take(&mut current));
+        let is_ws = ch.is_whitespace();
+        match in_whitespace {
+            Some(ws) if ws == is_ws => current.push(ch),
+            Some(_) => {
+                parts.push(current.iter().collect());
+                current.clear();
+                current.push(ch);
+                in_whitespace = Some(is_ws);
             }
-            tokens.push(ch.to_string());
+            None => {
+                current.push(ch);
+                in_whitespace = Some(is_ws);
+            }
         }
     }
     if !current.is_empty() {
-        tokens.push(current);
+        parts.push(current.iter().collect());
+    }
+
+    if parts.is_empty() {
+        return vec![];
+    }
+
+    // Phase 2: stitch whitespace onto adjacent non-whitespace tokens.
+    // pi logic:
+    //   for each part:
+    //     if part is whitespace:
+    //       if first token: push as-is (leading whitespace)
+    //       else: pop last token, append whitespace, push back
+    //     elif prev was whitespace:
+    //       if last token == prev whitespace: pop and prepend whitespace to current
+    //       else: prepend whitespace to current
+    //     else (non-ws, prev non-ws): push as-is
+    let mut tokens: Vec<String> = Vec::new();
+    let mut prev_part: Option<&str> = None;
+
+    for part in &parts {
+        if part.is_empty() {
+            continue;
+        }
+        let is_ws = part.chars().all(|c| c.is_whitespace());
+
+        if is_ws {
+            if prev_part.is_none() {
+                // Leading whitespace: push as its own token
+                tokens.push(part.clone());
+            } else {
+                // Trailing whitespace: append to previous token
+                if let Some(last) = tokens.last_mut() {
+                    last.push_str(part);
+                }
+            }
+        } else if let Some(prev) = prev_part {
+            let prev_is_ws = prev.chars().all(|c| c.is_whitespace());
+            if prev_is_ws {
+                // Preceding whitespace: prepend to current non-ws token
+                if tokens.last().map(|t| t.as_str()) == Some(prev) {
+                    // The last token is the whitespace itself: pop, prepend to current
+                    tokens.pop();
+                    let mut merged = prev.to_string();
+                    merged.push_str(part);
+                    tokens.push(merged);
+                } else {
+                    // The last token has been merged: prepend the whitespace part
+                    tokens.push(prev.to_string() + part);
+                }
+            } else {
+                tokens.push(part.clone());
+            }
+        } else {
+            tokens.push(part.clone());
+        }
+
+        prev_part = Some(part.as_str());
     }
 
     tokens
