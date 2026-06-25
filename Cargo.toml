@@ -31,12 +31,8 @@ anyhow = "1"
 futures = "0.3"
 async-trait = "0.1"
 colored = "3"
-genai = "0.6"
 directories = "6"
 crossterm = "0.29"
-rustls = "0.23"
-webpki-roots = "1"
-reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "stream", "gzip", "charset", "http2", "socks", "system-proxy"] }
 async-stream = "0.3"
 libc = "0.2"
 unicode-segmentation = "1"
@@ -46,6 +42,8 @@ comrak = "0.52"
 syntect = { version = "5.3.0", optional = true }
 regex = "1.12.4"
 base64 = "0.22"
+tokio-util = "0.7"
+yoagent = "0.8.4"
 
 [features]
 default = ["syntect"]

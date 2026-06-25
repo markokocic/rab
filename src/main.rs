@@ -1,4 +1,3 @@
-use rab::adapter;
 use rab::agent::extension::Extension;
 use rab::agent::session::SessionManager;
 use rab::agent::settings::Settings;
@@ -435,7 +434,7 @@ async fn main() -> anyhow::Result<()> {
     let thinking_level_str = thinking_level.as_deref().or(Some("xhigh"));
 
     if message_parts.is_empty() {
-        let provider = adapter::GenaiProvider::new(&auth, thinking_level_str)?;
+        let provider = rab::agent::yo_bridge::YoAgentProvider::new(&auth)?;
         let git_branch = get_git_branch(&cwd);
         let config = ui::AppConfig {
             model,
@@ -461,7 +460,7 @@ async fn main() -> anyhow::Result<()> {
         ui::run(config, session).await
     } else {
         let message = message_parts.join(" ");
-        let provider = adapter::GenaiProvider::new(&auth, thinking_level_str)?;
+        let provider = rab::agent::yo_bridge::YoAgentProvider::new(&auth)?;
         let provider_arc: std::sync::Arc<dyn rab::agent::Provider> = std::sync::Arc::new(provider);
         let mut agent_session = rab::agent::AgentSession::new(session);
         agent_session.set_compaction_config(

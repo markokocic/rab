@@ -13,6 +13,7 @@ pub mod skills;
 pub mod system_prompt;
 pub mod types;
 pub mod ui;
+pub mod yo_bridge;
 
 pub use agent_session::AgentSession;
 pub use context_files::{ContextFile, load_context_files};
