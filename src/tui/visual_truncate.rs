@@ -1,18 +1,4 @@
-/// Shared utility for truncating text to visual lines (accounting for line wrapping).
-///
-/// Matches pi's `visual-truncate.ts`:
-/// - `truncateToVisualLines` — renders text as visual lines, returns last N
-///
-/// Used by both bash renderer and generic tool fallback for consistent behavior.
 use crate::tui::util::visible_width;
-
-/// Result of truncating to visual lines.
-pub struct VisualTruncateResult<'a> {
-    /// The selected logical lines to display.
-    pub lines: Vec<&'a str>,
-    /// Number of logical lines that were hidden (skipped).
-    pub skipped: usize,
-}
 
 /// Count how many visual (wrapped) lines a single logical line occupies
 /// at the given terminal width. Accounts for zero-width edge case.
