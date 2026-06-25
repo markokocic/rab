@@ -54,7 +54,7 @@
 ### Compaction — supporting data
 
 - [x] **`details` & `fromHook` fields** — `CompactionEntry` and `BranchSummaryEntry` now support `details` and `fromHook` in serialization and API
-- [ ] **Compaction settings** — per-session config for `enabled`, `reserveTokens`, `keepRecentTokens`
+- [x] **Compaction settings** — per-session config for `enabled`, `reserveTokens`, `keepRecentTokens` persisted via `settings.json`
 
 ## Active / Pi alignment
 
