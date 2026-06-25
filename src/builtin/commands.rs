@@ -185,7 +185,7 @@ impl Extension for CommandsExtension {
             SlashCommand {
                 name: "fork".to_string(),
                 description: "Create a new fork from a previous user message".to_string(),
-                handler: Box::new(NotImplementedCommand),
+                handler: Box::new(ForkCommand),
             },
             SlashCommand {
                 name: "clone".to_string(),
@@ -220,7 +220,7 @@ impl Extension for CommandsExtension {
             SlashCommand {
                 name: "compact".to_string(),
                 description: "Manually compact the session context".to_string(),
-                handler: Box::new(NotImplementedCommand),
+                handler: Box::new(CompactCommand),
             },
             SlashCommand {
                 name: "resume".to_string(),
@@ -454,6 +454,33 @@ impl CommandHandler for LoginCommand {
                 Some(provider.to_string())
             },
         })
+    }
+}
+
+// ── /fork ─────────────────────────────────────────────────────────
+
+struct ForkCommand;
+
+impl CommandHandler for ForkCommand {
+    fn execute(&self, args: &str) -> anyhow::Result<CommandResult> {
+        let msg_id = args.trim();
+        if msg_id.is_empty() {
+            Ok(CommandResult::ForkSession { message_id: None })
+        } else {
+            Ok(CommandResult::ForkSession {
+                message_id: Some(msg_id.to_string()),
+            })
+        }
+    }
+}
+
+// ── /compact ──────────────────────────────────────────────────────
+
+struct CompactCommand;
+
+impl CommandHandler for CompactCommand {
+    fn execute(&self, _args: &str) -> anyhow::Result<CommandResult> {
+        Ok(CommandResult::CompactSession)
     }
 }
 
