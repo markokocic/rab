@@ -209,9 +209,9 @@ async fn main() -> anyhow::Result<()> {
     });
 
     let thinking_level = settings.default_thinking_level.as_deref().or(Some("xhigh"));
-    let provider = adapter::GenaiProvider::new(&auth, thinking_level)?;
 
     if message_parts.is_empty() {
+        let provider = adapter::GenaiProvider::new(&auth, thinking_level)?;
         let git_branch = get_git_branch(&cwd);
         let config = ui::AppConfig {
             model,
@@ -237,7 +237,14 @@ async fn main() -> anyhow::Result<()> {
         ui::run(config, session).await
     } else {
         let message = message_parts.join(" ");
+        let provider = adapter::GenaiProvider::new(&auth, thinking_level)?;
+        let provider_arc: std::sync::Arc<dyn rab::agent::Provider> = std::sync::Arc::new(provider);
         let mut agent_session = rab::agent::AgentSession::new(session);
+        agent_session.set_compaction_config(
+            provider_arc.clone(),
+            &model,
+            rab::agent::compaction::get_model_context_window(&model),
+        );
         run_print_mode(
             message,
             model,
@@ -245,7 +252,7 @@ async fn main() -> anyhow::Result<()> {
             tools,
             agent_tools,
             extensions,
-            provider,
+            provider_arc,
             history,
             &mut agent_session,
         )
@@ -261,7 +268,7 @@ async fn run_print_mode(
     tool_defs: Vec<rab::agent::provider::ToolDef>,
     agent_tools: Vec<Box<dyn rab::agent::extension::AgentTool>>,
     extensions: Vec<Box<dyn Extension>>,
-    provider: adapter::GenaiProvider,
+    provider: std::sync::Arc<dyn rab::agent::Provider>,
     history: Vec<rab::agent::types::AgentMessage>,
     agent_session: &mut rab::agent::AgentSession,
 ) -> anyhow::Result<()> {
@@ -369,7 +376,7 @@ async fn run_print_mode(
     };
 
     let new_messages =
-        rab::agent::run_agent_loop(vec![prompt], history, &loop_config, &provider, &mut emitter)
+        rab::agent::run_agent_loop(vec![prompt], history, &loop_config, provider.as_ref(), &mut emitter)
             .await?;
 
     // AgentSession.on_agent_end is already called by handle_event on AgentEnd.
@@ -394,6 +401,13 @@ async fn run_print_mode(
         } else if !last_assistant.content.is_empty() && !last_assistant.content.ends_with('\n') {
             println!();
         }
+    }
+
+    // Run auto-compaction if needed
+    match agent_session.check_auto_compact().await {
+        Ok(true) => eprintln!("{}", colored::Colorize::dimmed("✓ Compaction completed")),
+        Ok(false) => {}
+        Err(e) => eprintln!("{}", colored::Colorize::yellow(format!("Auto-compaction skipped: {}", e).as_str())),
     }
 
     Ok(())

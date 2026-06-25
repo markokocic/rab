@@ -1,7 +1,10 @@
+use crate::agent::compaction::{self, CompactionSettings, compact, prepare_compaction};
 use crate::agent::r#loop::AgentEvent;
+use crate::agent::provider::Provider;
 use crate::agent::session::SessionManager;
 use crate::agent::types::{AgentMessage, Role};
 use std::collections::HashSet;
+use std::sync::Arc;
 
 /// Lifecycle layer that bridges the agent loop and session manager.
 ///
@@ -34,6 +37,14 @@ pub struct AgentSession {
     persisted_message_ids: HashSet<String>,
     /// Tool call IDs already persisted (for tool result dedup).
     persisted_tool_call_ids: HashSet<String>,
+    /// Compaction settings (default: enabled).
+    compaction_settings: CompactionSettings,
+    /// Model context window in tokens (for shouldCompact check).
+    context_window: u64,
+    /// Model name to use for compaction LLM calls.
+    model_name: String,
+    /// Provider for compaction LLM calls.
+    compaction_provider: Option<Arc<dyn Provider>>,
 }
 
 impl AgentSession {
@@ -48,7 +59,38 @@ impl AgentSession {
             last_active_tools: ctx.active_tool_names,
             persisted_message_ids: HashSet::new(),
             persisted_tool_call_ids: HashSet::new(),
+            compaction_settings: CompactionSettings::default(),
+            context_window: 200_000,
+            model_name: String::new(),
+            compaction_provider: None,
         }
+    }
+
+    /// Configure compaction with provider, model, and context window.
+    pub fn set_compaction_config(
+        &mut self,
+        provider: Arc<dyn Provider>,
+        model_name: &str,
+        context_window: u64,
+    ) {
+        self.compaction_provider = Some(provider);
+        self.model_name = model_name.to_string();
+        self.context_window = context_window;
+    }
+
+    /// Enable or disable auto-compaction.
+    pub fn set_auto_compact(&mut self, enabled: bool) {
+        self.compaction_settings.enabled = enabled;
+    }
+
+    /// Get the current compaction settings (mutable, for modification).
+    pub fn compaction_settings_mut(&mut self) -> &mut CompactionSettings {
+        &mut self.compaction_settings
+    }
+
+    /// Get the current compaction settings.
+    pub fn compaction_settings(&self) -> &CompactionSettings {
+        &self.compaction_settings
     }
 
     // ── Accessors ─────────────────────────────────────────────────
@@ -188,6 +230,73 @@ impl AgentSession {
                 self.persisted_message_ids.insert(msg.id.clone());
             }
         }
+    }
+
+    // ── Compaction ────────────────────────────────────────────────
+
+    /// Check if compaction should run and execute it if needed.
+    /// Should be called after the agent finishes a turn (after on_agent_end).
+    /// Returns `true` if compaction was performed.
+    pub async fn check_auto_compact(&mut self) -> Result<bool, String> {
+        if !self.compaction_settings.enabled {
+            return Ok(false);
+        }
+        if self.compaction_provider.is_none() || self.model_name.is_empty() {
+            return Ok(false);
+        }
+
+        let entries = self.session.entries();
+        let context_msgs = self.session.build_session_context().messages;
+        let context_tokens = compaction::estimate_context_tokens(&context_msgs);
+
+        if !compaction::should_compact(
+            context_tokens,
+            self.context_window,
+            &self.compaction_settings,
+        ) {
+            return Ok(false);
+        }
+
+        let Some(prep) = prepare_compaction(entries, &self.compaction_settings) else {
+            return Ok(false);
+        };
+
+        let provider = self.compaction_provider.as_ref().unwrap();
+        let result = compact(&prep, provider.as_ref(), &self.model_name, None).await?;
+
+        // Append the compaction entry to the session
+        self.session.append_compaction(
+            &result.summary,
+            &result.first_kept_entry_id,
+            result.tokens_before,
+        );
+
+        Ok(true)
+    }
+
+    /// Run compaction manually (ignores auto-compact setting).
+    /// Returns the compaction summary text, or an error message.
+    pub async fn run_manual_compact(&mut self) -> Result<String, String> {
+        if self.compaction_provider.is_none() || self.model_name.is_empty() {
+            return Err("No provider configured for compaction".to_string());
+        }
+
+        let entries = self.session.entries();
+        let Some(prep) = prepare_compaction(entries, &self.compaction_settings) else {
+            return Err("Nothing to compact – session is already compacted or empty".to_string());
+        };
+
+        let provider = self.compaction_provider.as_ref().unwrap();
+        let result = compact(&prep, provider.as_ref(), &self.model_name, None).await?;
+
+        // Append the compaction entry to the session
+        self.session.append_compaction(
+            &result.summary,
+            &result.first_kept_entry_id,
+            result.tokens_before,
+        );
+
+        Ok(result.summary)
     }
 
     // ── Internal helpers ──────────────────────────────────────────
