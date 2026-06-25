@@ -31,11 +31,11 @@
 
 - [x] **`collectEntriesForBranchSummary()`** — gather entries from abandoned branch for summarization
 - [x] **`generateBranchSummary()`** — summarize abandoned branch via LLM
-- [ ] **`branchWithSummary()` integration** — when user navigates to a different branch point, summarize the abandoned path
+- [ ] **`branchWithSummary()` integration** — when user navigates to a different branch point, summarize the abandoned path (waiting on `/tree`/branch navigation implementation)
 
 ### Session switching at runtime
 
-- [x] **`/new` command** — create a new empty session at runtime (already listed below, needs agent-session lifecycle)
+- [x] **`/new` command** — create a new empty session at runtime
 - [x] **`/fork` command** — fork the current session at a specific point
 - [x] **`/session` command** — show session info and stats
 - [ ] **Session resource cleanup** — `cleanupSessionResources()` on session switch/dispose
@@ -43,8 +43,8 @@
 
 ### Session picker / UI
 
-- [ ] **Session picker component** — interactive listing of all sessions with search, cwd filter, name display
-- [ ] **Session picker progress** — show loading progress when scanning many session files
+- [x] **Session picker component** — `SessionPicker` state machine built with search, filter, selection, progress
+- [ ] **Session picker overlay** — wire as TUI overlay with Enter/Esc keyboard handling
 - [x] **Session info display** — show message count, first message preview, creation/modified time, parent session
 
 ### Session export
@@ -62,6 +62,6 @@
 - [ ] **Write tool output:** Lines don't match screen width, styling/wrapping differ from pi. Needs 1:1 alignment.
 - [ ] **Welcome message:** Doesn't look 1:1 identical with pi.
 - [ ] **Slash command autocomplete:** Doesn't show hints like pi. Needs 1:1 alignment.
-- [ ] **`/session` command:** doesn't work. Says "no session". Needs alignment with pi behavior.
-- [ ] **`/new` command:** Needs alignment with pi behavior.
+- [x] **`/session` command:** Works in interactive mode — shows session info, stats, and parent session.
+- [x] **`/new` command:** Works — creates new empty session and clears conversation.
 - [ ] **Check unused dependencies**: All dependencies verified as used. No unused crates found.
