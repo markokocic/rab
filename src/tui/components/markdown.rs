@@ -473,15 +473,22 @@ impl Markdown {
     /// `list_depth` tracks list nesting for indentation (the float pass
     /// removes most artifical nesting, but genuine nested lists remain).
     /// Determine whether to add a blank line between two consecutive block-level siblings.
-    /// Matches pi's behavior:
-    ///   - Paragraph adds blank unless next is List
-    ///   - List never adds trailing blank
-    ///   - Everything else always adds blank
+    /// Determine whether to add a blank line between two consecutive block-level siblings.
+    /// Matches pi's per-block-type behavior:
+    ///   - Paragraph: add blank unless next is List
+    ///   - List: never add trailing blank
+    ///   - Heading, CodeBlock, BlockQuote, Table, ThematicBreak: always add blank
+    ///   - HtmlBlock, FrontMatter, other: never add blank
     fn should_add_block_spacing(current: &NodeValue, next: &NodeValue) -> bool {
         match current {
             NodeValue::Paragraph => !matches!(next, NodeValue::List(_)),
             NodeValue::List(_) => false,
-            _ => true,
+            NodeValue::Heading(_)
+            | NodeValue::CodeBlock(_)
+            | NodeValue::BlockQuote
+            | NodeValue::Table(_)
+            | NodeValue::ThematicBreak => true,
+            _ => false,
         }
     }
 
