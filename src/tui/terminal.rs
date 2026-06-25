@@ -3,7 +3,7 @@ use std::sync::LazyLock;
 use std::sync::Mutex;
 use std::time::Duration;
 
-use crossterm::event::{self, Event, KeyEvent, KeyboardEnhancementFlags};
+use crossterm::event::{self, Event, KeyEvent};
 
 // =============================================================================
 // TerminalEvent — events that can come from the terminal beyond just keys
@@ -233,17 +233,6 @@ impl ProcessTerminal {
     fn disable_bracketed_paste(&self, writer: &mut dyn Write) -> io::Result<()> {
         write!(writer, "\x1b[?2004l")?;
         writer.flush()
-    }
-
-    #[allow(dead_code)]
-    fn enable_kitty_protocol(&mut self, writer: &mut dyn Write) -> io::Result<()> {
-        let flags = KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
-            | KeyboardEnhancementFlags::REPORT_EVENT_TYPES
-            | KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS;
-        write!(writer, "\x1b[>{}u", flags.bits())?;
-        writer.flush()?;
-        self.kitty_active = true;
-        Ok(())
     }
 
     fn disable_kitty_protocol(&mut self, writer: &mut dyn Write) -> io::Result<()> {

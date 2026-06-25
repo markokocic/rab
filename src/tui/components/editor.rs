@@ -322,15 +322,6 @@ impl Editor {
         }
     }
 
-    /// Apply the currently selected autocomplete item using the provider.
-    /// This extracts the repeated logic shared by Tab and Enter handlers.
-    #[allow(dead_code)]
-    fn apply_autocomplete_completion(&mut self, list: &mut SelectList) {
-        if let Some(val) = list.selected_item().map(|i| i.value.clone()) {
-            self.apply_autocomplete_completion_value(&val);
-        }
-    }
-
     /// After cursor movement, re-query autocomplete if active (pi-style).
     /// Keeps the picker in sync with the new cursor position - closes when
     /// the new position yields no suggestions, refreshes otherwise.

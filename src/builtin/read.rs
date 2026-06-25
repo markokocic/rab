@@ -206,18 +206,13 @@ fn get_compact_read_classification(path: &str, cwd: &Path) -> Option<(CompactRea
 // ── Truncation ──────────────────────────────────────────────────
 
 /// Truncation result, mirroring pi's `TruncationResult`.
-#[allow(dead_code)]
 struct TruncationResult {
     content: String,
     truncated: bool,
     truncated_by: Option<&'static str>, // None | "lines" | "bytes"
     output_lines: usize,
-    output_bytes: usize,
     total_lines: usize,
-    total_bytes: usize,
     first_line_exceeds_limit: bool,
-    max_lines: usize,
-    max_bytes: usize,
 }
 
 /// Truncate content from the head, keeping complete lines that fit within limits.
@@ -235,12 +230,8 @@ fn truncate_head(content: &str, max_lines: usize, max_bytes: usize) -> Truncatio
             truncated: false,
             truncated_by: None,
             output_lines: total_lines,
-            output_bytes: total_bytes,
             total_lines,
-            total_bytes,
             first_line_exceeds_limit: false,
-            max_lines,
-            max_bytes,
         };
     }
 
@@ -253,12 +244,8 @@ fn truncate_head(content: &str, max_lines: usize, max_bytes: usize) -> Truncatio
             truncated: true,
             truncated_by: Some("bytes"),
             output_lines: 0,
-            output_bytes: 0,
             total_lines,
-            total_bytes,
             first_line_exceeds_limit: true,
-            max_lines,
-            max_bytes,
         };
     }
 
@@ -293,12 +280,8 @@ fn truncate_head(content: &str, max_lines: usize, max_bytes: usize) -> Truncatio
         truncated: true,
         truncated_by: Some(truncated_by),
         output_lines: output.len(),
-        output_bytes: byte_count,
         total_lines,
-        total_bytes,
         first_line_exceeds_limit: false,
-        max_lines,
-        max_bytes,
     }
 }
 

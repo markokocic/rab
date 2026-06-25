@@ -715,17 +715,6 @@ mod tests {
                 thinking: String::new(),
             });
         }
-
-        #[allow(dead_code)]
-        fn sent_message_count(&self) -> usize {
-            self.sent_messages.lock().unwrap().len()
-        }
-
-        #[allow(dead_code)]
-        fn last_sent_message_count(&self) -> usize {
-            let msgs = self.sent_messages.lock().unwrap();
-            msgs.last().map(|m| m.len()).unwrap_or(0)
-        }
     }
 
     #[async_trait]
@@ -805,12 +794,6 @@ mod tests {
                 executed: Arc::new(std::sync::Mutex::new(Vec::new())),
                 terminate: false,
             }
-        }
-
-        #[allow(dead_code)]
-        fn with_sequential(mut self) -> Self {
-            self.execution_mode = ToolExecutionMode::Sequential;
-            self
         }
 
         fn with_delay(mut self, delay: std::time::Duration) -> Self {

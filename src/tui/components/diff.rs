@@ -261,60 +261,6 @@ fn render_intra_line_diff(old: &str, new: &str, output: &mut Vec<String>, theme:
     output.push(theme.fg_key(ThemeKey::ToolDiffAdded, &format!("+{}", added_line)));
 }
 
-/// Write the intra-line diff result lines to output, including line numbers.
-#[allow(dead_code)]
-fn render_intra_line_diff_with_nums(
-    old_content: &str,
-    new_content: &str,
-    old_line_num: &str,
-    new_line_num: &str,
-    output: &mut Vec<String>,
-    theme: &dyn Theme,
-) {
-    let changes = compute_word_diff(old_content, new_content);
-
-    let mut removed_line = String::new();
-    let mut added_line = String::new();
-
-    for change in &changes {
-        match change {
-            Change::Equal(text) => {
-                removed_line.push_str(text);
-                added_line.push_str(text);
-            }
-            Change::Removed(text) => {
-                let trimmed = text.trim_start();
-                if trimmed.len() < text.len() {
-                    let ws = &text[..text.len() - trimmed.len()];
-                    removed_line.push_str(ws);
-                }
-                if !trimmed.is_empty() {
-                    removed_line.push_str(&theme.inverse(trimmed));
-                }
-            }
-            Change::Added(text) => {
-                let trimmed = text.trim_start();
-                if trimmed.len() < text.len() {
-                    let ws = &text[..text.len() - trimmed.len()];
-                    added_line.push_str(ws);
-                }
-                if !trimmed.is_empty() {
-                    added_line.push_str(&theme.inverse(trimmed));
-                }
-            }
-        }
-    }
-
-    output.push(theme.fg_key(
-        ThemeKey::ToolDiffRemoved,
-        &format!("-{} {}", old_line_num, removed_line),
-    ));
-    output.push(theme.fg_key(
-        ThemeKey::ToolDiffAdded,
-        &format!("+{} {}", new_line_num, added_line),
-    ));
-}
-
 /// A change in a diff: equal, removed, or added.
 #[derive(Debug)]
 enum Change {

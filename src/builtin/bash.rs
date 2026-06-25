@@ -32,17 +32,6 @@ pub trait BashOperations: Send + Sync {
     ) -> Result<Option<i32>, anyhow::Error>;
 }
 
-/// Context passed to BashSpawnHook for command/cwd/env modification.
-#[derive(Debug, Clone)]
-pub struct BashSpawnContext {
-    pub command: String,
-    pub cwd: PathBuf,
-    pub env: HashMap<String, String>,
-}
-
-/// Hook to adjust command, cwd, or env before execution (matching pi's BashSpawnHook).
-pub type BashSpawnHook = Arc<dyn Send + Sync + Fn(BashSpawnContext) -> BashSpawnContext>;
-
 #[derive(Clone, Default)]
 pub struct BashToolOptions {
     /// Custom operations for command execution. Default: local shell.
@@ -51,8 +40,6 @@ pub struct BashToolOptions {
     pub command_prefix: Option<String>,
     /// Optional explicit shell path from settings.
     pub shell_path: Option<String>,
-    /// Hook to adjust command, cwd, or env before execution.
-    pub spawn_hook: Option<BashSpawnHook>,
 }
 
 pub struct BashExtension {
@@ -93,7 +80,6 @@ impl Extension for BashExtension {
             cwd: self.cwd.clone(),
             shell_path: self.options.shell_path.clone(),
             command_prefix: self.options.command_prefix.clone(),
-            spawn_hook: self.options.spawn_hook.clone(),
             operations: self.options.operations.clone(),
         })]
     }
@@ -103,8 +89,6 @@ struct BashTool {
     cwd: PathBuf,
     shell_path: Option<String>,
     command_prefix: Option<String>,
-    #[allow(dead_code)]
-    spawn_hook: Option<BashSpawnHook>,
     operations: Option<Arc<dyn BashOperations>>,
 }
 
@@ -275,15 +259,10 @@ fn format_size(bytes: usize) -> String {
 struct TailTruncation {
     content: String,
     truncated: bool,
-    #[allow(dead_code)]
     total_lines: usize,
-    #[allow(dead_code)]
     output_lines: usize,
-    #[allow(dead_code)]
     output_bytes: usize,
-    #[allow(dead_code)]
     truncated_by: &'static str,
-    #[allow(dead_code)]
     last_line_partial: bool,
 }
 
@@ -922,7 +901,6 @@ mod tests {
             cwd: std::env::temp_dir(),
             shell_path: None,
             command_prefix: None,
-            spawn_hook: None,
             operations: None,
         }
     }
@@ -1116,7 +1094,6 @@ mod tests {
             cwd: tmp.clone(),
             shell_path: None,
             command_prefix: None,
-            spawn_hook: None,
             operations: None,
         };
         let output = tool
