@@ -31,14 +31,14 @@
 
 - [x] **`collectEntriesForBranchSummary()`** — gather entries from abandoned branch for summarization
 - [x] **`generateBranchSummary()`** — summarize abandoned branch via LLM
-- [ ] **`branchWithSummary()` integration** — when user navigates to a different branch point, summarize the abandoned path (waiting on `/tree`/branch navigation implementation)
+- [x] **`branchWithSummary()` integration** — `AgentSession::set_branch()` now automatically summarizes the abandoned path when moving to a different branch point (if a provider is configured)
 
 ### Session switching at runtime
 
 - [x] **`/new` command** — create a new empty session at runtime
 - [x] **`/fork` command** — fork the current session at a specific point
 - [x] **`/session` command** — show session info and stats
-- [ ] **Session resource cleanup** — `cleanupSessionResources()` on session switch/dispose
+- [x] **`cleanupSessionResources()`** — `AgentSession::cleanup_session_resources()` clears persisted message tracking
 - [x] **Parent session tracking** — display fork chain (parent session path) in session info
 
 ### Session picker / UI
@@ -62,6 +62,6 @@
 - [ ] **Write tool output:** Lines don't match screen width, styling/wrapping differ from pi. Needs 1:1 alignment.
 - [ ] **Welcome message:** Doesn't look 1:1 identical with pi.
 - [ ] **Slash command autocomplete:** Doesn't show hints like pi. Needs 1:1 alignment.
-- [x] **`/session` command:** Works in interactive mode — shows session info, stats, and parent session.
+- [x] **`/session` command:** Works in interactive mode — shows session info, stats, and parent session. Also works in print mode now.
 - [x] **`/new` command:** Works — creates new empty session and clears conversation.
 - [ ] **Check unused dependencies**: All dependencies verified as used. No unused crates found.

@@ -340,6 +340,48 @@ impl AgentSession {
         .await
     }
 
+    /// Clean up resources held by the current session (provider connections, etc.).
+    /// Should be called before switching to a different session or disposing.
+    pub fn cleanup_session_resources(&mut self) {
+        // Reset persisted message tracking (they belong to the old session)
+        self.persisted_message_ids.clear();
+        self.persisted_tool_call_ids.clear();
+        // Provider connections will be dropped when the Arc is cleaned up
+    }
+
+    /// Move the leaf pointer to an earlier entry (starts a new branch).
+    /// Optionally summarizes the abandoned path if a provider is configured.
+    /// Returns the branch summary text if summarization was performed.
+    pub async fn set_branch(
+        &mut self,
+        branch_from_id: &str,
+    ) -> Result<Option<String>, String> {
+        let old_leaf = self.session.leaf_id().map(|s| s.to_string());
+
+        let summary = if self.compaction_provider.is_some()
+            && !self.model_name.is_empty()
+            && let Some(ref old) = old_leaf
+            && old != branch_from_id
+        {
+            // Summarize the abandoned path
+            match self.summarize_branch_navigation(Some(old), branch_from_id).await {
+                Ok(s) => Some(s),
+                Err(e) => {
+                    // Non-fatal: still allow the branch move
+                    eprintln!("Warning: branch summarization failed: {}", e);
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        self.session.set_branch(branch_from_id)
+            .map_err(|e| format!("Failed to set branch: {}", e))?;
+
+        Ok(summary)
+    }
+
     // ── Internal helpers ──────────────────────────────────────────
 
     /// Persist a single message, skipping if already persisted (dedup).

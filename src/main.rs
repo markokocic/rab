@@ -245,6 +245,13 @@ async fn main() -> anyhow::Result<()> {
             &model,
             rab::agent::compaction::get_model_context_window(&model),
         );
+
+        // Populate session info for /session command
+        let si = rab::builtin::commands::compute_session_info(agent_session.session());
+        if let Ok(mut guard) = session_info.lock() {
+            *guard = Some(si);
+        }
+
         run_print_mode(
             message,
             model,
