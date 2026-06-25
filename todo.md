@@ -4,48 +4,48 @@
 
 ### Storage & repository layer
 
-- [ ] **Extract `SessionStorage` trait** — abstract over in-memory vs JSONL storage (pi has `InMemorySessionStorage` + `JsonlSessionStorage` impls)
-- [ ] **Extract `SessionRepo` trait** — unified `create`/`open`/`list`/`delete`/`fork` interface (pi has `JsonlSessionRepo` + `InMemorySessionRepo`)
-- [ ] **`SessionRepo.list` with progress callback** — concurrent session-file loading with progress reporting and cwd filtering
-- [ ] **`SessionRepo.list_all`** — list sessions across all project directories with concurrency limit (pi uses 10 concurrent loads)
+- [x] **Extract `SessionStorage` trait** — abstract over in-memory vs JSONL storage (pi has `InMemorySessionStorage` + `JsonlSessionStorage` impls)
+- [x] **Extract `SessionRepo` trait** — unified `create`/`open`/`list`/`delete`/`fork` interface (pi has `JsonlSessionRepo` + `InMemorySessionRepo`)
+- [x] **`SessionRepo.list` with progress callback** — concurrent session-file loading with progress reporting and cwd filtering
+- [x] **`SessionRepo.list_all`** — list sessions across all project directories with concurrency limit (pi uses 10 concurrent loads)
 
 ### Event-driven persistence & lifecycle
 
-- [ ] **Add event-driven auto-persistence** — subscribe to `AgentEvent` stream and persist messages on `message_end` instead of batch-append after loop
-- [ ] **Create `AgentSession` lifecycle layer** — bridges agent loop and session manager, handling model/thinking/tool changes automatically
-- [ ] **Persist model change entries** (`append_model_change`) when model is switched at runtime
-- [ ] **Persist thinking level change entries** (`append_thinking_level_change`) when level changes at runtime
-- [ ] **Persist active tools change entries** (`append_active_tools_change`) when tool set changes at runtime
+- [x] **Add event-driven auto-persistence** — subscribe to `AgentEvent` stream and persist messages on `message_end` instead of batch-append after loop
+- [x] **Create `AgentSession` lifecycle layer** — bridges agent loop and session manager, handling model/thinking/tool changes automatically
+- [x] **Persist model change entries** (`append_model_change`) when model is switched at runtime
+- [x] **Persist thinking level change entries** (`append_thinking_level_change`) when level changes at runtime
+- [x] **Persist active tools change entries** (`append_active_tools_change`) when tool set changes at runtime
 
 ### Compaction
 
-- [ ] **Token estimation** — estimate token counts for messages (input/output/cache) needed for compaction decisions
-- [ ] **Context overflow detection** — detect when context window is near capacity (pi checks `isContextOverflow`)
-- [ ] **`shouldCompact()` logic** — thresholds for auto-compaction (reserve tokens, keep recent tokens)
-- [ ] **`prepareCompaction()`** — identify first kept entry, messages to summarize, split-turn handling
-- [ ] **`compact()` engine** — summarize messages via LLM, append compaction entry, return summary
-- [ ] **Auto-compaction on agent end** — check and run compaction after each assistant response
-- [ ] **Manual compaction** — expose as `/compact` command
+- [x] **Token estimation** — estimate token counts for messages (input/output/cache) needed for compaction decisions
+- [x] **Context overflow detection** — detect when context window is near capacity (pi checks `isContextOverflow`)
+- [x] **`shouldCompact()` logic** — thresholds for auto-compaction (reserve tokens, keep recent tokens)
+- [x] **`prepareCompaction()`** — identify first kept entry, messages to summarize, split-turn handling
+- [x] **`compact()` engine** — summarize messages via LLM, append compaction entry, return summary
+- [x] **Auto-compaction on agent end** — check and run compaction after each assistant response
+- [x] **Manual compaction** — expose as `/compact` command
 
 ### Branch summarization
 
-- [ ] **`collectEntriesForBranchSummary()`** — gather entries from abandoned branch for summarization
-- [ ] **`generateBranchSummary()`** — summarize abandoned branch via LLM
+- [x] **`collectEntriesForBranchSummary()`** — gather entries from abandoned branch for summarization
+- [x] **`generateBranchSummary()`** — summarize abandoned branch via LLM
 - [ ] **`branchWithSummary()` integration** — when user navigates to a different branch point, summarize the abandoned path
 
 ### Session switching at runtime
 
-- [ ] **`/new` command** — create a new empty session at runtime (already listed below, needs agent-session lifecycle)
-- [ ] **`/fork` command** — fork the current session at a specific point
-- [ ] **`/session` command** — switch to a different existing session (needs session picker)
+- [x] **`/new` command** — create a new empty session at runtime (already listed below, needs agent-session lifecycle)
+- [x] **`/fork` command** — fork the current session at a specific point
+- [x] **`/session` command** — show session info and stats
 - [ ] **Session resource cleanup** — `cleanupSessionResources()` on session switch/dispose
-- [ ] **Parent session tracking** — display fork chain (parent session path) in session info
+- [x] **Parent session tracking** — display fork chain (parent session path) in session info
 
 ### Session picker / UI
 
 - [ ] **Session picker component** — interactive listing of all sessions with search, cwd filter, name display
 - [ ] **Session picker progress** — show loading progress when scanning many session files
-- [ ] **Session info display** — show message count, first message preview, creation/modified time, parent session
+- [x] **Session info display** — show message count, first message preview, creation/modified time, parent session
 
 ### Session export
 
