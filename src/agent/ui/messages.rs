@@ -354,25 +354,40 @@ pub fn render_messages(
 pub fn session_messages_to_display(
     messages: &[crate::agent::types::AgentMessage],
 ) -> Vec<DisplayMsg> {
+    use std::collections::HashMap;
+
     let mut result = Vec::with_capacity(messages.len());
+    // Collect tool calls from assistant messages by their ID so we can emit
+    // each ToolCall immediately before its matching ToolResult.  This keeps
+    // every call+result pair adjacent, which lets the component builder merge
+    // them into a single ToolExecComponent.
+    let mut pending_calls: HashMap<String, crate::agent::types::ToolCall> = HashMap::new();
+
     for m in messages {
         match m.role {
             crate::agent::types::Role::User => result.push(DisplayMsg::User(m.content.clone())),
             crate::agent::types::Role::Assistant => {
-                // Emit ToolCall entries for each tool call before the response text
+                // Save tool calls for later matching, emit text now.
                 for tc in &m.tool_calls {
-                    result.push(DisplayMsg::ToolCall {
-                        name: tc.name.clone(),
-                        args: serde_json::to_string(&tc.arguments).unwrap_or_default(),
-                    });
+                    pending_calls.insert(tc.id.clone(), tc.clone());
                 }
-                // Only add assistant text if non-empty
                 if !m.content.is_empty() {
                     result.push(DisplayMsg::AssistantText(m.content.clone()));
                 }
             }
             crate::agent::types::Role::ToolResult => {
                 let prefix = if m.is_error { "✗" } else { "✓" };
+                // Try to match this result with a pending tool call by ID.
+                // Emit the call header immediately before the result so they
+                // stay adjacent and the component builder can merge them.
+                if let Some(ref tc_id) = m.tool_call_id
+                    && let Some(tc) = pending_calls.remove(tc_id)
+                {
+                    result.push(DisplayMsg::ToolCall {
+                        name: tc.name.clone(),
+                        args: serde_json::to_string(&tc.arguments).unwrap_or_default(),
+                    });
+                }
                 result.push(DisplayMsg::ToolResult {
                     content: format!("{} {}", prefix, m.content),
                     compact: None,
