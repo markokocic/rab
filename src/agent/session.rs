@@ -438,17 +438,6 @@ pub fn generate_entry_id(by_id: &HashMap<String, SessionEntry>) -> String {
     uuid::Uuid::new_v4().to_string()
 }
 
-/// Generate a unique ID using a HashSet for ID tracking.
-fn generate_entry_id_str(ids: &std::collections::HashSet<String>) -> String {
-    for _ in 0..100 {
-        let id = uuid::Uuid::new_v4().to_string()[..8].to_string();
-        if !ids.contains(&id) {
-            return id;
-        }
-    }
-    uuid::Uuid::new_v4().to_string()
-}
-
 // ── SessionManager ──────────────────────────────────────────────────
 
 /// Manages conversation sessions as append-only trees in JSONL files.
@@ -675,46 +664,8 @@ impl SessionManager {
         id
     }
 
-    /// Run migrations to bring entries to the current version.
-    /// Pi-compatible: handles v1→v2 (add id/parentId) and v2→v3 (hookMessage→custom).
-    /// Also strips rab-specific LeafEntry entries (pi doesn't persist leaf in file).
+    /// Update the session header version to the current version.
     fn migrate_to_current(&mut self) {
-        let version = self
-            .session_header
-            .as_ref()
-            .and_then(|h| h.version)
-            .unwrap_or(1);
-
-        if version < 2 {
-            // v1→v2: Add id/parentId tree structure.
-            // Linear entries get sequential IDs and parentId links.
-            let mut ids = std::collections::HashSet::new();
-            let mut _prev_id: Option<String> = None;
-            for entry in &mut self.file_entries {
-                // Generate an ID if the entry doesn't have one
-                let id = generate_entry_id_str(&ids);
-                ids.insert(id.clone());
-
-                if entry.parent_id().is_none() {
-                    // v1 sessions without id/parentId: _build_index uses sequential order
-                }
-                // Note: v1→v2 compaction firstKeptEntryIndex→firstKeptEntryId
-                // conversion is handled during deserialization when parsing the JSON.
-                _prev_id = Some(id);
-            }
-        }
-
-        if version < 3 {
-            // v2→v3: Rename hookMessage role to custom.
-            // For rab, this is a no-op since rab never wrote hookMessage.
-            // But we handle it for compatibility with pi v2 sessions.
-        }
-
-        // Strip rab-specific LeafEntry entries (pi doesn't persist leaf in file).
-        self.file_entries
-            .retain(|e| !matches!(e, SessionEntry::Leaf(_)));
-
-        // Update header version
         if let Some(ref mut h) = self.session_header {
             h.version = Some(CURRENT_SESSION_VERSION);
         }
