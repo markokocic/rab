@@ -5,7 +5,9 @@ use crate::tui::ThemeKey;
 use anyhow::Context;
 use async_trait::async_trait;
 use std::borrow::Cow;
+use std::sync::Mutex;
 use tokio::sync::mpsc::UnboundedSender;
+use unicode_normalization::UnicodeNormalization;
 
 pub struct EditExtension {
     cwd: std::path::PathBuf,
@@ -25,15 +27,17 @@ impl Extension for EditExtension {
     fn tools(&self) -> Vec<Box<dyn AgentTool>> {
         vec![Box::new(EditTool {
             cwd: self.cwd.clone(),
+            renderer: EditRenderer::new(),
         })]
     }
 }
 
 struct EditTool {
     cwd: std::path::PathBuf,
+    renderer: EditRenderer,
 }
 
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct Edit {
     old_text: String,
@@ -75,26 +79,31 @@ fn restore_line_endings(content: &str, ending: &str) -> String {
 
 // ── Fuzzy matching ───────────────────────────────────────────────
 
-/// Normalize text for fuzzy matching:
+/// Normalize text for fuzzy matching (pi-compatible).
+/// Applies progressive transformations:
+/// - NFKC normalization (handles composed/decomposed Unicode)
 /// - Strip trailing whitespace from each line
 /// - Normalize Unicode smart quotes → ASCII quotes
 /// - Normalize Unicode dashes/hyphens → ASCII hyphen
 /// - Normalize special Unicode spaces → regular space
 fn normalize_for_fuzzy_match(text: &str) -> String {
-    // First pass: strip trailing whitespace per line
-    let mut intermediate = String::with_capacity(text.len());
-    for line in text.lines() {
+    // First: NFKC normalization (pi calls .normalize("NFKC"))
+    let nfkc = text.nfkc().collect::<String>();
+
+    // Second: strip trailing whitespace per line
+    let mut intermediate = String::with_capacity(nfkc.len());
+    for line in nfkc.lines() {
         if !intermediate.is_empty() {
             intermediate.push('\n');
         }
         intermediate.push_str(line.trim_end());
     }
     // Handle trailing newline: lines() strips final newline, re-add if present
-    if text.ends_with('\n') {
+    if nfkc.ends_with('\n') {
         intermediate.push('\n');
     }
 
-    // Second pass: normalize Unicode characters to ASCII equivalents
+    // Third: normalize Unicode characters to ASCII equivalents
     let mut result = String::with_capacity(intermediate.len());
     for ch in intermediate.chars() {
         match ch {
@@ -156,51 +165,168 @@ fn prepare_edit_arguments(args: &serde_json::Value) -> Result<(String, Vec<Edit>
     Ok((path.to_string(), edits))
 }
 
+// ── Line-span tracking for fuzzy mapping ────────────────────────
+
+/// A line span tracking the byte offsets of a line in the content.
+/// Matches pi's `LineSpan` struct.
+#[derive(Debug, Clone, Copy)]
+struct LineSpan {
+    start: usize,
+    end: usize,
+}
+
+/// Split content into lines, preserving each line's ending.
+/// Returns Vec<&str> where each element includes its line ending if present.
+fn split_lines_with_endings(content: &str) -> Vec<&str> {
+    let mut result = Vec::new();
+    let mut remaining = content;
+    while let Some(pos) = remaining.find('\n') {
+        result.push(&remaining[..=pos]);
+        remaining = &remaining[pos + 1..];
+    }
+    if !remaining.is_empty() {
+        result.push(remaining);
+    }
+    result
+}
+
+/// Get line spans for the content.
+fn get_line_spans(content: &str) -> Vec<LineSpan> {
+    let mut offset = 0;
+    split_lines_with_endings(content)
+        .iter()
+        .map(|line| {
+            let span = LineSpan {
+                start: offset,
+                end: offset + line.len(),
+            };
+            offset = span.end;
+            span
+        })
+        .collect()
+}
+
+/// Get the line range that a replacement touches.
+fn get_replacement_line_range(
+    lines: &[LineSpan],
+    match_index: usize,
+    match_length: usize,
+) -> (usize, usize) {
+    let replacement_end = match_index + match_length;
+
+    let mut start_line = 0;
+    for (i, line) in lines.iter().enumerate() {
+        if match_index >= line.start && match_index < line.end {
+            start_line = i;
+            break;
+        }
+    }
+
+    let mut end_line = start_line;
+    while end_line < lines.len() && lines[end_line].end < replacement_end {
+        end_line += 1;
+    }
+    if end_line >= lines.len() {
+        end_line = lines.len() - 1;
+    }
+
+    (start_line, end_line + 1)
+}
+
+/// Apply replacements to content (applied in reverse order to keep offsets stable).
+/// Each replacement is (matchIndex, matchLength, newText).
+fn apply_replacements(
+    content: &str,
+    replacements: &[(usize, usize, &str)],
+    offset: usize,
+) -> String {
+    let mut result = content.to_string();
+    for (start, length, new_text) in replacements.iter().rev() {
+        let adj_start = start - offset;
+        let adj_end = adj_start + length;
+        result.replace_range(adj_start..adj_end, new_text);
+    }
+    result
+}
+
+/// Map changes made in fuzzy-normalized space back to the original (LF-normalized)
+/// content, preserving the original bytes of unchanged lines (pi-compatible).
+///
+/// Uses line-span tracking and groups overlapping replacements, matching pi's
+/// `applyReplacementsPreservingUnchangedLines`.
+fn apply_replacements_preserving_unchanged_lines(
+    original_content: &str,
+    base_content: &str,
+    replacements: &[(usize, usize, &str)], // (matchIndex, matchLength, newText) sorted by matchIndex
+) -> String {
+    let original_lines = split_lines_with_endings(original_content);
+    let base_lines = get_line_spans(base_content);
+
+    if original_lines.len() != base_lines.len() {
+        // Line count mismatch — fall back to simple application
+        let mut result = base_content.to_string();
+        for (start, end, new_text) in replacements.iter().rev() {
+            result.replace_range(*start..*end, new_text);
+        }
+        return result;
+    }
+
+    // Build groups of overlapping replacements
+    struct Group {
+        start_line: usize,
+        end_line: usize,
+        replacements: Vec<(usize, usize, String)>, // (matchIndex, matchLength, newText)
+    }
+
+    let mut groups: Vec<Group> = Vec::new();
+    for &(start, end, new_text) in replacements {
+        let (sl, el) = get_replacement_line_range(&base_lines, start, end);
+        if let Some(last) = groups.last_mut()
+            && sl < last.end_line
+        {
+            last.end_line = last.end_line.max(el);
+            last.replacements.push((start, end, new_text.to_string()));
+            continue;
+        }
+        groups.push(Group {
+            start_line: sl,
+            end_line: el,
+            replacements: vec![(start, end, new_text.to_string())],
+        });
+    }
+
+    let mut original_line_index = 0;
+    let mut result = String::new();
+
+    for group in &groups {
+        // Copy unchanged original lines
+        result.push_str(&original_lines[original_line_index..group.start_line].concat());
+
+        // Apply replacements to the base content slice for this group
+        let group_start_offset = base_lines[group.start_line].start;
+        let group_end_offset = base_lines[group.end_line - 1].end;
+        let group_slice = &base_content[group_start_offset..group_end_offset];
+        let adjusted_replacements: Vec<(usize, usize, &str)> = group
+            .replacements
+            .iter()
+            .map(|(s, e, t)| (*s - group_start_offset, *e, t.as_str()))
+            .collect();
+        result.push_str(&apply_replacements(group_slice, &adjusted_replacements, 0));
+
+        original_line_index = group.end_line;
+    }
+
+    // Copy remaining original lines
+    result.push_str(&original_lines[original_line_index..].concat());
+
+    result
+}
+
 // ── Diff computation ─────────────────────────────────────────────
 
 /// Replace tabs with 3 spaces for consistent rendering.
 fn replace_tabs(text: &str) -> String {
     text.replace('\t', "   ")
-}
-
-/// Map changes made in fuzzy-normalized space back to the original (LF-normalized)
-/// content, preserving the original bytes of unchanged lines. This matches pi's
-/// `applyReplacementsPreservingUnchangedLines` behavior.
-///
-/// When fuzzy matching is used, trailing whitespace in the original is preserved
-/// for lines that are not part of any change.
-fn map_fuzzy_to_original(original: &str, fuzzy_base: &str, fuzzy_modified: &str) -> String {
-    let orig_lines: Vec<&str> = original.lines().collect();
-    let fuzzy_base_lines: Vec<&str> = fuzzy_base.lines().collect();
-    let fuzzy_mod_lines: Vec<&str> = fuzzy_modified.lines().collect();
-
-    if orig_lines.len() != fuzzy_base_lines.len() {
-        // Line count mismatch — can't map precisely, return fuzzy version
-        return if fuzzy_modified.ends_with('\n') {
-            format!("{}\n", fuzzy_modified.trim_end())
-        } else {
-            fuzzy_modified.to_string()
-        };
-    }
-
-    let mut result = String::new();
-    for i in 0..orig_lines.len() {
-        if i >= fuzzy_mod_lines.len() {
-            break;
-        }
-        if fuzzy_base_lines[i] != fuzzy_mod_lines[i] {
-            // This line was changed — use the modified version (from fuzzy space)
-            result.push_str(fuzzy_mod_lines[i]);
-        } else {
-            // Unchanged line — preserve original bytes (including trailing whitespace)
-            result.push_str(orig_lines[i]);
-        }
-        if i < orig_lines.len() - 1 || original.ends_with('\n') {
-            result.push('\n');
-        }
-    }
-
-    result
 }
 
 /// Compute a display-oriented diff string with line numbers and context.
@@ -253,7 +379,6 @@ fn compute_diff(original: &str, modified: &str, _path: &str) -> String {
     const CONTEXT_LINES: usize = 4;
     let mut old_line_num: usize = 1;
     let mut new_line_num: usize = 1;
-    let mut _last_was_change = false;
 
     let pad = |num: usize| -> String { format!("{:width$}", num, width = line_num_width) };
 
@@ -344,8 +469,6 @@ fn compute_diff(original: &str, modified: &str, _path: &str) -> String {
                 old_line_num += ctx_buffer.len();
                 new_line_num += ctx_buffer.len();
             }
-
-            _last_was_change = false;
         } else {
             // Change (removed or added)
             let mut removed: Vec<&str> = Vec::new();
@@ -369,12 +492,216 @@ fn compute_diff(original: &str, modified: &str, _path: &str) -> String {
                 output.push(format!("+{} {}", pad(new_line_num), replace_tabs(line)));
                 new_line_num += 1;
             }
-
-            _last_was_change = true;
         }
     }
 
     output.join("\n")
+}
+
+/// Parse path and edits from args without validation errors — returns None if
+/// arguments are not yet complete (for preview computation).
+fn parse_path_edits(args: &serde_json::Value) -> Option<(String, Vec<Edit>)> {
+    let path = args.get("path").and_then(|v| v.as_str())?;
+    let edits: Vec<Edit> = if let Some(edits_val) = args.get("edits") {
+        if let Some(s) = edits_val.as_str() {
+            serde_json::from_str(s).ok()?
+        } else {
+            serde_json::from_value(edits_val.clone()).ok()?
+        }
+    } else if let (Some(old), Some(new)) = (args.get("oldText"), args.get("newText")) {
+        let old_text = old.as_str()?;
+        let new_text = new.as_str()?;
+        vec![Edit {
+            old_text: old_text.to_string(),
+            new_text: new_text.to_string(),
+        }]
+    } else {
+        return None;
+    };
+
+    if edits.is_empty() {
+        return None;
+    }
+
+    Some((path.to_string(), edits))
+}
+
+/// Apply edits to normalized content and return (normalized, base_content, new_content, diff).
+/// This is the core edit logic extracted for reuse by both execute and preview.
+///
+/// Returns Ok((normalized, base_content, new_content, diff_string)) on success,
+/// or Err(error_message) if edits can't be applied.
+fn apply_edits_and_compute_diff(
+    normalized: &str,
+    edits: &[Edit],
+    path_str: &str,
+) -> Result<(String, String, String), String> {
+    // Determine if fuzzy matching is needed
+    let mut needs_fuzzy = false;
+    for edit in edits {
+        let old_lf = normalize_to_lf(&edit.old_text);
+        if !normalized.contains(&old_lf) {
+            needs_fuzzy = true;
+            break;
+        }
+    }
+
+    // Build work content: exact or fuzzy-normalized
+    let fuzzy_owned;
+    let (work_content, is_fuzzy_space) = if needs_fuzzy {
+        fuzzy_owned = normalize_for_fuzzy_match(normalized);
+        (fuzzy_owned.as_str(), true)
+    } else {
+        (normalized, false)
+    };
+
+    let mut matched_indices: Vec<(usize, usize)> = Vec::new();
+
+    for (i, edit) in edits.iter().enumerate() {
+        if edit.old_text.is_empty() {
+            return if edits.len() == 1 {
+                Err(format!("oldText must not be empty in {}.", path_str))
+            } else {
+                Err(format!(
+                    "edits[{}].oldText must not be empty in {}.",
+                    i, path_str
+                ))
+            };
+        }
+
+        let search_text = if is_fuzzy_space {
+            normalize_for_fuzzy_match(&normalize_to_lf(&edit.old_text))
+        } else {
+            normalize_to_lf(&edit.old_text)
+        };
+        let count = work_content.matches(&search_text).count();
+
+        if count == 0 {
+            return if edits.len() == 1 {
+                Err(format!(
+                    "Could not find the exact text in {}. \
+                     The old text must match exactly including all whitespace and newlines.",
+                    path_str
+                ))
+            } else {
+                Err(format!(
+                    "Could not find edits[{}] in {}. \
+                     The oldText must match exactly including all whitespace and newlines.",
+                    i, path_str
+                ))
+            };
+        }
+
+        if count > 1 {
+            return if edits.len() == 1 {
+                Err(format!(
+                    "Found {} occurrences of the text in {}. \
+                     The text must be unique. Please provide more context to make it unique.",
+                    count, path_str
+                ))
+            } else {
+                Err(format!(
+                    "Found {} occurrences of edits[{}] in {}. \
+                     Each oldText must be unique. Please provide more context to make it unique.",
+                    count, i, path_str
+                ))
+            };
+        }
+
+        let pos = work_content.find(&search_text).unwrap();
+        matched_indices.push((pos, pos + search_text.len()));
+    }
+
+    // Check for overlapping edits
+    for (idx_i, &(pos_i, end_i)) in matched_indices.iter().enumerate() {
+        for (idx_j, &(pos_j, end_j)) in matched_indices.iter().enumerate().skip(idx_i + 1) {
+            if pos_i < end_j && pos_j < end_i {
+                return Err(format!(
+                    "edits[{}] and edits[{}] overlap in {}. Merge them into one edit or target disjoint regions.",
+                    idx_i, idx_j, path_str
+                ));
+            }
+        }
+    }
+
+    // Apply edits (sorted left-to-right)
+    let mut sorted: Vec<(usize, usize, &Edit)> = matched_indices
+        .into_iter()
+        .zip(edits.iter())
+        .map(|((start, end), edit)| (start, end, edit))
+        .collect();
+    sorted.sort_by_key(|(pos, _, _)| *pos);
+
+    let (base_content, new_content) = if is_fuzzy_space {
+        // Build replacement tuples for the preserving function
+        let mapped_refs: Vec<(usize, usize, &str)> = sorted
+            .iter()
+            .map(|(start, end, edit)| (*start, *end - *start, &edit.new_text[..]))
+            .collect();
+
+        let new_content =
+            apply_replacements_preserving_unchanged_lines(normalized, work_content, &mapped_refs);
+
+        (normalized.to_string(), new_content)
+    } else {
+        let mut modified = String::new();
+        let mut cursor = 0usize;
+        for (start, end, edit) in &sorted {
+            modified.push_str(&normalized[cursor..*start]);
+            modified.push_str(&normalize_to_lf(&edit.new_text));
+            cursor = *end;
+        }
+        modified.push_str(&normalized[cursor..]);
+        (normalized.to_string(), modified)
+    };
+
+    // No-change detection
+    if base_content == new_content {
+        return if edits.len() == 1 {
+            Err(format!(
+                "No changes made to {}. The replacement produced identical content. \
+                 This might indicate an issue with special characters or the text not \
+                 existing as expected.",
+                path_str
+            ))
+        } else {
+            Err(format!(
+                "No changes made to {}. The replacements produced identical content.",
+                path_str
+            ))
+        };
+    }
+
+    let diff = compute_diff(&base_content, &new_content, path_str);
+
+    Ok((base_content, new_content, diff))
+}
+
+/// Read a file and compute what the diff would look like if edits were applied.
+/// This is used for the preview rendering (matching pi's computeEditsDiff).
+fn compute_edits_diff(
+    path_str: &str,
+    edits: &[Edit],
+    cwd: &std::path::Path,
+) -> Result<String, String> {
+    let abs_path = {
+        let p = std::path::Path::new(path_str);
+        if p.is_absolute() {
+            p.to_path_buf()
+        } else {
+            cwd.join(p)
+        }
+    };
+
+    let raw_content =
+        std::fs::read_to_string(&abs_path).map_err(|e| format!("Could not read file: {}", e))?;
+
+    let (_bom, content) = strip_bom(&raw_content);
+    let normalized = normalize_to_lf(content);
+
+    let (_, _, diff) = apply_edits_and_compute_diff(&normalized, edits, path_str)?;
+
+    Ok(diff)
 }
 
 // ── AgentTool implementation ─────────────────────────────────────
@@ -433,7 +760,7 @@ impl AgentTool for EditTool {
     }
 
     fn renderer(&self) -> Option<Box<dyn ToolRenderer>> {
-        Some(Box::new(EditRenderer))
+        Some(Box::new(self.renderer.clone()))
     }
 
     async fn execute(
@@ -452,6 +779,7 @@ impl AgentTool for EditTool {
         let cwd = self.cwd.clone();
         let path_for_queue = path_str.clone();
         let cwd_for_closure = cwd.clone();
+        let edits_for_closure = edits.clone();
 
         // Wrap the entire read-edit-write in a per-file mutation queue so
         // concurrent edits to the same file are serialized (pi-style).
@@ -468,9 +796,13 @@ impl AgentTool for EditTool {
                     }
                 };
 
+                cancel.check()?;
+
                 // Read file
                 let raw_content = std::fs::read_to_string(&abs_path)
                     .with_context(|| format!("Failed to read {}", abs_path.display()))?;
+
+                cancel.check()?;
 
                 // ── 1. BOM handling ──
                 let (bom, content) = strip_bom(&raw_content);
@@ -479,192 +811,77 @@ impl AgentTool for EditTool {
                 let original_ending = detect_line_ending(content);
                 let normalized = normalize_to_lf(content);
 
-                // ── 3. Only use fuzzy normalization when needed (matching pi behavior) ──
-                // First, try exact matches for all edits. If all match exactly, no fuzzy needed.
-                // If any edit requires fuzzy matching, normalize everything and also preserve
-                // original lines for unchanged regions (matching pi's
-                // applyReplacementsPreservingUnchangedLines).
-                let mut needs_fuzzy = false;
-                for edit in &edits {
-                    let old_lf = normalize_to_lf(&edit.old_text);
-                    if !normalized.contains(&old_lf) {
-                        needs_fuzzy = true;
-                        break;
-                    }
-                }
+                // ── 3-8. Apply edits and compute diff ──
+                let (_base_content, new_content, diff) =
+                    apply_edits_and_compute_diff(&normalized, &edits_for_closure, &path_str)
+                        .map_err(|e| anyhow::anyhow!("{}", e))?;
 
-                // ── 4. Build work content: exact or fuzzy-normalized ──
-                let fuzzy_owned;
-                let (work_content, is_fuzzy_space) = if needs_fuzzy {
-                    fuzzy_owned = normalize_for_fuzzy_match(&normalized);
-                    (fuzzy_owned.as_str(), true)
-                } else {
-                    (normalized.as_str(), false)
-                };
-
-                let mut matched_indices: Vec<(usize, usize)> = Vec::new();
-
-                for (i, edit) in edits.iter().enumerate() {
-                    if edit.old_text.is_empty() {
-                        return if edits.len() == 1 {
-                            Err(anyhow::anyhow!("oldText must not be empty in {}.", path_str))
-                        } else {
-                            Err(anyhow::anyhow!(
-                                "edits[{}].oldText must not be empty in {}.",
-                                i,
-                                path_str
-                            ))
-                        };
-                    }
-
-                    let search_text = if is_fuzzy_space {
-                        normalize_for_fuzzy_match(&normalize_to_lf(&edit.old_text))
-                    } else {
-                        normalize_to_lf(&edit.old_text)
-                    };
-                    let count = work_content.matches(&search_text).count();
-
-                    if count == 0 {
-                        return if edits.len() == 1 {
-                            Err(anyhow::anyhow!(
-                                "Could not find the exact text in {}. \
-                                 The old text must match exactly including all whitespace and newlines.",
-                                path_str
-                            ))
-                        } else {
-                            Err(anyhow::anyhow!(
-                                "Could not find edits[{}] in {}. \
-                                 The oldText must match exactly including all whitespace and newlines.",
-                                i,
-                                path_str
-                            ))
-                        };
-                    }
-
-                    if count > 1 {
-                        return if edits.len() == 1 {
-                            Err(anyhow::anyhow!(
-                                "Found {} occurrences of the text in {}. \
-                                 The text must be unique. Please provide more context to make it unique.",
-                                count,
-                                path_str
-                            ))
-                        } else {
-                            Err(anyhow::anyhow!(
-                                "Found {} occurrences of edits[{}] in {}. \
-                                 Each oldText must be unique. Please provide more context to make it unique.",
-                                count,
-                                i,
-                                path_str
-                            ))
-                        };
-                    }
-
-                    let pos = work_content.find(&search_text).unwrap();
-                    matched_indices.push((pos, pos + search_text.len()));
-                }
-
-                // ── 5. Check for overlapping edits ──
-                for (idx_i, &(pos_i, end_i)) in matched_indices.iter().enumerate() {
-                    for (idx_j, &(pos_j, end_j)) in matched_indices.iter().enumerate().skip(idx_i + 1) {
-                        if pos_i < end_j && pos_j < end_i {
-                            return Err(anyhow::anyhow!(
-                                "edits[{}] and edits[{}] overlap in {}. Merge them into one edit or target disjoint regions.",
-                                idx_i,
-                                idx_j,
-                                path_str
-                            ));
-                        }
-                    }
-                }
-
-                // ── 6. Apply edits (sorted left-to-right) ──
-                let mut sorted: Vec<(usize, usize, &Edit)> = matched_indices
-                    .into_iter()
-                    .zip(edits.iter())
-                    .map(|((start, end), edit)| (start, end, edit))
-                    .collect();
-                sorted.sort_by_key(|(pos, _, _)| *pos);
-
-                // When using fuzzy matching, apply edits to the normalized content
-                // and then map back to preserve original unchanged line bytes (matching pi's
-                // applyReplacementsPreservingUnchangedLines).
-                let modified = if is_fuzzy_space {
-                    // Apply edits in fuzzy space
-                    let mut fuzzy_modified = String::new();
-                    let mut cursor = 0usize;
-                    for (start, end, edit) in &sorted {
-                        fuzzy_modified.push_str(&work_content[cursor..*start]);
-                        fuzzy_modified.push_str(&normalize_to_lf(&edit.new_text));
-                        cursor = *end;
-                    }
-                    fuzzy_modified.push_str(&work_content[cursor..]);
-
-                    // Map back to original content, preserving unchanged line bytes.
-                    // Split both versions into lines and reconstruct, keeping original
-                    // lines for unchanged regions.
-                    map_fuzzy_to_original(&normalized, work_content, &fuzzy_modified)
-                } else {
-                    let mut modified = String::new();
-                    let mut cursor = 0usize;
-                    for (start, end, edit) in &sorted {
-                        modified.push_str(&normalized[cursor..*start]);
-                        modified.push_str(&normalize_to_lf(&edit.new_text));
-                        cursor = *end;
-                    }
-                    modified.push_str(&normalized[cursor..]);
-                    modified
-                };
-
-                // ── 7. No-change detection (matching pi behavior) ──
-                if normalized == modified {
-                    return if edits.len() == 1 {
-                        Err(anyhow::anyhow!(
-                            "No changes made to {}. The replacement produced identical content. \
-                             This might indicate an issue with special characters or the text not \
-                             existing as expected.",
-                            path_str
-                        ))
-                    } else {
-                        Err(anyhow::anyhow!(
-                            "No changes made to {}. The replacements produced identical content.",
-                            path_str
-                        ))
-                    };
-                }
-
-                // ── 8. Compute diff ──
-                let diff = compute_diff(&normalized, &modified, &path_str);
+                cancel.check()?;
 
                 // ── 9. Write back with original line endings and BOM ──
                 let final_content =
-                    bom.to_string() + &restore_line_endings(&modified, original_ending);
+                    bom.to_string() + &restore_line_endings(&new_content, original_ending);
                 std::fs::write(&abs_path, &final_content)
                     .with_context(|| format!("Failed to write {}", abs_path.display()))?;
 
                 // ── 10. Return result ──
-                // The diff is included in the content for UI rendering (via ```diff block).
-                // The success message comes first so the model sees it in context.
+                // Content: just the success message (no embedded diff).
+                // Diff is in details for UI rendering (pi-compatible).
                 let noun = if edits.len() == 1 { "block" } else { "blocks" };
-                Ok(format!(
-                    "Successfully replaced {} {} in {}.\n```diff\n{}```",
+                let msg = format!(
+                    "Successfully replaced {} {} in {}.",
                     edits.len(),
                     noun,
-                    path_str,
-                    diff.trim_end()
-                ))
+                    path_str
+                );
+                let details = serde_json::json!({
+                    "diff": diff.trim_end(),
+                    "path": path_str,
+                    "patch": "", // patch is not computed yet
+                });
+                Ok::<_, anyhow::Error>((msg, details))
             },
         )
         .await?;
 
-        Ok(ToolOutput::ok(output))
+        let (msg, details) = output;
+        Ok(ToolOutput::ok_with_details(msg, details))
     }
+}
+
+// ── Edit tool renderer (stateful, with preview) ─────────────────
+
+/// Cached preview of what the edit will look like.
+#[derive(Debug, Clone)]
+struct EditPreview {
+    diff: String,
+    error: Option<String>,
 }
 
 /// Tool renderer for the `edit` tool.
 /// Uses `renderShell: "self"` - renders its own framing without colored box.
-/// Shows a preview of what will change in the call header.
-struct EditRenderer;
+/// Shows a preview of what will change in the call header (matching pi behavior).
+#[derive(Clone)]
+struct EditRenderer {
+    /// Cached diff preview, computed from file system during render_call.
+    /// Protected by Mutex for interior mutability in a Sync trait impl.
+    preview: std::sync::Arc<Mutex<Option<EditPreview>>>,
+}
+
+impl EditRenderer {
+    fn new() -> Self {
+        Self {
+            preview: std::sync::Arc::new(Mutex::new(None)),
+        }
+    }
+
+    /// Set the cached preview.
+    fn set_preview(&self, preview: EditPreview) {
+        if let Ok(mut p) = self.preview.lock() {
+            *p = Some(preview);
+        }
+    }
+}
 
 impl ToolRenderer for EditRenderer {
     fn render_self(&self) -> bool {
@@ -676,7 +893,7 @@ impl ToolRenderer for EditRenderer {
         args: &serde_json::Value,
         _width: usize,
         theme: &dyn Theme,
-        _ctx: &ToolRenderContext,
+        ctx: &ToolRenderContext,
     ) -> Vec<String> {
         let path = args
             .get("file_path")
@@ -694,54 +911,123 @@ impl ToolRenderer for EditRenderer {
             theme.fg_key(ThemeKey::Accent, &short)
         };
 
-        // Pi's initial render_call shows just the edit header (no preview).
-        // The async diff preview (computed via computeEditsDiff) would appear
-        // on re-render, but our synchronous architecture shows the diff only
-        // when the result is available via render_result.
-        vec![format!(
+        let header = format!(
             "{} {}",
             theme.fg_key(ThemeKey::ToolTitle, &theme.bold("edit")),
             path_disp
-        )]
-    }
+        );
 
-    fn render_result(
-        &self,
-        content: &str,
-        _width: usize,
-        theme: &dyn Theme,
-        _ctx: &ToolRenderContext,
-    ) -> Vec<String> {
-        // Parse result content: message before ```diff block + diff inside it.
-        // Pi renders the message OUTSIDE the colored box (via renderResult returning
-        // a Container). In our architecture, both message and diff are inside the same
-        // TuiBox, so we render the message first, then the diff.
-        let mut lines: Vec<String> = Vec::new();
+        let mut lines = vec![header];
 
-        if let Some(start) = content.find("```diff\n") {
-            // Text before the diff block is the success message
-            let msg = content[..start].trim_end();
-            if !msg.is_empty() {
-                lines.push(theme.fg_key(ThemeKey::ToolOutput, msg));
-            }
+        // Decide what diff to show:
+        // 1. If execution completed and details are available, use actual diff from details
+        // 2. Otherwise, if args are complete and we have a cached preview, show that
+        let actual_diff = ctx
+            .details
+            .as_ref()
+            .and_then(|d| d.get("diff"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
 
-            // Extract and render the diff
-            let after = &content[start + 8..];
-            if let Some(end) = after.find("```") {
-                let diff_text = &after[..end];
-                let rendered = crate::tui::components::diff::render_diff(diff_text, theme);
-                lines.extend(rendered);
+        let diff_to_show = if let Some(ref d) = actual_diff {
+            Some(d.clone())
+        } else if ctx.args_complete && !ctx.is_partial {
+            // After execution, if details aren't in context (unlikely), fallback to preview
+            self.preview.lock().ok().and_then(|p| {
+                p.as_ref().map(|preview| {
+                    if let Some(ref err) = preview.error {
+                        format!("error: {}", err)
+                    } else {
+                        preview.diff.clone()
+                    }
+                })
+            })
+        } else if ctx.args_complete && actual_diff.is_none() {
+            // Pending state: try to compute preview on the fly
+            // Check if preview is already cached
+            let cached = self.preview.lock().ok().and_then(|p| p.clone());
+
+            if let Some(preview) = cached {
+                if let Some(ref err) = preview.error {
+                    Some(format!("error: {}", err))
+                } else {
+                    Some(preview.diff.clone())
+                }
+            } else if let Some((path_str, edits)) = parse_path_edits(args) {
+                // Compute preview synchronously (file read is fast)
+                let result = compute_edits_diff(&path_str, &edits, std::path::Path::new(&ctx.cwd));
+                match result {
+                    Ok(diff) => {
+                        let p = EditPreview {
+                            diff: diff.clone(),
+                            error: None,
+                        };
+                        self.set_preview(p);
+                        Some(diff)
+                    }
+                    Err(e) => {
+                        let p = EditPreview {
+                            diff: String::new(),
+                            error: Some(e.clone()),
+                        };
+                        self.set_preview(p);
+                        Some(format!("error: {}", e))
+                    }
+                }
+            } else {
+                None
             }
         } else {
-            // No diff block — show content as-is
-            if !content.is_empty() {
-                lines.push(theme.fg_key(ThemeKey::ToolOutput, content));
+            None
+        };
+
+        if let Some(ref diff) = diff_to_show {
+            if diff.starts_with("error: ") {
+                // Show error inline (dimmed, matching pi error display)
+                lines.push(String::new());
+                lines.push(theme.fg_key(ThemeKey::Muted, diff));
+            } else if !diff.is_empty() {
+                lines.push(String::new());
+                let rendered_lines = crate::tui::components::diff::render_diff(diff, theme);
+                lines.extend(rendered_lines);
             }
         }
 
         lines
     }
+
+    fn render_result(
+        &self,
+        _content: &str,
+        _width: usize,
+        theme: &dyn Theme,
+        ctx: &ToolRenderContext,
+    ) -> Vec<String> {
+        // Result is already shown in the call header (via render_call using ctx.details).
+        // If there's an error message not already shown, return it.
+        if ctx.is_error {
+            // Error case: content has the error text
+            if !_content.is_empty() {
+                let msg = _content;
+                // Check if this error is already shown as preview
+                let preview_err = self
+                    .preview
+                    .lock()
+                    .ok()
+                    .and_then(|p| p.as_ref().and_then(|preview| preview.error.clone()));
+                if preview_err.as_deref() != Some(msg) {
+                    return vec![String::new(), theme.fg_key(ThemeKey::Error, msg)];
+                }
+            }
+        }
+
+        Vec::new()
+    }
 }
+
+// ═══════════════════════════════════════════════════════════════════
+// Tests
+// ═══════════════════════════════════════════════════════════════════
 
 #[cfg(test)]
 mod tests {
@@ -756,7 +1042,10 @@ mod tests {
 
     fn make_tool() -> (EditTool, std::path::PathBuf) {
         let tmp = tmp_dir();
-        let tool = EditTool { cwd: tmp.clone() };
+        let tool = EditTool {
+            cwd: tmp.clone(),
+            renderer: EditRenderer::new(),
+        };
         (tool, tmp)
     }
 
@@ -765,6 +1054,17 @@ mod tests {
             .await
             .unwrap()
             .content
+    }
+
+    async fn exec_ok_details(
+        tool: &EditTool,
+        args: serde_json::Value,
+    ) -> (String, Option<serde_json::Value>) {
+        let result = tool
+            .execute("id".into(), args, Cancel::new(), None)
+            .await
+            .unwrap();
+        (result.content, result.details)
     }
 
     async fn exec_err(tool: &EditTool, args: serde_json::Value) -> String {
@@ -1117,15 +1417,15 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "aaa\nxxx\n");
     }
 
-    // ── Diff output ──────────────────────────────────────────
+    // ── Structured details (diff no longer embedded in content) ──
 
     #[tokio::test]
-    async fn result_contains_diff() {
+    async fn result_content_has_no_diff_block() {
         let (tool, tmp) = make_tool();
         let path = tmp.join("diff_test.txt");
         std::fs::write(&path, "aaa\nbbb\nccc\n").unwrap();
 
-        let result = exec_ok(
+        let (content, details) = exec_ok_details(
             &tool,
             serde_json::json!({
                 "path": path.to_str().unwrap(),
@@ -1134,23 +1434,33 @@ mod tests {
         )
         .await;
 
-        assert!(result.contains("```diff"));
-        // Pi-style format with line numbers: "-2 bbb" and "+2 xxx"
-        // (bbb/xxx are on line 2 of the original/modified content)
+        // Content should NOT contain a ```diff block anymore
         assert!(
-            result.contains("-2 bbb"),
-            "expected '-2 bbb' in diff but got: {}",
-            result
+            !content.contains("```diff"),
+            "content should not contain diff block, got: {}",
+            content
+        );
+        assert!(content.contains("Successfully replaced 1 block"));
+
+        // Diff should be in details
+        let details_obj = details.expect("details should be present");
+        let diff = details_obj
+            .get("diff")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        assert!(
+            diff.contains("-2 bbb"),
+            "diff should contain '-2 bbb' but got: {}",
+            diff
         );
         assert!(
-            result.contains("+2 xxx"),
-            "expected '+2 xxx' in diff but got: {}",
-            result
+            diff.contains("+2 xxx"),
+            "diff should contain '+2 xxx' but got: {}",
+            diff
         );
-        assert!(result.contains("Successfully replaced 1 block"));
     }
 
-    // ── Fuzzy matching preserves unchanged lines ─────────────
+    // ── Fuzzy matching preserves unchanged lines (using new line-span mapping) ──
 
     #[tokio::test]
     async fn fuzzy_preserves_unchanged_line_trailing_whitespace() {
@@ -1216,6 +1526,33 @@ mod tests {
 
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "hi\n");
     }
+
+    // ── NFKC normalization test ─────────────────────────────
+
+    #[tokio::test]
+    async fn fuzzy_match_nfkc_composed_vs_decomposed() {
+        let (tool, tmp) = make_tool();
+        let path = tmp.join("nfkc.txt");
+        // "café" in NFD (decomposed): cafe + combining acute accent
+        let nfd: String = "cafe\u{0301}".chars().collect();
+        std::fs::write(&path, format!("{} rest\n", nfd)).unwrap();
+
+        exec_ok(
+            &tool,
+            serde_json::json!({
+                "path": path.to_str().unwrap(),
+                "edits": [{"oldText": "café", "newText": "changed"}]
+            }),
+        )
+        .await;
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            content.starts_with("changed"),
+            "expected 'changed' but got: {:?}",
+            content
+        );
+    }
 }
 
 #[cfg(test)]
@@ -1255,6 +1592,18 @@ mod fuzzy_tests {
         assert_eq!(
             normalize_for_fuzzy_match("hello\nworld\n"),
             "hello\nworld\n"
+        );
+    }
+
+    #[test]
+    fn test_nfkc_normalization() {
+        // é composed (NFC) vs decomposed (NFD) + NFKC
+        let composed = "café";
+        let decomposed: String = "cafe\u{0301}".chars().collect();
+        assert_eq!(
+            normalize_for_fuzzy_match(composed),
+            normalize_for_fuzzy_match(&decomposed),
+            "NFKC should make composed and decomposed café match"
         );
     }
 }
@@ -1312,5 +1661,15 @@ mod diff_tests {
             "should contain +6 Y but got: {}",
             diff
         );
+    }
+
+    #[test]
+    fn test_apply_replacements_preserving_unchanged_lines() {
+        let original = "keep this  \nchange this\nkeep that  \n";
+        let base = "keep this\nchange this\nkeep that\n";
+        // matchIndex 10, matchLength 11 covers "change this" (bytes 10..21 in base)
+        let replacements = vec![(10usize, 11usize, "modified")];
+        let result = apply_replacements_preserving_unchanged_lines(original, base, &replacements);
+        assert_eq!(result, "keep this  \nmodified\nkeep that  \n");
     }
 }

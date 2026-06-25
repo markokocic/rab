@@ -49,6 +49,8 @@ pub enum AgentEvent {
         content: String,
         compact: Option<String>,
         is_error: bool,
+        /// Structured details for the UI renderer (not sent to LLM).
+        details: Option<serde_json::Value>,
     },
     /// Intermediate tool execution progress (bash streaming output).
     ToolProgress {
@@ -130,6 +132,8 @@ struct ToolExecOutcome {
     is_error: bool,
     /// When true and ALL tools in the batch are terminal, skip further LLM calls.
     terminate: bool,
+    /// Structured details for UI rendering (not sent to LLM).
+    details: Option<serde_json::Value>,
 }
 
 /// Run the full agent loop. Returns all new messages added during the run.
@@ -336,6 +340,7 @@ pub async fn run_agent_loop(
                         content: outcome.content,
                         compact: outcome.compact,
                         is_error: outcome.is_error,
+                        details: outcome.details,
                     });
                     messages.push(msg.clone());
                     new_messages.push(msg);
@@ -484,6 +489,7 @@ async fn execute_tool_calls_sequential(
                     compact: None,
                     is_error: true,
                     terminate: false,
+                    details: None,
                 });
                 blocked = true;
                 break;
@@ -546,6 +552,7 @@ async fn execute_tool_calls_parallel(
                     compact: None,
                     is_error: true,
                     terminate: false,
+                    details: None,
                 });
                 blocked = true;
                 break;
@@ -630,6 +637,7 @@ async fn execute_single_tool(
                     compact: output.compact,
                     is_error: false,
                     terminate: output.terminate,
+                    details: output.details,
                 }
             }
             Err(e) => ToolExecOutcome {
@@ -639,6 +647,7 @@ async fn execute_single_tool(
                 compact: None,
                 is_error: true,
                 terminate: false,
+                details: None,
             },
         }
     } else {
@@ -649,6 +658,7 @@ async fn execute_single_tool(
             compact: None,
             is_error: true,
             terminate: false,
+            details: None,
         }
     }
 }
@@ -847,6 +857,7 @@ mod tests {
                 compact: None,
                 is_error: false,
                 terminate: self.terminate,
+                details: None,
             })
         }
     }

@@ -48,6 +48,8 @@ pub struct ToolExecComponent {
     cancelled: bool,
     // ── Read-specific (used when no renderer) ──
     file_path: Option<String>,
+    // ── Structured details for UI renderer (not sent to LLM) ──
+    details: Option<serde_json::Value>,
     // ── Dirty tracking for efficient re-render ──
     dirty: bool,
     // ── Render cache ──
@@ -77,6 +79,7 @@ impl ToolExecComponent {
             exit_code: None,
             cancelled: false,
             file_path: None,
+            details: None,
             dirty: true,
             cache: None,
         }
@@ -125,10 +128,16 @@ impl ToolExecComponent {
         self.mark_dirty();
     }
 
-    pub fn set_result(&mut self, output: impl Into<String>, is_error: bool) {
+    pub fn set_result_with_details(
+        &mut self,
+        output: impl Into<String>,
+        is_error: bool,
+        details: Option<serde_json::Value>,
+    ) {
         self.output = Some(output.into());
         self.is_error = is_error;
         self.is_complete = true;
+        self.details = details;
         // Capture final duration from started_at if not explicitly set via set_final_duration
         // (covers non-bash tools and fast commands that complete before any render).
         if self.final_duration.is_none()
@@ -137,6 +146,10 @@ impl ToolExecComponent {
             self.final_duration = Some(start.elapsed().as_secs_f64());
         }
         self.mark_dirty();
+    }
+
+    pub fn set_result(&mut self, output: impl Into<String>, is_error: bool) {
+        self.set_result_with_details(output, is_error, None);
     }
 
     pub fn set_args(&mut self, args: serde_json::Value) {
@@ -278,6 +291,7 @@ impl ToolExecComponent {
             full_output_path: self.full_output_path.clone(),
             file_path: self.file_path.clone(),
             expand_key,
+            details: self.details.clone(),
         };
 
         // For `renderShell: "self"` tools (like edit), wrap call + result in a

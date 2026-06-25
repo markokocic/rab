@@ -1690,6 +1690,7 @@ dependencies = [
  "syntect",
  "tempfile",
  "tokio",
+ "unicode-normalization",
  "unicode-segmentation",
  "unicode-width",
  "uuid",

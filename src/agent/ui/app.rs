@@ -2007,6 +2007,7 @@ fn handle_bang_command(app: &mut App, command: String) {
                     content: format!("Failed to execute: {:#}", e),
                     compact: None,
                     is_error: true,
+                    details: None,
                 });
                 guard.sent = true;
                 let _ = tx.send(AgentEvent::AgentEnd { messages: vec![] });
@@ -2086,6 +2087,7 @@ fn handle_bang_command(app: &mut App, command: String) {
             ),
             compact: None,
             is_error,
+            details: None,
         });
         guard.sent = true;
         let _ = tx.send(AgentEvent::AgentEnd { messages: vec![] });
@@ -2239,6 +2241,7 @@ fn handle_agent_event(app: &mut App, event: AgentEvent) {
             is_error,
             name,
             id,
+            details,
         } => {
             app.last_streaming_event = std::time::Instant::now();
             if let Some(weak) = app.pending_tools.remove(&id) {
@@ -2265,9 +2268,13 @@ fn handle_agent_event(app: &mut App, event: AgentEvent) {
                         {
                             comp.set_truncated(true, Some(path));
                         }
-                        comp.set_result(&content, is_error);
+                        comp.set_result_with_details(&content, is_error, details);
                     } else {
-                        comp.borrow_mut().set_result(&content, is_error);
+                        comp.borrow_mut().set_result_with_details(
+                            &content,
+                            is_error,
+                            details.clone(),
+                        );
                     };
                 }
             } else if name == "bash" {

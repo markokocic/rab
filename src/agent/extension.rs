@@ -171,6 +171,10 @@ pub struct ToolOutput {
     /// When true, the agent loop stops after this batch of tool calls
     /// (no more LLM calls). Pi-compatible: `terminate` on tool results.
     pub terminate: bool,
+    /// Structured rendering details for the UI (pi-compatible).
+    /// Carries data that should NOT be sent to the LLM but IS needed by
+    /// tool renderers (e.g. diff output, patch data).
+    pub details: Option<serde_json::Value>,
 }
 
 impl ToolOutput {
@@ -180,6 +184,7 @@ impl ToolOutput {
             compact: None,
             is_error: false,
             terminate: false,
+            details: None,
         }
     }
 
@@ -189,6 +194,22 @@ impl ToolOutput {
             compact: Some(compact.into()),
             is_error: false,
             terminate: false,
+            details: None,
+        }
+    }
+
+    /// Create an ok result with structured details for UI rendering (pi-compatible).
+    /// The `content` is sent to the LLM; `details` is used by the tool renderer only.
+    pub fn ok_with_details(
+        content: impl Into<String>,
+        details: impl Into<serde_json::Value>,
+    ) -> Self {
+        Self {
+            content: content.into(),
+            compact: None,
+            is_error: false,
+            terminate: false,
+            details: Some(details.into()),
         }
     }
 
@@ -198,6 +219,7 @@ impl ToolOutput {
             compact: None,
             is_error: true,
             terminate: false,
+            details: None,
         }
     }
 
@@ -233,6 +255,9 @@ pub struct ToolRenderContext {
     pub file_path: Option<String>,
     /// Keybinding hint for the expand action, e.g. "C-O".
     pub expand_key: String,
+    /// Structured rendering details from the tool execution (pi-compatible).
+    /// Set by tool renderers for preview/actual diff data. Not sent to the LLM.
+    pub details: Option<serde_json::Value>,
 }
 
 /// Tool-specific rendering interface (matching pi's renderCall/renderResult pattern).

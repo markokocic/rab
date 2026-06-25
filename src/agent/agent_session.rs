@@ -538,6 +538,7 @@ mod tests {
             content: "file content".to_string(),
             compact: None,
             is_error: false,
+            details: None,
         };
 
         as_.handle_event(&event);
@@ -608,6 +609,7 @@ mod tests {
             content: "done".to_string(),
             compact: None,
             is_error: false,
+            details: None,
         };
         as_.handle_event(&tool_event);
 
