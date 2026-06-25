@@ -202,6 +202,9 @@ pub struct App {
     /// behavior where setToolsExpanded expands both the header and all
     /// expandable chat children).
     header: Rc<RefCell<crate::agent::ui::components::HeaderComponent>>,
+
+    /// Session picker state (Some = picker is active).
+    session_picker: Option<crate::agent::ui::components::SessionPicker>,
     // ── Message rendering cache (avoids re-rendering messages every frame) ──
     // Cache fields removed - messages now rendered via Components in chat_container.
 }
@@ -385,6 +388,7 @@ impl App {
             header: Rc::new(RefCell::new(
                 crate::agent::ui::components::HeaderComponent::new(),
             )),
+            session_picker: None,
         };
 
         // Initial session info for /session command
@@ -547,10 +551,12 @@ pub async fn run(config: AppConfig, session: SessionManager) -> anyhow::Result<(
                     show_help_overlay(&mut app, &mut tui);
                 }
                 CommandResult::OpenSessionSelector => {
-                    // Session selector not yet implemented
-                    app.messages.push(DisplayMsg::Info(
-                        "Session selector - not yet implemented.".to_string(),
-                    ));
+                    // Open session picker
+                    let mut picker = crate::agent::ui::components::SessionPicker::new();
+                    let repo = crate::agent::DefaultSessionRepo::new();
+                    picker.load_sessions(&repo);
+                    app.session_picker = Some(picker);
+                    app.status_text = None;
                 }
                 CommandResult::OpenSettings => {
                     app.messages.push(DisplayMsg::Info(
@@ -647,6 +653,18 @@ pub async fn run(config: AppConfig, session: SessionManager) -> anyhow::Result<(
 /// Layout (top to bottom):
 ///   header → chat_container (messages) → pending → status → queued → working → editor → footer
 fn compose_ui(app: &mut App, width: usize) {
+    // ── Session picker ──
+    if let Some(ref picker) = app.session_picker {
+        let (lines, _cursor_y) = picker.render(width, &app.theme as &dyn crate::tui::Theme);
+        app.pending_section.borrow_mut().set_lines(lines);
+        // Clear chat container when picker is active
+        app.chat_container.borrow_mut().clear();
+        app.status_section.borrow_mut().set_lines(vec![]);
+        app.queued_section.borrow_mut().set_lines(vec![]);
+        app.working_section.borrow_mut().set_lines(vec![]);
+        return;
+    }
+
     // ── Pending (streaming) text ──
     let mut pending_lines = Vec::new();
     if let Some(ref text) = app.pending_text
@@ -757,6 +775,12 @@ fn compose_ui(app: &mut App, width: usize) {
 /// This keeps text-editing logic in the Editor component (via ChatEditor)
 /// and app-level side effects (aborting agents, toggling settings, etc.) here.
 fn handle_input(app: &mut App, tui: &mut TUI, term: &mut ProcessTerminal, key: &KeyEvent) {
+    // ── Session picker input handling ──
+    if app.session_picker.is_some() {
+        handle_session_picker_input(app, key);
+        return;
+    }
+
     // ── Check if any TUI overlay is active (help, model selector, etc.) ──
     if tui.has_overlays() {
         tui.pop_overlay();
@@ -1299,6 +1323,67 @@ fn start_agent_loop(app: &mut App, message: String) {
     });
 }
 
+/// Handle keyboard input for the session picker.
+fn handle_session_picker_input(app: &mut App, key: &crossterm::event::KeyEvent) {
+    use crossterm::event::KeyCode;
+
+    let Some(ref mut picker) = app.session_picker else {
+        return;
+    };
+
+    match key.code {
+        KeyCode::Esc => {
+            app.session_picker = None;
+            app.status_text = None;
+        }
+        KeyCode::Enter => {
+            if let Some(path) = picker.selected_path() {
+                let path = path.clone();
+                app.session_picker = None;
+                // Switch to the selected session
+                let new_sm = SessionManager::open(&path, None, Some(&app.cwd));
+                let new_session = AgentSession::new(new_sm);
+                let ctx = new_session.session().build_session_context();
+                app.conversation = ctx.messages;
+                app.messages.clear();
+                app.chat_container.borrow_mut().clear();
+                app.streaming_component = None;
+                app.pending_text = None;
+                app.pending_thinking = None;
+                app.pending_tools.clear();
+                app.tool_call_start_times.clear();
+                let display = crate::agent::ui::messages::session_messages_to_display(&app.conversation);
+                for msg in display {
+                    app.messages.push(msg);
+                }
+                app.session = Some(new_session);
+                app.update_session_info();
+                app.status_text = Some(format!("Switched to session: {}", path.display()));
+            }
+        }
+        KeyCode::Up => {
+            picker.select_prev();
+        }
+        KeyCode::Down => {
+            picker.select_next();
+        }
+        KeyCode::Char('/') => {
+            picker.set_filter("");
+        }
+        KeyCode::Char(c) => {
+            let mut filter = picker.filter().to_string();
+            filter.push(c);
+            picker.set_filter(&filter);
+        }
+        KeyCode::Backspace => {
+            let mut filter = picker.filter().to_string();
+            filter.pop();
+            picker.set_filter(&filter);
+        }
+        _ => {}
+    }
+}
+
 /// Handle slash commands by dispatching through extension command handlers.
 /// For commands that need TUI access (overlays), the result is stored in
 /// `pending_command_result` and consumed in the main loop where TUI is available.
@@ -1415,6 +1500,28 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
             chat_add(app, std::boxed::Box::new(Text::new(styled, 1, 1, None)));
         }
         CommandResult::SessionSwitched { path } => {
+            // Open the new session file
+            let new_sm = crate::agent::session::SessionManager::open(&path, None, Some(&app.cwd));
+            let new_session = crate::agent::AgentSession::new(new_sm);
+
+            // Load conversation from new session
+            let ctx = new_session.session().build_session_context();
+            app.conversation = ctx.messages;
+            app.messages.clear();
+            app.chat_container.borrow_mut().clear();
+            app.streaming_component = None;
+            app.pending_text = None;
+            app.pending_thinking = None;
+            app.pending_tools.clear();
+            app.tool_call_start_times.clear();
+
+            let display = crate::agent::ui::messages::session_messages_to_display(&app.conversation);
+            for msg in display {
+                app.messages.push(msg);
+            }
+
+            app.session = Some(new_session);
+            app.update_session_info();
             app.status_text = Some(format!("Switched to session: {}", path.display()));
         }
         CommandResult::SessionInfo {

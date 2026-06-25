@@ -6,6 +6,7 @@ pub mod header;
 pub mod info_message;
 pub mod message_components;
 pub mod session_picker;
+pub mod session_picker_overlay;
 pub mod tool_messages;
 pub mod user_message;
 
@@ -16,5 +17,7 @@ pub use footer_component::FooterComponent;
 pub use header::HeaderComponent;
 pub use info_message::InfoMessageComponent;
 pub use message_components::display_msg_to_component;
+pub use session_picker::SessionPicker;
+pub use session_picker_overlay::SessionPickerOverlay;
 pub use tool_messages::{RcToolExec, ToolCallComponent, ToolExecComponent, ToolResultComponent};
 pub use user_message::UserMessageComponent;
