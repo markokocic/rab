@@ -4,6 +4,8 @@ pub mod extension;
 pub mod r#loop;
 pub mod provider;
 pub mod session;
+pub mod session_repo;
+pub mod session_storage;
 pub mod settings;
 pub mod skills;
 pub mod system_prompt;
@@ -19,6 +21,8 @@ pub use r#loop::{
 };
 pub use provider::{Provider, StreamEvent, ToolDef};
 pub use session::SessionManager;
+pub use session_repo::{DefaultSessionRepo, SessionRepo};
+pub use session_storage::{InMemorySessionStorage, JsonlSessionStorage, SessionStorage};
 pub use settings::Settings;
 pub use skills::{LoadSkillsOptions, Skill, format_skills_for_prompt, load_skills};
 pub use system_prompt::{SystemPromptBuilder, ToolSnippet};

@@ -1,3 +1,4 @@
+use crate::agent::session_storage::{InMemorySessionStorage, JsonlSessionStorage, SessionStorage};
 use crate::agent::types::{AgentMessage, Role};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -446,6 +447,7 @@ pub fn generate_entry_id(by_id: &HashMap<String, SessionEntry>) -> String {
 /// Appending creates a child of the current leaf. Branching moves the
 /// leaf to an earlier entry, allowing new branches without modifying history.
 pub struct SessionManager {
+    storage: Box<dyn SessionStorage>,
     session_id: String,
     session_file: Option<PathBuf>,
     session_dir: PathBuf,
@@ -463,20 +465,23 @@ pub struct SessionManager {
 impl SessionManager {
     // ── Construction ─────────────────────────────────────────────
 
-    fn new(
+    /// Create a SessionManager with the given storage backend.
+    fn from_storage(
         cwd: &Path,
         session_dir: &Path,
-        session_file: Option<PathBuf>,
+        storage: Box<dyn SessionStorage>,
         persist: bool,
         create_new: bool,
         options: Option<&NewSessionOptions>,
     ) -> Self {
         let cwd = cwd.to_path_buf();
         let session_dir = session_dir.to_path_buf();
+        let session_file = storage.path().map(|p| p.to_path_buf());
 
         let mut sm = Self {
+            storage,
             session_id: String::new(),
-            session_file: None,
+            session_file,
             session_dir,
             cwd,
             persist,
@@ -489,28 +494,51 @@ impl SessionManager {
             leaf_id: None,
         };
 
-        if let Some(path) = session_file {
-            if create_new {
-                // Force a new session at the explicit path (don't load old data).
-                // Defer writing until first assistant message (lazy write).
-                sm.session_file = Some(path.clone());
-                sm.new_session(options);
-            } else {
-                sm.set_session_file(&path);
-            }
-        } else if create_new {
+        if create_new {
             sm.new_session(options);
+        } else if let Some(ref path) = sm.session_file.clone() {
+            sm.set_session_file(path);
         }
 
         sm
     }
 
+    /// Legacy constructor: builds storage from path/persist flags.
+    fn new(
+        cwd: &Path,
+        session_dir: &Path,
+        session_file: Option<PathBuf>,
+        persist: bool,
+        create_new: bool,
+        options: Option<&NewSessionOptions>,
+    ) -> Self {
+        let storage: Box<dyn SessionStorage> = if persist {
+            if let Some(ref path) = session_file {
+                Box::new(JsonlSessionStorage::new(path.clone()))
+            } else {
+                // No file path yet — will be set in new_session().
+                // Use in-memory until a path is generated.
+                Box::new(InMemorySessionStorage::new())
+            }
+        } else {
+            Box::new(InMemorySessionStorage::new())
+        };
+
+        Self::from_storage(cwd, session_dir, storage, persist, create_new, options)
+    }
+
     /// Switch to a different session file.
     fn set_session_file(&mut self, session_file: &Path) {
+        // Update storage if it doesn't match the new path
+        let current_path = self.storage.path().map(|p| p.to_path_buf());
+        if current_path.as_deref() != Some(session_file) {
+            self.storage = Box::new(JsonlSessionStorage::new(session_file.to_path_buf()));
+        }
+
         self.session_file = Some(session_file.to_path_buf());
-        if session_file.exists() {
-            // Use buffered reader to load header + entries
-            let (header, entries) = load_session_from_file(session_file);
+        if self.storage.exists() {
+            // Use storage to load header + entries
+            let (header, entries) = self.storage.load();
             self.session_header = header;
             self.file_entries = entries;
 
@@ -577,10 +605,12 @@ impl SessionManager {
 
         if self.persist {
             let file_ts = timestamp.replace([':', '.'], "-");
-            self.session_file = Some(
-                self.session_dir
-                    .join(format!("{}_{}.jsonl", file_ts, self.session_id)),
-            );
+            let path = self
+                .session_dir
+                .join(format!("{}_{}.jsonl", file_ts, self.session_id));
+            self.session_file = Some(path.clone());
+            // Update storage to point to the new file
+            self.storage = Box::new(JsonlSessionStorage::new(path));
         }
         // Do NOT write header immediately. Wait for first assistant message.
     }
@@ -623,11 +653,9 @@ impl SessionManager {
             return;
         }
 
-        let path = self.session_file.as_ref().unwrap();
-
         if !self.flushed {
             // First write with assistant: write header + all entries atomically.
-            if let Some(parent) = path.parent() {
+            if let Some(parent) = self.storage.path().and_then(|p| p.parent()) {
                 let _ = std::fs::create_dir_all(parent);
             }
             let default_header = SessionHeader {
@@ -639,18 +667,11 @@ impl SessionManager {
                 parent_session: None,
             };
             let header = self.session_header.as_ref().unwrap_or(&default_header);
-            let mut content = serde_json::to_string(header).unwrap_or_default();
-            content.push('\n');
-            for entry in &self.file_entries {
-                let line = serde_json::to_string(entry).unwrap_or_default();
-                content.push_str(&line);
-                content.push('\n');
-            }
-            let _ = std::fs::write(path, &content);
+            let _ = self.storage.write_full(header, &self.file_entries);
             self.flushed = true;
         } else if let Some(entry) = self.file_entries.last() {
             // Append mode: file already exists with assistant content.
-            let _ = append_entry_to_file(path, entry);
+            let _ = self.storage.append(entry);
         }
     }
 
