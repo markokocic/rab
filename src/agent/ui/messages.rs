@@ -354,21 +354,34 @@ pub fn render_messages(
 pub fn session_messages_to_display(
     messages: &[crate::agent::types::AgentMessage],
 ) -> Vec<DisplayMsg> {
-    messages
-        .iter()
-        .map(|m| match m.role {
-            crate::agent::types::Role::User => DisplayMsg::User(m.content.clone()),
-            crate::agent::types::Role::Assistant => DisplayMsg::AssistantText(m.content.clone()),
+    let mut result = Vec::with_capacity(messages.len());
+    for m in messages {
+        match m.role {
+            crate::agent::types::Role::User => result.push(DisplayMsg::User(m.content.clone())),
+            crate::agent::types::Role::Assistant => {
+                // Emit ToolCall entries for each tool call before the response text
+                for tc in &m.tool_calls {
+                    result.push(DisplayMsg::ToolCall {
+                        name: tc.name.clone(),
+                        args: serde_json::to_string(&tc.arguments).unwrap_or_default(),
+                    });
+                }
+                // Only add assistant text if non-empty
+                if !m.content.is_empty() {
+                    result.push(DisplayMsg::AssistantText(m.content.clone()));
+                }
+            }
             crate::agent::types::Role::ToolResult => {
                 let prefix = if m.is_error { "✗" } else { "✓" };
-                DisplayMsg::ToolResult {
+                result.push(DisplayMsg::ToolResult {
                     content: format!("{} {}", prefix, m.content),
                     compact: None,
                     is_error: m.is_error,
-                }
+                });
             }
-        })
-        .collect()
+        }
+    }
+    result
 }
 
 pub fn pad_to_width(s: &str, width: usize) -> String {

@@ -31,9 +31,45 @@ pub fn display_msg_to_component(msg: &DisplayMsg) -> Option<std::boxed::Box<dyn 
             let styled = theme.fg_key(ThemeKey::ThinkingText, &theme.italic(text));
             Some(std::boxed::Box::new(Text::new(styled, 0, 0, None)))
         }
-        DisplayMsg::ToolCall { name: _, args: _ } => {
-            // ToolCall uses ToolExecutionComponent - skip for initial load
-            None
+        DisplayMsg::ToolCall { name, args } => {
+            let theme: RabTheme = current_theme().clone();
+            if name == "bash"
+                && let Ok(val) = serde_json::from_str::<serde_json::Value>(args)
+            {
+                let cmd = val.get("command").and_then(|v| v.as_str()).unwrap_or("");
+                let timeout = val.get("timeout").and_then(|v| v.as_i64());
+                let timeout_suffix = timeout
+                    .map(|t| theme.fg_key(ThemeKey::Muted, &format!(" (timeout {}s)", t)))
+                    .unwrap_or_default();
+                let content = format!(
+                    "{}{}",
+                    theme.fg("toolTitle", &theme.bold(&format!("$ {}", cmd))),
+                    timeout_suffix
+                );
+                let bg_ansi = theme.bg_ansi_key(ThemeKey::ToolPendingBg).to_string();
+                let mut msg_box = TuiBox::new(1, 1, Some(crate::tui::Style::new().bg(bg_ansi)));
+                msg_box.add_child(std::boxed::Box::new(Text::new(content, 0, 0, None)));
+                return Some(std::boxed::Box::new(msg_box));
+            }
+            // Generic tool call header
+            let bg_ansi = theme.bg_ansi_key(ThemeKey::ToolPendingBg).to_string();
+            let truncated = if args.len() > 80 {
+                format!("{}…", &args[..80])
+            } else {
+                args.clone()
+            };
+            let content = if truncated.is_empty() || truncated == "{}" {
+                theme.fg("toolTitle", &theme.bold(name))
+            } else {
+                format!(
+                    "{}  {}",
+                    theme.fg("toolTitle", &theme.bold(name)),
+                    theme.fg_key(ThemeKey::Muted, &truncated)
+                )
+            };
+            let mut msg_box = TuiBox::new(1, 1, Some(crate::tui::Style::new().bg(bg_ansi)));
+            msg_box.add_child(std::boxed::Box::new(Text::new(content, 0, 0, None)));
+            Some(std::boxed::Box::new(msg_box))
         }
         DisplayMsg::ToolResult {
             content,

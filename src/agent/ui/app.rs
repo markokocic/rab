@@ -308,9 +308,45 @@ impl App {
             std::rc::Rc::new(std::cell::RefCell::new(crate::tui::Container::new()));
         {
             let mut chat = chat_container.borrow_mut();
-            for display_msg in &messages {
+            let mut i = 0;
+            while i < messages.len() {
+                // Pair adjacent ToolCall + ToolResult into a combined component
+                // (mirrors how ToolExecComponent combines them during live execution)
+                let paired = match (&messages[i], messages.get(i + 1)) {
+                    (
+                        DisplayMsg::ToolCall { name, args },
+                        Some(DisplayMsg::ToolResult {
+                            content, is_error, ..
+                        }),
+                    ) if name == "bash"
+                        && let Ok(val) = serde_json::from_str::<serde_json::Value>(args)
+                        && let Some(cmd) = val.get("command").and_then(|v| v.as_str()) =>
+                    {
+                        let mut bash =
+                            crate::agent::ui::components::BashExecution::new(cmd.to_string());
+                        let clean = content
+                            .strip_prefix("✓ ")
+                            .or_else(|| content.strip_prefix("✗ "))
+                            .unwrap_or(content);
+                        bash.append_chunk(clean);
+                        bash.set_complete(if *is_error { 1 } else { 0 });
+                        if !chat.children().is_empty() {
+                            chat.add_child(std::boxed::Box::new(
+                                crate::tui::components::Spacer::new(1),
+                            ));
+                        }
+                        chat.add_child(std::boxed::Box::new(bash));
+                        true
+                    }
+                    _ => false,
+                };
+                if paired {
+                    i += 2;
+                    continue;
+                }
+                // Default: single message component
                 if let Some(component) =
-                    crate::agent::ui::components::display_msg_to_component(display_msg)
+                    crate::agent::ui::components::display_msg_to_component(&messages[i])
                 {
                     if !chat.children().is_empty() {
                         chat.add_child(std::boxed::Box::new(crate::tui::components::Spacer::new(
@@ -319,6 +355,7 @@ impl App {
                     }
                     chat.add_child(component);
                 }
+                i += 1;
             }
         }
 
