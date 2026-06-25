@@ -9,7 +9,6 @@ use async_trait::async_trait;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use crate::agent::provider::ToolDef;
 use yoagent::provider::model::{ModelConfig, OpenAiCompat};
-use yoagent::types::ThinkingLevel;
 use yoagent::types::{AgentEvent, Content, Message, ToolContext, ToolError, ToolResult};
 
 // ──────────────────────────────────────────────

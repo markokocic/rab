@@ -55,6 +55,7 @@ pub struct AppConfig {
     /// Context files (AGENTS.md / CLAUDE.md) loaded for the session.
     pub context_files: Vec<String>,
     /// Tool execution mode (parallel by default).
+    #[allow(dead_code)]
     pub tool_execution: ToolExecutionMode,
     /// Skills loaded for the session (used for /skill:name expansion).
     pub skills: Vec<crate::agent::Skill>,
@@ -187,6 +188,7 @@ pub struct App {
     /// tool calls (fully idle). Shared with the agent loop.
     follow_up_queue: Arc<std::sync::Mutex<PendingMessageQueue>>,
     /// Tool execution mode (parallel by default).
+    #[allow(dead_code)]
     tool_execution: ToolExecutionMode,
 
     /// Skills loaded for the session (/skill:name expansion).
@@ -2542,6 +2544,7 @@ fn flush_all(app: &mut App) {
 }
 
 /// Collect tool definitions from the app's agent tools.
+#[allow(dead_code)]
 fn collect_tool_defs(app: &App) -> Vec<ToolDef> {
     let mut defs = Vec::new();
     for tool in app.agent_tools.iter() {
@@ -2629,28 +2632,10 @@ fn fmt_time_short(dt: &chrono::DateTime<chrono::Utc>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::provider::{Provider, StreamEvent};
     use crate::agent::types::AgentMessage;
     use crate::agent::ui::messages::render_messages;
-    use async_trait::async_trait;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-    use futures::Stream;
-    use std::pin::Pin;
     use tempfile::tempdir;
-
-    struct MockProvider;
-    #[async_trait]
-    impl Provider for MockProvider {
-        async fn stream(
-            &self,
-            _model: &str,
-            _system: &str,
-            _msgs: &[AgentMessage],
-            _tools: &[ToolDef],
-        ) -> anyhow::Result<Pin<Box<dyn Stream<Item = StreamEvent> + Send>>> {
-            unimplemented!()
-        }
-    }
 
     #[test]
     fn test_compose_ui_stable_line_count() {
