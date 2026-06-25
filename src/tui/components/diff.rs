@@ -199,7 +199,7 @@ pub fn render_diff(diff_text: &str, theme: &dyn Theme) -> Vec<String> {
             } else {
                 lines.push(theme.fg_key(
                     ThemeKey::ToolDiffContext,
-                    &format!("{} {}", line_num, content),
+                    &format!(" {} {}", line_num, content),
                 ));
             }
             i += 1;
