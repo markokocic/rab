@@ -1229,12 +1229,25 @@ fn submit_message(app: &mut App, message: String) {
     app.messages.push(DisplayMsg::User(trimmed.clone()));
 
     if app.is_streaming {
-        // Steering: delivered after current turn's tool calls finish, before next LLM call
-        app.steering_queue
-            .lock()
-            .unwrap()
-            .enqueue(AgentMessage::user(trimmed));
-        return;
+        // Safety check: if is_streaming is true but no events arrived for >5s,
+        // the spawned task may have crashed without sending AgentEnd (e.g. panic
+        // in provider.stream() before the Drop guard was added). Force-reset so
+        // the new message actually starts a fresh agent loop instead of silently
+        // queueing to the steering queue.
+        if app.last_streaming_event.elapsed() > std::time::Duration::from_secs(5) {
+            app.is_streaming = false;
+            app.working.stop();
+            app.footer.borrow_mut().set_streaming(false);
+            app.cancel_tx = None;
+            app.status_text = Some("Previous agent loop appears stuck — restarting".into());
+        } else {
+            // Steering: delivered after current turn's tool calls finish, before next LLM call
+            app.steering_queue
+                .lock()
+                .unwrap()
+                .enqueue(AgentMessage::user(trimmed));
+            return;
+        }
     }
 
     start_agent_loop(app, trimmed);
@@ -1263,7 +1276,29 @@ fn start_agent_loop(app: &mut App, message: String) {
     let (cancel_tx, mut cancel_rx) = tokio::sync::watch::channel(false);
     app.cancel_tx = Some(cancel_tx);
 
+    // Drop guard ensures AgentEnd is ALWAYS sent, even if the spawned task panics.
+    // Without this guard, a panic in run_agent_loop (e.g. in provider.stream())
+    // would silently kill the task without sending AgentEnd, leaving is_streaming
+    // stuck at true forever. New submissions would pile up in the steering queue
+    // instead of starting a fresh agent loop.
+    struct AgentEndGuard<'a> {
+        tx: &'a mpsc::UnboundedSender<AgentEvent>,
+        sent: bool,
+    }
+    impl Drop for AgentEndGuard<'_> {
+        fn drop(&mut self) {
+            if !self.sent {
+                let _ = self.tx.send(AgentEvent::AgentEnd { messages: vec![] });
+            }
+        }
+    }
+
     tokio::spawn(async move {
+        let mut agent_end_guard = AgentEndGuard {
+            tx: &tx,
+            sent: false,
+        };
+
         let config = LoopConfig {
             model: model.clone(),
             system_prompt,
@@ -1289,6 +1324,7 @@ fn start_agent_loop(app: &mut App, message: String) {
                 match result {
                     Ok(_) => {
                         // AgentEnd already sent by run_agent_loop on success
+                        agent_end_guard.sent = true;
                     }
                     Err(e) => {
                         // Pi-style: create an error assistant message so the failure is always visible
@@ -1310,6 +1346,7 @@ fn start_agent_loop(app: &mut App, message: String) {
                         let _ = tx.send(AgentEvent::AgentEnd {
                             messages: vec![error_assistant],
                         });
+                        agent_end_guard.sent = true;
                     }
                 }
             }
@@ -1318,6 +1355,7 @@ fn start_agent_loop(app: &mut App, message: String) {
                 let _ = tx.send(AgentEvent::AgentEnd {
                     messages: Vec::new(),
                 });
+                agent_end_guard.sent = true;
             }
         }
     });
