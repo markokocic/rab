@@ -1,3 +1,5 @@
+use serde::Serialize;
+
 use crate::agent::provider::{Provider, StopReason, StreamEvent};
 use crate::agent::session::SessionEntry;
 use crate::agent::types::{AgentMessage, Role};
@@ -44,11 +46,13 @@ pub struct CompactionPreparation {
 }
 
 /// Result of compact() — ready to append to the session.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct CompactionResult {
     pub summary: String,
     pub first_kept_entry_id: String,
     pub tokens_before: u64,
+    /// File operation details (readFiles, modifiedFiles).
+    pub details: Option<serde_json::Value>,
 }
 
 // ── Default context windows ────────────────────────────────────────
@@ -450,6 +454,54 @@ Summarize the prefix to provide context for the retained suffix:
 ## Context for Suffix
 - [Information needed to understand the kept suffix]"#;
 
+// ── File operation extraction ──────────────────────────────────────
+
+/// Extract file operations from a list of messages (for compaction details).
+fn extract_file_ops(messages: &[AgentMessage]) -> Option<serde_json::Value> {
+    let mut read_files: Vec<String> = Vec::new();
+    let mut modified_files: Vec<String> = Vec::new();
+
+    for msg in messages {
+        for tc in &msg.tool_calls {
+            let path = tc.arguments.get("file_path")
+                .or_else(|| tc.arguments.get("path"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+
+            if let Some(p) = path {
+                match tc.name.as_str() {
+                    "read" => {
+                        if !read_files.contains(&p) {
+                            read_files.push(p);
+                        }
+                    }
+                    "write" | "edit"
+                        if !modified_files.contains(&p) =>
+                    {
+                        modified_files.push(p);
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    if read_files.is_empty() && modified_files.is_empty() {
+        return None;
+    }
+
+    read_files.sort();
+    modified_files.sort();
+
+    // Deduplicate: files that are both read and modified go only in modified
+    read_files.retain(|f| !modified_files.contains(f));
+
+    Some(serde_json::json!({
+        "readFiles": read_files,
+        "modifiedFiles": modified_files,
+    }))
+}
+
 // ── compact ────────────────────────────────────────────────────────
 
 /// Execute compaction: send messages to the provider for summarisation
@@ -508,11 +560,17 @@ pub async fn compact(
     // Get summary from provider
     let summary_text = call_provider_for_summary(provider, model, system, &[summary_msg]).await?;
 
+    // Extract file operations from messages being summarised
+    let mut all_messages = preparation.messages_to_summarize.clone();
+    all_messages.extend(preparation.turn_prefix_messages.clone());
+    let details = extract_file_ops(&all_messages);
+
     // Build the result
     Ok(CompactionResult {
         summary: summary_text,
         first_kept_entry_id: preparation.first_kept_entry_id.clone(),
         tokens_before: preparation.tokens_before,
+        details,
     })
 }
 
@@ -834,5 +892,79 @@ mod tests {
         let formatted = format_message_for_summary(&msg);
         assert!(formatted.contains("Tool calls:"));
         assert!(formatted.contains("read"));
+    }
+
+    #[test]
+    fn test_extract_file_ops_empty() {
+        let result = extract_file_ops(&[]);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_extract_file_ops_read_only() {
+        let mut msg = make_msg(Role::Assistant, "reading");
+        msg.tool_calls = vec![
+            ToolCall {
+                id: "tc1".to_string(),
+                name: "read".to_string(),
+                arguments: serde_json::json!({"file_path": "src/main.rs"}),
+            },
+            ToolCall {
+                id: "tc2".to_string(),
+                name: "read".to_string(),
+                arguments: serde_json::json!({"path": "Cargo.toml"}),
+            },
+        ];
+        let result = extract_file_ops(&[msg]);
+        assert!(result.is_some());
+        let json = result.unwrap();
+        assert_eq!(json["readFiles"].as_array().unwrap().len(), 2);
+        assert_eq!(json["modifiedFiles"].as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn test_extract_file_ops_modified() {
+        let mut msg = make_msg(Role::Assistant, "editing");
+        msg.tool_calls = vec![
+            ToolCall {
+                id: "tc1".to_string(),
+                name: "edit".to_string(),
+                arguments: serde_json::json!({"file_path": "src/main.rs"}),
+            },
+            ToolCall {
+                id: "tc2".to_string(),
+                name: "write".to_string(),
+                arguments: serde_json::json!({"file_path": "src/lib.rs"}),
+            },
+            ToolCall {
+                id: "tc3".to_string(),
+                name: "read".to_string(),
+                arguments: serde_json::json!({"file_path": "src/main.rs"}), // read+modified → only in modified
+            },
+        ];
+        let result = extract_file_ops(&[msg]);
+        assert!(result.is_some());
+        let json = result.unwrap();
+        let modified = json["modifiedFiles"].as_array().unwrap();
+        assert_eq!(modified.len(), 2);
+        // read+modified: should not appear in readFiles
+        let read = json["readFiles"].as_array().unwrap();
+        assert!(!read.iter().any(|v| v == "src/main.rs"));
+    }
+
+    #[test]
+    fn test_compaction_result_details() {
+        let result = CompactionResult {
+            summary: "test".to_string(),
+            first_kept_entry_id: "e1".to_string(),
+            tokens_before: 100,
+            details: Some(serde_json::json!({
+                "readFiles": ["a.txt"],
+                "modifiedFiles": ["b.txt"],
+            })),
+        };
+        let json = serde_json::to_value(&result).unwrap();
+        assert_eq!(json["details"]["readFiles"][0], "a.txt");
+        assert_eq!(json["details"]["modifiedFiles"][0], "b.txt");
     }
 }

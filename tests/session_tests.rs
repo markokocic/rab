@@ -373,7 +373,7 @@ async fn test_session_compaction_entry() {
         m
     });
 
-    sm.append_compaction("Earlier conversation summarized", "entry_kept_id", 1000);
+    sm.append_compaction("Earlier conversation summarized", "entry_kept_id", 1000, None, None);
     sm.append_message(&rab::agent::types::AgentMessage::user("new stuff"));
     sm.append_message(&{
         let mut m = rab::agent::types::AgentMessage::user("dummy");
@@ -566,7 +566,7 @@ async fn test_session_label_and_custom() {
     sm.append_custom_entry("my_ext", serde_json::json!({"key": "val"}));
 
     // Branch summary
-    sm.append_branch_summary("root", "Abandoned path");
+    sm.append_branch_summary("root", "Abandoned path", None, None);
 
     let entries = sm.entries();
     let has_label = entries

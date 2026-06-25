@@ -877,6 +877,8 @@ impl SessionManager {
         summary: &str,
         first_kept_entry_id: &str,
         tokens_before: u64,
+        details: Option<serde_json::Value>,
+        from_hook: Option<bool>,
     ) -> String {
         let entry = SessionEntry::Compaction(CompactionEntry {
             id: generate_entry_id(&self.by_id),
@@ -885,22 +887,28 @@ impl SessionManager {
             summary: summary.to_string(),
             first_kept_entry_id: first_kept_entry_id.to_string(),
             tokens_before,
-            details: None,
-            from_hook: None,
+            details,
+            from_hook,
         });
         self._append_entry(entry)
     }
 
     /// Append a branch summary.
-    pub fn append_branch_summary(&mut self, from_id: &str, summary: &str) -> String {
+    pub fn append_branch_summary(
+        &mut self,
+        from_id: &str,
+        summary: &str,
+        details: Option<serde_json::Value>,
+        from_hook: Option<bool>,
+    ) -> String {
         let entry = SessionEntry::BranchSummary(BranchSummaryEntry {
             id: generate_entry_id(&self.by_id),
             parent_id: self.leaf_id.clone(),
             timestamp: chrono::Utc::now().to_rfc3339(),
             from_id: from_id.to_string(),
             summary: summary.to_string(),
-            details: None,
-            from_hook: None,
+            details,
+            from_hook,
         });
         self._append_entry(entry)
     }
@@ -1833,6 +1841,89 @@ mod tests {
     }
 
     #[test]
+    fn test_compaction_entry_with_details_from_hook() {
+        // Test that details and from_hook serialize/deserialize correctly
+        let entry = SessionEntry::Compaction(CompactionEntry {
+            id: "c1".to_string(),
+            parent_id: Some("p1".to_string()),
+            timestamp: "2026-06-19T12:00:00Z".to_string(),
+            summary: "Summarized earlier".to_string(),
+            first_kept_entry_id: "kept1".to_string(),
+            tokens_before: 5000,
+            details: Some(serde_json::json!({
+                "readFiles": ["a.txt"],
+                "modifiedFiles": ["b.txt"],
+            })),
+            from_hook: Some(true),
+        });
+
+        let json = serde_json::to_string(&entry).unwrap();
+        assert!(json.contains(r#"details"#));
+        assert!(json.contains(r#"readFiles"#));
+        assert!(json.contains(r#"fromHook"#));
+
+        let parsed: SessionEntry = serde_json::from_str(&json).unwrap();
+        match parsed {
+            SessionEntry::Compaction(e) => {
+                assert!(e.details.is_some());
+                assert_eq!(e.details.as_ref().unwrap()["readFiles"][0], "a.txt");
+                assert_eq!(e.from_hook, Some(true));
+            }
+            _ => panic!("Expected Compaction variant"),
+        }
+    }
+
+    #[test]
+    fn test_branch_summary_entry_with_details() {
+        let entry = SessionEntry::BranchSummary(BranchSummaryEntry {
+            id: "bs1".to_string(),
+            parent_id: Some("p1".to_string()),
+            timestamp: "2026-06-19T12:00:00Z".to_string(),
+            from_id: "branch_point".to_string(),
+            summary: "Abandoned work".to_string(),
+            details: Some(serde_json::json!({
+                "readFiles": ["x.txt"],
+                "modifiedFiles": ["y.txt"],
+            })),
+            from_hook: Some(false),
+        });
+
+        let json = serde_json::to_string(&entry).unwrap();
+        assert!(json.contains(r#"details"#));
+        assert!(json.contains(r#"fromHook"#));
+        assert!(json.contains(r#"readFiles"#));
+
+        let parsed: SessionEntry = serde_json::from_str(&json).unwrap();
+        match parsed {
+            SessionEntry::BranchSummary(e) => {
+                assert!(e.details.is_some());
+                assert_eq!(e.details.as_ref().unwrap()["readFiles"][0], "x.txt");
+                assert_eq!(e.from_hook, Some(false));
+            }
+            _ => panic!("Expected BranchSummary variant"),
+        }
+    }
+
+    #[test]
+    fn test_compaction_entry_omits_details_when_none() {
+        // When details/from_hook are None, they should be omitted from JSON
+        let entry = SessionEntry::Compaction(CompactionEntry {
+            id: "c1".to_string(),
+            parent_id: None,
+            timestamp: "2026-06-19T12:00:00Z".to_string(),
+            summary: "test".to_string(),
+            first_kept_entry_id: "kept1".to_string(),
+            tokens_before: 100,
+            details: None,
+            from_hook: None,
+        });
+
+        let json = serde_json::to_string(&entry).unwrap();
+        assert!(!json.contains(r#"details"#));
+        assert!(!json.contains(r#"fromHook"#));
+    }
+
+    #[test]
     fn test_session_info_roundtrip() {
         let entry = SessionEntry::SessionInfo(SessionInfoEntry {
             id: "abc12345".to_string(),
@@ -2643,7 +2734,7 @@ mod tests {
         std::fs::create_dir_all(&cwd).unwrap();
 
         let mut sm = SessionManager::create(&cwd, Some(&sessions_dir));
-        sm.append_compaction("Earlier work summarized", "entry_kept", 5000);
+        sm.append_compaction("Earlier work summarized", "entry_kept", 5000, None, None);
 
         match &sm.entries()[0] {
             SessionEntry::Compaction(e) => {
@@ -2750,7 +2841,7 @@ mod tests {
         sm.append_message(&make_agent_message(Role::User, "one"));
         sm.append_message(&make_agent_message(Role::Assistant, "response"));
 
-        sm.append_branch_summary("root", "Abandoned path summary");
+        sm.append_branch_summary("root", "Abandoned path summary", None, None);
 
         match &sm.entries()[2] {
             SessionEntry::BranchSummary(e) => {

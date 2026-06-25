@@ -270,6 +270,8 @@ impl AgentSession {
             &result.summary,
             &result.first_kept_entry_id,
             result.tokens_before,
+            result.details,
+            None, // from_hook: pi-generated
         );
 
         Ok(true)
@@ -295,6 +297,8 @@ impl AgentSession {
             &result.summary,
             &result.first_kept_entry_id,
             result.tokens_before,
+            result.details,
+            None, // from_hook: pi-generated
         );
 
         Ok(result.summary)

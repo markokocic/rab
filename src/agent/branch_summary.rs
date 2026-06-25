@@ -248,10 +248,61 @@ Keep it concise. Preserve exact file paths, function names, and error messages."
     // Prepend preamble
     let final_summary = format!("The user explored a different conversation branch before returning here.\nSummary of that exploration:\n\n{}", summary);
 
+    // Extract file operations from branch entries for details
+    let details = extract_branch_file_ops(entries);
+
     // Append branch summary entry to session
-    session.append_branch_summary(target_id, &final_summary);
+    session.append_branch_summary(target_id, &final_summary, details, None);
 
     Ok(final_summary)
+}
+
+/// Extract file operations from a list of branch entries (for details metadata).
+fn extract_branch_file_ops(entries: &[SessionEntry]) -> Option<serde_json::Value> {
+    let mut read_files: Vec<String> = Vec::new();
+    let mut modified_files: Vec<String> = Vec::new();
+
+    for entry in entries {
+        let msg = match entry {
+            SessionEntry::Message(m) => &m.message,
+            _ => continue,
+        };
+        for tc in &msg.tool_calls {
+            let path = tc.arguments.get("file_path")
+                .or_else(|| tc.arguments.get("path"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+
+            if let Some(p) = path {
+                match tc.name.as_str() {
+                    "read" => {
+                        if !read_files.contains(&p) {
+                            read_files.push(p);
+                        }
+                    }
+                    "write" | "edit"
+                        if !modified_files.contains(&p) =>
+                    {
+                        modified_files.push(p);
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    if read_files.is_empty() && modified_files.is_empty() {
+        return None;
+    }
+
+    read_files.sort();
+    modified_files.sort();
+    read_files.retain(|f| !modified_files.contains(f));
+
+    Some(serde_json::json!({
+        "readFiles": read_files,
+        "modifiedFiles": modified_files,
+    }))
 }
 
 #[cfg(test)]
