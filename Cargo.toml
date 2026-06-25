@@ -39,7 +39,6 @@ webpki-roots = "1"
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "stream", "gzip", "charset", "http2", "socks", "system-proxy"] }
 async-stream = "0.3"
 libc = "0.2"
-diff = "0.1"
 unicode-segmentation = "1"
 unicode-width = "0.2"
 comrak = "0.52"

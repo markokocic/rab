@@ -1,3 +1,4 @@
+pub mod agent_session;
 pub mod context_files;
 pub mod extension;
 pub mod r#loop;
@@ -9,6 +10,7 @@ pub mod system_prompt;
 pub mod types;
 pub mod ui;
 
+pub use agent_session::AgentSession;
 pub use context_files::{ContextFile, load_context_files};
 pub use extension::{AgentTool, CommandHandler, CommandResult, Extension, SlashCommand};
 pub use r#loop::{

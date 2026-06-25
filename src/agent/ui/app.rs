@@ -6,6 +6,7 @@ use std::rc::{Rc, Weak};
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::agent::AgentSession;
 use crate::agent::extension::{AgentTool, CommandResult, Extension};
 use crate::agent::provider::{Provider, ToolDef};
 use crate::agent::session::SessionManager;
@@ -139,8 +140,8 @@ pub struct App {
     /// Bash abort handle for bang (!) commands.
     bash_abort_handle: Option<tokio::task::AbortHandle>,
 
-    /// Session persistence.
-    session: Option<SessionManager>,
+    /// Session persistence via AgentSession lifecycle layer.
+    session: Option<AgentSession>,
 
     /// Footer (shared ownership - App mutates, TUI.root renders).
     footer: Rc<RefCell<Footer>>,
@@ -207,6 +208,7 @@ pub struct App {
 
 impl App {
     fn new(config: AppConfig, session: SessionManager) -> Self {
+        let agent_session = AgentSession::new(session);
         let (tx, rx) = mpsc::unbounded_channel();
         use crate::agent::ui::theme::current_theme;
         let theme = current_theme().clone();
@@ -264,7 +266,7 @@ impl App {
         let footer = Rc::new(RefCell::new(footer));
 
         // Load session messages
-        let context = session.build_session_context();
+        let context = agent_session.session().build_session_context();
         let history_messages = context.messages.clone();
         let history_display = session_messages_to_display(&history_messages);
 
@@ -363,7 +365,7 @@ impl App {
             last_usage: None,
             cancel_tx: None,
             bash_abort_handle: None,
-            session: Some(session),
+            session: Some(agent_session),
             footer,
             working: WorkingIndicator::new(),
             agent_tools: Arc::new(config.agent_tools),
@@ -396,7 +398,7 @@ impl App {
         if let Some(ref session) = self.session
             && let Some(ref info) = self.session_info
         {
-            let si = crate::builtin::commands::compute_session_info(session);
+            let si = crate::builtin::commands::compute_session_info(session.session());
             if let Ok(mut guard) = info.lock() {
                 *guard = Some(si);
             }
@@ -1385,9 +1387,9 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
             // Clear status section (matching pi's statusContainer.clear())
             app.status_text = None;
 
-            // Create a new session in the SessionManager (new ID, new file)
-            if let Some(ref mut session) = app.session {
-                session.new_session(None);
+            // Create a new session via AgentSession (new ID, new file, resets tracked state)
+            if let Some(ref mut agent_session) = app.session {
+                agent_session.new_session();
             }
 
             // Clear everything (matching pi's renderCurrentSessionState)
@@ -1427,7 +1429,11 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
             // Compute live stats from app.conversation (always fresh)
             let name_display = name
                 .as_deref()
-                .or_else(|| app.session.as_ref().and_then(|s| s.session_name()))
+                .or_else(|| {
+                    app.session
+                        .as_ref()
+                        .and_then(|s| s.session().session_name())
+                })
                 .unwrap_or("unnamed");
             let file_display = file_path
                 .as_ref()
@@ -1436,7 +1442,7 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
             let sid = if session_id.is_empty() {
                 app.session
                     .as_ref()
-                    .map(|s| s.session_id().to_string())
+                    .map(|s| s.session().session_id().to_string())
                     .unwrap_or_default()
             } else {
                 session_id
@@ -2055,12 +2061,11 @@ fn handle_agent_event(app: &mut App, event: AgentEvent) {
             app.footer.borrow_mut().set_streaming(false);
             app.cancel_tx = None;
 
-            // Persist new messages to session and update conversation state
-            // (user message is in prompts, not duplicated in app.conversation)
-            if let Some(ref mut session) = app.session {
-                for msg in messages {
-                    session.append_message(msg);
-                }
+            // Persist new messages to session via AgentSession lifecycle layer.
+            // AgentSession handles dedup (tool results already persisted via event),
+            // and skips user messages (persisted separately via submit_user_message).
+            if let Some(ref mut agent_session) = app.session {
+                agent_session.on_agent_end(messages);
             }
             // Extend app.conversation so subsequent turns have full context
             for msg in messages {

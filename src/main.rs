@@ -237,6 +237,7 @@ async fn main() -> anyhow::Result<()> {
         ui::run(config, session).await
     } else {
         let message = message_parts.join(" ");
+        let mut agent_session = rab::agent::AgentSession::new(session);
         run_print_mode(
             message,
             model,
@@ -246,7 +247,7 @@ async fn main() -> anyhow::Result<()> {
             extensions,
             provider,
             history,
-            &mut session,
+            &mut agent_session,
         )
         .await
     }
@@ -262,7 +263,7 @@ async fn run_print_mode(
     extensions: Vec<Box<dyn Extension>>,
     provider: adapter::GenaiProvider,
     history: Vec<rab::agent::types::AgentMessage>,
-    session: &mut SessionManager,
+    agent_session: &mut rab::agent::AgentSession,
 ) -> anyhow::Result<()> {
     let loop_config = LoopConfig {
         model: model.clone(),
@@ -280,11 +281,14 @@ async fn run_print_mode(
 
     let prompt = rab::agent::types::AgentMessage::user(&message);
 
-    // Persist the user prompt
-    session.append_message(&prompt);
+    // Persist the user prompt via AgentSession
+    agent_session.submit_user_message_obj(&prompt);
 
     let mut thinking_prefix_printed = false;
     let mut emitter = |event: AgentEvent| {
+        // Let AgentSession handle event-driven persistence (tool results, etc.)
+        agent_session.handle_event(&event);
+
         match event {
             AgentEvent::TextDelta { delta } => {
                 print!("{}", delta);
@@ -368,12 +372,8 @@ async fn run_print_mode(
         rab::agent::run_agent_loop(vec![prompt], history, &loop_config, &provider, &mut emitter)
             .await?;
 
-    // Persist all new assistant + tool result messages
-    for msg in &new_messages {
-        if msg.role != rab::agent::types::Role::User {
-            session.append_message(msg);
-        }
-    }
+    // AgentSession.on_agent_end is already called by handle_event on AgentEnd.
+    // Remaining non-user messages (if any) are persisted there.
 
     // Pi-style: explicitly check the last assistant message after the loop completes.
     // This handles errors that may not have been fully visible during streaming,
