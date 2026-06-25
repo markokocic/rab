@@ -189,14 +189,17 @@ impl Provider for GenaiProvider {
 
         let mut genai_stream = genai_response.stream;
 
-        // Pi-compatible per-chunk idle timeout configuration:
+        // Pi-compatible streaming timeout configuration:
         // - First-event timeout: 20s (matching pi's DEFAULT_SSE_HEADER_TIMEOUT_MS)
         //   Prevents zero-event SSE streams from leaving callers stuck on "Working...".
         // - Per-chunk idle timeout: 60s between subsequent events.
         //   If the stream stalls mid-response (no tokens, no done, no error),
         //   this ensures we eventually error out instead of hanging forever.
-        const FIRST_EVENT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
-        const CHUNK_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+        //   Pi's SSE path has no per-chunk timeout, but its WebSocket path uses
+        //   a configurable idle timeout (default 300s). We use 60s as a reasonable
+        //   safety net that still gives providers ample time between events.
+        const FIRST_EVENT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+        const CHUNK_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
         let stream = async_stream::stream! {
             // When the last yielded event arrived (or None if nothing yielded yet).
@@ -304,6 +307,9 @@ impl Provider for GenaiProvider {
                         // streams from leaving callers stuck on "Working...".
                         // Per-chunk idle timeout: 60s between yielded events.
                         // If only keep-alive chunks arrive, this still fires.
+                        // Pi's SSE path has no per-chunk timeout, but its
+                        // WebSocket path uses a configurable idle timeout
+                        // (default 300s). We use 60s as a reasonable safety net.
                         let limit = if last_yield.is_none() {
                             FIRST_EVENT_TIMEOUT
                         } else {
