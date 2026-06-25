@@ -41,6 +41,8 @@ pub enum SessionEntry {
     ThinkingLevelChange(ThinkingLevelChangeEntry),
     #[serde(rename = "model_change")]
     ModelChange(ModelChangeEntry),
+    #[serde(rename = "active_tools_change")]
+    ActiveToolsChange(ActiveToolsChangeEntry),
     #[serde(rename = "compaction")]
     Compaction(CompactionEntry),
     #[serde(rename = "branch_summary")]
@@ -53,6 +55,8 @@ pub enum SessionEntry {
     Custom(CustomEntry),
     #[serde(rename = "custom_message")]
     CustomMessage(CustomMessageEntry),
+    #[serde(rename = "leaf")]
+    Leaf(LeafEntry),
 }
 
 impl SessionEntry {
@@ -61,12 +65,14 @@ impl SessionEntry {
             SessionEntry::Message(e) => &e.id,
             SessionEntry::ThinkingLevelChange(e) => &e.id,
             SessionEntry::ModelChange(e) => &e.id,
+            SessionEntry::ActiveToolsChange(e) => &e.id,
             SessionEntry::Compaction(e) => &e.id,
             SessionEntry::BranchSummary(e) => &e.id,
             SessionEntry::SessionInfo(e) => &e.id,
             SessionEntry::Label(e) => &e.id,
             SessionEntry::Custom(e) => &e.id,
             SessionEntry::CustomMessage(e) => &e.id,
+            SessionEntry::Leaf(e) => &e.id,
         }
     }
 
@@ -75,12 +81,14 @@ impl SessionEntry {
             SessionEntry::Message(e) => e.parent_id.as_deref(),
             SessionEntry::ThinkingLevelChange(e) => e.parent_id.as_deref(),
             SessionEntry::ModelChange(e) => e.parent_id.as_deref(),
+            SessionEntry::ActiveToolsChange(e) => e.parent_id.as_deref(),
             SessionEntry::Compaction(e) => e.parent_id.as_deref(),
             SessionEntry::BranchSummary(e) => e.parent_id.as_deref(),
             SessionEntry::SessionInfo(e) => e.parent_id.as_deref(),
             SessionEntry::Label(e) => e.parent_id.as_deref(),
             SessionEntry::Custom(e) => e.parent_id.as_deref(),
             SessionEntry::CustomMessage(e) => e.parent_id.as_deref(),
+            SessionEntry::Leaf(e) => e.parent_id.as_deref(),
         }
     }
 
@@ -89,12 +97,14 @@ impl SessionEntry {
             SessionEntry::Message(e) => &e.timestamp,
             SessionEntry::ThinkingLevelChange(e) => &e.timestamp,
             SessionEntry::ModelChange(e) => &e.timestamp,
+            SessionEntry::ActiveToolsChange(e) => &e.timestamp,
             SessionEntry::Compaction(e) => &e.timestamp,
             SessionEntry::BranchSummary(e) => &e.timestamp,
             SessionEntry::SessionInfo(e) => &e.timestamp,
             SessionEntry::Label(e) => &e.timestamp,
             SessionEntry::Custom(e) => &e.timestamp,
             SessionEntry::CustomMessage(e) => &e.timestamp,
+            SessionEntry::Leaf(e) => &e.timestamp,
         }
     }
 }
@@ -129,6 +139,16 @@ pub struct ModelChangeEntry {
     pub timestamp: String,
     pub provider: String,
     pub model_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActiveToolsChangeEntry {
+    pub id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<String>,
+    pub timestamp: String,
+    pub active_tool_names: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -210,6 +230,17 @@ pub struct CustomMessageEntry {
     pub details: Option<serde_json::Value>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LeafEntry {
+    pub id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<String>,
+    pub timestamp: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_id: Option<String>,
+}
+
 // ── SessionInfo (for listing / display) ─────────────────────────────
 
 /// Lightweight metadata about a session, used for listing and selection.
@@ -231,9 +262,13 @@ pub struct SessionInfo {
 // ── SessionContext (resolved messages for LLM) ──────────────────────
 
 /// Resolved conversation context sent to the LLM.
+/// Pi-compatible: includes resolved thinking level, model, and active tool names.
 #[derive(Debug, Clone)]
 pub struct SessionContext {
     pub messages: Vec<AgentMessage>,
+    pub thinking_level: String,
+    pub model: Option<(String, String)>,
+    pub active_tool_names: Option<Vec<String>>,
 }
 
 // ── JSONL read/write ────────────────────────────────────────────────
@@ -341,6 +376,15 @@ pub fn get_default_session_dir(cwd: &Path) -> PathBuf {
         .home_dir()
         .join(".rab");
     rab_dir.join("sessions").join(encode_cwd_for_dir(cwd))
+}
+
+/// Determine the new leaf ID after appending an entry.
+/// Pi-compatible: leaf entries redirect the leaf to their target_id; all other entries become the leaf.
+fn leaf_id_after_entry(entry: &SessionEntry) -> Option<String> {
+    match entry {
+        SessionEntry::Leaf(e) => e.target_id.clone(),
+        other => Some(other.id().to_string()),
+    }
 }
 
 /// Generate a unique ID for session entries (8 hex chars, collision-checked).
@@ -563,7 +607,7 @@ impl SessionManager {
         self.leaf_id = None;
         for entry in &self.file_entries {
             self.by_id.insert(entry.id().to_string(), entry.clone());
-            self.leaf_id = Some(entry.id().to_string());
+            self.leaf_id = leaf_id_after_entry(entry);
             if let SessionEntry::Label(e) = entry {
                 if let Some(label) = &e.label {
                     self.labels_by_id.insert(e.target_id.clone(), label.clone());
@@ -588,9 +632,10 @@ impl SessionManager {
 
     fn _append_entry(&mut self, entry: SessionEntry) -> String {
         let id = entry.id().to_string();
-        self.file_entries.push(entry.clone());
+        self.leaf_id = leaf_id_after_entry(&entry);
         self.by_id.insert(id.clone(), entry);
-        self.leaf_id = Some(id.clone());
+        self.file_entries
+            .push(self.by_id.get(&id).expect("just inserted").clone());
         self._persist();
         id
     }
@@ -762,6 +807,62 @@ impl SessionManager {
         self._append_entry(entry)
     }
 
+    /// Append an active tools change entry (pi-compatible).
+    pub fn append_active_tools_change(&mut self, active_tool_names: &[String]) -> String {
+        let entry = SessionEntry::ActiveToolsChange(ActiveToolsChangeEntry {
+            id: generate_entry_id(&self.by_id),
+            parent_id: self.leaf_id.clone(),
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            active_tool_names: active_tool_names.to_vec(),
+        });
+        self._append_entry(entry)
+    }
+
+    /// Append a custom message entry (pi-compatible extension message).
+    pub fn append_custom_message_entry(
+        &mut self,
+        custom_type: &str,
+        content: serde_json::Value,
+        display: bool,
+        details: Option<serde_json::Value>,
+    ) -> String {
+        let entry = SessionEntry::CustomMessage(CustomMessageEntry {
+            id: generate_entry_id(&self.by_id),
+            parent_id: self.leaf_id.clone(),
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            custom_type: custom_type.to_string(),
+            content,
+            display,
+            details,
+        });
+        self._append_entry(entry)
+    }
+
+    // ── Public: Querying ────────────────────────────────────────
+
+    /// Find all entries of a given type (pi-compatible: generic type filter).
+    pub fn find_entries_by_type(&self, type_name: &str) -> Vec<&SessionEntry> {
+        self.file_entries
+            .iter()
+            .filter(|e| {
+                let name = match e {
+                    SessionEntry::Message(_) => "message",
+                    SessionEntry::ThinkingLevelChange(_) => "thinking_level_change",
+                    SessionEntry::ModelChange(_) => "model_change",
+                    SessionEntry::ActiveToolsChange(_) => "active_tools_change",
+                    SessionEntry::Compaction(_) => "compaction",
+                    SessionEntry::BranchSummary(_) => "branch_summary",
+                    SessionEntry::SessionInfo(_) => "session_info",
+                    SessionEntry::Label(_) => "label",
+                    SessionEntry::Custom(_) => "custom",
+                    SessionEntry::CustomMessage(_) => "custom_message",
+                    SessionEntry::Leaf(_) => "leaf",
+                };
+                name == type_name
+            })
+            .collect()
+    }
+
     // ── Public: Tree navigation ───────────────────────────────────
 
     /// Get all entries (excludes header).
@@ -795,20 +896,100 @@ impl SessionManager {
         path
     }
 
-    /// Build the session context (messages for LLM).
+    /// Build the session context (messages for LLM with compaction handling).
+    /// Pi-compatible: resolves thinking level, model, active tool names from path,
+    /// and handles compaction by replacing compacted entries with a summary message.
     pub fn build_session_context(&self) -> SessionContext {
         let path = self.branch(None);
-        let messages: Vec<AgentMessage> = path
-            .iter()
-            .filter_map(|entry| {
-                if let SessionEntry::Message(e) = entry {
-                    Some(e.message.clone())
-                } else {
-                    None
+
+        // Walk path to find latest values for metadata and compaction
+        let mut thinking_level = "off".to_string();
+        let mut model: Option<(String, String)> = None;
+        let mut active_tool_names: Option<Vec<String>> = None;
+        let mut compaction_entry: Option<&CompactionEntry> = None;
+
+        for entry in &path {
+            match entry {
+                SessionEntry::ThinkingLevelChange(e) => {
+                    thinking_level = e.thinking_level.clone();
                 }
-            })
-            .collect();
-        SessionContext { messages }
+                SessionEntry::ModelChange(e) => {
+                    model = Some((e.provider.clone(), e.model_id.clone()));
+                }
+                SessionEntry::ActiveToolsChange(e) => {
+                    active_tool_names = Some(e.active_tool_names.clone());
+                }
+                SessionEntry::Compaction(e) => {
+                    compaction_entry = Some(e);
+                }
+                _ => {}
+            }
+        }
+
+        // Build message list with compaction handling
+        let messages = if let Some(compaction) = compaction_entry {
+            let mut msgs: Vec<AgentMessage> = Vec::new();
+
+            // 1. Compaction summary message
+            msgs.push(AgentMessage {
+                id: String::new(),
+                parent_id: None,
+                role: crate::agent::types::Role::Assistant,
+                content: format!(
+                    "[Compaction: {} tokens → summary] {}",
+                    compaction.tokens_before, compaction.summary
+                ),
+                tool_calls: vec![],
+                tool_call_id: None,
+                usage: None,
+                is_error: false,
+                timestamp: chrono::Utc::now().timestamp_millis(),
+            });
+
+            // 2. Find compaction entry index
+            let compaction_idx = path
+                .iter()
+                .position(|e| matches!(e, SessionEntry::Compaction(ce) if ce.id == compaction.id));
+
+            if let Some(cidx) = compaction_idx {
+                // Entries BEFORE the compaction: only those at/after firstKeptEntryId
+                let mut found_first_kept = false;
+                for entry in path.iter().take(cidx) {
+                    if entry.id() == compaction.first_kept_entry_id {
+                        found_first_kept = true;
+                    }
+                    if found_first_kept {
+                        append_entry_to_message_list(entry, &mut msgs);
+                    }
+                }
+
+                // Entries AFTER the compaction: include all
+                for entry in path.iter().skip(cidx + 1) {
+                    append_entry_to_message_list(entry, &mut msgs);
+                }
+            } else {
+                // Fallback: include all entries (compaction entry not found in path)
+                for entry in &path {
+                    append_entry_to_message_list(entry, &mut msgs);
+                }
+            }
+
+            msgs
+        } else {
+            // No compaction: include all entries that can be converted to messages
+            let mut msgs: Vec<AgentMessage> = Vec::new();
+            for entry in &path {
+                append_entry_to_message_list(entry, &mut msgs);
+            }
+            msgs
+        };
+
+        SessionContext {
+            messages,
+            thinking_level,
+            model,
+            active_tool_names,
+        }
     }
 
     /// Get the label for an entry, if any.
@@ -819,17 +1000,31 @@ impl SessionManager {
     // ── Public: Branching ─────────────────────────────────────────
 
     /// Move leaf pointer to an earlier entry (starts a new branch).
+    /// Writes a LeafEntry to persist the branch point (pi-compatible).
     pub fn set_branch(&mut self, branch_from_id: &str) -> Result<(), String> {
         if !self.by_id.contains_key(branch_from_id) {
             return Err(format!("Entry {} not found", branch_from_id));
         }
-        self.leaf_id = Some(branch_from_id.to_string());
+        // Write a persistent leaf entry recording the branch point
+        self._append_entry(SessionEntry::Leaf(LeafEntry {
+            id: generate_entry_id(&self.by_id),
+            parent_id: self.leaf_id.clone(),
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            target_id: Some(branch_from_id.to_string()),
+        }));
         Ok(())
     }
 
     /// Reset leaf pointer to null (before any entries).
+    /// Writes a LeafEntry with target_id=null to persist the reset (pi-compatible).
     pub fn reset_leaf(&mut self) {
-        self.leaf_id = None;
+        // Write a persistent leaf entry recording the reset
+        self._append_entry(SessionEntry::Leaf(LeafEntry {
+            id: generate_entry_id(&self.by_id),
+            parent_id: self.leaf_id.clone(),
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            target_id: None,
+        }));
     }
 
     // ── Static factories ──────────────────────────────────────────
@@ -910,6 +1105,216 @@ pub fn find_most_recent_session(session_dir: &Path, filter_cwd: Option<&Path>) -
 
     files.sort_by_key(|b| std::cmp::Reverse(b.1));
     files.into_iter().next().map(|(path, _)| path)
+}
+
+// ── append_entry_to_message_list helper ─────────────────────────────
+
+/// Convert a session tree entry to an `AgentMessage` and append to the list.
+/// Pi-compatible: handles `message`, `custom_message`, and `branch_summary` entries.
+fn append_entry_to_message_list(entry: &SessionEntry, msgs: &mut Vec<AgentMessage>) {
+    match entry {
+        SessionEntry::Message(e) => {
+            msgs.push(e.message.clone());
+        }
+        SessionEntry::CustomMessage(e) => {
+            msgs.push(AgentMessage {
+                id: String::new(),
+                parent_id: None,
+                role: crate::agent::types::Role::Assistant,
+                content: format!(
+                    "[{}] {}",
+                    e.custom_type,
+                    serde_json::to_string(&e.content).unwrap_or_default()
+                ),
+                tool_calls: vec![],
+                tool_call_id: None,
+                usage: None,
+                is_error: false,
+                timestamp: chrono::Utc::now().timestamp_millis(),
+            });
+        }
+        SessionEntry::BranchSummary(e) if !e.summary.is_empty() => {
+            msgs.push(AgentMessage {
+                id: String::new(),
+                parent_id: None,
+                role: crate::agent::types::Role::Assistant,
+                content: format!("[Branch: from {}] {}", e.from_id, e.summary),
+                tool_calls: vec![],
+                tool_call_id: None,
+                usage: None,
+                is_error: false,
+                timestamp: chrono::Utc::now().timestamp_millis(),
+            });
+        }
+        _ => {}
+    }
+}
+
+// ── Session repository (list / delete / fork) ───────────────────────
+
+/// List all session metadata in a session directory, newest first.
+/// Pi-compatible: returns metadata for all valid `.jsonl` sessions.
+pub fn list_sessions(session_dir: &Path) -> Vec<SessionInfo> {
+    let mut sessions: Vec<SessionInfo> = Vec::new();
+    let dir = match std::fs::read_dir(session_dir) {
+        Ok(d) => d,
+        Err(_) => return sessions,
+    };
+    for entry in dir.flatten() {
+        let path = entry.path();
+        if path.extension().is_some_and(|ext| ext == "jsonl")
+            && let Some(info) = load_session_info(&path)
+        {
+            sessions.push(info);
+        }
+    }
+    sessions.sort_by_key(|b| std::cmp::Reverse(b.created));
+    sessions
+}
+
+/// Load session info from a session file.
+pub fn load_session_info(path: &Path) -> Option<SessionInfo> {
+    let header = read_session_header(path)?;
+    let created = DateTime::parse_from_rfc3339(&header.timestamp)
+        .ok()?
+        .with_timezone(&Utc);
+    let modified = path.metadata().ok()?.modified().ok()?;
+    let modified_dt: DateTime<Utc> = modified.into();
+    let entries = load_entries_from_file(path);
+    let name = entries.iter().rev().find_map(|e| {
+        if let SessionEntry::SessionInfo(si) = e {
+            let n = si.name.trim();
+            if n.is_empty() {
+                None
+            } else {
+                Some(n.to_string())
+            }
+        } else {
+            None
+        }
+    });
+    let message_count = entries
+        .iter()
+        .filter(|e| matches!(e, SessionEntry::Message(_)))
+        .count();
+    let first_message = entries
+        .iter()
+        .find_map(|e| {
+            if let SessionEntry::Message(m) = e {
+                Some(m.message.content.clone())
+            } else {
+                None
+            }
+        })
+        .unwrap_or_default();
+    let all_messages_text = entries
+        .iter()
+        .filter_map(|e| {
+            if let SessionEntry::Message(m) = e {
+                Some(m.message.content.clone())
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    Some(SessionInfo {
+        path: path.to_path_buf(),
+        id: header.id,
+        cwd: header.cwd,
+        name,
+        parent_session_path: header.parent_session,
+        created,
+        modified: modified_dt,
+        message_count,
+        first_message,
+        all_messages_text,
+    })
+}
+
+/// Delete a session file.
+pub fn delete_session(path: &Path) -> std::io::Result<()> {
+    if path.exists() {
+        std::fs::remove_file(path)?;
+    }
+    Ok(())
+}
+
+/// Fork a session: create a new session file containing a copy of entries from the source session
+/// up to (and including) the entry with the given `entry_id`, or all entries if `entry_id` is None.
+/// If `entry_id` is provided and `position` is "at", the copy goes up to and including that entry.
+/// If `position` is "before" (default), the copy goes up to but not including the entry
+/// (which must be a user message). Pi-compatible.
+pub fn fork_session(
+    source_path: &Path,
+    target_dir: &Path,
+    entry_id: Option<&str>,
+    position: Option<&str>,
+) -> std::io::Result<String> {
+    let header = read_session_header(source_path).ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidData, "Missing session header")
+    })?;
+    let entries = load_entries_from_file(source_path);
+
+    // Build by_id map for parent traversal
+    let by_id: HashMap<String, &SessionEntry> =
+        entries.iter().map(|e| (e.id().to_string(), e)).collect();
+
+    let forked_entries: Vec<SessionEntry> = if let Some(target_id) = entry_id {
+        // Find the target entry
+        let target = by_id.get(target_id).ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "Entry not found")
+        })?;
+
+        // Determine the effective leaf ID for the fork
+        let effective_leaf_id = match position.unwrap_or("before") {
+            "at" => Some(target.id().to_string()),
+            _ => {
+                if !matches!(target, SessionEntry::Message(m) if m.message.role == crate::agent::types::Role::User)
+                {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "Entry is not a user message",
+                    ));
+                }
+                target.parent_id().map(|s| s.to_string())
+            }
+        };
+
+        // Collect path from effective leaf to root
+        let mut path: Vec<&SessionEntry> = Vec::new();
+        let mut current = effective_leaf_id.as_ref().and_then(|id| by_id.get(id));
+        while let Some(entry) = current {
+            path.push(entry);
+            current = entry.parent_id().and_then(|pid| by_id.get(pid));
+        }
+        path.reverse();
+        path.into_iter().cloned().collect()
+    } else {
+        entries.clone()
+    };
+
+    // Create the new session
+    let session_id = uuid::Uuid::new_v4().to_string();
+    let timestamp = chrono::Utc::now().to_rfc3339();
+    let file_ts = timestamp.replace([':', '.'], "-");
+    let file_name = format!("{}_{}.jsonl", file_ts, session_id);
+    let target_path = target_dir.join(&file_name);
+
+    std::fs::create_dir_all(target_dir)?;
+
+    let new_header = SessionHeader {
+        type_: "session".to_string(),
+        version: Some(CURRENT_SESSION_VERSION),
+        id: session_id.clone(),
+        timestamp,
+        cwd: header.cwd.clone(),
+        parent_session: Some(source_path.to_string_lossy().to_string()),
+    };
+    write_entries_to_file(&target_path, &new_header, &forked_entries)?;
+
+    Ok(session_id)
 }
 
 // ── Tests ───────────────────────────────────────────────────────────
@@ -1155,7 +1560,190 @@ mod tests {
         }
     }
 
-    // ── JSONL read/write ────────────────────────────────────────────
+    // ── New entry type round-trip tests ──────────────────────────────
+
+    #[test]
+    fn test_active_tools_change_entry_roundtrip() {
+        let entry = SessionEntry::ActiveToolsChange(ActiveToolsChangeEntry {
+            id: "abc12345".to_string(),
+            parent_id: Some("parent1".to_string()),
+            timestamp: "2026-06-19T12:00:00Z".to_string(),
+            active_tool_names: vec!["read".to_string(), "write".to_string()],
+        });
+
+        let json = serde_json::to_string(&entry).unwrap();
+        let parsed: SessionEntry = serde_json::from_str(&json).unwrap();
+
+        match parsed {
+            SessionEntry::ActiveToolsChange(e) => {
+                assert_eq!(e.active_tool_names, vec!["read", "write"]);
+            }
+            _ => panic!("Expected ActiveToolsChange variant"),
+        }
+    }
+
+    #[test]
+    fn test_leaf_entry_roundtrip() {
+        // Leaf entry with target (branching)
+        let entry = SessionEntry::Leaf(LeafEntry {
+            id: "leaf1".to_string(),
+            parent_id: Some("msg3".to_string()),
+            timestamp: "2026-06-19T12:00:00Z".to_string(),
+            target_id: Some("msg1".to_string()),
+        });
+
+        let json = serde_json::to_string(&entry).unwrap();
+        let parsed: SessionEntry = serde_json::from_str(&json).unwrap();
+        match parsed {
+            SessionEntry::Leaf(e) => {
+                assert_eq!(e.target_id.as_deref(), Some("msg1"));
+            }
+            _ => panic!("Expected Leaf variant"),
+        }
+
+        // Leaf entry with null target (reset)
+        let entry = SessionEntry::Leaf(LeafEntry {
+            id: "leaf2".to_string(),
+            parent_id: Some("leaf1".to_string()),
+            timestamp: "2026-06-19T12:01:00Z".to_string(),
+            target_id: None,
+        });
+
+        let json = serde_json::to_string(&entry).unwrap();
+        let parsed: SessionEntry = serde_json::from_str(&json).unwrap();
+        match parsed {
+            SessionEntry::Leaf(e) => {
+                assert!(e.target_id.is_none());
+            }
+            _ => panic!("Expected Leaf variant"),
+        }
+    }
+
+    // ── Metadata context tests ───────────────────────────────────────
+
+    #[test]
+    fn test_build_context_tracks_metadata() {
+        let tmp = TempDir::new().unwrap();
+        let sessions_dir = tmp.path().join("sessions");
+        let cwd = tmp.path().join("project");
+        std::fs::create_dir_all(&cwd).unwrap();
+
+        let mut sm = SessionManager::create(&cwd, Some(&sessions_dir));
+        sm.append_thinking_level_change("high");
+        sm.append_model_change("opencode_go", "deepseek-v4-pro");
+        sm.append_active_tools_change(&["read".to_string(), "write".to_string()]);
+        sm.append_message(&make_agent_message(Role::User, "hello"));
+        sm.append_message(&make_agent_message(Role::Assistant, "hi"));
+
+        let context = sm.build_session_context();
+        assert_eq!(context.thinking_level, "high");
+        assert_eq!(
+            context.model,
+            Some(("opencode_go".to_string(), "deepseek-v4-pro".to_string()))
+        );
+        assert_eq!(
+            context.active_tool_names,
+            Some(vec!["read".to_string(), "write".to_string()])
+        );
+        assert_eq!(context.messages.len(), 2);
+    }
+
+    #[test]
+    fn test_build_context_defaults_when_no_metadata() {
+        let cwd = Path::new("/tmp/test");
+        let sm = SessionManager::in_memory(cwd);
+        let context = sm.build_session_context();
+        assert_eq!(context.thinking_level, "off");
+        assert!(context.model.is_none());
+        assert!(context.active_tool_names.is_none());
+        assert!(context.messages.is_empty());
+    }
+
+    // ── Find entries test ────────────────────────────────────────────
+
+    #[test]
+    fn test_find_entries_by_type() {
+        let cwd = Path::new("/tmp/test");
+        let mut sm = SessionManager::in_memory(cwd);
+        sm.append_message(&make_agent_message(Role::User, "hello"));
+        sm.append_thinking_level_change("high");
+        sm.append_model_change("p", "m");
+        sm.append_session_info("test session");
+
+        let messages = sm.find_entries_by_type("message");
+        assert_eq!(messages.len(), 1);
+
+        let thinking = sm.find_entries_by_type("thinking_level_change");
+        assert_eq!(thinking.len(), 1);
+
+        let models = sm.find_entries_by_type("model_change");
+        assert_eq!(models.len(), 1);
+
+        let infos = sm.find_entries_by_type("session_info");
+        assert_eq!(infos.len(), 1);
+    }
+
+    // ── Session listing / forking tests ──────────────────────────────
+
+    #[test]
+    fn test_list_sessions_empty_dir() {
+        let tmp = TempDir::new().unwrap();
+        let sessions = list_sessions(tmp.path());
+        assert!(sessions.is_empty());
+    }
+
+    #[test]
+    fn test_list_sessions() {
+        let tmp = TempDir::new().unwrap();
+        let sessions_dir = tmp.path().join("sessions");
+        let cwd = tmp.path().join("project");
+        std::fs::create_dir_all(&cwd).unwrap();
+
+        let mut sm = SessionManager::create(&cwd, Some(&sessions_dir));
+        sm.append_message(&make_agent_message(Role::User, "first"));
+        sm.append_message(&make_agent_message(Role::Assistant, "response"));
+        let path = sm.session_file().unwrap().to_path_buf();
+        drop(sm);
+
+        let sessions = list_sessions(&sessions_dir);
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].path, path);
+        assert_eq!(sessions[0].message_count, 2);
+    }
+
+    #[test]
+    fn test_fork_session_all_entries() {
+        let tmp = TempDir::new().unwrap();
+        let sessions_dir = tmp.path().join("sessions");
+        let cwd = tmp.path().join("project");
+        std::fs::create_dir_all(&cwd).unwrap();
+
+        let mut sm = SessionManager::create(&cwd, Some(&sessions_dir));
+        sm.append_message(&make_agent_message(Role::User, "hello"));
+        sm.append_message(&make_agent_message(Role::Assistant, "world"));
+        let source_path = sm.session_file().unwrap().to_path_buf();
+        drop(sm);
+
+        let target_dir = tmp.path().join("forked");
+        let new_id = fork_session(&source_path, &target_dir, None, None).unwrap();
+        assert!(!new_id.is_empty());
+
+        let sessions = list_sessions(&target_dir);
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].message_count, 2);
+    }
+
+    #[test]
+    fn test_delete_session() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("test.jsonl");
+        std::fs::write(&path, "{\"type\":\"session\",\"id\":\"test\",\"timestamp\":\"2026-01-01T00:00:00Z\",\"cwd\":\"/\"}\n").unwrap();
+        assert!(path.exists());
+        delete_session(&path).unwrap();
+        assert!(!path.exists());
+        // deleting non-existent file should be ok
+        delete_session(&path).unwrap();
+    }
 
     #[test]
     fn test_parse_session_entry_line() {
@@ -1724,18 +2312,29 @@ mod tests {
         // Current leaf is after last message
         assert_eq!(sm.entries().len(), 4);
 
-        // Branch back to first user message
+        // Branch back to first user message (writes a LeafEntry)
         sm.set_branch(&m1).unwrap();
+        assert_eq!(sm.entries().len(), 5); // 4 original + 1 leaf entry
+        // Leaf entry should point to m1
+        match sm.entries().last().unwrap() {
+            SessionEntry::Leaf(e) => {
+                assert_eq!(e.target_id.as_deref(), Some(m1.as_str()));
+            }
+            _ => panic!("Expected Leaf entry"),
+        }
 
         // Append a new branch
         sm.append_message(&make_agent_message(Role::Assistant, "alternate response"));
+        // We now have 6 entries (original 4 + 1 leaf entry + 1 new message)
+        assert_eq!(sm.entries().len(), 6);
 
-        // We now have 5 entries (original 4 + new branch entry)
-        assert_eq!(sm.entries().len(), 5);
-
-        // Build context from current leaf - should have 3 messages (m1, branch asst, nothing after)
+        // Build context from current leaf - should have 2 messages (m1, branch asst)
         let context = sm.build_session_context();
         assert_eq!(context.messages.len(), 2); // user "one" + assistant "alternate response"
+        // Verify metadata in context
+        assert_eq!(context.thinking_level, "off");
+        assert!(context.model.is_none());
+        assert!(context.active_tool_names.is_none());
     }
 
     #[test]
@@ -1748,13 +2347,28 @@ mod tests {
         let mut sm = SessionManager::create(&cwd, Some(&sessions_dir));
         sm.append_message(&make_agent_message(Role::User, "one"));
         sm.append_message(&make_agent_message(Role::Assistant, "response"));
+        assert_eq!(sm.entries().len(), 2);
 
-        sm.reset_leaf();
+        sm.reset_leaf(); // Writes a LeafEntry with target_id = None
+        assert_eq!(sm.entries().len(), 3);
         assert!(sm.leaf_id().is_none());
+        match sm.entries().last().unwrap() {
+            SessionEntry::Leaf(e) => {
+                assert!(e.target_id.is_none());
+            }
+            _ => panic!("Expected Leaf entry"),
+        }
 
         // Append from reset state (parentId = null)
         sm.append_message(&make_agent_message(Role::User, "fresh start"));
-        assert_eq!(sm.entries().len(), 3);
+        assert_eq!(sm.entries().len(), 4);
+        // Verify fresh start has no parent
+        match &sm.entries()[3] {
+            SessionEntry::Message(m) => {
+                assert!(m.parent_id.is_none());
+            }
+            _ => panic!("Expected Message"),
+        }
     }
 
     #[test]
