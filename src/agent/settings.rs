@@ -50,6 +50,30 @@ pub struct Settings {
     )]
     pub collapse_tool_output: Option<bool>,
 
+    /// Auto-compact enabled (Ctrl+Shift+C toggle).
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "autoCompact"
+    )]
+    pub auto_compact: Option<bool>,
+
+    /// Tokens to reserve for system prompt + tool defs + response.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "compactReserveTokens"
+    )]
+    pub compact_reserve_tokens: Option<u64>,
+
+    /// Number of most-recent tokens to always keep.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "compactKeepRecentTokens"
+    )]
+    pub compact_keep_recent_tokens: Option<u64>,
+
     /// Tracks which fields were explicitly modified during this session.
     /// Only modified fields are written when saving, preventing unset/default
     /// fields and project-level overrides from leaking into the global file.
@@ -76,6 +100,24 @@ impl Settings {
     pub fn set_default_thinking_level(&mut self, value: Option<String>) {
         self.default_thinking_level = value;
         self.modified_fields.insert("defaultThinkingLevel".into());
+    }
+
+    /// Set auto_compact and mark it as modified.
+    pub fn set_auto_compact(&mut self, value: Option<bool>) {
+        self.auto_compact = value;
+        self.modified_fields.insert("autoCompact".into());
+    }
+
+    /// Set compact_reserve_tokens and mark it as modified.
+    pub fn set_compact_reserve_tokens(&mut self, value: Option<u64>) {
+        self.compact_reserve_tokens = value;
+        self.modified_fields.insert("compactReserveTokens".into());
+    }
+
+    /// Set compact_keep_recent_tokens and mark it as modified.
+    pub fn set_compact_keep_recent_tokens(&mut self, value: Option<u64>) {
+        self.compact_keep_recent_tokens = value;
+        self.modified_fields.insert("compactKeepRecentTokens".into());
     }
 
     /// Mark a field as modified (for use with the setters or external callers).
@@ -144,6 +186,9 @@ impl Settings {
             verbose: project.verbose || global.verbose,
             hide_thinking: project.hide_thinking.or(global.hide_thinking),
             collapse_tool_output: project.collapse_tool_output.or(global.collapse_tool_output),
+            auto_compact: project.auto_compact.or(global.auto_compact),
+            compact_reserve_tokens: project.compact_reserve_tokens.or(global.compact_reserve_tokens),
+            compact_keep_recent_tokens: project.compact_keep_recent_tokens.or(global.compact_keep_recent_tokens),
             modified_fields: HashSet::new(),
         }
     }

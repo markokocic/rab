@@ -1089,6 +1089,13 @@ fn handle_dequeue(app: &mut App) {
 fn handle_compact_toggle(app: &mut App) {
     app.auto_compact = !app.auto_compact;
     app.footer.borrow_mut().set_auto_compact(app.auto_compact);
+
+    // Persist to settings
+    app.settings.set_auto_compact(Some(app.auto_compact));
+    if let Err(e) = app.settings.save() {
+        eprintln!("Warning: failed to save auto_compact setting: {}", e);
+    }
+
     app.status_text = Some(if app.auto_compact {
         "Auto-compact: on".into()
     } else {
@@ -1527,8 +1534,37 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
             app.messages.push(DisplayMsg::Info(info));
         }
         CommandResult::OpenSessionSelector => {
-            // Needs TUI overlay - defer
-            app.pending_command_result = Some(result);
+            // Load and display available sessions
+            use crate::agent::SessionRepo;
+            let repo = crate::agent::DefaultSessionRepo::new();
+            let sessions = repo.list_all(None);
+
+            if sessions.is_empty() {
+                let msg = "No sessions found.".to_string();
+                chat_add(app, std::boxed::Box::new(InfoMessageComponent::new(msg.clone())));
+                app.messages.push(DisplayMsg::Info(msg));
+            } else {
+                let mut info = format!("Available Sessions ({} total)\n\n", sessions.len());
+                for (i, s) in sessions.iter().take(20).enumerate() {
+                    let name = s.name.as_deref().unwrap_or("unnamed");
+                    let cwd_short = s.cwd.rsplit('/').next().unwrap_or(&s.cwd);
+                    info += &format!(
+                        "{}. {}  [{}]  {} msgs\n   {}\n\n",
+                        i + 1,
+                        name,
+                        fmt_time_short(&s.created),
+                        s.message_count,
+                        cwd_short,
+                    );
+                }
+                if sessions.len() > 20 {
+                    info += &format!("... and {} more sessions\n", sessions.len() - 20);
+                }
+                info += "Use /resume to open the interactive picker";
+
+                chat_add(app, std::boxed::Box::new(InfoMessageComponent::new(info.clone())));
+                app.messages.push(DisplayMsg::Info(info));
+            }
         }
         CommandResult::SessionNamed { name } => {
             app.status_text = Some(format!("Session name: {}", name));
@@ -2286,6 +2322,11 @@ fn format_number(n: u64) -> String {
         result.push(c);
     }
     result.chars().rev().collect()
+}
+
+/// Format a DateTime for short display (YYYY-MM-DD HH:MM).
+fn fmt_time_short(dt: &chrono::DateTime<chrono::Utc>) -> String {
+    dt.format("%Y-%m-%d %H:%M").to_string()
 }
 
 #[cfg(test)]

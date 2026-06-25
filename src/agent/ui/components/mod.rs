@@ -5,6 +5,7 @@ pub mod footer_component;
 pub mod header;
 pub mod info_message;
 pub mod message_components;
+pub mod session_picker;
 pub mod tool_messages;
 pub mod user_message;
 
