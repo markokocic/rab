@@ -13,11 +13,22 @@ use tokio::sync::{Mutex as TokioMutex, mpsc::UnboundedSender};
 
 pub struct BashExtension {
     cwd: std::path::PathBuf,
+    shell_path: Option<String>,
 }
 
 impl BashExtension {
     pub fn new(cwd: std::path::PathBuf) -> Self {
-        Self { cwd }
+        Self {
+            cwd,
+            shell_path: None,
+        }
+    }
+
+    pub fn with_shell_path(cwd: std::path::PathBuf, shell_path: String) -> Self {
+        Self {
+            cwd,
+            shell_path: Some(shell_path),
+        }
     }
 }
 
@@ -29,12 +40,14 @@ impl Extension for BashExtension {
     fn tools(&self) -> Vec<Box<dyn AgentTool>> {
         vec![Box::new(BashTool {
             cwd: self.cwd.clone(),
+            shell_path: self.shell_path.clone(),
         })]
     }
 }
 
 struct BashTool {
     cwd: std::path::PathBuf,
+    shell_path: Option<String>,
 }
 
 // ── Constants ────────────────────────────────────────────────────
@@ -42,6 +55,66 @@ struct BashTool {
 const DEFAULT_MAX_LINES: usize = 2000;
 const DEFAULT_MAX_BYTES: usize = 50 * 1024; // 50KB
 const BASH_TEMP_FILE_PREFIX: &str = "pi-bash";
+
+/// Grace period after child exit (ms) — matching pi's EXIT_STDIO_GRACE_MS.
+/// Detached descendants may keep stdout/stderr pipes open; we poll until idle.
+const EXIT_STDIO_GRACE_MS: u64 = 100;
+
+// ── Shell resolution (matching pi's getShellConfig) ──────────────
+
+/// Shell configuration: which shell binary to use and how to pass commands.
+struct ShellConfig {
+    shell: String,
+    args: Vec<String>,
+}
+
+/// Resolve the shell to use for command execution.
+/// Resolution order (matching pi):
+/// 1. User-specified shell_path (from BashTool.shell_path)
+/// 2. On Unix: /bin/bash, then bash on PATH, then fallback to sh
+/// 3. On Windows: Git Bash, bash on PATH, fallback to sh
+fn resolve_shell(shell_path: Option<&str>) -> ShellConfig {
+    if let Some(path) = shell_path {
+        return ShellConfig {
+            shell: path.to_string(),
+            args: vec!["-c".to_string()],
+        };
+    }
+
+    // Try /bin/bash first (most common on Unix)
+    if std::path::Path::new("/bin/bash").exists() {
+        return ShellConfig {
+            shell: "/bin/bash".to_string(),
+            args: vec!["-c".to_string()],
+        };
+    }
+
+    // Try `which bash`
+    #[cfg(unix)]
+    {
+        if let Ok(output) = std::process::Command::new("which")
+            .arg("bash")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .output()
+            && output.status.success()
+        {
+            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !path.is_empty() && std::path::Path::new(&path).exists() {
+                return ShellConfig {
+                    shell: path,
+                    args: vec!["-c".to_string()],
+                };
+            }
+        }
+    }
+
+    // Fallback to sh
+    ShellConfig {
+        shell: "sh".to_string(),
+        args: vec!["-c".to_string()],
+    }
+}
 
 // ── Helpers ──────────────────────────────────────────────────────
 
@@ -65,12 +138,15 @@ fn kill_process_group(pid: u32) {
 fn spawn_bash_command(
     command: &str,
     cwd: &std::path::Path,
+    shell_path: Option<&str>,
 ) -> std::io::Result<tokio::process::Child> {
+    let shell_cfg = resolve_shell(shell_path);
+
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
-        let mut std_cmd = std::process::Command::new("sh");
-        std_cmd.arg("-c").arg(command).current_dir(cwd);
+        let mut std_cmd = std::process::Command::new(&shell_cfg.shell);
+        std_cmd.args(&shell_cfg.args).arg(command).current_dir(cwd);
         unsafe {
             std_cmd.pre_exec(|| {
                 libc::setpgid(0, 0);
@@ -86,8 +162,8 @@ fn spawn_bash_command(
     }
     #[cfg(not(unix))]
     {
-        tokio::process::Command::new("sh")
-            .arg("-c")
+        tokio::process::Command::new(&shell_cfg.shell)
+            .args(&shell_cfg.args)
             .arg(command)
             .current_dir(cwd)
             .stdin(std::process::Stdio::null())
@@ -98,20 +174,14 @@ fn spawn_bash_command(
 }
 
 /// Sanitize binary output for display/storage (matching pi's sanitizeBinaryOutput + stripAnsi).
-/// Removes:
-/// - ANSI escape sequences
-/// - Control characters (except tab, newline, carriage return)
-/// - Unicode format characters
 fn sanitize_output(text: &str) -> String {
     let mut result = String::with_capacity(text.len());
     let mut in_escape = false;
     for c in text.chars() {
         if in_escape {
             if c == '\x1b' || c == '\u{9b}' {
-                // nested escape
                 continue;
             }
-            // ANSI escape ends at ASCII letter or '~'
             if c.is_ascii_alphabetic() || c == '~' {
                 in_escape = false;
             }
@@ -121,12 +191,10 @@ fn sanitize_output(text: &str) -> String {
             in_escape = true;
             continue;
         }
-        // Filter control characters except \t (0x09), \n (0x0a), \r (0x0d)
         let code = c as u32;
         if code <= 0x1f && code != 0x09 && code != 0x0a && code != 0x0d {
             continue;
         }
-        // Filter Unicode format characters
         if (0xfff9..=0xfffb).contains(&code) {
             continue;
         }
@@ -135,7 +203,6 @@ fn sanitize_output(text: &str) -> String {
     result
 }
 
-/// Format bytes as a human-readable size string, matching pi's format.
 fn format_size(bytes: usize) -> String {
     if bytes < 1024 {
         format!("{}B", bytes)
@@ -148,11 +215,8 @@ fn format_size(bytes: usize) -> String {
 
 /// Truncation result for tail-based truncation (keep last N lines/bytes).
 struct TailTruncation {
-    /// Truncated output content.
     content: String,
-    /// Whether truncation occurred.
     truncated: bool,
-    // Fields below are only used in tests; kept for test assertions.
     #[allow(dead_code)]
     total_lines: usize,
     #[allow(dead_code)]
@@ -160,20 +224,17 @@ struct TailTruncation {
     #[allow(dead_code)]
     output_bytes: usize,
     #[allow(dead_code)]
-    truncated_by: &'static str, // "lines" | "bytes"
+    truncated_by: &'static str,
     #[allow(dead_code)]
     last_line_partial: bool,
 }
 
 /// Truncate content from the tail, keeping complete lines that fit within limits.
-/// Keeps the LAST N lines/bytes. Never returns partial lines unless the last line
-/// of the original content exceeds the byte limit.
 fn truncate_tail(content: &str, max_lines: usize, max_bytes: usize) -> TailTruncation {
     let total_bytes = content.len();
     let lines: Vec<&str> = content.lines().collect();
     let total_lines = lines.len();
 
-    // Check if no truncation needed
     if total_lines <= max_lines && total_bytes <= max_bytes {
         return TailTruncation {
             content: content.to_string(),
@@ -186,7 +247,6 @@ fn truncate_tail(content: &str, max_lines: usize, max_bytes: usize) -> TailTrunc
         };
     }
 
-    // Work backwards from the end
     let mut output: Vec<&str> = Vec::new();
     let mut byte_count: usize = 0;
     let mut truncated_by = "lines";
@@ -197,13 +257,11 @@ fn truncate_tail(content: &str, max_lines: usize, max_bytes: usize) -> TailTrunc
         let with_newline = if output.is_empty() {
             line_bytes
         } else {
-            line_bytes + 1 // +1 for preceding newline
+            line_bytes + 1
         };
 
         if byte_count + with_newline > max_bytes {
             truncated_by = "bytes";
-            // If we haven't added ANY lines yet and this line exceeds maxBytes,
-            // take the end of the line (partial)
             if output.is_empty() {
                 let end_start = line.len().saturating_sub(max_bytes);
                 let truncated_line = &line[end_start..];
@@ -234,15 +292,8 @@ fn truncate_tail(content: &str, max_lines: usize, max_bytes: usize) -> TailTrunc
     }
 }
 
-/// Format the final bash execution result, matching pi's bash tool output format.
-///
-/// Pi's bash tool (LLM-called) returns raw output, not the `bashExecutionToText` format.
-/// - Non-empty output → raw output (no Ran prefix, no backtick fences)
-/// - Empty output → "(no output)"
-/// - Truncated → raw output + `\n\n[Showing lines X-Y of Z... Full output: path]`
-/// - Non-zero exit → returned as Err with output + `\n\nCommand exited with code N`
-/// - Cancelled → returned as Err with output + `\n\nCommand aborted`
-/// - Timed out → returned as Err with output + `\n\nCommand timed out after N seconds`
+// ── Result formatting ────────────────────────────────────────────
+
 fn finish_bash_execution(
     combined: &str,
     exit_code: i32,
@@ -250,17 +301,14 @@ fn finish_bash_execution(
     timed_out: Option<u64>,
     on_update: Option<UnboundedSender<ToolOutput>>,
 ) -> Result<ToolOutput, anyhow::Error> {
-    // Apply tail truncation (pi-style: keep last N lines/bytes)
     let trunc = truncate_tail(combined, DEFAULT_MAX_LINES, DEFAULT_MAX_BYTES);
 
-    // Build output text: raw output or (no output)
     let mut result_text = if trunc.content.is_empty() {
         "(no output)".to_string()
     } else {
         trunc.content.clone()
     };
 
-    // Truncation notice (matching pi: appended to text, not in details)
     if trunc.truncated {
         let tmp_dir = std::env::temp_dir().join(BASH_TEMP_FILE_PREFIX);
         let _ = std::fs::create_dir_all(&tmp_dir);
@@ -301,7 +349,6 @@ fn finish_bash_execution(
         result_text.push_str(&notice);
     }
 
-    // Build the final output with error status appended (matching pi)
     let final_output = if cancelled {
         if result_text.is_empty() || result_text == "(no output)" {
             "Command aborted".to_string()
@@ -324,7 +371,6 @@ fn finish_bash_execution(
             format!("{}\n\nCommand exited with code {}", result_text, exit_code)
         }
     } else {
-        // Success
         if let Some(ref tx) = on_update {
             let _ = tx.send(ToolOutput::ok(result_text.clone()));
         }
@@ -384,13 +430,20 @@ impl AgentTool for BashTool {
         let command = args["command"]
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("Missing 'command' argument"))?;
-        let timeout = args["timeout"].as_u64(); // no default timeout (matches schema)
+        let timeout = args["timeout"].as_u64();
         let started_at = Instant::now();
 
         cancel.check()?;
 
-        // Build the command with process group setup for process-tree killing
-        let mut child = spawn_bash_command(command, &self.cwd)
+        // Check that the working directory exists (matching pi's fsAccess check)
+        if !self.cwd.exists() {
+            anyhow::bail!(
+                "Working directory does not exist: {}\nCannot execute bash commands.",
+                self.cwd.display()
+            );
+        }
+
+        let mut child = spawn_bash_command(command, &self.cwd, self.shell_path.as_deref())
             .with_context(|| format!("Failed to spawn command: {}", command))?;
 
         let pid = child.id().unwrap_or(0);
@@ -399,7 +452,6 @@ impl AgentTool for BashTool {
         let combined = Arc::new(TokioMutex::new(String::new()));
         let combined_clone = combined.clone();
 
-        // Read stdout/stderr in a background task using tokio::select!
         let stdout_pipe = child
             .stdout
             .take()
@@ -450,14 +502,19 @@ impl AgentTool for BashTool {
             }
         });
 
+        // ── PID tracking for cleanup on shutdown signals ──
+        // Register this PID so it gets killed if the parent exits unexpectedly
+        let _pid_guard = ProcessGuard::new(pid);
+
         // Set up cancellation monitor: kill the process group if cancelled
         let cancelled = Arc::new(AtomicBool::new(false));
-        let cancel_clone = cancelled.clone();
+        let cancel_flag = cancelled.clone();
+        let cancel_inner = cancel.clone();
         let _cancel_monitor: tokio::task::JoinHandle<()> = tokio::spawn(async move {
-            while !cancel.is_cancelled() {
+            while !cancel_inner.is_cancelled() {
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             }
-            cancel_clone.store(true, Ordering::SeqCst);
+            cancel_flag.store(true, Ordering::SeqCst);
             kill_process_group(pid);
         });
 
@@ -474,7 +531,6 @@ impl AgentTool for BashTool {
         let exit_code: i32;
 
         loop {
-            // Check cancellation
             if cancelled.load(Ordering::SeqCst) {
                 kill_process_group(pid);
                 read_task.abort();
@@ -482,7 +538,6 @@ impl AgentTool for BashTool {
                 return finish_bash_execution(&combined_str, -1, true, None, on_update);
             }
 
-            // Check timeout
             if let Some(dur) = timeout_dur
                 && started_at.elapsed() > dur
             {
@@ -492,7 +547,6 @@ impl AgentTool for BashTool {
                 return finish_bash_execution(&combined_str, -1, false, timeout, on_update);
             }
 
-            // Send streaming update (throttled to ~100ms, matching pi)
             if let Some(ref tx) = on_update
                 && last_update_at.elapsed().as_millis() as u64 >= throttle_ms
             {
@@ -503,11 +557,24 @@ impl AgentTool for BashTool {
                 }
             }
 
-            // Check if process has exited
             match child.try_wait() {
                 Ok(Some(status)) => {
-                    read_task.await.ok();
                     exit_code = status.code().unwrap_or(-1);
+                    // ── Idle grace period (matching pi's waitForChildProcess) ──
+                    // After child exit, wait for pipes to go idle (late data from
+                    // detached descendants). Poll every 100ms; if no new data
+                    // within the grace window, the output is stable.
+                    let mut last_len = combined.lock().await.len();
+                    loop {
+                        tokio::time::sleep(std::time::Duration::from_millis(EXIT_STDIO_GRACE_MS))
+                            .await;
+                        let new_len = combined.lock().await.len();
+                        if new_len == last_len {
+                            break;
+                        }
+                        last_len = new_len;
+                    }
+                    read_task.abort();
                     break;
                 }
                 Ok(None) => {
@@ -521,7 +588,6 @@ impl AgentTool for BashTool {
             }
         }
 
-        // Final flush: send any remaining output
         let combined_str = combined.lock().await.clone();
         if let Some(ref tx) = on_update
             && !combined_str.is_empty()
@@ -570,7 +636,6 @@ impl ToolRenderer for BashRenderer {
     ) -> Vec<String> {
         let mut lines: Vec<String> = Vec::new();
 
-        // Strip truncation footer and trim trailing whitespace/newlines
         let clean = strip_context_truncation_footer(content)
             .trim_end()
             .to_string();
@@ -580,7 +645,6 @@ impl ToolRenderer for BashRenderer {
             return lines;
         }
 
-        // Visual-line-aware truncation (matching pi's truncateToVisualLines)
         let preview_count = 5;
         let (preview_lines, hidden_line_count) = if ctx.expanded {
             (all_lines.clone(), 0)
@@ -588,22 +652,24 @@ impl ToolRenderer for BashRenderer {
             truncate_to_visual_lines(&all_lines, width, preview_count)
         };
 
+        // ── Preview hint with dim/muted styling (matching pi's keyHint) ──
         if !ctx.expanded && hidden_line_count > 0 {
-            let hint = if ctx.expand_key.is_empty() {
-                theme.fg_key(
+            if ctx.expand_key.is_empty() {
+                lines.push(theme.fg_key(
                     ThemeKey::Muted,
                     &format!("... {} earlier lines", hidden_line_count),
-                )
+                ));
             } else {
-                theme.fg(
-                    "muted",
-                    &format!(
-                        "... ({} earlier lines, {} to expand)",
-                        hidden_line_count, ctx.expand_key
-                    ),
-                )
-            };
-            lines.push(hint);
+                // Pi pattern: muted prefix + dim key + muted suffix
+                // e.g. "... (12 earlier lines, \x1b[2mctrl+o\x1b[22m to expand)"
+                let prefix = theme.fg_key(
+                    ThemeKey::Muted,
+                    &format!("... ({} earlier lines, ", hidden_line_count),
+                );
+                let key_styled = theme.fg("dim", &ctx.expand_key);
+                let suffix = theme.fg_key(ThemeKey::Muted, " to expand)");
+                lines.push(format!("{}{}{}", prefix, key_styled, suffix));
+            }
         }
 
         let fg_key = if ctx.is_error { "error" } else { "toolOutput" };
@@ -615,7 +681,6 @@ impl ToolRenderer for BashRenderer {
             }
         }
 
-        // Duration (with blank line separator before it, matching pi's `\n` prefix)
         if let Some(secs) = ctx.duration_secs {
             if !lines.is_empty() {
                 lines.push(String::new());
@@ -625,7 +690,6 @@ impl ToolRenderer for BashRenderer {
             lines.push(theme.fg_key(ThemeKey::Muted, &format!("{} {:.1}s", label, secs)));
         }
 
-        // Truncation warnings (with blank line separator, matching pi)
         if ctx.was_truncated {
             if !lines.is_empty() {
                 lines.push(String::new());
@@ -644,7 +708,6 @@ impl ToolRenderer for BashRenderer {
     }
 }
 
-/// Strip the context-truncation footer from bash output.
 fn strip_context_truncation_footer(output: &str) -> String {
     let lines: Vec<&str> = output.lines().collect();
     if lines.len() < 3 {
@@ -666,6 +729,55 @@ fn strip_context_truncation_footer(output: &str) -> String {
     }
 }
 
+// ── PID tracking for cleanup on shutdown signals ────────────────
+// Matching pi's trackDetachedChildPid / untrackDetachedChildPid.
+// On SIGTERM/SIGHUP, all tracked PIDs are killed before exit.
+
+use std::sync::Mutex;
+
+static TRACKED_PIDS: Mutex<Vec<u32>> = std::sync::Mutex::new(Vec::new());
+
+fn track_pid(pid: u32) {
+    if let Ok(mut pids) = TRACKED_PIDS.lock() {
+        pids.push(pid);
+    }
+}
+
+fn untrack_pid(pid: u32) {
+    if let Ok(mut pids) = TRACKED_PIDS.lock() {
+        pids.retain(|&p| p != pid);
+    }
+}
+
+/// Kill all tracked child process groups. Called on SIGTERM/SIGHUP.
+pub fn kill_tracked_children() {
+    let pids: Vec<u32> = TRACKED_PIDS.lock().map(|p| p.clone()).unwrap_or_default();
+    for pid in pids {
+        kill_process_group(pid);
+    }
+}
+
+struct ProcessGuard {
+    pid: u32,
+}
+
+impl ProcessGuard {
+    fn new(pid: u32) -> Self {
+        if pid > 0 {
+            track_pid(pid);
+        }
+        Self { pid }
+    }
+}
+
+impl Drop for ProcessGuard {
+    fn drop(&mut self) {
+        if self.pid > 0 {
+            untrack_pid(self.pid);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -673,6 +785,7 @@ mod tests {
     fn make_tool() -> BashTool {
         BashTool {
             cwd: std::env::temp_dir(),
+            shell_path: None,
         }
     }
 
@@ -861,7 +974,10 @@ mod tests {
         std::fs::create_dir_all(&tmp).unwrap();
         std::fs::write(tmp.join("marker.txt"), "hello").unwrap();
 
-        let tool = BashTool { cwd: tmp.clone() };
+        let tool = BashTool {
+            cwd: tmp.clone(),
+            shell_path: None,
+        };
         let output = tool
             .execute(
                 "id".into(),
@@ -934,10 +1050,7 @@ mod tests {
     fn test_truncate_tail_exact_line_fit() {
         let lines: String = (1..=2000).map(|i| format!("line {}\n", i)).collect();
         let result = truncate_tail(&lines, 2000, 50000);
-        assert!(
-            !result.truncated,
-            "should not truncate when exactly at line limit"
-        );
+        assert!(!result.truncated);
         assert!(result.content.lines().count() == 2000);
     }
 
@@ -1003,11 +1116,7 @@ mod tests {
             .collect();
         let result = truncate_tail(&content, 2000, 50000);
         assert!(result.truncated);
-        assert!(
-            result.output_bytes <= 50000,
-            "output_bytes {} exceeds limit 50000",
-            result.output_bytes
-        );
+        assert!(result.output_bytes <= 50000);
     }
 
     #[tokio::test]
@@ -1047,16 +1156,8 @@ mod tests {
             )
             .await
             .unwrap();
-        assert!(
-            !output.content.contains("Output truncated"),
-            "got: {}",
-            output.content
-        );
-        assert!(
-            !output.content.contains("Full output:"),
-            "got: {}",
-            output.content
-        );
+        assert!(!output.content.contains("Output truncated"));
+        assert!(!output.content.contains("Full output:"));
     }
 
     #[tokio::test]
@@ -1072,7 +1173,6 @@ mod tests {
             )
             .await
             .unwrap();
-        // Should mention a temp file path with /pi-bash/ prefix
         assert!(
             output.content.contains("/pi-bash/"),
             "expected temp file path with /pi-bash/, got: {}",
@@ -1103,5 +1203,28 @@ mod tests {
         assert!(result.truncated);
         assert_eq!(result.truncated_by, "bytes");
         assert!(result.output_lines < 2000);
+    }
+
+    // ── ProcessGuard tests ──────────────────────────────────────
+
+    #[test]
+    fn test_process_guard_tracks_pid() {
+        let pid = 12345u32;
+        {
+            let _guard = ProcessGuard::new(pid);
+            let pids = TRACKED_PIDS.lock().unwrap();
+            assert!(pids.contains(&pid));
+        }
+        let pids = TRACKED_PIDS.lock().unwrap();
+        assert!(!pids.contains(&pid));
+    }
+
+    #[test]
+    fn test_process_guard_zero_pid() {
+        {
+            let _guard = ProcessGuard::new(0);
+            let pids = TRACKED_PIDS.lock().unwrap();
+            assert!(!pids.contains(&0));
+        }
     }
 }
