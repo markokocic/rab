@@ -41,7 +41,7 @@ struct BashTool {
 
 const DEFAULT_MAX_LINES: usize = 2000;
 const DEFAULT_MAX_BYTES: usize = 50 * 1024; // 50KB
-const DEFAULT_TIMEOUT_SECS: u64 = 300; // 5 minutes default timeout for all commands
+const BASH_TEMP_FILE_PREFIX: &str = "pi-bash";
 
 // ── Helpers ──────────────────────────────────────────────────────
 
@@ -79,6 +79,7 @@ fn spawn_bash_command(
         }
         let mut tokio_cmd = tokio::process::Command::from(std_cmd);
         tokio_cmd
+            .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .spawn()
@@ -89,104 +90,49 @@ fn spawn_bash_command(
             .arg("-c")
             .arg(command)
             .current_dir(cwd)
+            .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .spawn()
     }
 }
 
-/// Format the final bash execution result, matching pi's bash tool output format.
-///
-/// Pi's bash tool (LLM-called) returns raw output, not the `bashExecutionToText` format.
-/// - Non-empty output → raw output (no Ran prefix, no backtick fences)
-/// - Empty output → "(no output)"
-/// - Truncated → raw output + `\n\n[Showing lines X-Y of Z... Full output: path]`
-/// - Non-zero exit → returned as Err with output + `\n\nCommand exited with code N`
-/// - Cancelled → returned as Err with output + `\n\nCommand aborted`
-fn finish_bash_execution(
-    _command: &str,
-    combined: &str,
-    exit_code: i32,
-    cancelled: bool,
-    _started_at: Instant,
-    on_update: Option<UnboundedSender<ToolOutput>>,
-) -> Result<ToolOutput, anyhow::Error> {
-    // Apply tail truncation (pi-style: keep last N lines/bytes)
-    let trunc = truncate_tail(combined, DEFAULT_MAX_LINES, DEFAULT_MAX_BYTES);
-
-    // Build output text: raw output or (no output)
-    let mut result_text = if trunc.content.is_empty() {
-        "(no output)".to_string()
-    } else {
-        trunc.content.clone()
-    };
-
-    // Truncation notice (matching pi: appended to text, not in details)
-    if trunc.truncated {
-        let tmp_dir = std::env::temp_dir().join("rab-bash");
-        let _ = std::fs::create_dir_all(&tmp_dir);
-        let tmp_path = tmp_dir.join(format!("{}.txt", uuid::Uuid::new_v4()));
-        let saved = if std::fs::write(&tmp_path, combined).is_ok() {
-            Some(tmp_path)
-        } else {
-            None
-        };
-
-        let start_line = trunc.total_lines - trunc.output_lines + 1;
-        let end_line = trunc.total_lines;
-
-        let notice = if trunc.truncated_by == "lines" {
-            format!(
-                "\n\n[Showing lines {}-{} of {}. Full output: {}]",
-                start_line,
-                end_line,
-                trunc.total_lines,
-                saved
-                    .as_ref()
-                    .map(|p| p.display().to_string())
-                    .unwrap_or_default()
-            )
-        } else {
-            format!(
-                "\n\n[Showing lines {}-{} of {} ({} limit). Full output: {}]",
-                start_line,
-                end_line,
-                trunc.total_lines,
-                format_size(DEFAULT_MAX_BYTES),
-                saved
-                    .as_ref()
-                    .map(|p| p.display().to_string())
-                    .unwrap_or_default()
-            )
-        };
-        result_text.push_str(&notice);
+/// Sanitize binary output for display/storage (matching pi's sanitizeBinaryOutput + stripAnsi).
+/// Removes:
+/// - ANSI escape sequences
+/// - Control characters (except tab, newline, carriage return)
+/// - Unicode format characters
+fn sanitize_output(text: &str) -> String {
+    let mut result = String::with_capacity(text.len());
+    let mut in_escape = false;
+    for c in text.chars() {
+        if in_escape {
+            if c == '\x1b' || c == '\u{9b}' {
+                // nested escape
+                continue;
+            }
+            // ANSI escape ends at ASCII letter or '~'
+            if c.is_ascii_alphabetic() || c == '~' {
+                in_escape = false;
+            }
+            continue;
+        }
+        if c == '\x1b' || c == '\u{9b}' {
+            in_escape = true;
+            continue;
+        }
+        // Filter control characters except \t (0x09), \n (0x0a), \r (0x0d)
+        let code = c as u32;
+        if code <= 0x1f && code != 0x09 && code != 0x0a && code != 0x0d {
+            continue;
+        }
+        // Filter Unicode format characters
+        if (0xfff9..=0xfffb).contains(&code) {
+            continue;
+        }
+        result.push(c);
     }
-
-    // Send final update (before error conversion, so UI shows the output)
-    if let Some(ref tx) = on_update {
-        let _ = tx.send(ToolOutput::ok(result_text.clone()));
-    }
-
-    // Error cases: return as Err with output + status (matching pi)
-    if cancelled {
-        let err_msg = if result_text.is_empty() || result_text == "(no output)" {
-            "Command aborted".to_string()
-        } else {
-            format!("{}\n\nCommand aborted", result_text)
-        };
-        return Err(anyhow::anyhow!("{}", err_msg));
-    }
-
-    if exit_code != 0 {
-        let err_msg = if result_text.is_empty() || result_text == "(no output)" {
-            format!("Command exited with code {}", exit_code)
-        } else {
-            format!("{}\n\nCommand exited with code {}", result_text, exit_code)
-        };
-        return Err(anyhow::anyhow!("{}", err_msg));
-    }
-
-    Ok(ToolOutput::ok(result_text))
+    result
 }
 
 /// Format bytes as a human-readable size string, matching pi's format.
@@ -288,6 +234,110 @@ fn truncate_tail(content: &str, max_lines: usize, max_bytes: usize) -> TailTrunc
     }
 }
 
+/// Format the final bash execution result, matching pi's bash tool output format.
+///
+/// Pi's bash tool (LLM-called) returns raw output, not the `bashExecutionToText` format.
+/// - Non-empty output → raw output (no Ran prefix, no backtick fences)
+/// - Empty output → "(no output)"
+/// - Truncated → raw output + `\n\n[Showing lines X-Y of Z... Full output: path]`
+/// - Non-zero exit → returned as Err with output + `\n\nCommand exited with code N`
+/// - Cancelled → returned as Err with output + `\n\nCommand aborted`
+/// - Timed out → returned as Err with output + `\n\nCommand timed out after N seconds`
+fn finish_bash_execution(
+    combined: &str,
+    exit_code: i32,
+    cancelled: bool,
+    timed_out: Option<u64>,
+    on_update: Option<UnboundedSender<ToolOutput>>,
+) -> Result<ToolOutput, anyhow::Error> {
+    // Apply tail truncation (pi-style: keep last N lines/bytes)
+    let trunc = truncate_tail(combined, DEFAULT_MAX_LINES, DEFAULT_MAX_BYTES);
+
+    // Build output text: raw output or (no output)
+    let mut result_text = if trunc.content.is_empty() {
+        "(no output)".to_string()
+    } else {
+        trunc.content.clone()
+    };
+
+    // Truncation notice (matching pi: appended to text, not in details)
+    if trunc.truncated {
+        let tmp_dir = std::env::temp_dir().join(BASH_TEMP_FILE_PREFIX);
+        let _ = std::fs::create_dir_all(&tmp_dir);
+        let tmp_path = tmp_dir.join(format!("{}.log", uuid::Uuid::new_v4()));
+        let saved = if std::fs::write(&tmp_path, combined).is_ok() {
+            Some(tmp_path)
+        } else {
+            None
+        };
+
+        let start_line = trunc.total_lines - trunc.output_lines + 1;
+        let end_line = trunc.total_lines;
+
+        let notice = if trunc.truncated_by == "lines" {
+            format!(
+                "\n\n[Showing lines {}-{} of {}. Full output: {}]",
+                start_line,
+                end_line,
+                trunc.total_lines,
+                saved
+                    .as_ref()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_default()
+            )
+        } else {
+            format!(
+                "\n\n[Showing lines {}-{} of {} ({} limit). Full output: {}]",
+                start_line,
+                end_line,
+                trunc.total_lines,
+                format_size(DEFAULT_MAX_BYTES),
+                saved
+                    .as_ref()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_default()
+            )
+        };
+        result_text.push_str(&notice);
+    }
+
+    // Build the final output with error status appended (matching pi)
+    let final_output = if cancelled {
+        if result_text.is_empty() || result_text == "(no output)" {
+            "Command aborted".to_string()
+        } else {
+            format!("{}\n\nCommand aborted", result_text)
+        }
+    } else if let Some(secs) = timed_out {
+        if result_text.is_empty() || result_text == "(no output)" {
+            format!("Command timed out after {} seconds", secs)
+        } else {
+            format!(
+                "{}\n\nCommand timed out after {} seconds",
+                result_text, secs
+            )
+        }
+    } else if exit_code != 0 {
+        if result_text.is_empty() || result_text == "(no output)" {
+            format!("Command exited with code {}", exit_code)
+        } else {
+            format!("{}\n\nCommand exited with code {}", result_text, exit_code)
+        }
+    } else {
+        // Success
+        if let Some(ref tx) = on_update {
+            let _ = tx.send(ToolOutput::ok(result_text.clone()));
+        }
+        return Ok(ToolOutput::ok(result_text));
+    };
+
+    if let Some(ref tx) = on_update {
+        let _ = tx.send(ToolOutput::ok(final_output.clone()));
+    }
+
+    Err(anyhow::anyhow!("{}", final_output))
+}
+
 // ── AgentTool implementation ─────────────────────────────────────
 
 #[async_trait]
@@ -334,7 +384,7 @@ impl AgentTool for BashTool {
         let command = args["command"]
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("Missing 'command' argument"))?;
-        let timeout = args["timeout"].as_u64().or(Some(DEFAULT_TIMEOUT_SECS));
+        let timeout = args["timeout"].as_u64(); // no default timeout (matches schema)
         let started_at = Instant::now();
 
         cancel.check()?;
@@ -349,7 +399,7 @@ impl AgentTool for BashTool {
         let combined = Arc::new(TokioMutex::new(String::new()));
         let combined_clone = combined.clone();
 
-        // Read stdout in a background task
+        // Read stdout/stderr in a background task using tokio::select!
         let stdout_pipe = child
             .stdout
             .take()
@@ -361,8 +411,8 @@ impl AgentTool for BashTool {
 
         use tokio::io::AsyncReadExt;
         let read_task = tokio::spawn(async move {
-            let mut stdout_buf = vec![0u8; 4096];
-            let mut stderr_buf = vec![0u8; 4096];
+            let mut stdout_buf = vec![0u8; 65536];
+            let mut stderr_buf = vec![0u8; 65536];
             let mut stdout_reader = stdout_pipe;
             let mut stderr_reader = stderr_pipe;
             let mut stdout_done = false;
@@ -373,8 +423,10 @@ impl AgentTool for BashTool {
                         match result {
                             Ok(0) => stdout_done = true,
                             Ok(n) => {
+                                let text = String::from_utf8_lossy(&stdout_buf[..n]);
+                                let sanitized = sanitize_output(&text);
                                 let mut out = combined_clone.lock().await;
-                                out.push_str(&String::from_utf8_lossy(&stdout_buf[..n]));
+                                out.push_str(&sanitized);
                             }
                             Err(_) => stdout_done = true,
                         }
@@ -383,8 +435,10 @@ impl AgentTool for BashTool {
                         match result {
                             Ok(0) => stderr_done = true,
                             Ok(n) => {
+                                let text = String::from_utf8_lossy(&stderr_buf[..n]);
+                                let sanitized = sanitize_output(&text);
                                 let mut out = combined_clone.lock().await;
-                                out.push_str(&String::from_utf8_lossy(&stderr_buf[..n]));
+                                out.push_str(&sanitized);
                             }
                             Err(_) => stderr_done = true,
                         }
@@ -407,14 +461,25 @@ impl AgentTool for BashTool {
             kill_process_group(pid);
         });
 
+        // Send initial empty update (matching pi's onUpdate({ content: [], details: undefined }))
+        if let Some(ref tx) = on_update {
+            let _ = tx.send(ToolOutput::ok(String::new()));
+        }
+
         // Wait for the process to exit, with optional timeout and streaming updates
         let timeout_dur = timeout.map(std::time::Duration::from_secs);
+        let throttle_ms = 100u64;
+        let mut last_update_at = Instant::now();
+
+        let exit_code: i32;
+
         loop {
             // Check cancellation
             if cancelled.load(Ordering::SeqCst) {
                 kill_process_group(pid);
                 read_task.abort();
-                return Err(anyhow::anyhow!("Command aborted"));
+                let combined_str = combined.lock().await.clone();
+                return finish_bash_execution(&combined_str, -1, true, None, on_update);
             }
 
             // Check timeout
@@ -423,23 +488,18 @@ impl AgentTool for BashTool {
             {
                 kill_process_group(pid);
                 read_task.abort();
-                return Err(anyhow::anyhow!(
-                    "Command timed out after {} seconds",
-                    timeout.unwrap_or(0)
-                ));
+                let combined_str = combined.lock().await.clone();
+                return finish_bash_execution(&combined_str, -1, false, timeout, on_update);
             }
 
-            // Send streaming update (1s tick interval, matching pi)
-            if let Some(ref tx) = on_update {
-                let out = combined.lock().await;
+            // Send streaming update (throttled to ~100ms, matching pi)
+            if let Some(ref tx) = on_update
+                && last_update_at.elapsed().as_millis() as u64 >= throttle_ms
+            {
+                let out = combined.lock().await.clone();
                 if !out.is_empty() {
-                    let elapsed = started_at.elapsed();
-                    let display = format!(
-                        "{}\n\n[Elapsed {:.1}s]",
-                        out.trim_end(),
-                        elapsed.as_secs_f64()
-                    );
-                    let _ = tx.send(ToolOutput::ok(display));
+                    last_update_at = Instant::now();
+                    let _ = tx.send(ToolOutput::ok(out));
                 }
             }
 
@@ -447,47 +507,35 @@ impl AgentTool for BashTool {
             match child.try_wait() {
                 Ok(Some(status)) => {
                     read_task.await.ok();
-                    let combined_str = combined.lock().await.clone();
-                    let exit_code = status.code().unwrap_or(-1);
-
-                    return finish_bash_execution(
-                        command,
-                        &combined_str,
-                        exit_code,
-                        false,
-                        started_at,
-                        on_update,
-                    );
+                    exit_code = status.code().unwrap_or(-1);
+                    break;
                 }
                 Ok(None) => {
-                    // Still running, poll again soon (1s tick, matching pi)
-                    tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+                    tokio::time::sleep(std::time::Duration::from_millis(throttle_ms)).await;
                 }
                 Err(_) => {
                     read_task.await.ok();
-                    let combined_str = combined.lock().await.clone();
-                    let exit_code = -1;
-                    return finish_bash_execution(
-                        command,
-                        &combined_str,
-                        exit_code,
-                        false,
-                        started_at,
-                        on_update,
-                    );
+                    exit_code = -1;
+                    break;
                 }
             }
         }
+
+        // Final flush: send any remaining output
+        let combined_str = combined.lock().await.clone();
+        if let Some(ref tx) = on_update
+            && !combined_str.is_empty()
+        {
+            let _ = tx.send(ToolOutput::ok(combined_str.clone()));
+        }
+
+        finish_bash_execution(&combined_str, exit_code, false, None, on_update)
     }
 }
 
-/// Tool renderer for the `bash` tool.
-/// Formats call headers with `$ command` and result with tail-based preview.
-/// Tool renderer for the `bash` tool.
-/// Formats call headers with `$ command` and result with tail-based preview.
-struct BashRenderer;
+// ── Bash tool renderer ───────────────────────────────────────────
 
-// ── Visual-line-aware truncation (delegated to shared module) ────
+struct BashRenderer;
 
 impl ToolRenderer for BashRenderer {
     fn render_call(
@@ -523,12 +571,9 @@ impl ToolRenderer for BashRenderer {
         let mut lines: Vec<String> = Vec::new();
 
         // Strip truncation footer and trim trailing whitespace/newlines
-        // (matching pi's output.trim() in rebuildBashResultRenderComponent)
         let clean = strip_context_truncation_footer(content)
             .trim_end()
             .to_string();
-        // Use lines() instead of split('\n') to avoid trailing empty string
-        // from final newline (split would produce ["a", "b", ""] vs lines() ["a", "b"])
         let all_lines: Vec<&str> = clean.lines().collect();
 
         if all_lines.is_empty() || (all_lines.len() == 1 && all_lines[0].is_empty()) {
@@ -579,11 +624,6 @@ impl ToolRenderer for BashRenderer {
             let label = if is_complete { "Took" } else { "Elapsed" };
             lines.push(theme.fg_key(ThemeKey::Muted, &format!("{} {:.1}s", label, secs)));
         }
-
-        // Pi does not add separate exit code or cancelled status lines because
-        // the tool result content already includes "Command exited with code N" or
-        // "Command aborted" from the tool error response. The content is rendered
-        // as-is above, preserving the status at the end where truncation keeps it.
 
         // Truncation warnings (with blank line separator, matching pi)
         if ctx.was_truncated {
@@ -733,7 +773,6 @@ mod tests {
 
     #[test]
     fn test_truncate_tail_partial_last_line() {
-        // A single line that exceeds the byte limit
         let content = format!("short\n{}\n", "x".repeat(60000));
         let result = truncate_tail(&content, 2000, 50000);
         assert!(result.truncated);
@@ -747,8 +786,6 @@ mod tests {
         assert!(!result.truncated);
         assert_eq!(result.content, "");
     }
-
-    // ── Exit code integration tests ──────────────────────────────
 
     #[tokio::test]
     async fn exit_code_nonzero() {
@@ -851,7 +888,6 @@ mod tests {
     #[tokio::test]
     async fn timeout_with_partial_output() {
         let tool = make_tool();
-        // Command that produces some output then hangs
         let result = tool
             .execute(
                 "id".into(),
@@ -860,8 +896,6 @@ mod tests {
                 None,
             )
             .await;
-        // May timeout before process is killed, which is fine
-        // The key is it doesn't hang forever
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("timed out"), "got: {}", err);
@@ -883,7 +917,6 @@ mod tests {
             .await
         });
 
-        // Give it a moment to start
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         cancel.cancel();
 
@@ -897,11 +930,8 @@ mod tests {
         );
     }
 
-    // ── Truncation boundary tests ────────────────────────────────
-
     #[test]
     fn test_truncate_tail_exact_line_fit() {
-        // Content exactly at the line limit - no truncation
         let lines: String = (1..=2000).map(|i| format!("line {}\n", i)).collect();
         let result = truncate_tail(&lines, 2000, 50000);
         assert!(
@@ -917,13 +947,11 @@ mod tests {
         let result = truncate_tail(&lines, 2000, 50000);
         assert!(result.truncated);
         assert_eq!(result.content.lines().count(), 2000);
-        // Should keep last 2000 lines
         assert!(result.content.starts_with("line 2"));
     }
 
     #[test]
     fn test_truncate_tail_exact_byte_fit() {
-        // Content exactly at byte limit - no truncation
         let line = "a".repeat(50000);
         let result = truncate_tail(&line, 2000, 50000);
         assert!(!result.truncated);
@@ -931,7 +959,6 @@ mod tests {
 
     #[test]
     fn test_truncate_tail_one_byte_over() {
-        // Content one byte over the limit
         let line = "a".repeat(50001);
         let result = truncate_tail(&line, 2000, 50000);
         assert!(result.truncated);
@@ -965,21 +992,17 @@ mod tests {
         let result = truncate_tail(&content, 2000, 50000);
         assert!(result.truncated);
         assert!(result.last_line_partial);
-        // Should keep the last 50000 bytes of the line
         assert_eq!(result.content.len(), 50000);
         assert!(result.content.ends_with("x".repeat(50000).as_str()));
     }
 
     #[test]
     fn test_truncate_tail_byte_count_respects_newlines() {
-        // Each line is 1000 bytes, 50 lines = 50KB, plus 49 newlines = ~49 bytes extra
-        // At 2000 line limit, byte limit should be hit first
         let content: String = (1..=100)
             .map(|i| format!("line {} {}\n", i, "x".repeat(1000)))
             .collect();
         let result = truncate_tail(&content, 2000, 50000);
         assert!(result.truncated);
-        // Output bytes should be at most 50000 (byte limit)
         assert!(
             result.output_bytes <= 50000,
             "output_bytes {} exceeds limit 50000",
@@ -987,12 +1010,9 @@ mod tests {
         );
     }
 
-    // ── Truncation footer tests ─────────────────────────────────
-
     #[tokio::test]
     async fn truncated_by_lines_shows_footer() {
         let tool = make_tool();
-        // Generate 3000 lines of output (exceeds 2000 line limit)
         let cmd = "for i in $(seq 1 3000); do echo \"line $i\"; done";
         let output = tool
             .execute(
@@ -1027,7 +1047,6 @@ mod tests {
             )
             .await
             .unwrap();
-        // Small output should not have footer markers
         assert!(
             !output.content.contains("Output truncated"),
             "got: {}",
@@ -1043,7 +1062,6 @@ mod tests {
     #[tokio::test]
     async fn truncated_saves_temp_file() {
         let tool = make_tool();
-        // Generate enough output to exceed line limit
         let cmd = "for i in $(seq 1 3000); do echo \"line $i\"; done";
         let output = tool
             .execute(
@@ -1054,25 +1072,21 @@ mod tests {
             )
             .await
             .unwrap();
-        // Should mention a temp file path
+        // Should mention a temp file path with /pi-bash/ prefix
         assert!(
-            output.content.contains("/rab-bash/"),
-            "expected temp file path, got: {}",
+            output.content.contains("/pi-bash/"),
+            "expected temp file path with /pi-bash/, got: {}",
             output.content
         );
     }
 
-    // ── Truncate tail: many short lines ──────────────────────────
-
     #[test]
     fn test_truncate_tail_many_short_lines() {
-        // 10000 very short lines, well under byte limit
         let content: String = (1..=10000).map(|i| format!("{}\n", i)).collect();
         let result = truncate_tail(&content, 2000, 50000);
         assert!(result.truncated);
         assert_eq!(result.truncated_by, "lines");
         assert_eq!(result.output_lines, 2000);
-        // Should keep the last 2000 lines
         assert!(
             result.content.starts_with("8001"),
             "starts with: {:?}",
@@ -1082,14 +1096,11 @@ mod tests {
 
     #[test]
     fn test_truncate_tail_lines_and_bytes_both_exceeded() {
-        // Both limits exceeded - byte limit should win (more restrictive)
         let content: String = (1..=5000)
             .map(|i| format!("line {} {}\n", i, "x".repeat(100)))
             .collect();
         let result = truncate_tail(&content, 2000, 30000);
         assert!(result.truncated);
-        // With 100-byte lines, 300 lines would be ~30KB + newlines
-        // So byte limit should be hit before line limit
         assert_eq!(result.truncated_by, "bytes");
         assert!(result.output_lines < 2000);
     }
