@@ -304,47 +304,67 @@ impl App {
 
         // Populate chat_container with initial messages (startup info + history).
         // Add spacers between messages matching pi's addMessageToChat behavior.
+        // Adjacent ToolCall + ToolResult pairs are merged into a single
+        // ToolExecComponent so reloaded sessions look identical to live execution.
+        let cwd_string_for_pairs = config.cwd.to_string_lossy().to_string();
         let chat_container =
             std::rc::Rc::new(std::cell::RefCell::new(crate::tui::Container::new()));
         {
+            fn pair_to_tool_component(
+                name: &str,
+                args_str: &str,
+                output: &str,
+                is_error: bool,
+                cwd: &str,
+            ) -> Option<std::boxed::Box<dyn Component>> {
+                let args: serde_json::Value = serde_json::from_str(args_str).ok()?;
+                let mut comp = crate::agent::ui::components::ToolExecComponent::new(
+                    name,
+                    None, // no renderer needed — render_generic handles bash
+                    args,
+                    cwd.to_string(),
+                );
+                comp.set_bash(name == "bash");
+                let clean = output
+                    .strip_prefix("✓ ")
+                    .or_else(|| output.strip_prefix("✗ "))
+                    .unwrap_or(output);
+                comp.set_result_with_details(clean, is_error, None);
+                Some(std::boxed::Box::new(comp))
+            }
+
             let mut chat = chat_container.borrow_mut();
             let mut i = 0;
             while i < messages.len() {
-                // Pair adjacent ToolCall + ToolResult into a combined component
-                // (mirrors how ToolExecComponent combines them during live execution)
-                let paired = match (&messages[i], messages.get(i + 1)) {
-                    (
-                        DisplayMsg::ToolCall { name, args },
-                        Some(DisplayMsg::ToolResult {
-                            content, is_error, ..
-                        }),
-                    ) if name == "bash"
-                        && let Ok(val) = serde_json::from_str::<serde_json::Value>(args)
-                        && let Some(cmd) = val.get("command").and_then(|v| v.as_str()) =>
-                    {
-                        let mut bash =
-                            crate::agent::ui::components::BashExecution::new(cmd.to_string());
-                        let clean = content
-                            .strip_prefix("✓ ")
-                            .or_else(|| content.strip_prefix("✗ "))
-                            .unwrap_or(content);
-                        bash.append_chunk(clean);
-                        bash.set_complete(if *is_error { 1 } else { 0 });
+                // Adjacent ToolCall + ToolResult → single combined component
+                if i + 1 < messages.len() {
+                    let paired = match (&messages[i], &messages[i + 1]) {
+                        (
+                            DisplayMsg::ToolCall { name, args },
+                            DisplayMsg::ToolResult {
+                                content, is_error, ..
+                            },
+                        ) => pair_to_tool_component(
+                            name,
+                            args,
+                            content,
+                            *is_error,
+                            &cwd_string_for_pairs,
+                        ),
+                        _ => None,
+                    };
+                    if let Some(component) = paired {
                         if !chat.children().is_empty() {
                             chat.add_child(std::boxed::Box::new(
                                 crate::tui::components::Spacer::new(1),
                             ));
                         }
-                        chat.add_child(std::boxed::Box::new(bash));
-                        true
+                        chat.add_child(component);
+                        i += 2;
+                        continue;
                     }
-                    _ => false,
-                };
-                if paired {
-                    i += 2;
-                    continue;
                 }
-                // Default: single message component
+                // Single message component
                 if let Some(component) =
                     crate::agent::ui::components::display_msg_to_component(&messages[i])
                 {
