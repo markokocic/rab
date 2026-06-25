@@ -424,10 +424,21 @@ async fn main() -> anyhow::Result<()> {
         include_defaults: true,
     });
 
-    let thinking_level = settings.default_thinking_level.as_deref().or(Some("xhigh"));
+    // Determine initial thinking level: prefer session's recorded level, fall back to settings.
+    // Pi-compatible: if the session has thinking level change entries, use the resolved level
+    // from the current path. Otherwise fall back to settings default.
+    let has_thinking_entries = !session
+        .find_entries_by_type("thinking_level_change")
+        .is_empty();
+    let thinking_level = if has_thinking_entries {
+        Some(context.thinking_level.clone())
+    } else {
+        settings.default_thinking_level.clone()
+    };
+    let thinking_level_str = thinking_level.as_deref().or(Some("xhigh"));
 
     if message_parts.is_empty() {
-        let provider = adapter::GenaiProvider::new(&auth, thinking_level)?;
+        let provider = adapter::GenaiProvider::new(&auth, thinking_level_str)?;
         let git_branch = get_git_branch(&cwd);
         let config = ui::AppConfig {
             model,
@@ -437,7 +448,7 @@ async fn main() -> anyhow::Result<()> {
             extensions,
             provider: Box::new(provider),
             cwd,
-            thinking_level: thinking_level.map(|s| s.to_string()),
+            thinking_level: thinking_level_str.map(|s| s.to_string()),
             git_branch,
             available_models,
             hide_thinking: settings.hide_thinking.unwrap_or(true),
@@ -453,7 +464,7 @@ async fn main() -> anyhow::Result<()> {
         ui::run(config, session).await
     } else {
         let message = message_parts.join(" ");
-        let provider = adapter::GenaiProvider::new(&auth, thinking_level)?;
+        let provider = adapter::GenaiProvider::new(&auth, thinking_level_str)?;
         let provider_arc: std::sync::Arc<dyn rab::agent::Provider> = std::sync::Arc::new(provider);
         let mut agent_session = rab::agent::AgentSession::new(session);
         agent_session.set_compaction_config(

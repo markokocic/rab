@@ -379,6 +379,14 @@ impl App {
             }
         }
 
+        // Apply hide_thinking setting to all initial chat components (pi-compatible)
+        if config.hide_thinking {
+            let mut chat = chat_container.borrow_mut();
+            for child in chat.children_mut().iter_mut() {
+                child.set_hide_thinking(true);
+            }
+        }
+
         let result = Self {
             cwd: config.cwd,
             model: config.model,
@@ -980,6 +988,10 @@ fn handle_thinking_cycle(app: &mut App) {
     if let Err(e) = app.settings.save() {
         app.status_text = Some(format!("Failed to save thinking level: {}", e));
     }
+    // Record the change in the session (pi-compatible)
+    if let Some(ref mut agent_session) = app.session {
+        agent_session.on_thinking_level_change(next);
+    }
     // Update provider's reasoning effort so API calls use the new level
     // (even if save failed, the current session should use the new level)
     app.provider.set_reasoning_effort(Some(next));
@@ -1551,15 +1563,44 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
             app.pending_command_result = Some(result);
         }
         CommandResult::Reloaded => {
-            chat_add(
-                app,
-                std::boxed::Box::new(InfoMessageComponent::new(
+            // Actually reload settings from disk (pi-compatible)
+            if let Err(e) = app.settings.reload(&app.cwd) {
+                app.status_text = Some(format!("Failed to reload settings: {}", e));
+            } else {
+                // Apply reloaded settings to runtime state
+                if let Some(level) = app.settings.default_thinking_level.clone() {
+                    app.thinking_level = Some(level.clone());
+                    app.footer
+                        .borrow_mut()
+                        .set_thinking_level(Some(level.clone()));
+                    app.provider.set_reasoning_effort(Some(&level));
+                }
+                app.hide_thinking = app.settings.hide_thinking.unwrap_or(true);
+                // Propagate to all chat container components
+                {
+                    let mut chat = app.chat_container.borrow_mut();
+                    for child in chat.children_mut().iter_mut() {
+                        child.set_hide_thinking(app.hide_thinking);
+                    }
+                }
+                // Update streaming component if it exists
+                if let Some(weak) = app.streaming_component.as_ref().and_then(|w| w.upgrade()) {
+                    weak.borrow_mut().set_hide_thinking(app.hide_thinking);
+                }
+                app.editor.borrow_mut().update_border_color(
+                    app.thinking_level.as_deref(),
+                    &app.theme as &dyn crate::tui::Theme,
+                );
+                chat_add(
+                    app,
+                    std::boxed::Box::new(InfoMessageComponent::new(
+                        "Settings, extensions, and keybindings reloaded.".to_string(),
+                    )),
+                );
+                app.messages.push(DisplayMsg::Info(
                     "Settings, extensions, and keybindings reloaded.".to_string(),
-                )),
-            );
-            app.messages.push(DisplayMsg::Info(
-                "Settings, extensions, and keybindings reloaded.".to_string(),
-            ));
+                ));
+            }
         }
         CommandResult::NewSession => {
             // Matching pi's handleClearCommand:

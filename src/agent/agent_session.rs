@@ -53,10 +53,25 @@ impl AgentSession {
     pub fn new(session: SessionManager) -> Self {
         // Snapshot current metadata from the session context for change detection.
         let ctx = session.build_session_context();
+
+        // If the session has no thinking level change entries, set last_thinking_level
+        // to empty so the first on_thinking_level_change always detects a change.
+        // Pi-compatible: the initial thinking level comes from settings default, not from
+        // the session context default ("off"). An empty sentinel ensures the first user
+        // cycle is always recorded in the session.
+        let has_thinking_entries = !session
+            .find_entries_by_type("thinking_level_change")
+            .is_empty();
+        let last_thinking_level = if has_thinking_entries {
+            ctx.thinking_level
+        } else {
+            String::new()
+        };
+
         Self {
             session,
             last_model: ctx.model,
-            last_thinking_level: ctx.thinking_level,
+            last_thinking_level,
             last_active_tools: ctx.active_tool_names,
             persisted_message_ids: HashSet::new(),
             persisted_tool_call_ids: HashSet::new(),
