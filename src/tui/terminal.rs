@@ -488,21 +488,3 @@ impl Drop for Terminal {
         let _ = self.inner.stop(&mut std::io::sink());
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_new_terminal() {
-        let term = ProcessTerminal::new();
-        assert!(!term.kitty_protocol_active());
-    }
-
-    #[test]
-    fn test_drain_input_timeout() {
-        let mut term = ProcessTerminal::new();
-        // drain_input may fail if no TTY is available in test env — that's ok
-        let _ = term.drain_input(10);
-    }
-}

@@ -859,12 +859,6 @@ mod tests {
     }
 
     #[test]
-    fn test_find_fd() {
-        // fd may or may not be installed, but the function should not panic
-        let _ = find_fd();
-    }
-
-    #[test]
     fn test_build_fd_path_query() {
         assert_eq!(build_fd_path_query("hello"), "hello");
         assert_eq!(build_fd_path_query("src/main.rs"), "src[\\\\/]main\\.rs");

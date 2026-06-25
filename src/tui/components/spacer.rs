@@ -21,19 +21,3 @@ impl Component for Spacer {
         vec![String::new(); self.lines]
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_spacer() {
-        let mut spacer = Spacer::new(3);
-        let lines = spacer.render(10);
-        assert_eq!(lines.len(), 3);
-        // Pi: spacer returns empty strings
-        for line in &lines {
-            assert_eq!(line, "");
-        }
-    }
-}

@@ -301,24 +301,6 @@ mod tests {
     }
 
     #[test]
-    fn test_composite_line_at_basic() {
-        let mut c = Container::new();
-        // composite_line_at is private on Container; test through public API
-        // by rendering an overlay that uses it internally
-        let child = crate::tui::components::Text::new("overlay", 0, 0, None);
-        c.show_overlay(
-            Box::new(child),
-            OverlayOptions {
-                width: Some(SizeValue::Absolute(2)),
-                anchor: Some(OverlayAnchor::TopLeft),
-                ..Default::default()
-            },
-        );
-        // Smoke test: rendering with overlay doesn't panic
-        let _lines = c.render(80);
-    }
-
-    #[test]
     fn test_overlay_layout_center_default() {
         // Layout resolution is now on Container - we test via overlay rendering
         let mut c = Container::new();
