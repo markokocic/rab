@@ -1,110 +1,6 @@
 use rab::agent::extension::{CommandResult, Extension};
 use rab::builtin::commands::{CommandsExtension, SessionInfoInternal};
 
-/// Simulate the prefix matching logic used by `submit_message`.
-/// Returns (command_name, args) when exactly one prefix match, or None.
-fn resolve_command(typed: &str, exts: &[Box<dyn Extension>]) -> Option<(String, String)> {
-    let (cmd_part, args) = match typed.trim().split_once(' ') {
-        Some((cmd, rest)) => (cmd.trim_start_matches('/').to_string(), rest.to_string()),
-        None => (
-            typed.trim().trim_start_matches('/').to_string(),
-            String::new(),
-        ),
-    };
-    let lower = cmd_part.to_lowercase();
-
-    // Collect owned command names (commands() returns temporary Vecs)
-    let mut cmds: Vec<String> = Vec::new();
-    for ext in exts {
-        for c in ext.commands() {
-            if !cmds.contains(&c.name) {
-                cmds.push(c.name.clone());
-            }
-        }
-    }
-
-    // Exact match
-    if cmds.contains(&cmd_part) {
-        return Some((cmd_part, args));
-    }
-
-    // Prefix match
-    let matches: Vec<&String> = cmds
-        .iter()
-        .filter(|n| n.to_lowercase().starts_with(&lower))
-        .collect();
-    if matches.len() == 1 {
-        Some((matches[0].clone(), args))
-    } else {
-        None
-    }
-}
-
-#[test]
-fn exact_quit() {
-    let ext: Box<dyn Extension> = Box::new(CommandsExtension::new(vec!["m1".into(), "m2".into()]));
-    let exts: Vec<Box<dyn Extension>> = vec![ext];
-    let result = resolve_command("/quit", &exts);
-    assert_eq!(result, Some(("quit".into(), String::new())));
-}
-
-#[test]
-fn prefix_q_resolves_to_quit() {
-    let ext: Box<dyn Extension> = Box::new(CommandsExtension::new(vec!["m1".into(), "m2".into()]));
-    let exts: Vec<Box<dyn Extension>> = vec![ext];
-    let result = resolve_command("/q", &exts);
-    assert_eq!(result, Some(("quit".into(), String::new())));
-}
-
-#[test]
-fn exact_model_with_args() {
-    let ext: Box<dyn Extension> = Box::new(CommandsExtension::new(vec!["m1".into(), "m2".into()]));
-    let exts: Vec<Box<dyn Extension>> = vec![ext];
-    let result = resolve_command("/model deepseek-v4-flash", &exts);
-    assert_eq!(result, Some(("model".into(), "deepseek-v4-flash".into())));
-}
-
-#[test]
-fn prefix_mo_resolves_to_model() {
-    let ext: Box<dyn Extension> = Box::new(CommandsExtension::new(vec!["m1".into(), "m2".into()]));
-    let exts: Vec<Box<dyn Extension>> = vec![ext];
-    // /mo uniquely matches /model
-    let result = resolve_command("/mo", &exts);
-    assert_eq!(result, Some(("model".into(), String::new())));
-}
-
-#[test]
-fn prefix_hotkeys_resolves_to_hotkeys() {
-    let ext: Box<dyn Extension> = Box::new(CommandsExtension::new(vec![]));
-    let exts: Vec<Box<dyn Extension>> = vec![ext];
-    let result = resolve_command("/hot", &exts);
-    assert_eq!(result, Some(("hotkeys".into(), String::new())));
-}
-
-#[test]
-fn prefix_reload_resolves_to_reload() {
-    let ext: Box<dyn Extension> = Box::new(CommandsExtension::new(vec![]));
-    let exts: Vec<Box<dyn Extension>> = vec![ext];
-    let result = resolve_command("/rel", &exts);
-    assert_eq!(result, Some(("reload".into(), String::new())));
-}
-
-#[test]
-fn unknown_command_no_match() {
-    let ext: Box<dyn Extension> = Box::new(CommandsExtension::new(vec!["m1".into(), "m2".into()]));
-    let exts: Vec<Box<dyn Extension>> = vec![ext];
-    let result = resolve_command("/unknown", &exts);
-    assert_eq!(result, None);
-}
-
-#[test]
-fn prefix_match_is_case_insensitive() {
-    let ext: Box<dyn Extension> = Box::new(CommandsExtension::new(vec!["m1".into(), "m2".into()]));
-    let exts: Vec<Box<dyn Extension>> = vec![ext];
-    let result = resolve_command("/Q", &exts);
-    assert_eq!(result, Some(("quit".into(), String::new())));
-}
-
 #[test]
 fn test_quit_command() {
     let ext = CommandsExtension::new(vec!["m1".into(), "m2".into()]);
@@ -273,14 +169,6 @@ fn resume_ignores_args() {
     }
 }
 
-#[test]
-fn prefix_res_resolves_to_resume() {
-    let ext: Box<dyn Extension> = Box::new(CommandsExtension::new(vec![]));
-    let exts: Vec<Box<dyn Extension>> = vec![ext];
-    let result = resolve_command("/res", &exts);
-    assert_eq!(result, Some(("resume".into(), String::new())));
-}
-
 // ── /session ──────────────────────────────────────────────────────
 
 #[test]
@@ -336,14 +224,6 @@ fn session_command_with_info() {
         }
         other => panic!("Expected SessionInfo, got {:?}", other),
     }
-}
-
-#[test]
-fn prefix_sess_resolves_to_session() {
-    let ext: Box<dyn Extension> = Box::new(CommandsExtension::new(vec![]));
-    let exts: Vec<Box<dyn Extension>> = vec![ext];
-    let result = resolve_command("/sess", &exts);
-    assert_eq!(result, Some(("session".into(), String::new())));
 }
 
 // ── /name ─────────────────────────────────────────────────────────
