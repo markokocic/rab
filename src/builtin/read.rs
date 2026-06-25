@@ -104,12 +104,18 @@ fn get_compact_read_classification(path: &str, cwd: &Path) -> Option<(CompactRea
 // ── Truncation ──────────────────────────────────────────────────
 
 /// Truncation result, mirroring pi's `TruncationResult`.
+#[allow(dead_code)]
 struct TruncationResult {
     content: String,
     truncated: bool,
-    truncated_by: &'static str, // "lines" | "bytes"
+    truncated_by: Option<&'static str>, // None | "lines" | "bytes"
     output_lines: usize,
+    output_bytes: usize,
+    total_lines: usize,
+    total_bytes: usize,
     first_line_exceeds_limit: bool,
+    max_lines: usize,
+    max_bytes: usize,
 }
 
 /// Truncate content from the head, keeping complete lines that fit within limits.
@@ -125,9 +131,14 @@ fn truncate_head(content: &str, max_lines: usize, max_bytes: usize) -> Truncatio
         return TruncationResult {
             content: content.to_string(),
             truncated: false,
-            truncated_by: "",
+            truncated_by: None,
             output_lines: total_lines,
+            output_bytes: total_bytes,
+            total_lines,
+            total_bytes,
             first_line_exceeds_limit: false,
+            max_lines,
+            max_bytes,
         };
     }
 
@@ -138,9 +149,14 @@ fn truncate_head(content: &str, max_lines: usize, max_bytes: usize) -> Truncatio
         return TruncationResult {
             content: String::new(),
             truncated: true,
-            truncated_by: "bytes",
+            truncated_by: Some("bytes"),
             output_lines: 0,
+            output_bytes: 0,
+            total_lines,
+            total_bytes,
             first_line_exceeds_limit: true,
+            max_lines,
+            max_bytes,
         };
     }
 
@@ -173,9 +189,14 @@ fn truncate_head(content: &str, max_lines: usize, max_bytes: usize) -> Truncatio
     TruncationResult {
         content: output.join("\n"),
         truncated: true,
-        truncated_by,
+        truncated_by: Some(truncated_by),
         output_lines: output.len(),
+        output_bytes: byte_count,
+        total_lines,
+        total_bytes,
         first_line_exceeds_limit: false,
+        max_lines,
+        max_bytes,
     }
 }
 
@@ -307,17 +328,45 @@ impl AgentTool for ReadTool {
                 path,
                 DEFAULT_MAX_BYTES,
             );
-            return Ok(ToolOutput::ok(msg));
+            let details = Some(serde_json::json!({
+                "truncation": {
+                    "truncated": true,
+                    "truncatedBy": "bytes",
+                    "totalLines": trunc.total_lines,
+                    "outputLines": 0,
+                    "firstLineExceedsLimit": true,
+                    "maxLines": DEFAULT_MAX_LINES,
+                    "maxBytes": DEFAULT_MAX_BYTES,
+                }
+            }));
+            if let Some(label) = compact {
+                return Ok(ToolOutput {
+                    content: msg,
+                    compact: Some(label),
+                    is_error: false,
+                    terminate: false,
+                    details,
+                });
+            } else {
+                return Ok(ToolOutput {
+                    content: msg,
+                    compact: None,
+                    is_error: false,
+                    terminate: false,
+                    details,
+                });
+            }
         }
 
         let output: String;
+        let mut details: Option<serde_json::Value> = None;
 
         if trunc.truncated {
             let start_display = start_line + 1;
             let end_display = start_display + trunc.output_lines - 1;
             let next_offset = end_display + 1;
 
-            if trunc.truncated_by == "lines" {
+            if trunc.truncated_by == Some("lines") {
                 output = format!(
                     "{}\n\n[Showing lines {}-{} of {}. Use offset={} to continue.]",
                     trunc.content, start_display, end_display, total_file_lines, next_offset,
@@ -333,6 +382,17 @@ impl AgentTool for ReadTool {
                     next_offset,
                 );
             }
+            details = Some(serde_json::json!({
+                "truncation": {
+                    "truncated": true,
+                    "truncatedBy": trunc.truncated_by,
+                    "totalLines": trunc.total_lines,
+                    "outputLines": trunc.output_lines,
+                    "firstLineExceedsLimit": false,
+                    "maxLines": DEFAULT_MAX_LINES,
+                    "maxBytes": DEFAULT_MAX_BYTES,
+                }
+            }));
         } else if let Some(ul) = user_limited_lines {
             if start_line + ul < total_file_lines {
                 let remaining = total_file_lines - (start_line + ul);
@@ -353,9 +413,21 @@ impl AgentTool for ReadTool {
         }
 
         if let Some(label) = compact {
-            Ok(ToolOutput::ok_with_compact(output, label))
+            Ok(ToolOutput {
+                content: output,
+                compact: Some(label),
+                is_error: false,
+                terminate: false,
+                details,
+            })
         } else {
-            Ok(ToolOutput::ok(output))
+            Ok(ToolOutput {
+                content: output,
+                compact: None,
+                is_error: false,
+                terminate: false,
+                details,
+            })
         }
     }
 }
@@ -475,7 +547,7 @@ impl ToolRenderer for ReadRenderer {
             None
         };
 
-        // Pi: trim trailing empty lines
+        // Pi: trim trailing empty lines from the full content
         let all_lines: Vec<&str> = content.lines().collect();
         let mut end = all_lines.len();
         while end > 0 && all_lines[end - 1].is_empty() {
@@ -491,28 +563,101 @@ impl ToolRenderer for ReadRenderer {
         // Pi: start with blank line (`\n` before content)
         let mut result = vec![String::new()];
 
-        // Pi: apply replaceTabs and color each line
+        // Pi: apply syntax highlighting when a language is detected (syntect feature)
+        #[cfg(feature = "syntect")]
+        {
+            if let Some(lang) = lang {
+                let combined = display_lines.join("\n");
+                let highlighted = crate::tui::components::highlight_code(&combined, Some(lang));
+                for line in highlighted {
+                    result.push(line.replace('\t', "   "));
+                }
+            } else {
+                for line in &display_lines {
+                    let processed = line.replace('\t', "   ");
+                    result.push(theme.fg_key(ThemeKey::ToolOutput, &processed));
+                }
+            }
+        }
+
+        #[cfg(not(feature = "syntect"))]
         for line in &display_lines {
             let processed = line.replace('\t', "   ");
-            #[cfg(feature = "syntect")]
-            if let Some(lang) = lang {
-                // Pi uses highlightCode on the full text, then replaceTabs on each line
-                let _ = lang;
-            }
             result.push(theme.fg_key(ThemeKey::ToolOutput, &processed));
         }
 
         // Pi: remaining lines hint
-        if remaining > 0 && !ctx.expand_key.is_empty() {
-            result.push(theme.fg(
-                "muted",
-                &format!(
+        if remaining > 0 {
+            let hint = if !ctx.expand_key.is_empty() {
+                format!(
                     "... ({} more lines, {} to expand)",
                     remaining, ctx.expand_key
-                ),
-            ));
-        } else if remaining > 0 {
-            result.push(theme.fg_key(ThemeKey::Muted, &format!("... ({} more lines)", remaining)));
+                )
+            } else {
+                format!("... ({} more lines)", remaining)
+            };
+            result.push(theme.fg_key(ThemeKey::Muted, &hint));
+        }
+
+        // Pi: truncation warnings from details (matching pi's formatReadResult)
+        if let Some(ref details) = ctx.details
+            && let Some(truncation) = details.get("truncation")
+        {
+            let truncated = truncation
+                .get("truncated")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            if truncated {
+                let warning_color = |s: String| theme.fg_key(ThemeKey::Warning, &s);
+                let first_line_exceeds = truncation
+                    .get("firstLineExceedsLimit")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                if first_line_exceeds {
+                    let max_bytes = truncation
+                        .get("maxBytes")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(DEFAULT_MAX_BYTES as u64)
+                        as usize;
+                    result.push(warning_color(format!(
+                        "[First line exceeds {} limit]",
+                        format_size(max_bytes),
+                    )));
+                } else if let Some(truncated_by) =
+                    truncation.get("truncatedBy").and_then(|v| v.as_str())
+                {
+                    let output_lines = truncation
+                        .get("outputLines")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0) as usize;
+                    let total_lines = truncation
+                        .get("totalLines")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0) as usize;
+                    if truncated_by == "lines" {
+                        let max_lines = truncation
+                            .get("maxLines")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(DEFAULT_MAX_LINES as u64)
+                            as usize;
+                        result.push(warning_color(format!(
+                            "[Truncated: showing {} of {} lines ({} line limit)]",
+                            output_lines, total_lines, max_lines,
+                        )));
+                    } else {
+                        let max_bytes = truncation
+                            .get("maxBytes")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(DEFAULT_MAX_BYTES as u64)
+                            as usize;
+                        result.push(warning_color(format!(
+                            "[Truncated: {} lines shown ({} limit)]",
+                            output_lines,
+                            format_size(max_bytes),
+                        )));
+                    }
+                }
+            }
         }
 
         result
@@ -564,7 +709,7 @@ mod tests {
         let content: String = (1..=5000).map(|i| format!("line {}\n", i)).collect();
         let result = truncate_head(&content, 2000, 50000);
         assert!(result.truncated);
-        assert_eq!(result.truncated_by, "lines");
+        assert_eq!(result.truncated_by, Some("lines"));
         assert_eq!(result.output_lines, 2000);
         assert!(result.content.ends_with("line 2000"));
     }
@@ -576,7 +721,7 @@ mod tests {
             .collect();
         let result = truncate_head(&content, 2000, 50000);
         assert!(result.truncated);
-        assert_eq!(result.truncated_by, "bytes");
+        assert_eq!(result.truncated_by, Some("bytes"));
         assert!(result.output_lines < 100);
     }
 
