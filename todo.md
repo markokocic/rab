@@ -44,7 +44,7 @@
 ### Session picker / UI
 
 - [x] **Session picker component** — `SessionPicker` state machine built with search, filter, selection, progress
-- [ ] **Session picker overlay** — wire as TUI overlay with Enter/Esc keyboard handling
+- [x] **Session picker overlay** — integrated inline with keyboard navigation (↑↓ Enter Esc /)
 - [x] **Session info display** — show message count, first message preview, creation/modified time, parent session
 
 ### Session export
