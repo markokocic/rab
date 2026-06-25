@@ -472,6 +472,19 @@ impl Markdown {
     /// Render a node's children as lines, collecting non-inline children.
     /// `list_depth` tracks list nesting for indentation (the float pass
     /// removes most artifical nesting, but genuine nested lists remain).
+    /// Determine whether to add a blank line between two consecutive block-level siblings.
+    /// Matches pi's behavior:
+    ///   - Paragraph adds blank unless next is List
+    ///   - List never adds trailing blank
+    ///   - Everything else always adds blank
+    fn should_add_block_spacing(current: &NodeValue, next: &NodeValue) -> bool {
+        match current {
+            NodeValue::Paragraph => !matches!(next, NodeValue::List(_)),
+            NodeValue::List(_) => false,
+            _ => true,
+        }
+    }
+
     fn render_node_lines<'a>(
         &self,
         node: &'a AstNode<'a>,
@@ -484,8 +497,20 @@ impl Markdown {
 
         match &val.value {
             NodeValue::Document => {
-                for child in &children {
-                    lines.extend(self.render_node_lines(child, width, 0));
+                for (i, child) in children.iter().enumerate() {
+                    let child_lines = self.render_node_lines(child, width, 0);
+                    let is_last = i + 1 == children.len();
+                    if child_lines.is_empty() && is_last {
+                        continue;
+                    }
+                    lines.extend(child_lines);
+                    if !is_last {
+                        let current_val = child.data.borrow();
+                        let next_val = children[i + 1].data.borrow();
+                        if Self::should_add_block_spacing(&current_val.value, &next_val.value) {
+                            lines.push(String::new());
+                        }
+                    }
                 }
             }
 
@@ -724,9 +749,17 @@ impl Markdown {
         let qborder = self.theme.quote_border.clone();
 
         let mut inner_lines: Vec<String> = Vec::new();
-        for child in children {
+        for (i, child) in children.iter().enumerate() {
             let child_lines = self.render_node_lines(child, quote_content_width, 0);
+            let is_last = i + 1 == children.len();
             inner_lines.extend(child_lines);
+            if !is_last {
+                let current_val = child.data.borrow();
+                let next_val = children[i + 1].data.borrow();
+                if Self::should_add_block_spacing(&current_val.value, &next_val.value) {
+                    inner_lines.push(String::new());
+                }
+            }
         }
 
         // Remove trailing blank lines
@@ -1401,7 +1434,24 @@ mod tests {
         let theme = test_theme();
         let mut md = Markdown::new("para one\n\npara two", 0, 0, theme, None);
         let lines = md.render(80);
-        assert!(lines.len() >= 2);
+        // Two paragraphs should produce three lines: para one, blank, para two
+        assert!(lines.len() >= 2, "should have at least 2 lines");
+        // Lines are padded to width; check trimmed versions
+        assert!(
+            lines[0].trim_end().ends_with("para one"),
+            "first line should contain 'para one', got {:?}",
+            lines[0]
+        );
+        assert!(
+            lines[1].trim().is_empty(),
+            "line between paragraphs should be empty, got {:?}",
+            lines[1]
+        );
+        assert!(
+            lines[2].trim_end().ends_with("para two"),
+            "third line should contain 'para two', got {:?}",
+            lines[2]
+        );
     }
 
     #[test]
