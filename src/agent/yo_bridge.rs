@@ -100,6 +100,23 @@ impl yoagent::types::AgentTool for RabToolAdapter {
     }
 }
 
+/// Collect tool definitions from a list of rab AgentTools.
+/// Used by main.rs to build LLM tool schemas.
+pub fn collect_tool_defs(agent_tools: &[Box<dyn RabAgentTool>]) -> Vec<ToolDef> {
+    use crate::agent::provider::ToolDef;
+    let mut defs = Vec::new();
+    for tool in agent_tools {
+        if !defs.iter().any(|d: &ToolDef| d.name == tool.name()) {
+            defs.push(ToolDef {
+                name: tool.name().to_string(),
+                description: tool.description().to_string(),
+                parameters: tool.parameters(),
+            });
+        }
+    }
+    defs
+}
+
 // ──────────────────────────────────────────────
 // 2. Provider bridge (kept for compaction & AgentSession compatibility)
 // ──────────────────────────────────────────────
@@ -434,6 +451,75 @@ pub async fn forward_events(mut rx: UnboundedReceiver<AgentEvent>, tx: Unbounded
             break;
         }
     }
+}
+
+/// Convert a yoagent AgentEvent reference → rab AgentEvent.
+pub fn convert_to_rab_event(event: &AgentEvent) -> Option<RabEvent> {
+    Some(match event {
+        AgentEvent::AgentStart => RabEvent::AgentStart,
+        AgentEvent::AgentEnd { messages } => RabEvent::AgentEnd {
+            messages: yoagent_messages_to_rab(messages),
+        },
+        AgentEvent::TurnStart => RabEvent::TurnStart,
+        AgentEvent::TurnEnd { .. } => RabEvent::TurnEnd,
+        AgentEvent::MessageUpdate { delta, .. } => match delta {
+            yoagent::types::StreamDelta::Text { delta } => {
+                RabEvent::TextDelta {
+                    delta: delta.clone(),
+                }
+            }
+            yoagent::types::StreamDelta::Thinking { delta } => {
+                RabEvent::ThinkingDelta {
+                    delta: delta.clone(),
+                }
+            }
+            yoagent::types::StreamDelta::ToolCallDelta { .. } => return None,
+        },
+        AgentEvent::ToolExecutionStart {
+            tool_call_id,
+            tool_name,
+            args,
+        } => RabEvent::ToolCall {
+            id: tool_call_id.clone(),
+            name: tool_name.clone(),
+            args: args.clone(),
+        },
+        AgentEvent::ToolExecutionEnd {
+            tool_call_id,
+            tool_name,
+            result,
+            is_error,
+        } => {
+            let content = result
+                .content
+                .iter()
+                .filter_map(|c| {
+                    if let Content::Text { text } = c {
+                        Some(text.clone())
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("");
+            RabEvent::ToolResult {
+                id: tool_call_id.clone(),
+                name: tool_name.clone(),
+                content,
+                compact: None,
+                is_error: *is_error,
+                details: None,
+            }
+        }
+        AgentEvent::ProgressMessage { text, .. } => RabEvent::ToolProgress {
+            content: text.clone(),
+            is_error: false,
+        },
+        AgentEvent::MessageStart { .. }
+        | AgentEvent::MessageEnd { .. }
+        | AgentEvent::ToolExecutionUpdate { .. }
+        | AgentEvent::InputRejected { .. } => return None,
+    })
 }
 
 fn convert_event(event: AgentEvent) -> Option<RabEvent> {

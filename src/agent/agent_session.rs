@@ -1,6 +1,6 @@
 use crate::agent::branch_summary::{collect_entries_for_branch_summary, generate_branch_summary};
 use crate::agent::compaction::{self, CompactionSettings, compact, prepare_compaction};
-use crate::agent::r#loop::AgentEvent;
+use crate::agent::provider::AgentEvent;
 use crate::agent::provider::Provider;
 use crate::agent::session::SessionManager;
 use crate::agent::types::{AgentMessage, Role};

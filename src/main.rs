@@ -2,7 +2,7 @@ use rab::agent::extension::Extension;
 use rab::agent::session::SessionManager;
 use rab::agent::settings::Settings;
 use rab::agent::ui;
-use rab::agent::{AgentEvent, LoopConfig};
+use rab::agent::AgentEvent;
 use rab::builtin::{
     bash::BashExtension, commands::CommandsExtension, edit::EditExtension, read::ReadExtension,
     write::WriteExtension,
@@ -344,7 +344,6 @@ async fn main() -> anyhow::Result<()> {
 
     // Load history from session
     let context = session.build_session_context();
-    let history = context.messages;
 
     // Available models
     let available_models = vec![
@@ -408,9 +407,9 @@ async fn main() -> anyhow::Result<()> {
         .cwd(&cwd)
         .build();
 
-    let tools = rab::agent::collect_tool_defs(&extensions);
     let agent_tools: Vec<Box<dyn rab::agent::extension::AgentTool>> =
         extensions.iter().flat_map(|ext| ext.tools()).collect();
+    let tools = rab::agent::yo_bridge::collect_tool_defs(&agent_tools);
 
     // Load skills for startup display and /skill:name expansion
     let skills = rab::agent::load_skills(rab::agent::LoadSkillsOptions {
@@ -476,144 +475,119 @@ async fn main() -> anyhow::Result<()> {
             *guard = Some(si);
         }
 
+        // Get API key for yoagent
+        let api_key = auth.api_key("opencode-go").unwrap_or_default();
         run_print_mode(
             message,
             model,
+            api_key,
             system_prompt,
-            tools,
             agent_tools,
-            extensions,
-            provider_arc,
-            history,
             &mut agent_session,
         )
         .await
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn run_print_mode(
     message: String,
     model: String,
+    api_key: String,
     system_prompt: String,
-    tool_defs: Vec<rab::agent::provider::ToolDef>,
     agent_tools: Vec<Box<dyn rab::agent::extension::AgentTool>>,
-    extensions: Vec<Box<dyn Extension>>,
-    provider: std::sync::Arc<dyn rab::agent::Provider>,
-    history: Vec<rab::agent::types::AgentMessage>,
     agent_session: &mut rab::agent::AgentSession,
 ) -> anyhow::Result<()> {
-    let loop_config = LoopConfig {
-        model: model.clone(),
-        system_prompt,
-        tools: tool_defs,
-        agent_tools: &agent_tools,
-        extensions: &extensions,
-        tool_execution: rab::agent::ToolExecutionMode::Parallel,
-        steering_queue: None,
-        follow_up_queue: None,
-        transform_context: None,
-        prepare_next_turn: None,
-        should_stop_after_turn: None,
-    };
+    // Build yoagent Agent
+    let yoagent_tools = rab::agent::yo_bridge::RabToolAdapter::wrap_all(&agent_tools);
+    let mut agent = yoagent::agent::Agent::new(yoagent::provider::OpenAiCompatProvider)
+        .with_model(&model)
+        .with_api_key(&api_key)
+        .with_model_config(rab::agent::yo_bridge::opencode_model_config())
+        .with_system_prompt(&system_prompt)
+        .with_thinking(yoagent::types::ThinkingLevel::High)
+        .with_tools(yoagent_tools)
+        .without_context_management();
 
-    let prompt = rab::agent::types::AgentMessage::user(&message);
+    let (yo_tx, mut yo_rx) = tokio::sync::mpsc::unbounded_channel();
+    let msg_for_agent = message.clone();
 
-    // Persist the user prompt via AgentSession
-    agent_session.submit_user_message_obj(&prompt);
+    // Spawn agent loop (it blocks until done, sending events to yo_tx)
+    tokio::spawn(async move {
+        agent.prompt_with_sender(msg_for_agent, yo_tx).await;
+    });
 
+    // Persist user prompt via AgentSession
+    let rab_prompt = rab::agent::types::AgentMessage::user(&message);
+    agent_session.submit_user_message_obj(&rab_prompt);
+
+    let mut new_messages: Vec<rab::agent::types::AgentMessage> = Vec::new();
     let mut thinking_prefix_printed = false;
-    let mut emitter = |event: AgentEvent| {
-        // Let AgentSession handle event-driven persistence (tool results, etc.)
-        agent_session.handle_event(&event);
 
-        match event {
-            AgentEvent::TextDelta { delta } => {
-                print!("{}", delta);
-                let _ = std::io::stdout().flush();
-            }
-            AgentEvent::ThinkingDelta { ref delta } => {
-                if !thinking_prefix_printed {
-                    eprint!("{}", colored::Colorize::dimmed("… "));
-                    thinking_prefix_printed = true;
+    // Process events from yoagent
+    while let Some(event) = yo_rx.recv().await {
+        use rab::agent::yo_bridge::convert_to_rab_event;
+        if let Some(rab_event) = convert_to_rab_event(&event) {
+            agent_session.handle_event(&rab_event);
+
+            match &rab_event {
+                AgentEvent::TextDelta { delta } => {
+                    print!("{}", delta);
+                    let _ = std::io::stdout().flush();
                 }
-                eprint!("{}", colored::Colorize::dimmed(delta.as_str()));
-                let _ = std::io::stderr().flush();
-            }
-            AgentEvent::ToolCall {
-                ref name, ref args, ..
-            } => {
-                eprintln!(
-                    "\n{} {} {}",
-                    colored::Colorize::dimmed("⚙"),
-                    colored::Colorize::bold(name.as_str()),
-                    colored::Colorize::dimmed(
-                        serde_json::to_string(args).unwrap_or_default().as_str()
-                    )
-                );
-                thinking_prefix_printed = false;
-            }
-            AgentEvent::ToolResult {
-                ref content,
-                is_error,
-                ..
-            } => {
-                if is_error {
+                AgentEvent::ThinkingDelta { delta } => {
+                    if !thinking_prefix_printed {
+                        eprint!("{}", colored::Colorize::dimmed("… "));
+                        thinking_prefix_printed = true;
+                    }
+                    eprint!("{}", colored::Colorize::dimmed(delta.as_str()));
+                    let _ = std::io::stderr().flush();
+                }
+                AgentEvent::ToolCall { name, args, .. } => {
                     eprintln!(
-                        "{} {}",
-                        colored::Colorize::red("✗"),
-                        colored::Colorize::red(content.as_str())
+                        "\n{} {} {}",
+                        colored::Colorize::dimmed("⚙"),
+                        colored::Colorize::bold(name.as_str()),
+                        colored::Colorize::dimmed(
+                            serde_json::to_string(args).unwrap_or_default().as_str()
+                        )
                     );
-                } else {
-                    let truncated: String = content.chars().take(500).collect();
-                    eprintln!(
-                        "{} {}",
-                        colored::Colorize::dimmed("✓"),
-                        colored::Colorize::dimmed(truncated.as_str())
-                    );
-                    if content.len() > 500 {
-                        eprintln!("{}", colored::Colorize::dimmed("... (truncated)"));
+                    thinking_prefix_printed = false;
+                }
+                AgentEvent::ToolResult {
+                    content,
+                    is_error,
+                    ..
+                } => {
+                    if *is_error {
+                        eprintln!(
+                            "{} {}",
+                            colored::Colorize::red("✗"),
+                            colored::Colorize::red(content.as_str())
+                        );
+                    } else {
+                        let truncated: String = content.chars().take(500).collect();
+                        eprintln!(
+                            "{} {}",
+                            colored::Colorize::dimmed("✓"),
+                            colored::Colorize::dimmed(truncated.as_str())
+                        );
+                        if content.len() > 500 {
+                            eprintln!("{}", colored::Colorize::dimmed("... (truncated)"));
+                        }
                     }
                 }
-            }
-            AgentEvent::ToolProgress { ref content, .. } => {
-                // Stream output is printed as it arrives
-                print!("{}", content);
-                let _ = std::io::stdout().flush();
-            }
-            AgentEvent::AgentStart | AgentEvent::TurnStart | AgentEvent::TurnEnd => {}
-            AgentEvent::ToolCallArgsUpdate { .. } => {
-                // Progressive args update - no-op in print mode
-            }
-            AgentEvent::UserMessage { ref content } => {
-                // In print mode, show injected queue messages
-                eprintln!(
-                    "{} {}",
-                    colored::Colorize::dimmed("→"),
-                    colored::Colorize::dimmed(content.as_str())
-                );
-            }
-            AgentEvent::Aborted { ref reason } => {
-                eprintln!(
-                    "{} {}",
-                    colored::Colorize::red("✗"),
-                    colored::Colorize::red(reason.as_str())
-                );
-            }
-            AgentEvent::AgentEnd { .. } => {
-                eprintln!();
+                AgentEvent::ToolProgress { content, .. } => {
+                    print!("{}", content);
+                    let _ = std::io::stdout().flush();
+                }
+                AgentEvent::AgentEnd { messages } => {
+                    eprintln!();
+                    new_messages = messages.clone();
+                }
+                _ => {}
             }
         }
-    };
-
-    let new_messages = rab::agent::run_agent_loop(
-        vec![prompt],
-        history,
-        &loop_config,
-        provider.as_ref(),
-        &mut emitter,
-    )
-    .await?;
+    }
 
     // AgentSession.on_agent_end is already called by handle_event on AgentEnd.
     // Remaining non-user messages (if any) are persisted there.
