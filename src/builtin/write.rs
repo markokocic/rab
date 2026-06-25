@@ -96,6 +96,13 @@ struct WriteTool {
 
 #[async_trait]
 impl AgentTool for WriteTool {
+    fn clone_boxed(&self) -> Box<dyn AgentTool> {
+        Box::new(Self {
+            cwd: self.cwd.clone(),
+            operations: self.operations.clone(),
+        })
+    }
+
     fn name(&self) -> &str {
         "write"
     }

@@ -312,6 +312,13 @@ pub trait AgentTool: Send + Sync {
     fn description(&self) -> &str;
     fn parameters(&self) -> serde_json::Value;
 
+    /// Clone this tool into a boxed trait object.
+    /// Only needed if you use `RabToolAdapter` to wrap tools for yoagent.
+    /// Default impl panics — override in real tools.
+    fn clone_boxed(&self) -> Box<dyn AgentTool> {
+        panic!("clone_boxed not implemented for {}", self.name())
+    }
+
     /// Execution mode for this tool. When set to `Sequential`, a batch of tool calls
     /// containing this tool will execute sequentially (one-at-a-time) even when the
     /// global config is `Parallel`. Defaults to `Parallel`.

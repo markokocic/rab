@@ -453,6 +453,15 @@ fn finish_bash_execution(
 
 #[async_trait]
 impl AgentTool for BashTool {
+    fn clone_boxed(&self) -> Box<dyn AgentTool> {
+        Box::new(Self {
+            cwd: self.cwd.clone(),
+            shell_path: self.shell_path.clone(),
+            command_prefix: self.command_prefix.clone(),
+            operations: self.operations.clone(),
+        })
+    }
+
     fn name(&self) -> &str {
         "bash"
     }

@@ -289,6 +289,12 @@ fn truncate_head(content: &str, max_lines: usize, max_bytes: usize) -> Truncatio
 
 #[async_trait]
 impl AgentTool for ReadTool {
+    fn clone_boxed(&self) -> Box<dyn AgentTool> {
+        Box::new(Self {
+            cwd: self.cwd.clone(),
+        })
+    }
+
     fn name(&self) -> &str {
         "read"
     }

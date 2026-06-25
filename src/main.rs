@@ -456,6 +456,7 @@ async fn main() -> anyhow::Result<()> {
             model_supports_reasoning: true,
             tool_execution: rab::agent::ToolExecutionMode::Parallel,
             session_info: Some(session_info),
+            api_key: auth.api_key("opencode-go").unwrap_or_default(),
         };
         ui::run(config, session).await
     } else {

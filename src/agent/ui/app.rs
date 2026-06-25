@@ -20,7 +20,7 @@ use crate::agent::ui::messages::{DisplayMsg, session_messages_to_display};
 use crate::agent::ui::model_selector::ModelSelector;
 use crate::agent::ui::theme::RabTheme;
 use crate::agent::ui::working::WorkingIndicator;
-use crate::agent::{AgentEvent, LoopConfig, run_agent_loop};
+use crate::agent::{AgentEvent, yo_bridge};
 use crate::builtin::commands::SessionInfoInternal;
 use crate::tui::Component;
 use crate::tui::TUI;
@@ -64,6 +64,8 @@ pub struct AppConfig {
     pub model_supports_reasoning: bool,
     /// Session info Arc for /session command (shared with CommandsExtension).
     pub session_info: Option<std::sync::Arc<std::sync::Mutex<Option<SessionInfoInternal>>>>,
+    /// API key for yoagent provider.
+    pub api_key: String,
 }
 
 /// Main application state.
@@ -192,6 +194,8 @@ pub struct App {
 
     /// Skills loaded for the session (/skill:name expansion).
     skills: Vec<crate::agent::Skill>,
+    /// API key for yoagent provider.
+    api_key: String,
     /// Session info updater for /session command.
     session_info: Option<std::sync::Arc<std::sync::Mutex<Option<SessionInfoInternal>>>>,
 
@@ -458,6 +462,7 @@ impl App {
             tool_execution: config.tool_execution,
             skills: config.skills,
             session_info: config.session_info,
+            api_key: config.api_key,
             settings: config.settings,
             auto_compact: true,
             status_text: None,
@@ -1345,18 +1350,13 @@ fn submit_message(app: &mut App, message: String) {
 }
 
 /// Actually start an agent loop (not queued).
+/// Uses yoagent's Agent internally.
 fn start_agent_loop(app: &mut App, message: String) {
-    let provider = Arc::clone(&app.provider);
     let model = app.model.clone();
     let system_prompt = app.system_prompt.clone();
-    let tools = collect_tool_defs(app);
     let tx = app.event_tx.clone();
-    let history = app.conversation.clone();
+    let api_key = app.api_key.clone();
     let agent_tools = Arc::clone(&app.agent_tools);
-    let extensions = Arc::clone(&app.extensions);
-    let tool_execution = app.tool_execution;
-    let steering_queue = Arc::clone(&app.steering_queue);
-    let follow_up_queue = Arc::clone(&app.follow_up_queue);
 
     app.is_streaming = true;
     app.working.start();
@@ -1367,86 +1367,30 @@ fn start_agent_loop(app: &mut App, message: String) {
     let (cancel_tx, mut cancel_rx) = tokio::sync::watch::channel(false);
     app.cancel_tx = Some(cancel_tx);
 
-    // Drop guard ensures AgentEnd is ALWAYS sent, even if the spawned task panics.
-    // Without this guard, a panic in run_agent_loop (e.g. in provider.stream())
-    // would silently kill the task without sending AgentEnd, leaving is_streaming
-    // stuck at true forever. New submissions would pile up in the steering queue
-    // instead of starting a fresh agent loop.
-    struct AgentEndGuard<'a> {
-        tx: &'a mpsc::UnboundedSender<AgentEvent>,
-        sent: bool,
-    }
-    impl Drop for AgentEndGuard<'_> {
-        fn drop(&mut self) {
-            if !self.sent {
-                let _ = self.tx.send(AgentEvent::AgentEnd { messages: vec![] });
-            }
-        }
-    }
-
     tokio::spawn(async move {
-        let mut agent_end_guard = AgentEndGuard {
-            tx: &tx,
-            sent: false,
-        };
+        // Build yoagent Agent with wrapped tools
+        let yoagent_tools = yo_bridge::RabToolAdapter::wrap_all(&agent_tools);
+        let mut agent = yoagent::agent::Agent::new(yoagent::provider::OpenAiCompatProvider)
+            .with_model(&model)
+            .with_api_key(&api_key)
+            .with_model_config(yo_bridge::opencode_model_config())
+            .with_system_prompt(&system_prompt)
+            .with_thinking(yoagent::types::ThinkingLevel::High)
+            .with_tools(yoagent_tools)
+            .without_context_management();
 
-        let config = LoopConfig {
-            model: model.clone(),
-            system_prompt,
-            tools,
-            agent_tools: &agent_tools,
-            extensions: &extensions,
-            tool_execution,
-            steering_queue: Some(&*steering_queue),
-            follow_up_queue: Some(&*follow_up_queue),
-            transform_context: None,
-            prepare_next_turn: None,
-            should_stop_after_turn: None,
-        };
+        let (yo_tx, yo_rx) = tokio::sync::mpsc::unbounded_channel();
 
-        let mut emit = |event: AgentEvent| {
-            let _ = tx.send(event);
-        };
+        // Spawn agent loop in a separate task (it blocks until done)
+        tokio::spawn(async move {
+            agent.prompt_with_sender(message, yo_tx).await;
+        });
 
-        let prompt = AgentMessage::user(message);
-
+        // Forward yoagent events → rab events, cancellable
         tokio::select! {
-            result = run_agent_loop(vec![prompt], history, &config, &*provider, &mut emit) => {
-                match result {
-                    Ok(_) => {
-                        // AgentEnd already sent by run_agent_loop on success
-                        agent_end_guard.sent = true;
-                    }
-                    Err(e) => {
-                        // Pi-style: create an error assistant message so the failure is always visible
-                        let error_text = format!("Error: {:#}", e);
-                        let _ = tx.send(AgentEvent::TextDelta {
-                            delta: error_text.clone(),
-                        });
-                        let error_assistant = AgentMessage {
-                            id: uuid::Uuid::new_v4().to_string(),
-                            parent_id: None,
-                            role: crate::agent::types::Role::Assistant,
-                            content: error_text,
-                            tool_calls: vec![],
-                            tool_call_id: None,
-                            usage: None,
-                            is_error: true,
-                            timestamp: chrono::Utc::now().timestamp_millis(),
-                        };
-                        let _ = tx.send(AgentEvent::AgentEnd {
-                            messages: vec![error_assistant],
-                        });
-                        agent_end_guard.sent = true;
-                    }
-                }
-            }
+            _ = yo_bridge::forward_events(yo_rx, tx) => {}
             _ = cancel_rx.changed() => {
-                // Cancelled by user (ESC/Ctrl+C). Send a clean AgentEnd without error text.
-                let _ = tx.send(AgentEvent::AgentEnd {
-                    messages: Vec::new(),
-                });
-                agent_end_guard.sent = true;
+                // Cancelled — events stop forwarding, agent task will finish silently
             }
         }
     });
@@ -2740,6 +2684,7 @@ mod tests {
             model_supports_reasoning: true,
             tool_execution: ToolExecutionMode::Parallel,
             session_info: None,
+            api_key: String::new(),
         };
 
         let mut app = App::new(config, session);
@@ -2900,6 +2845,7 @@ mod tests {
             model_supports_reasoning: true,
             tool_execution: ToolExecutionMode::Parallel,
             session_info: None,
+            api_key: String::new(),
         };
 
         let mut app = App::new(config, session);
@@ -2947,6 +2893,7 @@ mod tests {
             model_supports_reasoning: true,
             tool_execution: ToolExecutionMode::Parallel,
             session_info: None,
+            api_key: String::new(),
         };
 
         let mut app = App::new(config, session);
@@ -2988,6 +2935,7 @@ mod tests {
             model_supports_reasoning: true,
             tool_execution: ToolExecutionMode::Parallel,
             session_info: None,
+            api_key: String::new(),
         };
 
         let mut app = App::new(config, session);
@@ -3036,6 +2984,7 @@ mod tests {
             model_supports_reasoning: true,
             tool_execution: ToolExecutionMode::Parallel,
             session_info: None,
+            api_key: String::new(),
         };
 
         let mut app = App::new(config, session);
@@ -3075,6 +3024,7 @@ mod tests {
             model_supports_reasoning: true,
             tool_execution: ToolExecutionMode::Parallel,
             session_info: None,
+            api_key: String::new(),
         };
 
         let mut app = App::new(config, session);
@@ -3114,6 +3064,7 @@ mod tests {
             model_supports_reasoning: true,
             tool_execution: ToolExecutionMode::Parallel,
             session_info: None,
+            api_key: String::new(),
         };
 
         let mut app = App::new(config, session);
@@ -3153,6 +3104,7 @@ mod tests {
             model_supports_reasoning: true,
             tool_execution: ToolExecutionMode::Parallel,
             session_info: None,
+            api_key: String::new(),
         };
 
         let mut app = App::new(config, session);
@@ -3198,6 +3150,7 @@ mod tests {
             model_supports_reasoning: true,
             tool_execution: ToolExecutionMode::Parallel,
             session_info: None,
+            api_key: String::new(),
         };
 
         let mut app = App::new(config, session);
@@ -3294,6 +3247,7 @@ mod tests {
             model_supports_reasoning: true,
             tool_execution: ToolExecutionMode::Parallel,
             session_info: None,
+            api_key: String::new(),
         };
 
         let mut app = App::new(config, session);
@@ -3350,6 +3304,7 @@ mod tests {
             model_supports_reasoning: true,
             tool_execution: ToolExecutionMode::Parallel,
             session_info: None,
+            api_key: String::new(),
         };
 
         let mut app = App::new(config, session);
@@ -3404,6 +3359,7 @@ mod tests {
             model_supports_reasoning: true,
             tool_execution: ToolExecutionMode::Parallel,
             session_info: None,
+            api_key: String::new(),
         };
 
         let mut app = App::new(config, session);
@@ -3474,6 +3430,7 @@ mod tests {
             model_supports_reasoning: true,
             tool_execution: ToolExecutionMode::Parallel,
             session_info: None,
+            api_key: String::new(),
         };
 
         let mut app = App::new(config, session);
@@ -3582,6 +3539,7 @@ mod tests {
             model_supports_reasoning: true,
             tool_execution: ToolExecutionMode::Parallel,
             session_info: None,
+            api_key: String::new(),
             ..make_config(cwd.clone())
         };
         let mut app = App::new(config, session);
@@ -3616,6 +3574,7 @@ mod tests {
             model_supports_reasoning: true,
             tool_execution: ToolExecutionMode::Parallel,
             session_info: None,
+            api_key: String::new(),
             ..make_config(cwd.clone())
         };
         let mut app = App::new(config, session);
@@ -3641,6 +3600,7 @@ mod tests {
             model_supports_reasoning: true,
             tool_execution: ToolExecutionMode::Parallel,
             session_info: None,
+            api_key: String::new(),
             ..make_config(cwd.clone())
         };
         let mut app = App::new(config, session);
@@ -3826,6 +3786,7 @@ mod tests {
             model_supports_reasoning: false,
             tool_execution: ToolExecutionMode::Parallel,
             session_info: None,
+            api_key: String::new(),
         }
     }
 }

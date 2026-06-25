@@ -757,6 +757,14 @@ fn compute_edits_diff(
 
 #[async_trait]
 impl AgentTool for EditTool {
+    fn clone_boxed(&self) -> Box<dyn AgentTool> {
+        Box::new(Self {
+            cwd: self.cwd.clone(),
+            renderer: self.renderer.clone(),
+            operations: self.operations.clone(),
+        })
+    }
+
     fn name(&self) -> &str {
         "edit"
     }
