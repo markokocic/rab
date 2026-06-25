@@ -2062,6 +2062,7 @@ fn handle_bang_command(app: &mut App, command: String) {
     bash_comp
         .borrow_mut()
         .set_started_at(std::time::Instant::now());
+    bash_comp.borrow_mut().set_expanded(app.tools_expanded);
     app.bash_component = Some(Rc::downgrade(&bash_comp));
     chat_add(
         app,
@@ -2349,6 +2350,7 @@ fn handle_agent_event(app: &mut App, event: AgentEvent) {
                 tool.set_started_at(std::time::Instant::now());
                 Rc::new(RefCell::new(tool))
             };
+            comp.borrow_mut().set_expanded(app.tools_expanded);
             app.pending_tools.insert(id.clone(), Rc::downgrade(&comp));
             app.tool_call_start_times.insert(id.clone(), started_at);
             chat_add(
@@ -2443,6 +2445,7 @@ fn handle_agent_event(app: &mut App, event: AgentEvent) {
                     }
                     bash.set_duration_from_content(&content);
                     bash.set_complete(if is_error { 1 } else { 0 });
+                    bash.set_expanded(app.tools_expanded);
                     chat_add(app, std::boxed::Box::new(bash));
                 }
             } else {
