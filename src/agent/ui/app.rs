@@ -205,6 +205,12 @@ pub struct App {
 
     /// Session picker state (Some = picker is active).
     session_picker: Option<crate::agent::ui::components::SessionPicker>,
+
+    /// Tracks the number of children in `chat_container` after the last
+    /// status message was added (pi-style `lastStatusSpacer`/`lastStatusText`).
+    /// Used by `show_status()` to replace consecutive status messages in-place
+    /// instead of appending indefinitely.
+    last_status_len: Option<usize>,
     // ── Message rendering cache (avoids re-rendering messages every frame) ──
     // Cache fields removed - messages now rendered via Components in chat_container.
 }
@@ -454,6 +460,7 @@ impl App {
                 crate::agent::ui::components::HeaderComponent::new(),
             )),
             session_picker: None,
+            last_status_len: None,
         };
 
         // Initial session info for /session command
@@ -909,13 +916,13 @@ fn handle_input(app: &mut App, tui: &mut TUI, term: &mut ProcessTerminal, key: &
             if let Err(e) = app.settings.save() {
                 app.status_text = Some(format!("Failed to save thinking visibility: {}", e));
             }
-            chat_add(
+            show_status(
                 app,
-                Box::new(InfoMessageComponent::new(if app.hide_thinking {
+                if app.hide_thinking {
                     "Thinking blocks: hidden".to_string()
                 } else {
                     "Thinking blocks: visible".to_string()
-                })),
+                },
             );
         }
         InputAction::ToolsExpand => {
@@ -1043,13 +1050,13 @@ fn handle_tools_expand(app: &mut App) {
     if let Err(e) = app.settings.save() {
         app.status_text = Some(format!("Failed to save tool output setting: {}", e));
     }
-    chat_add(
+    show_status(
         app,
-        Box::new(InfoMessageComponent::new(if app.tools_expanded {
+        if app.tools_expanded {
             "Tool output: expanded".to_string()
         } else {
             "Tool output: collapsed".to_string()
-        })),
+        },
     );
 }
 
@@ -2202,6 +2209,34 @@ pub fn chat_add(app: &mut App, component: std::boxed::Box<dyn Component>) {
         chat.add_child(std::boxed::Box::new(Spacer::new(1)));
     }
     chat.add_child(component);
+}
+
+/// Show a status message in the chat (pi-style `showStatus`).
+///
+/// If the last two children of `chat_container` are from a previous status
+/// (spacer + InfoMessageComponent), they are replaced in-place rather than
+/// appending new entries. This prevents multiple consecutive status messages
+/// from accumulating at the end of the chat session.
+fn show_status(app: &mut App, message: String) {
+    let mut chat = app.chat_container.borrow_mut();
+    // Check if previous status children are still the last in the container
+    if let Some(prev_len) = app.last_status_len
+        && chat.len() == prev_len
+        && prev_len >= 2
+    {
+        chat.pop_child(); // info message
+        chat.pop_child(); // spacer
+    }
+    app.last_status_len = None;
+    drop(chat);
+
+    // Add the new status
+    let mut chat = app.chat_container.borrow_mut();
+    if !chat.children().is_empty() {
+        chat.add_child(std::boxed::Box::new(Spacer::new(1)));
+    }
+    chat.add_child(std::boxed::Box::new(InfoMessageComponent::new(message)));
+    app.last_status_len = Some(chat.len());
 }
 
 /// Handle agent events from the channel.

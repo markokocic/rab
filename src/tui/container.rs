@@ -104,9 +104,20 @@ impl Container {
         self.children.len()
     }
 
+    /// Remove and return the last child, if any.
+    pub fn pop_child(&mut self) -> Option<Box<dyn Component>> {
+        self.child_caches.pop();
+        self.children.pop()
+    }
+
     /// Check if empty.
     pub fn is_empty(&self) -> bool {
         self.children.is_empty()
+    }
+
+    /// Peek at the last child, if any.
+    pub fn last_child(&self) -> Option<&dyn Component> {
+        self.children.last().map(|c| c.as_ref())
     }
 
     // ── Overlay management ──

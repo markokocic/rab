@@ -6,28 +6,79 @@ use crate::tui::visual_truncate::truncate_to_visual_lines;
 use anyhow::Context;
 use async_trait::async_trait;
 use std::borrow::Cow;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 use tokio::sync::{Mutex as TokioMutex, mpsc::UnboundedSender};
 
+// ── BashOperations (pluggable) ────────────────────────────────────
+
+/// Pluggable operations for the bash tool (matching pi's BashOperations).
+/// Override these to delegate command execution to remote systems (for example SSH).
+#[async_trait]
+pub trait BashOperations: Send + Sync {
+    /// Execute a command and stream output via the sender.
+    /// Returns the exit code (0 = success, non-zero = error, None = killed).
+    async fn exec(
+        &self,
+        command: &str,
+        cwd: &Path,
+        on_data: UnboundedSender<String>,
+        signal: Option<&Cancel>,
+        timeout: Option<u64>,
+        env: Option<HashMap<String, String>>,
+    ) -> Result<Option<i32>, anyhow::Error>;
+}
+
+/// Context passed to BashSpawnHook for command/cwd/env modification.
+#[derive(Debug, Clone)]
+pub struct BashSpawnContext {
+    pub command: String,
+    pub cwd: PathBuf,
+    pub env: HashMap<String, String>,
+}
+
+/// Hook to adjust command, cwd, or env before execution (matching pi's BashSpawnHook).
+pub type BashSpawnHook = Arc<dyn Send + Sync + Fn(BashSpawnContext) -> BashSpawnContext>;
+
+#[derive(Clone, Default)]
+pub struct BashToolOptions {
+    /// Custom operations for command execution. Default: local shell.
+    pub operations: Option<Arc<dyn BashOperations>>,
+    /// Command prefix prepended to every command (for example shell setup commands).
+    pub command_prefix: Option<String>,
+    /// Optional explicit shell path from settings.
+    pub shell_path: Option<String>,
+    /// Hook to adjust command, cwd, or env before execution.
+    pub spawn_hook: Option<BashSpawnHook>,
+}
+
 pub struct BashExtension {
-    cwd: std::path::PathBuf,
-    shell_path: Option<String>,
+    cwd: PathBuf,
+    options: BashToolOptions,
 }
 
 impl BashExtension {
-    pub fn new(cwd: std::path::PathBuf) -> Self {
+    pub fn new(cwd: PathBuf) -> Self {
         Self {
             cwd,
-            shell_path: None,
+            options: BashToolOptions::default(),
         }
     }
 
-    pub fn with_shell_path(cwd: std::path::PathBuf, shell_path: String) -> Self {
+    pub fn with_options(cwd: PathBuf, options: BashToolOptions) -> Self {
+        Self { cwd, options }
+    }
+
+    pub fn with_shell_path(cwd: PathBuf, shell_path: String) -> Self {
         Self {
             cwd,
-            shell_path: Some(shell_path),
+            options: BashToolOptions {
+                shell_path: Some(shell_path),
+                ..BashToolOptions::default()
+            },
         }
     }
 }
@@ -40,14 +91,21 @@ impl Extension for BashExtension {
     fn tools(&self) -> Vec<Box<dyn AgentTool>> {
         vec![Box::new(BashTool {
             cwd: self.cwd.clone(),
-            shell_path: self.shell_path.clone(),
+            shell_path: self.options.shell_path.clone(),
+            command_prefix: self.options.command_prefix.clone(),
+            spawn_hook: self.options.spawn_hook.clone(),
+            operations: self.options.operations.clone(),
         })]
     }
 }
 
 struct BashTool {
-    cwd: std::path::PathBuf,
+    cwd: PathBuf,
     shell_path: Option<String>,
+    command_prefix: Option<String>,
+    #[allow(dead_code)]
+    spawn_hook: Option<BashSpawnHook>,
+    operations: Option<Arc<dyn BashOperations>>,
 }
 
 // ── Constants ────────────────────────────────────────────────────
@@ -309,15 +367,12 @@ fn finish_bash_execution(
         trunc.content.clone()
     };
 
-    if trunc.truncated {
+    // Save full output to temp file if truncated
+    let full_output_path = if trunc.truncated {
         let tmp_dir = std::env::temp_dir().join(BASH_TEMP_FILE_PREFIX);
         let _ = std::fs::create_dir_all(&tmp_dir);
         let tmp_path = tmp_dir.join(format!("{}.log", uuid::Uuid::new_v4()));
-        let saved = if std::fs::write(&tmp_path, combined).is_ok() {
-            Some(tmp_path)
-        } else {
-            None
-        };
+        let saved = std::fs::write(&tmp_path, combined).ok().map(|_| tmp_path);
 
         let start_line = trunc.total_lines - trunc.output_lines + 1;
         let end_line = trunc.total_lines;
@@ -347,7 +402,29 @@ fn finish_bash_execution(
             )
         };
         result_text.push_str(&notice);
-    }
+        saved
+    } else {
+        None
+    };
+
+    // Build structured details
+    let details = if trunc.truncated || full_output_path.is_some() {
+        Some(serde_json::json!({
+            "truncation": {
+                "truncated": trunc.truncated,
+                "truncatedBy": trunc.truncated_by,
+                "totalLines": trunc.total_lines,
+                "outputLines": trunc.output_lines,
+                "outputBytes": trunc.output_bytes,
+                "lastLinePartial": trunc.last_line_partial,
+                "maxLines": DEFAULT_MAX_LINES,
+                "maxBytes": DEFAULT_MAX_BYTES,
+            },
+            "fullOutputPath": full_output_path.as_ref().map(|p| p.display().to_string()),
+        }))
+    } else {
+        None
+    };
 
     let final_output = if cancelled {
         if result_text.is_empty() || result_text == "(no output)" {
@@ -372,13 +449,22 @@ fn finish_bash_execution(
         }
     } else {
         if let Some(ref tx) = on_update {
-            let _ = tx.send(ToolOutput::ok(result_text.clone()));
+            let _ = tx.send(ToolOutput::ok_with_details(
+                result_text.clone(),
+                details.clone().unwrap_or_default(),
+            ));
         }
-        return Ok(ToolOutput::ok(result_text));
+        return Ok(ToolOutput::ok_with_details(
+            result_text,
+            details.unwrap_or_default(),
+        ));
     };
 
     if let Some(ref tx) = on_update {
-        let _ = tx.send(ToolOutput::ok(final_output.clone()));
+        let _ = tx.send(ToolOutput::ok_with_details(
+            final_output.clone(),
+            details.clone().unwrap_or_default(),
+        ));
     }
 
     Err(anyhow::anyhow!("{}", final_output))
@@ -435,6 +521,13 @@ impl AgentTool for BashTool {
 
         cancel.check()?;
 
+        // Apply command prefix if set
+        let effective_command = if let Some(ref prefix) = self.command_prefix {
+            format!("{}\n{}", prefix, command)
+        } else {
+            command.to_string()
+        };
+
         // Check that the working directory exists (matching pi's fsAccess check)
         if !self.cwd.exists() {
             anyhow::bail!(
@@ -443,8 +536,46 @@ impl AgentTool for BashTool {
             );
         }
 
-        let mut child = spawn_bash_command(command, &self.cwd, self.shell_path.as_deref())
-            .with_context(|| format!("Failed to spawn command: {}", command))?;
+        // If custom operations are provided, delegate entirely
+        if let Some(ref ops) = self.operations {
+            let (output_tx, mut output_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+            let ops_cancel = cancel.clone();
+
+            // Spawn the operations exec in background
+            let ops_command = effective_command.clone();
+            let ops_cwd = self.cwd.clone();
+            let ops = ops.clone();
+            let ops_handle = tokio::spawn(async move {
+                ops.exec(
+                    &ops_command,
+                    &ops_cwd,
+                    output_tx,
+                    Some(&ops_cancel),
+                    timeout,
+                    None,
+                )
+                .await
+            });
+
+            // Collect output from the channel
+            let mut combined = String::new();
+            while let Some(chunk) = output_rx.recv().await {
+                combined.push_str(&chunk);
+                // Stream partial output to on_update
+                if let Some(ref tx) = on_update {
+                    let _ = tx.send(ToolOutput::ok(combined.clone()));
+                }
+            }
+
+            let exit_code = ops_handle.await.unwrap_or(Ok(None)).unwrap_or(None);
+            let code = exit_code.unwrap_or(-1);
+
+            return finish_bash_execution(&combined, code, cancel.is_cancelled(), None, on_update);
+        }
+
+        let mut child =
+            spawn_bash_command(&effective_command, &self.cwd, self.shell_path.as_deref())
+                .with_context(|| format!("Failed to spawn command: {}", effective_command))?;
 
         let pid = child.id().unwrap_or(0);
 
@@ -786,6 +917,9 @@ mod tests {
         BashTool {
             cwd: std::env::temp_dir(),
             shell_path: None,
+            command_prefix: None,
+            spawn_hook: None,
+            operations: None,
         }
     }
 
@@ -977,6 +1111,9 @@ mod tests {
         let tool = BashTool {
             cwd: tmp.clone(),
             shell_path: None,
+            command_prefix: None,
+            spawn_hook: None,
+            operations: None,
         };
         let output = tool
             .execute(

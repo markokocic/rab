@@ -143,12 +143,12 @@ impl Extension for CommandsExtension {
                 name: "export".to_string(),
                 description: "Export session (HTML default, or specify path: .html/.jsonl)"
                     .to_string(),
-                handler: Box::new(NotImplementedCommand),
+                handler: Box::new(ExportCommand),
             },
             SlashCommand {
                 name: "import".to_string(),
                 description: "Import and resume a session from a JSONL file".to_string(),
-                handler: Box::new(NotImplementedCommand),
+                handler: Box::new(ImportCommand),
             },
             SlashCommand {
                 name: "share".to_string(),
@@ -158,7 +158,7 @@ impl Extension for CommandsExtension {
             SlashCommand {
                 name: "copy".to_string(),
                 description: "Copy last agent message to clipboard".to_string(),
-                handler: Box::new(NotImplementedCommand),
+                handler: Box::new(CopyLastCommand),
             },
             SlashCommand {
                 name: "name".to_string(),
@@ -175,7 +175,7 @@ impl Extension for CommandsExtension {
             SlashCommand {
                 name: "changelog".to_string(),
                 description: "Show changelog entries".to_string(),
-                handler: Box::new(NotImplementedCommand),
+                handler: Box::new(ChangelogCommand),
             },
             SlashCommand {
                 name: "hotkeys".to_string(),
@@ -190,12 +190,12 @@ impl Extension for CommandsExtension {
             SlashCommand {
                 name: "clone".to_string(),
                 description: "Duplicate the current session at the current position".to_string(),
-                handler: Box::new(NotImplementedCommand),
+                handler: Box::new(CloneCommand),
             },
             SlashCommand {
                 name: "tree".to_string(),
                 description: "Navigate session tree (switch branches)".to_string(),
-                handler: Box::new(NotImplementedCommand),
+                handler: Box::new(TreeCommand),
             },
             SlashCommand {
                 name: "trust".to_string(),
@@ -210,7 +210,7 @@ impl Extension for CommandsExtension {
             SlashCommand {
                 name: "logout".to_string(),
                 description: "Remove provider authentication".to_string(),
-                handler: Box::new(NotImplementedCommand),
+                handler: Box::new(LogoutCommand),
             },
             SlashCommand {
                 name: "new".to_string(),
@@ -484,7 +484,98 @@ impl CommandHandler for CompactCommand {
     }
 }
 
+// ── /export ──────────────────────────────────────────────────────
+
+struct ExportCommand;
+
+impl CommandHandler for ExportCommand {
+    fn execute(&self, args: &str) -> anyhow::Result<CommandResult> {
+        let path = args.trim();
+        Ok(CommandResult::ExportSession {
+            path: if path.is_empty() {
+                None
+            } else {
+                Some(path.to_string())
+            },
+        })
+    }
+}
+
+// ── /import ──────────────────────────────────────────────────────
+
+struct ImportCommand;
+
+impl CommandHandler for ImportCommand {
+    fn execute(&self, args: &str) -> anyhow::Result<CommandResult> {
+        let path = args.trim();
+        if path.is_empty() {
+            Ok(CommandResult::Info(
+                "Usage: /import <path> - import and resume a session from a JSONL file".to_string(),
+            ))
+        } else {
+            Ok(CommandResult::ImportSession {
+                path: path.to_string(),
+            })
+        }
+    }
+}
+
+// ── /copy ─────────────────────────────────────────────────────────
+
+struct CopyLastCommand;
+
+impl CommandHandler for CopyLastCommand {
+    fn execute(&self, _args: &str) -> anyhow::Result<CommandResult> {
+        Ok(CommandResult::CopyLastMessage)
+    }
+}
+
+// ── /changelog ────────────────────────────────────────────────────
+
+struct ChangelogCommand;
+
+impl CommandHandler for ChangelogCommand {
+    fn execute(&self, _args: &str) -> anyhow::Result<CommandResult> {
+        Ok(CommandResult::ShowChangelog)
+    }
+}
+
+// ── /clone ────────────────────────────────────────────────────────
+
+struct CloneCommand;
+
+impl CommandHandler for CloneCommand {
+    fn execute(&self, _args: &str) -> anyhow::Result<CommandResult> {
+        Ok(CommandResult::CloneSession)
+    }
+}
+
+// ── /tree ─────────────────────────────────────────────────────────
+
+struct TreeCommand;
+
+impl CommandHandler for TreeCommand {
+    fn execute(&self, _args: &str) -> anyhow::Result<CommandResult> {
+        Ok(CommandResult::SessionTree)
+    }
+}
+
 // ── /logout ───────────────────────────────────────────────────────
+
+struct LogoutCommand;
+
+impl CommandHandler for LogoutCommand {
+    fn execute(&self, args: &str) -> anyhow::Result<CommandResult> {
+        let provider = args.trim();
+        Ok(CommandResult::Logout {
+            provider: if provider.is_empty() {
+                None
+            } else {
+                Some(provider.to_string())
+            },
+        })
+    }
+}
 
 // ── Not Implemented fallback ─────────────────────────────────────
 

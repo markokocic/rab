@@ -7,6 +7,7 @@ use async_trait::async_trait;
 use std::borrow::Cow;
 use std::path::Path;
 use tokio::sync::mpsc::UnboundedSender;
+use unicode_normalization::UnicodeNormalization;
 
 pub struct ReadExtension {
     cwd: std::path::PathBuf,
@@ -59,6 +60,103 @@ fn trim_trailing_empty_lines<'a>(lines: &'a [&'a str]) -> &'a [&'a str] {
         end -= 1;
     }
     &lines[..end]
+}
+
+// ── macOS path variant resolution (matching pi's resolveReadPathAsync) ──
+
+/// Try macOS filename variant: narrow no-break space before AM/PM.
+fn try_macos_am_pm_variant(path: &str) -> Option<String> {
+    // macOS screenshot names: "Screen Shot 2023-01-01 at 10.30.00 AM.png"
+    // Users type "10.30.00 AM" with regular space, macOS stores with narrow no-break space.
+    let narrow_nbsp = "\u{202F}";
+    if path.contains(" AM") || path.contains(" PM") {
+        let variant = path
+            .replace(" AM", &format!("{}AM", narrow_nbsp))
+            .replace(" PM", &format!("{}PM", narrow_nbsp));
+        if variant != path && std::path::Path::new(&variant).exists() {
+            return Some(variant);
+        }
+    }
+    None
+}
+
+/// Try macOS NFD filename variant.
+fn try_nfd_variant(path: &str) -> Option<String> {
+    // macOS stores filenames in NFD (decomposed) form.
+    // Try converting the user input to NFD.
+    let nfd: String = path.nfkd().collect();
+    if nfd != path && std::path::Path::new(&nfd).exists() {
+        return Some(nfd);
+    }
+    None
+}
+
+/// Try curly quote variant for macOS screenshot names.
+fn try_curly_quote_variant(path: &str) -> Option<String> {
+    // macOS uses U+2019 (right single quotation mark) in screenshot names like "Capture d'écran"
+    // Users typically type U+0027 (straight apostrophe)
+    let variant = path.replace('\'', "\u{2019}");
+    if variant != path && std::path::Path::new(&variant).exists() {
+        return Some(variant);
+    }
+    None
+}
+
+/// Resolve a read path trying macOS filename variants if the direct path doesn't exist.
+/// Matching pi's `resolveReadPath` (sync version).
+fn resolve_read_path(path: &str, cwd: &Path) -> std::path::PathBuf {
+    let resolved = {
+        let p = std::path::Path::new(path);
+        if p.is_absolute() {
+            p.to_path_buf()
+        } else {
+            cwd.join(p)
+        }
+    };
+
+    if resolved.exists() {
+        return resolved;
+    }
+
+    let resolved_str = resolved.to_string_lossy();
+
+    // Try macOS AM/PM variant
+    if let Some(variant) = try_macos_am_pm_variant(&resolved_str) {
+        return std::path::PathBuf::from(variant);
+    }
+
+    // Try NFD variant
+    if let Some(variant) = try_nfd_variant(&resolved_str) {
+        return std::path::PathBuf::from(variant);
+    }
+
+    // Try curly quote variant
+    if let Some(variant) = try_curly_quote_variant(&resolved_str) {
+        return std::path::PathBuf::from(variant);
+    }
+
+    resolved
+}
+
+// ── Image detection (basic) ───────────────────────────────────────────
+
+/// Detect common image MIME types from file extension.
+/// Returns the MIME type if the file extension matches a known image format,
+/// or None otherwise.
+fn guess_image_mime_from_extension(path: &Path) -> Option<&'static str> {
+    let ext = path.extension()?.to_str()?.to_lowercase();
+    match ext.as_str() {
+        "png" => Some("image/png"),
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "gif" => Some("image/gif"),
+        "webp" => Some("image/webp"),
+        "bmp" => Some("image/bmp"),
+        "ico" => Some("image/x-icon"),
+        "svg" => Some("image/svg+xml"),
+        "tiff" | "tif" => Some("image/tiff"),
+        "avif" => Some("image/avif"),
+        _ => None,
+    }
 }
 
 /// Compact read classification matching pi's `CompactReadClassification`.
@@ -259,16 +357,32 @@ impl AgentTool for ReadTool {
         let offset = args["offset"].as_u64().map(|o| o as usize).unwrap_or(0);
         let limit = args["limit"].as_u64().map(|l| l as usize);
 
-        let abs_path = {
-            let p = std::path::Path::new(path);
-            if p.is_absolute() {
-                p.to_path_buf()
-            } else {
-                self.cwd.join(p)
-            }
-        };
+        let abs_path = resolve_read_path(path, &self.cwd);
 
         cancel.check()?;
+
+        // Check if the file is an image (basic extension-based detection)
+        if let Some(mime) = guess_image_mime_from_extension(&abs_path) {
+            // Image file detected - check readability and return a descriptive note
+            std::fs::metadata(&abs_path)
+                .with_context(|| format!("Failed to read image {}", abs_path.display()))?;
+            let file_name = abs_path
+                .file_name()
+                .map(|n| n.to_string_lossy())
+                .unwrap_or_default()
+                .to_string();
+            let file_size = std::fs::metadata(&abs_path)
+                .ok()
+                .map(|m| format_size(m.len() as usize))
+                .unwrap_or_default();
+            let msg = format!(
+                "Read image file [{}] - {} ({})\n[Image display not yet supported in rab.]",
+                mime, file_name, file_size,
+            );
+            // Read to verify the file is accessible
+            let _ = std::fs::read(&abs_path)?;
+            return Ok(ToolOutput::ok(msg));
+        }
 
         let content = std::fs::read_to_string(&abs_path)
             .with_context(|| format!("Failed to read {}", abs_path.display()))?;

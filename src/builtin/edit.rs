@@ -2,20 +2,67 @@ use crate::agent::extension::{AgentTool, Cancel, Extension, ToolOutput};
 use crate::agent::extension::{ToolRenderContext, ToolRenderer};
 use crate::tui::Theme;
 use crate::tui::ThemeKey;
-use anyhow::Context;
 use async_trait::async_trait;
 use std::borrow::Cow;
-use std::sync::Mutex;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc::UnboundedSender;
 use unicode_normalization::UnicodeNormalization;
 
+// ── EditOperations (pluggable) ─────────────────────────────────────
+
+/// Pluggable operations for the edit tool (matching pi's EditOperations).
+/// Override these to delegate file editing to remote systems (for example SSH).
+#[async_trait]
+pub trait EditOperations: Send + Sync {
+    /// Read file contents as a String.
+    async fn read_file(&self, absolute_path: &Path) -> anyhow::Result<String>;
+    /// Write content to a file.
+    async fn write_file(&self, absolute_path: &Path, content: &str) -> anyhow::Result<()>;
+    /// Check if file is readable and writable (throw if not).
+    async fn access(&self, absolute_path: &Path) -> anyhow::Result<()>;
+}
+
+struct DefaultEditOperations;
+
+#[async_trait]
+impl EditOperations for DefaultEditOperations {
+    async fn read_file(&self, absolute_path: &Path) -> anyhow::Result<String> {
+        Ok(std::fs::read_to_string(absolute_path)?)
+    }
+
+    async fn write_file(&self, absolute_path: &Path, content: &str) -> anyhow::Result<()> {
+        Ok(std::fs::write(absolute_path, content)?)
+    }
+
+    async fn access(&self, absolute_path: &Path) -> anyhow::Result<()> {
+        if !absolute_path.exists() {
+            anyhow::bail!("File not found: {}", absolute_path.display());
+        }
+        if !absolute_path.is_file() {
+            anyhow::bail!("Not a file: {}", absolute_path.display());
+        }
+        Ok(())
+    }
+}
+
 pub struct EditExtension {
-    cwd: std::path::PathBuf,
+    cwd: PathBuf,
+    operations: Arc<dyn EditOperations>,
 }
 
 impl EditExtension {
-    pub fn new(cwd: std::path::PathBuf) -> Self {
-        Self { cwd }
+    pub fn new(cwd: PathBuf) -> Self {
+        Self {
+            cwd,
+            operations: Arc::new(DefaultEditOperations),
+        }
+    }
+
+    /// Set custom edit operations (e.g. for SSH targets).
+    pub fn with_operations(mut self, operations: Arc<dyn EditOperations>) -> Self {
+        self.operations = operations;
+        self
     }
 }
 
@@ -28,13 +75,15 @@ impl Extension for EditExtension {
         vec![Box::new(EditTool {
             cwd: self.cwd.clone(),
             renderer: EditRenderer::new(),
+            operations: self.operations.clone(),
         })]
     }
 }
 
 struct EditTool {
-    cwd: std::path::PathBuf,
+    cwd: PathBuf,
     renderer: EditRenderer,
+    operations: Arc<dyn EditOperations>,
 }
 
 #[derive(serde::Deserialize, Clone)]
@@ -780,6 +829,7 @@ impl AgentTool for EditTool {
         let path_for_queue = path_str.clone();
         let cwd_for_closure = cwd.clone();
         let edits_for_closure = edits.clone();
+        let ops = self.operations.clone();
 
         // Wrap the entire read-edit-write in a per-file mutation queue so
         // concurrent edits to the same file are serialized (pi-style).
@@ -798,9 +848,13 @@ impl AgentTool for EditTool {
 
                 cancel.check()?;
 
-                // Read file
-                let raw_content = std::fs::read_to_string(&abs_path)
-                    .with_context(|| format!("Failed to read {}", abs_path.display()))?;
+                // Check file accessibility using operations
+                ops.access(&abs_path).await?;
+
+                cancel.check()?;
+
+                // Read file using operations
+                let raw_content = ops.read_file(&abs_path).await?;
 
                 cancel.check()?;
 
@@ -821,12 +875,15 @@ impl AgentTool for EditTool {
                 // ── 9. Write back with original line endings and BOM ──
                 let final_content =
                     bom.to_string() + &restore_line_endings(&new_content, original_ending);
-                std::fs::write(&abs_path, &final_content)
-                    .with_context(|| format!("Failed to write {}", abs_path.display()))?;
+                ops.write_file(&abs_path, &final_content).await?;
 
-                // ── 10. Return result ──
-                // Content: just the success message (no embedded diff).
-                // Diff is in details for UI rendering (pi-compatible).
+                cancel.check()?;
+
+                // ── 10. Compute firstChangedLine and patch ──
+                let first_changed_line = extract_first_changed_line(&diff);
+                let patch = generate_unified_patch(&path_str, &_base_content, &new_content);
+
+                // ── 11. Return result ──
                 let noun = if edits.len() == 1 { "block" } else { "blocks" };
                 let msg = format!(
                     "Successfully replaced {} {} in {}.",
@@ -837,7 +894,8 @@ impl AgentTool for EditTool {
                 let details = serde_json::json!({
                     "diff": diff.trim_end(),
                     "path": path_str,
-                    "patch": "", // patch is not computed yet
+                    "patch": patch,
+                    "firstChangedLine": first_changed_line,
                 });
                 Ok::<_, anyhow::Error>((msg, details))
             },
@@ -1025,6 +1083,151 @@ impl ToolRenderer for EditRenderer {
     }
 }
 
+// ── Diff utility functions ───────────────────────────────────────
+
+/// Extract the first changed line number from a diff string.
+/// Scans for the first `+` or `-` prefixed line with a line number.
+fn extract_first_changed_line(diff: &str) -> Option<usize> {
+    for line in diff.lines() {
+        let bytes = line.as_bytes();
+        if bytes.is_empty() {
+            continue;
+        }
+        let prefix = bytes[0] as char;
+        if prefix != '+' && prefix != '-' {
+            continue;
+        }
+        // Parse the line number from the rest
+        let rest = &line[1..];
+        let num_str: String = rest
+            .chars()
+            .take_while(|c| c.is_whitespace() || c.is_ascii_digit())
+            .collect();
+        if let Ok(num) = num_str.trim().parse::<usize>() {
+            return Some(num);
+        }
+    }
+    None
+}
+
+/// Generate a unified diff patch string from original and modified content.
+/// Uses basic hunk structure matching pi's `generateUnifiedPatch`.
+fn generate_unified_patch(path: &str, original: &str, modified: &str) -> String {
+    let orig_lines: Vec<&str> = original.lines().collect();
+    let mod_lines: Vec<&str> = modified.lines().collect();
+
+    let n = orig_lines.len();
+    let m = mod_lines.len();
+    let mut dp = vec![vec![0usize; m + 1]; n + 1];
+    for i in 1..=n {
+        for j in 1..=m {
+            if orig_lines[i - 1] == mod_lines[j - 1] {
+                dp[i][j] = dp[i - 1][j - 1] + 1;
+            } else {
+                dp[i][j] = dp[i - 1][j].max(dp[i][j - 1]);
+            }
+        }
+    }
+
+    // Backtrack to build sequence of changes
+    let mut changes: Vec<(char, &str)> = Vec::new();
+    let mut i = n;
+    let mut j = m;
+    while i > 0 || j > 0 {
+        if i > 0 && j > 0 && orig_lines[i - 1] == mod_lines[j - 1] {
+            changes.push((' ', orig_lines[i - 1]));
+            i -= 1;
+            j -= 1;
+        } else if j > 0 && (i == 0 || dp[i][j - 1] >= dp[i - 1][j]) {
+            changes.push(('+', mod_lines[j - 1]));
+            j -= 1;
+        } else {
+            changes.push(('-', orig_lines[i - 1]));
+            i -= 1;
+        }
+    }
+    changes.reverse();
+
+    // Group into hunks
+    const CTX: usize = 3;
+    let mut hunks: Vec<String> = Vec::new();
+    let mut pos = 0;
+
+    while pos < changes.len() {
+        while pos < changes.len() && changes[pos].0 == ' ' {
+            pos += 1;
+        }
+        if pos >= changes.len() {
+            break;
+        }
+
+        let hunk_start = pos.saturating_sub(CTX);
+        let hunk_end = (pos + 3 * CTX).min(changes.len());
+
+        // Compute old/new line ranges
+        let mut old_line = 1usize;
+        let mut new_line = 1usize;
+        for (tag, _) in changes.iter().take(pos.saturating_sub(CTX)) {
+            match tag {
+                ' ' => {
+                    old_line += 1;
+                    new_line += 1;
+                }
+                '-' => old_line += 1,
+                '+' => new_line += 1,
+                _ => {}
+            }
+        }
+
+        let old_start = old_line;
+        let new_start = new_line;
+
+        // Count hunk size
+        let mut old_count = 0usize;
+        let mut new_count = 0usize;
+        for (tag, _) in changes[hunk_start..hunk_end].iter() {
+            match tag {
+                ' ' => {
+                    old_count += 1;
+                    new_count += 1;
+                }
+                '-' => old_count += 1,
+                '+' => new_count += 1,
+                _ => {}
+            }
+        }
+
+        let mut hunk = format!(
+            "@@ -{},{} +{},{} @@\n",
+            old_start, old_count, new_start, new_count
+        );
+
+        for (tag, text) in changes[hunk_start..hunk_end].iter() {
+            match tag {
+                ' ' => hunk.push_str(&format!(" {}", text)),
+                '-' => hunk.push_str(&format!("-{}", text)),
+                '+' => hunk.push_str(&format!("+{}", text)),
+                _ => {}
+            }
+            hunk.push('\n');
+        }
+
+        hunks.push(hunk);
+        pos = hunk_end;
+    }
+
+    if hunks.is_empty() {
+        return String::new();
+    }
+
+    let mut patch = format!("--- a/{}\n+++ b/{}\n", path, path);
+    for hunk in &hunks {
+        patch.push_str(hunk);
+    }
+
+    patch
+}
+
 // ═══════════════════════════════════════════════════════════════════
 // Tests
 // ═══════════════════════════════════════════════════════════════════
@@ -1045,6 +1248,7 @@ mod tests {
         let tool = EditTool {
             cwd: tmp.clone(),
             renderer: EditRenderer::new(),
+            operations: Arc::new(DefaultEditOperations),
         };
         (tool, tmp)
     }
