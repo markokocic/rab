@@ -3,21 +3,18 @@ use std::path::Path;
 use std::sync::{Arc, LazyLock, Mutex};
 use tokio::sync::Notify;
 
+use crate::builtin;
+
 /// Per-file queue entries. Each entry is a `Notify` that the NEXT operation
 /// will wait on. Operations chain through these to serialize access.
 static FILE_QUEUES: LazyLock<Mutex<HashMap<String, Arc<Notify>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
-/// Resolve a file path (relative or absolute) against a working directory.
-fn resolve_path(path: &str, cwd: &Path) -> String {
-    let p = Path::new(path);
-    if p.is_absolute() {
-        path.to_string()
-    } else {
-        let joined = cwd.join(p);
-        // Normalize using the filesystem representation
-        joined.to_string_lossy().replace('\\', "/")
-    }
+/// Normalize a path for use as a queue key.
+fn normalize_path_key(path: &str, cwd: &Path) -> String {
+    builtin::resolve_path(path, cwd)
+        .to_string_lossy()
+        .replace('\\', "/")
 }
 
 /// Serialize file mutation operations targeting the same file.
@@ -43,7 +40,7 @@ where
     F: FnOnce() -> Fut,
     Fut: std::future::Future<Output = Result<T, E>>,
 {
-    let key = resolve_path(file_path, cwd);
+    let key = normalize_path_key(file_path, cwd);
 
     // ── Registration phase ─────────────────────────────────────
     // Atomically: pick up the previous Notify (if any) and store ours.

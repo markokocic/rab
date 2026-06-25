@@ -141,7 +141,7 @@ fn get_style_prefix(style_fn: &dyn Fn(&str) -> String) -> String {
 }
 
 /// Check whether hyperlinks (OSC 8) are supported.
-fn hyperlinks_supported() -> bool {
+pub(crate) fn hyperlinks_supported() -> bool {
     if let Ok(prog) = std::env::var("TERM_PROGRAM")
         && (prog == "iTerm.app" || prog == "kitty" || prog == "WezTerm" || prog == "vscode")
     {
@@ -163,7 +163,7 @@ fn hyperlinks_supported() -> bool {
 }
 
 /// Wrap text in an OSC 8 hyperlink.
-fn hyperlink(text: &str, url: &str) -> String {
+pub(crate) fn hyperlink(text: &str, url: &str) -> String {
     format!("\x1b]8;;{}\x07{}\x1b]8;;\x07", url, text)
 }
 

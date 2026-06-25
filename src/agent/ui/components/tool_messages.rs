@@ -50,6 +50,8 @@ pub struct ToolExecComponent {
     file_path: Option<String>,
     // ── Structured details for UI renderer (not sent to LLM) ──
     details: Option<serde_json::Value>,
+    // ── Working directory for path resolution in renderers ──
+    cwd: String,
     // ── Dirty tracking for efficient re-render ──
     dirty: bool,
     // ── Render cache ──
@@ -61,6 +63,7 @@ impl ToolExecComponent {
         name: impl Into<String>,
         renderer: Option<Box<dyn ToolRenderer>>,
         args: serde_json::Value,
+        cwd: String,
     ) -> Self {
         Self {
             name: name.into(),
@@ -80,6 +83,7 @@ impl ToolExecComponent {
             cancelled: false,
             file_path: None,
             details: None,
+            cwd,
             dirty: true,
             cache: None,
         }
@@ -283,7 +287,7 @@ impl ToolExecComponent {
             args_complete: self.is_complete,
             is_partial,
             is_error: self.is_error,
-            cwd: String::new(),
+            cwd: self.cwd.clone(),
             duration_secs: self.live_duration(),
             exit_code: self.exit_code,
             cancelled: self.cancelled,

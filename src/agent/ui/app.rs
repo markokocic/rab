@@ -2184,6 +2184,7 @@ fn handle_agent_event(app: &mut App, event: AgentEvent) {
                     &name,
                     renderer,
                     args.clone(),
+                    app.cwd.to_string_lossy().to_string(),
                 );
                 tool.set_started_at(std::time::Instant::now());
                 Rc::new(RefCell::new(tool))
@@ -2200,6 +2201,7 @@ fn handle_agent_event(app: &mut App, event: AgentEvent) {
                         .find(|t| t.name() == name)
                         .and_then(|t| t.renderer()),
                     args.clone(),
+                    app.cwd.to_string_lossy().to_string(),
                 );
                 comp.set_file_path(path.to_string());
                 comp.set_started_at(std::time::Instant::now());
@@ -2209,6 +2211,7 @@ fn handle_agent_event(app: &mut App, event: AgentEvent) {
                     &name,
                     renderer,
                     args.clone(),
+                    app.cwd.to_string_lossy().to_string(),
                 );
                 tool.set_started_at(std::time::Instant::now());
                 Rc::new(RefCell::new(tool))
