@@ -1,3 +1,4 @@
+use crate::agent::branch_summary::{collect_entries_for_branch_summary, generate_branch_summary};
 use crate::agent::compaction::{self, CompactionSettings, compact, prepare_compaction};
 use crate::agent::r#loop::AgentEvent;
 use crate::agent::provider::Provider;
@@ -297,6 +298,42 @@ impl AgentSession {
         );
 
         Ok(result.summary)
+    }
+
+    // ── Branch summarization ───────────────────────────────────────
+
+    /// Summarise the abandoned branch when navigating to a different node.
+    ///
+    /// Collects entries between `old_leaf_id` and the common ancestor with
+    /// `target_id`, summarises them via the provider, and appends a
+    /// `BranchSummaryEntry` to the session.
+    ///
+    /// Returns the summary text, or an error message.
+    pub async fn summarize_branch_navigation(
+        &mut self,
+        old_leaf_id: Option<&str>,
+        target_id: &str,
+    ) -> Result<String, String> {
+        if self.compaction_provider.is_none() || self.model_name.is_empty() {
+            return Err("No provider configured for summarization".to_string());
+        }
+
+        let (entries, _common_ancestor) =
+            collect_entries_for_branch_summary(self.session(), old_leaf_id, target_id);
+
+        if entries.is_empty() {
+            return Err("No abandoned entries to summarize".to_string());
+        }
+
+        let provider = self.compaction_provider.as_ref().unwrap();
+        generate_branch_summary(
+            &mut self.session,
+            &entries,
+            target_id,
+            provider.as_ref(),
+            &self.model_name,
+        )
+        .await
     }
 
     // ── Internal helpers ──────────────────────────────────────────
