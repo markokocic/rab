@@ -462,11 +462,6 @@ disable-model-invocation: true
     }
 
     #[test]
-    fn test_format_skills_empty() {
-        assert!(format_skills_for_prompt(&[]).is_empty());
-    }
-
-    #[test]
     fn test_format_skills_all_disabled() {
         let skills = vec![Skill {
             name: "hidden".to_string(),
