@@ -1,6 +1,6 @@
 use serde::Serialize;
 
-use crate::agent::provider::{Provider, StopReason, StreamEvent};
+use crate::agent::yo_bridge;
 use crate::agent::session::SessionEntry;
 use crate::agent::types::{AgentMessage, Role};
 
@@ -508,7 +508,7 @@ fn extract_file_ops(messages: &[AgentMessage]) -> Option<serde_json::Value> {
 /// and return the result ready to append to the session.
 pub async fn compact(
     preparation: &CompactionPreparation,
-    provider: &dyn Provider,
+    api_key: &str,
     model: &str,
     system_prompt_override: Option<&str>,
 ) -> Result<CompactionResult, String> {
@@ -557,8 +557,8 @@ pub async fn compact(
     // Create a summarisation message
     let summary_msg = AgentMessage::user(&prompt);
 
-    // Get summary from provider
-    let summary_text = call_provider_for_summary(provider, model, system, &[summary_msg]).await?;
+    // Get summary from provider via yoagent
+    let summary_text = yo_bridge::summarize_text(api_key, model, system, &[summary_msg]).await?;
 
     // Extract file operations from messages being summarised
     let mut all_messages = preparation.messages_to_summarize.clone();
@@ -575,58 +575,7 @@ pub async fn compact(
 }
 
 /// Call the provider for a simple text completion (no tools, no streaming).
-async fn call_provider_for_summary(
-    provider: &dyn Provider,
-    model: &str,
-    system_prompt: &str,
-    messages: &[AgentMessage],
-) -> Result<String, String> {
-    let mut stream = provider
-        .stream(model, system_prompt, messages, &[])
-        .await
-        .map_err(|e| format!("Summarization failed: {}", e))?;
 
-    let mut text = String::new();
-    let mut last_error: Option<String> = None;
-
-    use futures::StreamExt;
-    while let Some(event) = stream.next().await {
-        match event {
-            StreamEvent::TextDelta { text: delta } => {
-                text.push_str(&delta);
-            }
-            StreamEvent::Done {
-                text: final_text,
-                stop_reason,
-                ..
-            } => {
-                // If we got no deltas, use the final text
-                if text.is_empty() && !final_text.is_empty() {
-                    text = final_text;
-                }
-                if stop_reason == StopReason::Error {
-                    last_error = Some("Provider returned error status".to_string());
-                }
-                break;
-            }
-            StreamEvent::Error { message } => {
-                last_error = Some(message);
-                break;
-            }
-            _ => {} // ignore thinking, tool calls etc.
-        }
-    }
-
-    if let Some(err) = last_error {
-        return Err(format!("Summarization failed: {}", err));
-    }
-
-    if text.is_empty() {
-        return Err("Summarization returned empty response".to_string());
-    }
-
-    Ok(text)
-}
 
 /// Format a message for inclusion in the summarisation prompt.
 fn format_message_for_summary(msg: &AgentMessage) -> String {

@@ -1,5 +1,5 @@
 use crate::agent::compaction::{CompactionSettings, estimate_tokens};
-use crate::agent::provider::Provider;
+use crate::agent::yo_bridge;
 use crate::agent::session::{SessionEntry, SessionManager};
 use crate::agent::types::{AgentMessage, Role};
 use std::collections::HashSet;
@@ -151,7 +151,7 @@ pub async fn generate_branch_summary(
     session: &mut SessionManager,
     entries: &[SessionEntry],
     target_id: &str,
-    provider: &dyn Provider,
+    api_key: &str,
     model: &str,
 ) -> Result<String, String> {
     let settings = CompactionSettings::default();
@@ -211,44 +211,7 @@ Keep it concise. Preserve exact file paths, function names, and error messages."
     let summary_msg = AgentMessage::user(&prompt);
     let system_prompt = "You are a precise summarizer. Summarize the conversation branch above.";
 
-    let mut stream = provider
-        .stream(model, system_prompt, &[summary_msg], &[])
-        .await
-        .map_err(|e| format!("Branch summarization failed: {}", e))?;
-
-    let mut summary = String::new();
-    let mut last_error: Option<String> = None;
-
-    use futures::StreamExt;
-    while let Some(event) = stream.next().await {
-        match event {
-            crate::agent::provider::StreamEvent::TextDelta { text: delta } => {
-                summary.push_str(&delta);
-            }
-            crate::agent::provider::StreamEvent::Done {
-                text: final_text,
-                stop_reason,
-                ..
-            } => {
-                if summary.is_empty() && !final_text.is_empty() {
-                    summary = final_text;
-                }
-                if stop_reason == crate::agent::provider::StopReason::Error {
-                    last_error = Some("Provider returned error status".to_string());
-                }
-                break;
-            }
-            crate::agent::provider::StreamEvent::Error { message } => {
-                last_error = Some(message);
-                break;
-            }
-            _ => {}
-        }
-    }
-
-    if let Some(err) = last_error {
-        return Err(format!("Branch summarization failed: {}", err));
-    }
+    let summary = yo_bridge::summarize_text(api_key, model, system_prompt, &[summary_msg]).await?;
 
     if summary.is_empty() {
         return Err("Branch summarization returned empty response".to_string());

@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use crate::agent::AgentSession;
 use crate::agent::extension::{AgentTool, CommandResult, Extension};
-use crate::agent::provider::{Provider, ToolDef};
+use crate::agent::provider::ToolDef;
 use crate::agent::session::SessionManager;
 use crate::agent::types::{AgentMessage, PendingMessageQueue, QueueMode, ToolExecutionMode, Usage};
 use crate::agent::ui::chat_editor::{ChatEditor, InputAction};
@@ -42,10 +42,8 @@ const THINKING_LEVELS: &[&str] = &["xhigh", "high", "medium", "low", "off"];
 pub struct AppConfig {
     pub model: String,
     pub system_prompt: String,
-    pub tools: Vec<ToolDef>,
     pub agent_tools: Vec<Box<dyn AgentTool>>,
     pub extensions: Vec<Box<dyn Extension>>,
-    pub provider: Box<dyn Provider>,
     pub cwd: PathBuf,
     pub thinking_level: Option<String>,
     pub git_branch: Option<String>,
@@ -74,7 +72,6 @@ pub struct App {
     model: String,
     thinking_level: Option<String>,
     system_prompt: String,
-    provider: Arc<dyn Provider>,
     theme: RabTheme,
 
     /// Slash commands from all extensions.
@@ -406,7 +403,6 @@ impl App {
             model: config.model,
             thinking_level: config.thinking_level,
             system_prompt: config.system_prompt,
-            provider: Arc::from(config.provider),
             theme,
             commands,
             available_models: config.available_models,
@@ -1019,9 +1015,7 @@ fn handle_thinking_cycle(app: &mut App) {
     if let Some(ref mut agent_session) = app.session {
         agent_session.on_thinking_level_change(next);
     }
-    // Update provider's reasoning effort so API calls use the new level
-    // (even if save failed, the current session should use the new level)
-    app.provider.set_reasoning_effort(Some(next));
+    // yoagent hardcodes ThinkingLevel::High, no provider call needed
     app.status_text = Some(format!("Thinking level: {}", next));
 }
 
@@ -1539,7 +1533,7 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
                     app.footer
                         .borrow_mut()
                         .set_thinking_level(Some(level.clone()));
-                    app.provider.set_reasoning_effort(Some(&level));
+                    // yoagent hardcodes ThinkingLevel::High
                 }
                 app.hide_thinking = app.settings.hide_thinking.unwrap_or(true);
                 // Propagate to all chat container components
@@ -2635,7 +2629,7 @@ fn fmt_time_short(dt: &chrono::DateTime<chrono::Utc>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::provider::StreamEvent;
+    use crate::agent::provider::{Provider, StreamEvent};
     use crate::agent::types::AgentMessage;
     use crate::agent::ui::messages::render_messages;
     use async_trait::async_trait;
@@ -2667,10 +2661,8 @@ mod tests {
         let config = AppConfig {
             model: "deepseek-v4-flash".into(),
             system_prompt: String::new(),
-            tools: vec![],
             agent_tools: vec![],
             extensions: vec![],
-            provider: Box::new(MockProvider),
             cwd: cwd.clone(),
             thinking_level: None,
             git_branch: None,
@@ -2828,10 +2820,8 @@ mod tests {
         let config = AppConfig {
             model: "deepseek-v4-flash".into(),
             system_prompt: String::new(),
-            tools: vec![],
             agent_tools: vec![],
             extensions: vec![],
-            provider: Box::new(MockProvider),
             cwd: cwd.clone(),
             thinking_level: None,
             git_branch: None,
@@ -2876,10 +2866,8 @@ mod tests {
         let config = AppConfig {
             model: "deepseek-v4-flash".into(),
             system_prompt: String::new(),
-            tools: vec![],
             agent_tools: vec![],
             extensions: vec![],
-            provider: Box::new(MockProvider),
             cwd: cwd.clone(),
             thinking_level: None,
             git_branch: None,
@@ -2918,10 +2906,8 @@ mod tests {
         let config = AppConfig {
             model: "deepseek-v4-flash".into(),
             system_prompt: String::new(),
-            tools: vec![],
             agent_tools: vec![],
             extensions: vec![],
-            provider: Box::new(MockProvider),
             cwd: cwd.clone(),
             thinking_level: None,
             git_branch: None,
@@ -2967,10 +2953,8 @@ mod tests {
         let config = AppConfig {
             model: "deepseek-v4-flash".into(),
             system_prompt: String::new(),
-            tools: vec![],
             agent_tools: vec![],
             extensions: vec![],
-            provider: Box::new(MockProvider),
             cwd: cwd.clone(),
             thinking_level: None,
             git_branch: None,
@@ -3007,10 +2991,8 @@ mod tests {
         let config = AppConfig {
             model: "deepseek-v4-flash".into(),
             system_prompt: String::new(),
-            tools: vec![],
             agent_tools: vec![],
             extensions: vec![],
-            provider: Box::new(MockProvider),
             cwd: cwd.clone(),
             thinking_level: None,
             git_branch: None,
@@ -3047,10 +3029,8 @@ mod tests {
         let config = AppConfig {
             model: "deepseek-v4-flash".into(),
             system_prompt: String::new(),
-            tools: vec![],
             agent_tools: vec![],
             extensions: vec![],
-            provider: Box::new(MockProvider),
             cwd: cwd.clone(),
             thinking_level: None,
             git_branch: None,
@@ -3087,10 +3067,8 @@ mod tests {
         let config = AppConfig {
             model: "deepseek-v4-flash".into(),
             system_prompt: String::new(),
-            tools: vec![],
             agent_tools: vec![],
             extensions: vec![],
-            provider: Box::new(MockProvider),
             cwd: cwd.clone(),
             thinking_level: None,
             git_branch: None,
@@ -3133,10 +3111,8 @@ mod tests {
         let config = AppConfig {
             model: "deepseek-v4-flash".into(),
             system_prompt: String::new(),
-            tools: vec![],
             agent_tools: vec![],
             extensions: vec![],
-            provider: Box::new(MockProvider),
             cwd: cwd.clone(),
             thinking_level: None,
             git_branch: None,
@@ -3230,10 +3206,8 @@ mod tests {
         let config = AppConfig {
             model: "deepseek-v4-flash".into(),
             system_prompt: String::new(),
-            tools: vec![],
             agent_tools: vec![],
             extensions: vec![],
-            provider: Box::new(MockProvider),
             cwd: cwd.clone(),
             thinking_level: None,
             git_branch: None,
@@ -3287,10 +3261,8 @@ mod tests {
         let config = AppConfig {
             model: "deepseek-v4-flash".into(),
             system_prompt: String::new(),
-            tools: vec![],
             agent_tools: vec![],
             extensions: vec![],
-            provider: Box::new(MockProvider),
             cwd: cwd.clone(),
             thinking_level: None,
             git_branch: None,
@@ -3342,10 +3314,8 @@ mod tests {
         let config = AppConfig {
             model: "deepseek-v4-flash".into(),
             system_prompt: String::new(),
-            tools: vec![],
             agent_tools: vec![],
             extensions: vec![],
-            provider: Box::new(MockProvider),
             cwd: cwd.clone(),
             thinking_level: None,
             git_branch: None,
@@ -3413,10 +3383,8 @@ mod tests {
         let config = AppConfig {
             model: "deepseek-v4-flash".into(),
             system_prompt: String::new(),
-            tools: vec![],
             agent_tools: vec![],
             extensions: vec![],
-            provider: Box::new(MockProvider),
             cwd: cwd.clone(),
             thinking_level: None,
             git_branch: None,
@@ -3769,10 +3737,8 @@ mod tests {
         AppConfig {
             model: "test-model".into(),
             system_prompt: String::new(),
-            tools: vec![],
             agent_tools: vec![],
             extensions: vec![],
-            provider: Box::new(MockProvider),
             cwd,
             thinking_level: None,
             git_branch: None,

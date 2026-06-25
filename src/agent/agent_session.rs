@@ -1,11 +1,9 @@
 use crate::agent::branch_summary::{collect_entries_for_branch_summary, generate_branch_summary};
 use crate::agent::compaction::{self, CompactionSettings, compact, prepare_compaction};
 use crate::agent::provider::AgentEvent;
-use crate::agent::provider::Provider;
 use crate::agent::session::SessionManager;
 use crate::agent::types::{AgentMessage, Role};
 use std::collections::HashSet;
-use std::sync::Arc;
 
 /// Lifecycle layer that bridges the agent loop and session manager.
 ///
@@ -44,8 +42,8 @@ pub struct AgentSession {
     context_window: u64,
     /// Model name to use for compaction LLM calls.
     model_name: String,
-    /// Provider for compaction LLM calls.
-    compaction_provider: Option<Arc<dyn Provider>>,
+    /// API key for compaction LLM calls.
+    compaction_api_key: Option<String>,
 }
 
 impl AgentSession {
@@ -78,18 +76,18 @@ impl AgentSession {
             compaction_settings: CompactionSettings::default(),
             context_window: 200_000,
             model_name: String::new(),
-            compaction_provider: None,
+            compaction_api_key: None,
         }
     }
 
-    /// Configure compaction with provider, model, and context window.
+    /// Configure compaction with API key, model, and context window.
     pub fn set_compaction_config(
         &mut self,
-        provider: Arc<dyn Provider>,
+        api_key: String,
         model_name: &str,
         context_window: u64,
     ) {
-        self.compaction_provider = Some(provider);
+        self.compaction_api_key = Some(api_key);
         self.model_name = model_name.to_string();
         self.context_window = context_window;
     }
@@ -257,7 +255,7 @@ impl AgentSession {
         if !self.compaction_settings.enabled {
             return Ok(false);
         }
-        if self.compaction_provider.is_none() || self.model_name.is_empty() {
+        if self.compaction_api_key.is_none() || self.model_name.is_empty() {
             return Ok(false);
         }
 
@@ -277,8 +275,8 @@ impl AgentSession {
             return Ok(false);
         };
 
-        let provider = self.compaction_provider.as_ref().unwrap();
-        let result = compact(&prep, provider.as_ref(), &self.model_name, None).await?;
+        let api_key = self.compaction_api_key.as_ref().unwrap();
+        let result = compact(&prep, api_key, &self.model_name, None).await?;
 
         // Append the compaction entry to the session
         self.session.append_compaction(
@@ -295,7 +293,7 @@ impl AgentSession {
     /// Run compaction manually (ignores auto-compact setting).
     /// Returns the compaction summary text, or an error message.
     pub async fn run_manual_compact(&mut self) -> Result<String, String> {
-        if self.compaction_provider.is_none() || self.model_name.is_empty() {
+        if self.compaction_api_key.is_none() || self.model_name.is_empty() {
             return Err("No provider configured for compaction".to_string());
         }
 
@@ -304,8 +302,8 @@ impl AgentSession {
             return Err("Nothing to compact – session is already compacted or empty".to_string());
         };
 
-        let provider = self.compaction_provider.as_ref().unwrap();
-        let result = compact(&prep, provider.as_ref(), &self.model_name, None).await?;
+        let api_key = self.compaction_api_key.as_ref().unwrap();
+        let result = compact(&prep, api_key, &self.model_name, None).await?;
 
         // Append the compaction entry to the session
         self.session.append_compaction(
@@ -333,7 +331,7 @@ impl AgentSession {
         old_leaf_id: Option<&str>,
         target_id: &str,
     ) -> Result<String, String> {
-        if self.compaction_provider.is_none() || self.model_name.is_empty() {
+        if self.compaction_api_key.is_none() || self.model_name.is_empty() {
             return Err("No provider configured for summarization".to_string());
         }
 
@@ -344,12 +342,12 @@ impl AgentSession {
             return Err("No abandoned entries to summarize".to_string());
         }
 
-        let provider = self.compaction_provider.as_ref().unwrap();
+        let api_key = self.compaction_api_key.as_ref().unwrap();
         generate_branch_summary(
             &mut self.session,
             &entries,
             target_id,
-            provider.as_ref(),
+            api_key,
             &self.model_name,
         )
         .await
@@ -370,7 +368,7 @@ impl AgentSession {
     pub async fn set_branch(&mut self, branch_from_id: &str) -> Result<Option<String>, String> {
         let old_leaf = self.session.leaf_id().map(|s| s.to_string());
 
-        let summary = if self.compaction_provider.is_some()
+        let summary = if self.compaction_api_key.is_some()
             && !self.model_name.is_empty()
             && let Some(ref old) = old_leaf
             && old != branch_from_id

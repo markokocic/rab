@@ -4,17 +4,11 @@
 //! throughout the codebase. Goal: delete entirely.
 
 use crate::agent::extension::{AgentTool as RabAgentTool, Cancel, ToolOutput};
-use crate::agent::provider::{Provider, StopReason, StreamEvent, ToolDef};
 use crate::agent::types::AgentMessage;
-use crate::auth::AuthStorage;
 use async_trait::async_trait;
-use futures::Stream;
-use std::collections::HashMap;
-use std::pin::Pin;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
-use yoagent::provider::StreamProvider;
+use crate::agent::provider::ToolDef;
 use yoagent::provider::model::{ModelConfig, OpenAiCompat};
-use yoagent::provider::traits::StreamConfig;
 use yoagent::types::ThinkingLevel;
 use yoagent::types::{AgentEvent, Content, Message, ToolContext, ToolError, ToolResult};
 
@@ -100,10 +94,114 @@ impl yoagent::types::AgentTool for RabToolAdapter {
     }
 }
 
+/// Call yoagent's provider for a simple text completion (no tools, no streaming).
+/// Used by compaction and branch summary.
+pub async fn summarize_text(
+    api_key: &str,
+    model: &str,
+    system_prompt: &str,
+    messages: &[crate::agent::types::AgentMessage],
+) -> Result<String, String> {
+    use yoagent::provider::traits::StreamConfig;
+    use yoagent::provider::StreamProvider;
+
+    let yoagent_messages: Vec<yoagent::types::Message> = messages
+        .iter()
+        .map(|m| {
+            let content = vec![yoagent::types::Content::Text {
+                text: m.content.clone(),
+            }];
+            match m.role {
+                crate::agent::types::Role::User => {
+                    yoagent::types::Message::User {
+                        content,
+                        timestamp: 0,
+                    }
+                }
+                crate::agent::types::Role::Assistant => {
+                    yoagent::types::Message::Assistant {
+                        content,
+                        stop_reason: yoagent::types::StopReason::Stop,
+                        model: model.to_string(),
+                        provider: String::new(),
+                        usage: yoagent::types::Usage::default(),
+                        timestamp: 0,
+                        error_message: None,
+                    }
+                }
+                crate::agent::types::Role::ToolResult => {
+                    yoagent::types::Message::ToolResult {
+                        tool_call_id: m.tool_call_id.clone().unwrap_or_default(),
+                        tool_name: String::new(),
+                        content,
+                        is_error: m.is_error,
+                        timestamp: 0,
+                    }
+                }
+            }
+        })
+        .collect();
+
+    let config = StreamConfig {
+        model: model.to_string(),
+        system_prompt: system_prompt.to_string(),
+        messages: yoagent_messages,
+        tools: vec![],
+        thinking_level: yoagent::types::ThinkingLevel::Off,
+        api_key: api_key.to_string(),
+        max_tokens: Some(2048),
+        temperature: Some(0.3),
+        model_config: Some(opencode_model_config()),
+        cache_config: yoagent::types::CacheConfig::default(),
+    };
+
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let cancel = tokio_util::sync::CancellationToken::new();
+
+    tokio::spawn(async move {
+        let _ = yoagent::provider::OpenAiCompatProvider
+            .stream(config, tx, cancel)
+            .await;
+    });
+
+    let mut text = String::new();
+    let mut last_error: Option<String> = None;
+
+    while let Some(event) = rx.recv().await {
+        match event {
+            yoagent::provider::traits::StreamEvent::TextDelta { delta, .. } => {
+                text.push_str(&delta);
+            }
+            yoagent::provider::traits::StreamEvent::Done { message } => {
+                // Extract final text from the message
+                if let yoagent::types::Message::Assistant { content, .. } = &message {
+                    for c in content {
+                        if let yoagent::types::Content::Text { text: t } = c {
+                            if text.is_empty() {
+                                text = t.clone();
+                            }
+                        }
+                    }
+                }
+                break;
+            }
+            yoagent::provider::traits::StreamEvent::Error { .. } => {
+                last_error = Some("Provider returned error".to_string());
+                break;
+            }
+            _ => {}
+        }
+    }
+
+    if let Some(err) = last_error {
+        return Err(err);
+    }
+    Ok(text)
+}
+
 /// Collect tool definitions from a list of rab AgentTools.
 /// Used by main.rs to build LLM tool schemas.
 pub fn collect_tool_defs(agent_tools: &[Box<dyn RabAgentTool>]) -> Vec<ToolDef> {
-    use crate::agent::provider::ToolDef;
     let mut defs = Vec::new();
     for tool in agent_tools {
         if !defs.iter().any(|d: &ToolDef| d.name == tool.name()) {
@@ -122,8 +220,6 @@ pub fn collect_tool_defs(agent_tools: &[Box<dyn RabAgentTool>]) -> Vec<ToolDef> 
 // ──────────────────────────────────────────────
 
 /// Hardcoded to highest available.
-const THINKING_LEVEL: ThinkingLevel = ThinkingLevel::High;
-
 pub fn opencode_model_config() -> ModelConfig {
     ModelConfig::openai_compat(
         "https://opencode.ai/zen/go/v1",
@@ -131,175 +227,6 @@ pub fn opencode_model_config() -> ModelConfig {
         "opencode-go",
         OpenAiCompat::deepseek(),
     )
-}
-
-/// YoAgent-backed provider implementing rab's `Provider` trait.
-/// Kept for compaction in AgentSession.
-pub struct YoAgentProvider {
-    api_key: String,
-}
-
-impl YoAgentProvider {
-    pub fn new(auth: &AuthStorage) -> anyhow::Result<Self> {
-        let api_key = auth
-            .api_key("opencode-go")
-            .ok_or_else(|| anyhow::anyhow!("No opencode-go API key"))?;
-        Ok(Self { api_key })
-    }
-}
-
-#[async_trait]
-impl Provider for YoAgentProvider {
-    async fn stream(
-        &self,
-        model: &str,
-        system_prompt: &str,
-        messages: &[AgentMessage],
-        tools: &[ToolDef],
-    ) -> anyhow::Result<Pin<Box<dyn Stream<Item = StreamEvent> + Send>>> {
-        let config = StreamConfig {
-            model: model.to_string(),
-            system_prompt: system_prompt.to_string(),
-            messages: rab_messages_to_yoagent(messages),
-            tools: tools
-                .iter()
-                .map(|t| yoagent::provider::traits::ToolDefinition {
-                    name: t.name.clone(),
-                    description: t.description.clone(),
-                    parameters: t.parameters.clone(),
-                })
-                .collect(),
-            thinking_level: THINKING_LEVEL,
-            api_key: self.api_key.clone(),
-            max_tokens: None,
-            temperature: None,
-            model_config: Some(opencode_model_config()),
-            cache_config: yoagent::types::CacheConfig::default(),
-        };
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let cancel = tokio_util::sync::CancellationToken::new();
-        let mut partial_tool_calls: HashMap<usize, ToolCallAccum> = HashMap::new();
-
-        tokio::spawn(async move {
-            let _ = yoagent::provider::OpenAiCompatProvider
-                .stream(config, tx, cancel)
-                .await;
-        });
-
-        let stream = async_stream::stream! {
-            while let Some(event) = rx.recv().await {
-                match event {
-                    yoagent::provider::traits::StreamEvent::Start => {}
-                    yoagent::provider::traits::StreamEvent::TextDelta { delta, .. } => {
-                        yield StreamEvent::TextDelta { text: delta };
-                    }
-                    yoagent::provider::traits::StreamEvent::ThinkingDelta { delta, .. } => {
-                        yield StreamEvent::ThinkingDelta { text: delta };
-                    }
-                    yoagent::provider::traits::StreamEvent::ToolCallStart { content_index, id, name } => {
-                        partial_tool_calls.insert(content_index, ToolCallAccum { id, name, arguments: String::new() });
-                    }
-                    yoagent::provider::traits::StreamEvent::ToolCallDelta { content_index, delta } => {
-                        if let Some(acc) = partial_tool_calls.get_mut(&content_index) {
-                            acc.arguments.push_str(&delta);
-                        }
-                    }
-                    yoagent::provider::traits::StreamEvent::ToolCallEnd { content_index } => {
-                        if let Some(acc) = partial_tool_calls.remove(&content_index) {
-                            let args: serde_json::Value =
-                                serde_json::from_str(&acc.arguments)
-                                    .unwrap_or(serde_json::Value::String(acc.arguments.clone()));
-                            yield StreamEvent::ToolCall {
-                                id: acc.id,
-                                name: acc.name,
-                                arguments: serde_json::to_string(&args).unwrap_or_default(),
-                            };
-                        }
-                    }
-                    yoagent::provider::traits::StreamEvent::Done { message } => {
-                        let (text, tool_calls, usage, stop_reason) = extract_from_provider_message(&message);
-                        yield StreamEvent::Done { text, usage, stop_reason, tool_calls };
-                    }
-                    yoagent::provider::traits::StreamEvent::Error { message: err_msg } => {
-                        let error_text = match &err_msg {
-                            yoagent::types::Message::Assistant { error_message: Some(e), .. } => e.clone(),
-                            _ => String::new(),
-                        };
-                        yield StreamEvent::Error { message: error_text };
-                    }
-                }
-            }
-        };
-
-        Ok(Box::pin(stream))
-    }
-
-    fn set_reasoning_effort(&self, _level: Option<&str>) {}
-}
-
-struct ToolCallAccum {
-    id: String,
-    name: String,
-    arguments: String,
-}
-
-fn extract_from_provider_message(
-    msg: &yoagent::types::Message,
-) -> (
-    String,
-    Vec<crate::agent::types::ToolCall>,
-    crate::agent::types::Usage,
-    StopReason,
-) {
-    let mut text = String::new();
-    let mut tool_calls = Vec::new();
-    let mut usage = crate::agent::types::Usage::default();
-    let mut stop_reason = StopReason::EndTurn;
-
-    if let yoagent::types::Message::Assistant {
-        content,
-        stop_reason: sr,
-        usage: u,
-        ..
-    } = msg
-    {
-        for c in content {
-            match c {
-                Content::Text { text: t } => text.push_str(t),
-                Content::ToolCall {
-                    id,
-                    name,
-                    arguments,
-                    ..
-                } => {
-                    tool_calls.push(crate::agent::types::ToolCall {
-                        id: id.clone(),
-                        name: name.clone(),
-                        arguments: arguments.clone(),
-                    });
-                }
-                _ => {}
-            }
-        }
-
-        stop_reason = match sr {
-            yoagent::types::StopReason::Stop => StopReason::EndTurn,
-            yoagent::types::StopReason::ToolUse => StopReason::ToolUse,
-            yoagent::types::StopReason::Length => StopReason::MaxTokens,
-            yoagent::types::StopReason::Error => StopReason::Error,
-            yoagent::types::StopReason::Aborted => StopReason::EndTurn,
-        };
-
-        usage = crate::agent::types::Usage {
-            input_tokens: Some(u.input as i32),
-            output_tokens: Some(u.output as i32),
-            cache_tokens: Some(u.cache_read as i32),
-            cache_write_tokens: Some(u.cache_write as i32),
-            cost_total: None,
-        };
-    }
-
-    (text, tool_calls, usage, stop_reason)
 }
 
 // ──────────────────────────────────────────────
