@@ -92,11 +92,18 @@ pub struct ToolCall {
 }
 
 /// Token usage information for an assistant response.
+///
+/// Fields match pi's `AssistantMessage.usage`:
+///   input, output, cacheRead, cacheWrite, cost.{total}
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Usage {
     pub input_tokens: Option<i32>,
     pub output_tokens: Option<i32>,
     pub cache_tokens: Option<i32>,
+    /// Cache write tokens (pi's `cacheWrite`).
+    pub cache_write_tokens: Option<i32>,
+    /// Total cost in USD (pi's `cost.total`).
+    pub cost_total: Option<f64>,
 }
 
 /// A universal message type in the conversation.

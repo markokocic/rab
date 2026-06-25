@@ -2290,6 +2290,8 @@ mod tests {
                         input_tokens: Some(10),
                         output_tokens: Some(5),
                         cache_tokens: None,
+                        cache_write_tokens: None,
+                        cost_total: None,
                     });
                     m
                 },

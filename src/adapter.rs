@@ -264,7 +264,13 @@ impl Provider for GenaiProvider {
                                         .and_then(|u| u.prompt_tokens),
                                     output_tokens: end.captured_usage.as_ref()
                                         .and_then(|u| u.completion_tokens),
-                                    cache_tokens: None,
+                                    cache_tokens: end.captured_usage.as_ref()
+                                        .and_then(|u| u.prompt_tokens_details.as_ref()
+                                            .and_then(|d| d.cached_tokens)),
+                                    cache_write_tokens: end.captured_usage.as_ref()
+                                        .and_then(|u| u.prompt_tokens_details.as_ref()
+                                            .and_then(|d| d.cache_creation_tokens)),
+                                    cost_total: None,
                                 };
 
                                 let stop_reason = match &end.captured_stop_reason {

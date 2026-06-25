@@ -1,5 +1,4 @@
 use crate::agent::types::Usage;
-use crate::agent::ui::messages::pad_to_width;
 use crate::agent::ui::theme::RabTheme;
 use crate::agent::ui::theme::ThemeKey;
 use crate::tui::util::{truncate_to_width, visible_width};
@@ -35,28 +34,26 @@ pub fn format_tokens(count: u64) -> String {
 
 /// Format cwd for footer display (pi-style `formatCwdForFooter`).
 /// Resolves cwd relative to home directory, using `~` prefix.
+///
+/// Matches pi which uses `path.resolve()` + `path.relative()` to handle
+/// symlinks, `..`, and edge cases correctly.
 pub fn format_cwd_for_footer(cwd: &str, home: Option<&str>) -> String {
     let home = match home {
         Some(h) => h,
         None => return cwd.to_string(),
     };
 
-    let resolved_cwd = std::path::Path::new(cwd);
-    let resolved_home = std::path::Path::new(home);
+    // Canonicalize both paths to resolve symlinks and `..` (pi uses `resolve`).
+    // Fall back to raw paths if canonicalize fails (e.g. non-existent cwd).
+    let resolved_cwd = std::fs::canonicalize(cwd).unwrap_or_else(|_| std::path::PathBuf::from(cwd));
+    let resolved_home =
+        std::fs::canonicalize(home).unwrap_or_else(|_| std::path::PathBuf::from(home));
 
-    // Try to make relative
-    let relative = match resolved_cwd.strip_prefix(resolved_home) {
-        Ok(rest) => {
-            if rest.as_os_str().is_empty() {
-                // cwd IS home
-                return "~".to_string();
-            }
-            rest.to_string_lossy().to_string()
-        }
-        Err(_) => return cwd.to_string(),
-    };
-
-    format!("~/{}", relative)
+    match resolved_cwd.strip_prefix(&resolved_home) {
+        Ok(rest) if rest.as_os_str().is_empty() => "~".to_string(),
+        Ok(rest) => format!("~/{}", rest.to_string_lossy()),
+        Err(_) => cwd.to_string(),
+    }
 }
 
 // ── Footer Component ─────────────────────────────────────────────
@@ -171,14 +168,22 @@ impl Footer {
     }
 
     /// Pi-style: accumulate usage from a single response's usage data.
+    /// Accumulates input, output, cache_read, cache_write, and cost.
+    /// Updates latest_cache_hit_rate from this call's cache ratio.
     pub fn accumulate_usage(&mut self, usage: &Usage) {
         let input = usage.input_tokens.unwrap_or(0) as u64;
         let output = usage.output_tokens.unwrap_or(0) as u64;
         let cache_read = usage.cache_tokens.unwrap_or(0) as u64;
+        let cache_write = usage.cache_write_tokens.unwrap_or(0) as u64;
 
         self.total_input += input;
         self.total_output += output;
         self.total_cache_read += cache_read;
+        self.total_cache_write += cache_write;
+
+        if let Some(cost) = usage.cost_total {
+            self.total_cost += cost;
+        }
 
         // Compute cache hit rate from latest call
         let total_prompt = input + cache_read;
@@ -260,6 +265,8 @@ impl crate::tui::Component for Footer {
         let theme = &self.theme;
 
         // ── Line 1: pwd (git branch) • session-name ──
+        // pi: truncateToWidth(theme.fg("dim", pwd), width, theme.fg("dim", "..."));
+        // No padding — the TUI's differential render handles trailing space.
         let home = std::env::var("HOME").ok();
         let mut pwd = format_cwd_for_footer(&self.cwd, home.as_deref());
 
@@ -273,13 +280,8 @@ impl crate::tui::Component for Footer {
             &theme.fg_key(ThemeKey::Dim, &pwd),
             w,
             &theme.fg_key(ThemeKey::Dim, "..."),
-            true,
+            false, // pi: no padding
         );
-        let pwd_line = if pwd_line.is_empty() {
-            String::new()
-        } else {
-            pad_to_width(&pwd_line, w)
-        };
 
         // ── Line 2: stats left, model right (both dimmed separately) ──
         // Build stats parts (pi-style order and content)
@@ -386,9 +388,9 @@ impl crate::tui::Component for Footer {
         // Compute widths and layout (pi-style)
         let mut stats_left_width = visible_width(&stats_left);
 
-        // Pi-style: if statsLeft is too wide, truncate it
+        // Pi-style: if statsLeft is too wide, truncate it (no padding).
         if stats_left_width > w {
-            stats_left = truncate_to_width(&stats_left, w, "…", true);
+            stats_left = truncate_to_width(&stats_left, w, "...", false);
             stats_left_width = visible_width(&stats_left);
         }
 
@@ -411,7 +413,8 @@ impl crate::tui::Component for Footer {
             // Need to truncate right side
             let available_for_right = w.saturating_sub(stats_left_width + min_padding);
             if available_for_right > 0 {
-                let truncated_right = truncate_to_width(&right_side, available_for_right, "", true);
+                let truncated_right =
+                    truncate_to_width(&right_side, available_for_right, "", false);
                 let truncated_right_width = visible_width(&truncated_right);
                 let padding = " ".repeat(w - stats_left_width - truncated_right_width);
                 format!("{}{}{}", stats_left, padding, truncated_right)
@@ -431,6 +434,7 @@ impl crate::tui::Component for Footer {
         let mut lines = vec![pwd_line, stats_line_formatted];
 
         // ── Line 3: extension statuses (sorted by key, sanitized) ──
+        // pi: truncateToWidth(statusLine, width, theme.fg("dim", "...")) — no padding.
         if !self.extension_statuses.is_empty() {
             let status_text: Vec<String> = self
                 .extension_statuses
@@ -438,15 +442,14 @@ impl crate::tui::Component for Footer {
                 .map(|(_, text)| sanitize_status_text(text))
                 .collect();
             let status_line = status_text.join(" ");
-            let truncated =
-                truncate_to_width(&status_line, w, &theme.fg_key(ThemeKey::Dim, "..."), true);
-            let status_line = if truncated.is_empty() {
-                String::new()
-            } else {
-                pad_to_width(&truncated, w)
-            };
-            if !status_line.trim().is_empty() {
-                lines.push(status_line);
+            let truncated = truncate_to_width(
+                &status_line,
+                w,
+                &theme.fg_key(ThemeKey::Dim, "..."),
+                false, // pi: no padding
+            );
+            if !truncated.trim().is_empty() {
+                lines.push(truncated);
             }
         }
 
@@ -621,6 +624,8 @@ mod tests {
             input_tokens: Some(1500),
             output_tokens: Some(500),
             cache_tokens: None,
+            cache_write_tokens: None,
+            cost_total: None,
         };
         footer.accumulate_usage(&usage);
         let lines = footer.render(80);
@@ -635,12 +640,16 @@ mod tests {
             input_tokens: Some(1000),
             output_tokens: Some(500),
             cache_tokens: None,
+            cache_write_tokens: None,
+            cost_total: None,
         };
         footer.accumulate_usage(&u1);
         let u2 = Usage {
             input_tokens: Some(2000),
             output_tokens: Some(300),
             cache_tokens: None,
+            cache_write_tokens: None,
+            cost_total: None,
         };
         footer.accumulate_usage(&u2);
         let lines = footer.render(80);
@@ -655,6 +664,8 @@ mod tests {
             input_tokens: Some(1000),
             output_tokens: Some(500),
             cache_tokens: Some(200),
+            cache_write_tokens: None,
+            cost_total: None,
         };
         footer.accumulate_usage(&usage);
         let lines = footer.render(80);
@@ -814,6 +825,8 @@ mod tests {
             input_tokens: Some(100000),
             output_tokens: Some(50000),
             cache_tokens: Some(10000),
+            cache_write_tokens: None,
+            cost_total: None,
         };
         footer.accumulate_usage(&usage);
         footer.set_context(Some(45.0), 128000);
@@ -842,6 +855,8 @@ mod tests {
             input_tokens: Some(100),
             output_tokens: Some(50),
             cache_tokens: None,
+            cache_write_tokens: None,
+            cost_total: None,
         };
         footer.accumulate_usage(&usage);
         let lines = footer.render(80);
@@ -908,5 +923,41 @@ mod tests {
             lines[1].contains("xp"),
             "Should show experimental indicator"
         );
+    }
+
+    // ── verify unpadded lines don't exceed width (pi-compatible) ──
+
+    #[test]
+    fn test_pwd_line_not_padded() {
+        // Pi doesn't pad pwd line to full width — just truncates with ellipsis.
+        // Verify the visible width of line 0 doesn't exceed width but also isn't
+        // necessarily padded to match width exactly.
+        let mut footer = make_footer();
+        // Use a short cwd that fits easily
+        footer.set_cwd("/home/user");
+        let lines = footer.render(80);
+        assert!(visible_width(&lines[0]) <= 80, "Pwd line exceeds width");
+        // A short path should be less than 80 (not padded) — just the dim text.
+        assert!(
+            visible_width(&lines[0]) < 80,
+            "Pwd line should not be padded to full width (pi behavior)"
+        );
+    }
+
+    #[test]
+    fn test_extension_line_not_padded() {
+        let mut footer = make_footer();
+        footer.set_extension_status("ext1".into(), Some("short".into()));
+        let lines = footer.render(80);
+        if lines.len() >= 3 {
+            assert!(
+                visible_width(&lines[2]) <= 80,
+                "Extension line exceeds width"
+            );
+            assert!(
+                visible_width(&lines[2]) < 80,
+                "Extension line should not be padded to full width (pi behavior)"
+            );
+        }
     }
 }

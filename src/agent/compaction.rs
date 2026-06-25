@@ -734,6 +734,8 @@ mod tests {
             input_tokens: Some(100),
             output_tokens: Some(50),
             cache_tokens: None,
+            cache_write_tokens: None,
+            cost_total: None,
         });
         let msgs = vec![
             make_msg(Role::User, "hello"),
