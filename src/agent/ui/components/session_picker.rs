@@ -1,7 +1,7 @@
-use crate::agent::session::SessionInfo;
 use crate::agent::SessionRepo;
-use crate::tui::theme::ThemeKey;
+use crate::agent::session::SessionInfo;
 use crate::tui::Theme;
+use crate::tui::theme::ThemeKey;
 use std::path::PathBuf;
 
 /// Interactive session picker state.
@@ -153,10 +153,13 @@ impl SessionPicker {
         let mut lines = Vec::new();
 
         if self.loading {
-            lines.push(theme.fg_key(ThemeKey::Dim, &format!(
-                "Loading sessions... ({}/{})",
-                self.loaded_count, self.total_count
-            )));
+            lines.push(theme.fg_key(
+                ThemeKey::Dim,
+                &format!(
+                    "Loading sessions... ({}/{})",
+                    self.loaded_count, self.total_count
+                ),
+            ));
             return (lines, 0);
         }
 
@@ -167,11 +170,14 @@ impl SessionPicker {
 
         // Header
         lines.push(theme.bold("Sessions"));
-        lines.push(theme.fg_key(ThemeKey::Dim, &format!(
-            "{} total, {} shown",
-            self.sessions.len(),
-            self.filtered.len()
-        )));
+        lines.push(theme.fg_key(
+            ThemeKey::Dim,
+            &format!(
+                "{} total, {} shown",
+                self.sessions.len(),
+                self.filtered.len()
+            ),
+        ));
         lines.push(String::new());
 
         let mut cursor_y = 0;
@@ -180,11 +186,7 @@ impl SessionPicker {
             let session = &self.sessions[session_idx];
             let is_selected = display_idx == self.selected;
 
-            let name = session
-                .name
-                .as_deref()
-                .unwrap_or("unnamed")
-                .to_string();
+            let name = session.name.as_deref().unwrap_or("unnamed").to_string();
             let cwd_short = shorten_cwd(&session.cwd);
 
             let marker = if is_selected { "▸ " } else { "  " };
@@ -207,7 +209,10 @@ impl SessionPicker {
 
         // Footer hint
         lines.push(String::new());
-        lines.push(theme.fg_key(ThemeKey::Dim, "↑↓ navigate · Enter select · / filter · Esc cancel"));
+        lines.push(theme.fg_key(
+            ThemeKey::Dim,
+            "↑↓ navigate · Enter select · / filter · Esc cancel",
+        ));
 
         (lines, cursor_y)
     }

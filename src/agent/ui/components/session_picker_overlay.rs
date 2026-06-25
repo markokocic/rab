@@ -1,7 +1,7 @@
-use crate::agent::session::SessionManager;
-use crate::agent::ui::components::session_picker::{SessionPicker, SessionPickerResult};
 use crate::agent::AgentSession;
 use crate::agent::DefaultSessionRepo;
+use crate::agent::session::SessionManager;
+use crate::agent::ui::components::session_picker::{SessionPicker, SessionPickerResult};
 use crate::tui::Component;
 use crate::tui::Theme;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -49,7 +49,9 @@ impl SessionPickerOverlay {
                 *app_session = Some(new_session);
                 Some(session_id)
             }
-            SessionPickerResult::Cancel | SessionPickerResult::Info(_) | SessionPickerResult::Delete(_) => None,
+            SessionPickerResult::Cancel
+            | SessionPickerResult::Info(_)
+            | SessionPickerResult::Delete(_) => None,
         }
     }
 }

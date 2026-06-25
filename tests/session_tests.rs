@@ -373,7 +373,13 @@ async fn test_session_compaction_entry() {
         m
     });
 
-    sm.append_compaction("Earlier conversation summarized", "entry_kept_id", 1000, None, None);
+    sm.append_compaction(
+        "Earlier conversation summarized",
+        "entry_kept_id",
+        1000,
+        None,
+        None,
+    );
     sm.append_message(&rab::agent::types::AgentMessage::user("new stuff"));
     sm.append_message(&{
         let mut m = rab::agent::types::AgentMessage::user("dummy");

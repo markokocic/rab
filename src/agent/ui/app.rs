@@ -1352,7 +1352,8 @@ fn handle_session_picker_input(app: &mut App, key: &crossterm::event::KeyEvent) 
                 app.pending_thinking = None;
                 app.pending_tools.clear();
                 app.tool_call_start_times.clear();
-                let display = crate::agent::ui::messages::session_messages_to_display(&app.conversation);
+                let display =
+                    crate::agent::ui::messages::session_messages_to_display(&app.conversation);
                 for msg in display {
                     app.messages.push(msg);
                 }
@@ -1515,7 +1516,8 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
             app.pending_tools.clear();
             app.tool_call_start_times.clear();
 
-            let display = crate::agent::ui::messages::session_messages_to_display(&app.conversation);
+            let display =
+                crate::agent::ui::messages::session_messages_to_display(&app.conversation);
             for msg in display {
                 app.messages.push(msg);
             }
@@ -1648,7 +1650,10 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
 
             if sessions.is_empty() {
                 let msg = "No sessions found.".to_string();
-                chat_add(app, std::boxed::Box::new(InfoMessageComponent::new(msg.clone())));
+                chat_add(
+                    app,
+                    std::boxed::Box::new(InfoMessageComponent::new(msg.clone())),
+                );
                 app.messages.push(DisplayMsg::Info(msg));
             } else {
                 let mut info = format!("Available Sessions ({} total)\n\n", sessions.len());
@@ -1669,7 +1674,10 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
                 }
                 info += "Use /resume to open the interactive picker";
 
-                chat_add(app, std::boxed::Box::new(InfoMessageComponent::new(info.clone())));
+                chat_add(
+                    app,
+                    std::boxed::Box::new(InfoMessageComponent::new(info.clone())),
+                );
                 app.messages.push(DisplayMsg::Info(info));
             }
         }
@@ -1733,9 +1741,13 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
         }
         CommandResult::ForkSession { message_id } => {
             // Clone the session info before modifying app.session
-            let source_path = app.session.as_ref()
+            let source_path = app
+                .session
+                .as_ref()
                 .and_then(|s| s.session().session_file().map(|p| p.to_path_buf()));
-            let session_dir = app.session.as_ref()
+            let session_dir = app
+                .session
+                .as_ref()
                 .map(|s| s.session().session_dir().to_path_buf());
             let cwd = app.cwd.clone();
 
@@ -1751,16 +1763,23 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
                             // Find the new session file
                             let dir_entries = std::fs::read_dir(target_dir).ok();
                             let new_path = dir_entries.and_then(|entries| {
-                                entries.flatten().find(|e| {
-                                    let filename = e.file_name();
-                                    filename.to_string_lossy().contains(&new_id)
-                                }).map(|e| e.path())
+                                entries
+                                    .flatten()
+                                    .find(|e| {
+                                        let filename = e.file_name();
+                                        filename.to_string_lossy().contains(&new_id)
+                                    })
+                                    .map(|e| e.path())
                             });
 
                             match new_path {
                                 Some(ref path) => {
                                     // Open the new session and replace the current one
-                                    let new_sm = crate::agent::session::SessionManager::open(path, None, Some(&cwd));
+                                    let new_sm = crate::agent::session::SessionManager::open(
+                                        path,
+                                        None,
+                                        Some(&cwd),
+                                    );
                                     let new_session = crate::agent::AgentSession::new(new_sm);
 
                                     // Reload conversation
@@ -1774,32 +1793,51 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
                                     app.pending_tools.clear();
                                     app.tool_call_start_times.clear();
 
-                                    let display = crate::agent::ui::messages::session_messages_to_display(&app.conversation);
+                                    let display =
+                                        crate::agent::ui::messages::session_messages_to_display(
+                                            &app.conversation,
+                                        );
                                     for msg in display {
                                         app.messages.push(msg);
                                     }
 
                                     app.session = Some(new_session);
 
-                                    let styled = app.theme.fg("accent", &format!("✓ Forked session: {}", path.display()));
-                                    chat_add(app, std::boxed::Box::new(Text::new(styled, 1, 1, None)));
+                                    let styled = app.theme.fg(
+                                        "accent",
+                                        &format!("✓ Forked session: {}", path.display()),
+                                    );
+                                    chat_add(
+                                        app,
+                                        std::boxed::Box::new(Text::new(styled, 1, 1, None)),
+                                    );
                                 }
                                 None => {
-                                    let msg = format!("Fork created but new file not found: {}", new_id);
-                                    chat_add(app, std::boxed::Box::new(InfoMessageComponent::new(msg)));
+                                    let msg =
+                                        format!("Fork created but new file not found: {}", new_id);
+                                    chat_add(
+                                        app,
+                                        std::boxed::Box::new(InfoMessageComponent::new(msg)),
+                                    );
                                 }
                             }
                         }
                         Err(e) => {
                             let msg = format!("Fork failed: {}", e);
-                            chat_add(app, std::boxed::Box::new(InfoMessageComponent::new(msg.clone())));
+                            chat_add(
+                                app,
+                                std::boxed::Box::new(InfoMessageComponent::new(msg.clone())),
+                            );
                             app.messages.push(DisplayMsg::Info(msg));
                         }
                     }
                 }
                 _ => {
                     let msg = "No active session to fork".to_string();
-                    chat_add(app, std::boxed::Box::new(InfoMessageComponent::new(msg.clone())));
+                    chat_add(
+                        app,
+                        std::boxed::Box::new(InfoMessageComponent::new(msg.clone())),
+                    );
                     app.messages.push(DisplayMsg::Info(msg));
                 }
             }
@@ -1850,11 +1888,17 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
                 // We can't await in this sync context, so we return a status message
                 // and the actual compaction runs asynchronously. For now, show a note.
                 let msg = "Manual compaction requested. Use /compact in print mode or restart interactive.".to_string();
-                chat_add(app, std::boxed::Box::new(InfoMessageComponent::new(msg.clone())));
+                chat_add(
+                    app,
+                    std::boxed::Box::new(InfoMessageComponent::new(msg.clone())),
+                );
                 app.messages.push(DisplayMsg::Info(msg));
             } else {
                 let msg = "No active session to compact".to_string();
-                chat_add(app, std::boxed::Box::new(InfoMessageComponent::new(msg.clone())));
+                chat_add(
+                    app,
+                    std::boxed::Box::new(InfoMessageComponent::new(msg.clone())),
+                );
                 app.messages.push(DisplayMsg::Info(msg));
             }
         }

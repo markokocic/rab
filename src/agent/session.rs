@@ -646,9 +646,9 @@ impl SessionManager {
             .iter()
             .any(|e| matches!(e, SessionEntry::Message(m) if m.message.role == Role::Assistant));
 
-        if !has_assistant {
-            // Defer writing until an assistant message arrives.
-            // This matches pi's behavior: no file writes for user-only sessions.
+        if !has_assistant && !self.flushed {
+            // No file on disk yet and no assistant — defer until first assistant message.
+            // This matches pi's behavior: no file writes for user-only new sessions.
             self.flushed = false;
             return;
         }
@@ -670,7 +670,7 @@ impl SessionManager {
             let _ = self.storage.write_full(header, &self.file_entries);
             self.flushed = true;
         } else if let Some(entry) = self.file_entries.last() {
-            // Append mode: file already exists with assistant content.
+            // Append mode: file already exists.
             let _ = self.storage.append(entry);
         }
     }

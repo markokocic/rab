@@ -22,7 +22,11 @@ async fn main() -> anyhow::Result<()> {
     let mut model_override: Option<String> = None;
     let mut message_parts: Vec<String> = Vec::new();
     let mut continue_session: bool = false;
+    let mut resume_session: bool = false;
     let mut session_path: Option<String> = None;
+    let mut session_id: Option<String> = None;
+    let mut fork_source: Option<String> = None;
+    let mut export_path: Option<String> = None;
     let mut no_session: bool = false;
     let mut session_name: Option<String> = None;
     let mut session_dir_override: Option<String> = None;
@@ -41,10 +45,31 @@ async fn main() -> anyhow::Result<()> {
             "-c" | "--continue" => {
                 continue_session = true;
             }
+            "-r" | "--resume" => {
+                resume_session = true;
+            }
             "--session" => {
                 i += 1;
                 if i < args.len() {
                     session_path = Some(args[i].clone());
+                }
+            }
+            "--session-id" => {
+                i += 1;
+                if i < args.len() {
+                    session_id = Some(args[i].clone());
+                }
+            }
+            "--fork" => {
+                i += 1;
+                if i < args.len() {
+                    fork_source = Some(args[i].clone());
+                }
+            }
+            "--export" => {
+                i += 1;
+                if i < args.len() {
+                    export_path = Some(args[i].clone());
                 }
             }
             "--no-session" => {
@@ -87,6 +112,47 @@ async fn main() -> anyhow::Result<()> {
         i += 1;
     }
 
+    // Validate flag conflicts (pi-compatible)
+    let conflicting_flags: Vec<&str> = [
+        (fork_source.is_some(), "--fork"),
+        (continue_session, "--continue"),
+        (resume_session, "--resume"),
+        (no_session, "--no-session"),
+    ]
+    .into_iter()
+    .filter_map(|(cond, name)| if cond { Some(name) } else { None })
+    .collect();
+
+    if fork_source.is_some() && conflicting_flags.len() > 1 {
+        for f in &conflicting_flags[1..] {
+            eprintln!("Error: --fork cannot be combined with {}", f);
+        }
+        std::process::exit(1);
+    }
+
+    if session_id.is_some() {
+        let mut conflicting: Vec<&str> = Vec::new();
+        if session_path.is_some() {
+            conflicting.push("--session");
+        }
+        if continue_session {
+            conflicting.push("--continue");
+        }
+        if resume_session {
+            conflicting.push("--resume");
+        }
+        if no_session {
+            conflicting.push("--no-session");
+        }
+        if !conflicting.is_empty() {
+            eprintln!(
+                "Error: --session-id cannot be combined with {}",
+                conflicting.join(", ")
+            );
+            std::process::exit(1);
+        }
+    }
+
     // Load settings and auth
     let settings = Settings::load(&cwd)?;
     let model = model_override.unwrap_or_else(|| settings.model().to_string());
@@ -105,15 +171,165 @@ async fn main() -> anyhow::Result<()> {
     }
     init_keybindings(keybindings);
 
-    // Session management
-    let session_dir = session_dir_override.map(std::path::PathBuf::from);
-    let session = if no_session {
+    let session_dir = session_dir_override.as_ref().map(std::path::PathBuf::from);
+
+    // Resolve session arg (path or partial ID) for --session and --fork
+    fn resolve_session_arg(
+        arg: &str,
+        cwd: &std::path::Path,
+        session_dir: Option<&std::path::Path>,
+    ) -> Result<ResolvedSession, String> {
+        // If it looks like a path (contains separator or ends with .jsonl), use as-is
+        if arg.contains('/') || arg.contains('\\') || arg.ends_with(".jsonl") {
+            let path = std::path::PathBuf::from(arg);
+            if path.is_absolute() {
+                return Ok(ResolvedSession::Path(path));
+            }
+            return Ok(ResolvedSession::Path(cwd.join(&path)));
+        }
+
+        // Try to match as session ID prefix (first exact, then prefix)
+        let sessions = rab::agent::session::SessionManager::list_all(session_dir);
+
+        // Exact match first
+        if let Some(s) = sessions.iter().find(|s| s.id == arg) {
+            return Ok(ResolvedSession::Found {
+                path: s.path.clone(),
+                cwd: s.cwd.clone(),
+            });
+        }
+
+        // Prefix match
+        let matches: Vec<_> = sessions.iter().filter(|s| s.id.starts_with(arg)).collect();
+        if matches.len() == 1 {
+            return Ok(ResolvedSession::Found {
+                path: matches[0].path.clone(),
+                cwd: matches[0].cwd.clone(),
+            });
+        }
+
+        Err(format!("No session found matching '{}'", arg))
+    }
+
+    enum ResolvedSession {
+        Path(std::path::PathBuf),
+        Found {
+            path: std::path::PathBuf,
+            cwd: String,
+        },
+    }
+
+    impl ResolvedSession {
+        fn path(&self) -> &std::path::Path {
+            match self {
+                ResolvedSession::Path(p) => p.as_path(),
+                ResolvedSession::Found { path, .. } => path.as_path(),
+            }
+        }
+
+        fn cwd(&self) -> Option<&str> {
+            match self {
+                ResolvedSession::Path(_) => None,
+                ResolvedSession::Found { cwd, .. } => Some(cwd.as_str()),
+            }
+        }
+    }
+
+    // Handle --export: export session and exit
+    if let Some(ref _export_dest) = export_path {
+        eprintln!("Export to HTML is not yet implemented. See --export in pi.");
+        std::process::exit(1);
+    }
+
+    // Build session manager
+    let session = if let Some(ref fork_arg) = fork_source {
+        // Pi-compatible fork: resolve arg, then fork
+        let resolved = match resolve_session_arg(fork_arg, &cwd, session_dir.as_deref()) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                std::process::exit(1);
+            }
+        };
+        // Check for session-id conflict: if --session-id is also set, validate it's not taken
+        if let Some(ref sid) = session_id {
+            let sessions_dir = session_dir
+                .clone()
+                .unwrap_or_else(|| rab::agent::session::get_default_session_dir(&cwd));
+            let sessions = rab::agent::session::list_sessions(&sessions_dir);
+            if sessions.iter().any(|s| s.id == *sid) {
+                eprintln!("Session already exists with id '{}'", sid);
+                std::process::exit(1);
+            }
+        }
+        let fork_options = session_id
+            .as_ref()
+            .map(|id| rab::agent::session::NewSessionOptions {
+                id: Some(id.clone()),
+                parent_session: None,
+            });
+        match SessionManager::fork_from(
+            resolved.path(),
+            &cwd,
+            session_dir.as_deref(),
+            fork_options.as_ref(),
+        ) {
+            Ok(sm) => {
+                eprintln!("Forked session {}", sm.session_id());
+                sm
+            }
+            Err(e) => {
+                eprintln!("Error: fork failed: {}", e);
+                std::process::exit(1);
+            }
+        }
+    } else if no_session {
         SessionManager::in_memory(&cwd)
-    } else if let Some(ref path) = session_path {
-        let path = std::path::PathBuf::from(path);
-        SessionManager::open(&path, session_dir.as_deref(), None)
+    } else if let Some(ref path_or_id) = session_path {
+        // Pi-compatible: resolve path or partial UUID
+        match resolve_session_arg(path_or_id, &cwd, session_dir.as_deref()) {
+            Ok(resolved) => {
+                // Check if this session is from a different project (cross-project fork)
+                if let Some(session_cwd) = resolved.cwd() {
+                    let resolved_cwd = std::path::Path::new(session_cwd);
+                    if resolved_cwd != cwd {
+                        eprintln!("Warning: session from different project: {}", session_cwd);
+                        eprintln!("Use --fork to fork it into the current directory.");
+                    }
+                }
+                let path = resolved.path().to_path_buf();
+                SessionManager::open(&path, session_dir.as_deref(), None)
+            }
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                std::process::exit(1);
+            }
+        }
+    } else if resume_session {
+        // Pi-compatible: --resume opens interactive session picker
+        // For now, fall back to continue_recent
+        SessionManager::continue_recent(&cwd, session_dir.as_deref())
     } else if continue_session {
         SessionManager::continue_recent(&cwd, session_dir.as_deref())
+    } else if let Some(ref sid) = session_id {
+        // Use explicit session ID, creating it if missing
+        let sessions_dir = session_dir
+            .clone()
+            .unwrap_or_else(|| rab::agent::session::get_default_session_dir(&cwd));
+        let sessions = rab::agent::session::list_sessions(&sessions_dir);
+        let existing = sessions.iter().find(|s| s.id == *sid);
+        if let Some(s) = existing {
+            SessionManager::open(&s.path, session_dir.as_deref(), None)
+        } else {
+            SessionManager::create_with_options(
+                &cwd,
+                session_dir.as_deref(),
+                Some(&rab::agent::session::NewSessionOptions {
+                    id: Some(sid.clone()),
+                    parent_session: None,
+                }),
+            )
+        }
     } else {
         SessionManager::create(&cwd, session_dir.as_deref())
     };
@@ -382,9 +598,14 @@ async fn run_print_mode(
         }
     };
 
-    let new_messages =
-        rab::agent::run_agent_loop(vec![prompt], history, &loop_config, provider.as_ref(), &mut emitter)
-            .await?;
+    let new_messages = rab::agent::run_agent_loop(
+        vec![prompt],
+        history,
+        &loop_config,
+        provider.as_ref(),
+        &mut emitter,
+    )
+    .await?;
 
     // AgentSession.on_agent_end is already called by handle_event on AgentEnd.
     // Remaining non-user messages (if any) are persisted there.
@@ -414,7 +635,10 @@ async fn run_print_mode(
     match agent_session.check_auto_compact().await {
         Ok(true) => eprintln!("{}", colored::Colorize::dimmed("✓ Compaction completed")),
         Ok(false) => {}
-        Err(e) => eprintln!("{}", colored::Colorize::yellow(format!("Auto-compaction skipped: {}", e).as_str())),
+        Err(e) => eprintln!(
+            "{}",
+            colored::Colorize::yellow(format!("Auto-compaction skipped: {}", e).as_str())
+        ),
     }
 
     Ok(())

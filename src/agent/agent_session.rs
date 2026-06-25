@@ -352,10 +352,7 @@ impl AgentSession {
     /// Move the leaf pointer to an earlier entry (starts a new branch).
     /// Optionally summarizes the abandoned path if a provider is configured.
     /// Returns the branch summary text if summarization was performed.
-    pub async fn set_branch(
-        &mut self,
-        branch_from_id: &str,
-    ) -> Result<Option<String>, String> {
+    pub async fn set_branch(&mut self, branch_from_id: &str) -> Result<Option<String>, String> {
         let old_leaf = self.session.leaf_id().map(|s| s.to_string());
 
         let summary = if self.compaction_provider.is_some()
@@ -364,7 +361,10 @@ impl AgentSession {
             && old != branch_from_id
         {
             // Summarize the abandoned path
-            match self.summarize_branch_navigation(Some(old), branch_from_id).await {
+            match self
+                .summarize_branch_navigation(Some(old), branch_from_id)
+                .await
+            {
                 Ok(s) => Some(s),
                 Err(e) => {
                     // Non-fatal: still allow the branch move
@@ -376,7 +376,8 @@ impl AgentSession {
             None
         };
 
-        self.session.set_branch(branch_from_id)
+        self.session
+            .set_branch(branch_from_id)
             .map_err(|e| format!("Failed to set branch: {}", e))?;
 
         Ok(summary)

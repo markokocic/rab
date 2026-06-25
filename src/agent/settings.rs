@@ -117,7 +117,8 @@ impl Settings {
     /// Set compact_keep_recent_tokens and mark it as modified.
     pub fn set_compact_keep_recent_tokens(&mut self, value: Option<u64>) {
         self.compact_keep_recent_tokens = value;
-        self.modified_fields.insert("compactKeepRecentTokens".into());
+        self.modified_fields
+            .insert("compactKeepRecentTokens".into());
     }
 
     /// Mark a field as modified (for use with the setters or external callers).
@@ -187,8 +188,12 @@ impl Settings {
             hide_thinking: project.hide_thinking.or(global.hide_thinking),
             collapse_tool_output: project.collapse_tool_output.or(global.collapse_tool_output),
             auto_compact: project.auto_compact.or(global.auto_compact),
-            compact_reserve_tokens: project.compact_reserve_tokens.or(global.compact_reserve_tokens),
-            compact_keep_recent_tokens: project.compact_keep_recent_tokens.or(global.compact_keep_recent_tokens),
+            compact_reserve_tokens: project
+                .compact_reserve_tokens
+                .or(global.compact_reserve_tokens),
+            compact_keep_recent_tokens: project
+                .compact_keep_recent_tokens
+                .or(global.compact_keep_recent_tokens),
             modified_fields: HashSet::new(),
         }
     }

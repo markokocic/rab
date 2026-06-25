@@ -463,7 +463,9 @@ fn extract_file_ops(messages: &[AgentMessage]) -> Option<serde_json::Value> {
 
     for msg in messages {
         for tc in &msg.tool_calls {
-            let path = tc.arguments.get("file_path")
+            let path = tc
+                .arguments
+                .get("file_path")
                 .or_else(|| tc.arguments.get("path"))
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string());
@@ -475,9 +477,7 @@ fn extract_file_ops(messages: &[AgentMessage]) -> Option<serde_json::Value> {
                             read_files.push(p);
                         }
                     }
-                    "write" | "edit"
-                        if !modified_files.contains(&p) =>
-                    {
+                    "write" | "edit" if !modified_files.contains(&p) => {
                         modified_files.push(p);
                     }
                     _ => {}

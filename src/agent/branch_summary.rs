@@ -1,4 +1,4 @@
-use crate::agent::compaction::{estimate_tokens, CompactionSettings};
+use crate::agent::compaction::{CompactionSettings, estimate_tokens};
 use crate::agent::provider::Provider;
 use crate::agent::session::{SessionEntry, SessionManager};
 use crate::agent::types::{AgentMessage, Role};
@@ -92,7 +92,10 @@ pub fn prepare_branch_entries(
                 id: String::new(),
                 parent_id: None,
                 role: Role::Assistant,
-                content: format!("[Compaction: {} tokens → summary] {}", c.tokens_before, c.summary),
+                content: format!(
+                    "[Compaction: {} tokens → summary] {}",
+                    c.tokens_before, c.summary
+                ),
                 tool_calls: vec![],
                 tool_call_id: None,
                 usage: None,
@@ -121,7 +124,10 @@ pub fn prepare_branch_entries(
 
         // Always include compaction/branch_summary entries if they're important context
         if token_budget > 0 && total_tokens + tokens > token_budget {
-            let is_summary = matches!(entry, SessionEntry::Compaction(_) | SessionEntry::BranchSummary(_));
+            let is_summary = matches!(
+                entry,
+                SessionEntry::Compaction(_) | SessionEntry::BranchSummary(_)
+            );
             if !is_summary {
                 break;
             }
@@ -166,7 +172,10 @@ pub async fn generate_branch_summary(
             Role::Assistant => "Assistant",
             Role::ToolResult => "Tool Result",
         };
-        conversation_text.push_str(&format!("<{}>\n{}\n</{}>\n", role_label, msg.content, role_label));
+        conversation_text.push_str(&format!(
+            "<{}>\n{}\n</{}>\n",
+            role_label, msg.content, role_label
+        ));
     }
 
     let prompt = format!(
@@ -246,7 +255,10 @@ Keep it concise. Preserve exact file paths, function names, and error messages."
     }
 
     // Prepend preamble
-    let final_summary = format!("The user explored a different conversation branch before returning here.\nSummary of that exploration:\n\n{}", summary);
+    let final_summary = format!(
+        "The user explored a different conversation branch before returning here.\nSummary of that exploration:\n\n{}",
+        summary
+    );
 
     // Extract file operations from branch entries for details
     let details = extract_branch_file_ops(entries);
@@ -268,7 +280,9 @@ fn extract_branch_file_ops(entries: &[SessionEntry]) -> Option<serde_json::Value
             _ => continue,
         };
         for tc in &msg.tool_calls {
-            let path = tc.arguments.get("file_path")
+            let path = tc
+                .arguments
+                .get("file_path")
                 .or_else(|| tc.arguments.get("path"))
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string());
@@ -280,9 +294,7 @@ fn extract_branch_file_ops(entries: &[SessionEntry]) -> Option<serde_json::Value
                             read_files.push(p);
                         }
                     }
-                    "write" | "edit"
-                        if !modified_files.contains(&p) =>
-                    {
+                    "write" | "edit" if !modified_files.contains(&p) => {
                         modified_files.push(p);
                     }
                     _ => {}
@@ -333,7 +345,11 @@ mod tests {
         std::fs::create_dir_all(&cwd).unwrap();
         let mut sm = SessionManager::create(&cwd, Some(&sessions_dir));
         for i in 0..count {
-            let role = if i % 2 == 0 { Role::User } else { Role::Assistant };
+            let role = if i % 2 == 0 {
+                Role::User
+            } else {
+                Role::Assistant
+            };
             sm.append_message(&make_msg(role, &format!("msg {}", i)));
         }
         (tmp, sm)
@@ -375,17 +391,21 @@ mod tests {
         // Target is the current leaf = entries[5]
         let target_id = entries[5].id().to_string();
 
-        let (collected, ancestor) = collect_entries_for_branch_summary(
-            &sm,
-            Some(&old_leaf_id),
-            &target_id,
-        );
+        let (collected, ancestor) =
+            collect_entries_for_branch_summary(&sm, Some(&old_leaf_id), &target_id);
 
         // Collected should have entries from index 3 (the abandoned leaf)
         // going back to but not including branch_point_id (index 2)
         // The abandoned path is just entry[3].
-        assert!(!collected.is_empty(), "should have collected abandoned entries");
-        assert_eq!(collected.len(), 1, "only the one abandoned entry after branching");
+        assert!(
+            !collected.is_empty(),
+            "should have collected abandoned entries"
+        );
+        assert_eq!(
+            collected.len(),
+            1,
+            "only the one abandoned entry after branching"
+        );
         assert_eq!(
             collected[0].id(),
             entries[3].id(),
@@ -409,7 +429,11 @@ mod tests {
     fn test_prepare_branch_entries_basic() {
         let entries: Vec<SessionEntry> = (0..4)
             .map(|i| {
-                let role = if i % 2 == 0 { Role::User } else { Role::Assistant };
+                let role = if i % 2 == 0 {
+                    Role::User
+                } else {
+                    Role::Assistant
+                };
                 SessionEntry::Message(MessageEntry {
                     id: format!("m{}", i),
                     parent_id: None,
