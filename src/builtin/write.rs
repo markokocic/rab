@@ -85,6 +85,7 @@ impl Extension for WriteExtension {
             }),
             snippet: "Create or overwrite files",
             guidelines: &["Use write only for new files or complete rewrites."],
+            prepare_arguments: None,
         }]
     }
 

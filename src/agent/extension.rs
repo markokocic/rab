@@ -8,14 +8,17 @@ use std::sync::{
 
 /// A tool bundled with its prompt metadata.
 ///
-/// Mirrors pi's `ToolDefinition` which carries `promptSnippet` and
-/// `promptGuidelines` directly on the tool definition.
+/// Mirrors pi's `ToolDefinition` which carries `promptSnippet`,
+/// `promptGuidelines` and `prepareArguments` directly on the tool definition.
 pub struct ToolWithMeta {
     pub tool: Box<dyn yoagent::types::AgentTool>,
     /// One-line snippet for the "Available tools" section of the system prompt.
     pub snippet: &'static str,
     /// Guideline bullets for the "Guidelines" section of the system prompt.
     pub guidelines: &'static [&'static str],
+    /// Optional pre-processing of raw LLM arguments before execute().
+    /// Receives raw arguments, returns normalized arguments or an error message.
+    pub prepare_arguments: Option<fn(serde_json::Value) -> Result<serde_json::Value, String>>,
 }
 
 /// An autocomplete item for slash command arguments.
@@ -229,6 +232,39 @@ pub trait ToolRenderer: Send + Sync {
     /// Used by edit tool to show success/error bg during preview.
     fn render_bg_key(&self) -> Option<&'static str> {
         None
+    }
+}
+
+/// ToolWithMeta IS an AgentTool — delegates to the inner tool with optional
+/// argument pre-processing.
+#[async_trait::async_trait]
+impl yoagent::types::AgentTool for ToolWithMeta {
+    fn name(&self) -> &str {
+        self.tool.name()
+    }
+
+    fn label(&self) -> &str {
+        self.tool.label()
+    }
+
+    fn description(&self) -> &str {
+        self.tool.description()
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        self.tool.parameters_schema()
+    }
+
+    async fn execute(
+        &self,
+        params: serde_json::Value,
+        ctx: yoagent::types::ToolContext,
+    ) -> std::result::Result<yoagent::types::ToolResult, yoagent::types::ToolError> {
+        let params = match self.prepare_arguments {
+            Some(prepare) => prepare(params).map_err(yoagent::types::ToolError::InvalidArgs)?,
+            None => params,
+        };
+        self.tool.execute(params, ctx).await
     }
 }
 

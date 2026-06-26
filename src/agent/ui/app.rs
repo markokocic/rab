@@ -1276,11 +1276,11 @@ fn start_agent_loop(app: &mut App, message: String) {
     app.cancel_tx = Some(cancel_tx);
 
     tokio::spawn(async move {
-        // Create yoagent tools from extensions (unwrap ToolWithMeta)
+        // ToolWithMeta IS an AgentTool — no unwrapping needed
         let yoagent_tools: Vec<Box<dyn yoagent::types::AgentTool>> = extensions
             .iter()
             .flat_map(|ext| ext.tools())
-            .map(|twm| twm.tool)
+            .map(|twm| Box::new(twm) as Box<dyn yoagent::types::AgentTool>)
             .collect();
         let mut agent = yoagent::agent::Agent::new(yoagent::provider::OpenAiCompatProvider)
             .with_model(&model)

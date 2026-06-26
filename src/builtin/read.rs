@@ -30,6 +30,7 @@ impl Extension for ReadExtension {
             }),
             snippet: "Read file contents",
             guidelines: &["Use read to examine files instead of cat or sed."],
+            prepare_arguments: None,
         }]
     }
 

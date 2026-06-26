@@ -8,6 +8,7 @@ use rab::builtin::{
 };
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use yoagent::types::AgentTool as _;
 
 use rab::tui::keybindings::{Keybindings, init_keybindings};
 
@@ -390,7 +391,7 @@ async fn main() -> anyhow::Result<()> {
     let tool_snippets: Vec<rab::agent::ToolSnippet> = all_tools
         .iter()
         .map(|twm| rab::agent::ToolSnippet {
-            name: twm.tool.name().to_string(),
+            name: twm.name().to_string(),
             description: twm.snippet.to_string(),
         })
         .collect();
@@ -401,9 +402,11 @@ async fn main() -> anyhow::Result<()> {
         .map(|s| s.to_string())
         .collect();
 
-    // Extract bare tools for yoagent Agent
-    let agent_tools: Vec<Box<dyn yoagent::types::AgentTool>> =
-        all_tools.into_iter().map(|twm| twm.tool).collect();
+    // ToolWithMeta IS an AgentTool now — no unwrapping needed
+    let agent_tools: Vec<Box<dyn yoagent::types::AgentTool>> = all_tools
+        .into_iter()
+        .map(|twm| Box::new(twm) as Box<dyn yoagent::types::AgentTool>)
+        .collect();
 
     // Build system prompt using the new builder
     let system_prompt = rab::agent::SystemPromptBuilder::new()

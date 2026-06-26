@@ -83,6 +83,7 @@ impl Extension for EditExtension {
                 "Each edits[].oldText is matched against the original file, not after earlier edits are applied. Do not emit overlapping or nested edits. Merge nearby changes into one edit.",
                 "Keep edits[].oldText as small as possible while still being unique in the file. Do not pad with large unchanged regions.",
             ],
+            prepare_arguments: Some(prepare_edit_args),
         }]
     }
 
@@ -191,7 +192,6 @@ fn normalize_for_fuzzy_match(text: &str) -> String {
 // ── Input normalization ──────────────────────────────────────────
 
 /// Normalize tool arguments: handle `edits` as JSON string, legacy `oldText`/`newText`.
-#[allow(dead_code)]
 fn prepare_edit_arguments(args: &serde_json::Value) -> Result<(String, Vec<Edit>), String> {
     let path = args["path"]
         .as_str()
@@ -225,6 +225,20 @@ fn prepare_edit_arguments(args: &serde_json::Value) -> Result<(String, Vec<Edit>
     }
 
     Ok((path.to_string(), edits))
+}
+
+/// Normalize tool arguments before execution.
+/// Returns restructured JSON matching execute()'s expected format, or the
+/// original args on error (execute() will produce its own error message).
+pub fn prepare_edit_args(args: serde_json::Value) -> Result<serde_json::Value, String> {
+    let (path_str, edits) = prepare_edit_arguments(&args)?;
+    Ok(serde_json::json!({
+        "path": path_str,
+        "edits": edits.iter().map(|e| serde_json::json!({
+            "oldText": e.old_text,
+            "newText": e.new_text
+        })).collect::<Vec<_>>()
+    }))
 }
 
 /// Normalize tool arguments before execution (test-only).
