@@ -1199,6 +1199,10 @@ fn submit_message(app: &mut App, message: String) {
                 &expanded,
             )),
         );
+        // Persist expanded skill invocation to session
+        if let Some(ref mut agent_session) = app.session {
+            agent_session.submit_user_message(&expanded);
+        }
         if app.is_streaming {
             app.steering_queue
                 .lock()
@@ -1232,12 +1236,10 @@ fn submit_message(app: &mut App, message: String) {
         )),
     );
 
-    // Persist user message to session and update in-memory conversation
+    // Persist user message to session (in-memory conversation updated on AgentEnd)
     if let Some(ref mut agent_session) = app.session {
         agent_session.submit_user_message(&trimmed);
     }
-    app.conversation
-        .push(crate::agent::types::user_message(&trimmed));
 
     if app.is_streaming {
         // Safety check: if is_streaming is true but no events arrived for >5s,
@@ -2394,11 +2396,11 @@ fn handle_agent_event(app: &mut App, event: yoagent::types::AgentEvent) {
             app.is_streaming = false;
             app.working.stop();
             app.footer.borrow_mut().set_streaming(false);
-            // Update in-memory conversation with assistant messages from this turn
+            // Update in-memory conversation with all messages from this turn
+            // (user messages are included — they were persisted in submit_message
+            //  but NOT added to app.conversation to avoid duplicates with history).
             for msg in &messages {
-                if !crate::agent::types::message_is_user(msg) {
-                    app.conversation.push(msg.clone());
-                }
+                app.conversation.push(msg.clone());
             }
             // Persist remaining messages (assistant + tool results) to session
             if let Some(ref mut s) = app.session {
