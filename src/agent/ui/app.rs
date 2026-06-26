@@ -124,9 +124,6 @@ pub struct App {
     /// Timestamp of last agent event received (used for streaming safety timeout).
     last_streaming_event: std::time::Instant,
 
-    /// Agent cancellation sender for Ctrl+C / ESC.
-    cancel_tx: Option<tokio::sync::watch::Sender<bool>>,
-
     /// Bash abort handle for bang (!) commands.
     bash_abort_handle: Option<tokio::task::AbortHandle>,
 
@@ -354,7 +351,6 @@ impl App {
 
             should_quit: false,
             last_streaming_event: std::time::Instant::now(),
-            cancel_tx: None,
             bash_abort_handle: None,
             session: Some(agent_session),
             footer,
@@ -927,11 +923,18 @@ fn handle_thinking_cycle(app: &mut App) {
     if let Err(e) = app.settings.save() {
         app.status_text = Some(format!("Failed to save thinking level: {}", e));
     }
-    // Record the change in the session (pi-compatible)
+    // Record the change in the session and update the persistent agent
     if let Some(ref mut agent_session) = app.session {
         agent_session.on_thinking_level_change(next);
+        let thinking = match next {
+            "off" => yoagent::types::ThinkingLevel::Off,
+            "low" => yoagent::types::ThinkingLevel::Low,
+            "medium" => yoagent::types::ThinkingLevel::Medium,
+            "high" | "xhigh" => yoagent::types::ThinkingLevel::High,
+            _ => yoagent::types::ThinkingLevel::High,
+        };
+        agent_session.set_agent_thinking(thinking);
     }
-    // yoagent hardcodes ThinkingLevel::High, no provider call needed
     app.status_text = Some(format!("Thinking level: {}", next));
 }
 
@@ -954,6 +957,11 @@ fn handle_model_cycle(app: &mut App, dir: isize) {
     app.footer.borrow_mut().set_model(&app.model);
     // All rab models support reasoning (deepseek-v4-flash, deepseek-v4-pro).
     app.footer.borrow_mut().set_model_supports_reasoning(true);
+    // Record the change in the session and update the persistent agent
+    if let Some(ref mut agent_session) = app.session {
+        agent_session.on_model_change("opencode-go", &app.model);
+        agent_session.set_agent_model(&app.model);
+    }
     app.status_text = Some(format!("Model: {}", app.model));
 }
 
@@ -1135,8 +1143,9 @@ fn handle_compact_toggle(app: &mut App) {
 
 /// Interrupt streaming agent and restore queued messages to editor.
 fn interrupt_streaming(app: &mut App) {
-    if let Some(tx) = app.cancel_tx.take() {
-        let _ = tx.send(true);
+    // Abort the agent (cancels the current turn, agent is recreated on next turn)
+    if let Some(ref s) = app.session {
+        s.abort();
     }
     if let Some(handle) = app.bash_abort_handle.take() {
         handle.abort();
@@ -1246,7 +1255,6 @@ fn submit_message(app: &mut App, message: String) {
             app.is_streaming = false;
             app.working.stop();
             app.footer.borrow_mut().set_streaming(false);
-            app.cancel_tx = None;
             app.status_text = Some("Previous agent loop appears stuck — restarting".into());
         } else {
             // Steering: delivered after current turn's tool calls finish, before next LLM call
@@ -1262,13 +1270,11 @@ fn submit_message(app: &mut App, message: String) {
 }
 
 /// Actually start an agent loop (not queued).
-/// Uses yoagent's Agent internally.
+/// Uses the persistent Agent on AgentSession (pi-compatible).
 fn start_agent_loop(app: &mut App, message: String) {
-    let model = app.model.clone();
-    let system_prompt = app.system_prompt.clone();
-    let tx = app.event_tx.clone();
-    let api_key = app.api_key.clone();
-    let extensions = Arc::clone(&app.extensions);
+    if app.session.is_none() {
+        return;
+    }
 
     app.is_streaming = true;
     app.working.start();
@@ -1276,87 +1282,58 @@ fn start_agent_loop(app: &mut App, message: String) {
     app.pending_text = None;
     app.pending_thinking = None;
 
-    // Capture conversation history and thinking level before spawning
-    let history = app.conversation.clone();
-    let thinking_level = app.thinking_level.clone();
+    let session = app.session.as_mut().unwrap();
 
-    let (cancel_tx, mut cancel_rx) = tokio::sync::watch::channel(false);
-    app.cancel_tx = Some(cancel_tx);
+    // Drain steering/follow-up from app-level queues into the agent
+    let steer_msgs: Vec<yoagent::types::AgentMessage> =
+        app.steering_queue.lock().unwrap().drain(..).collect();
+    let follow_msgs: Vec<yoagent::types::AgentMessage> =
+        app.follow_up_queue.lock().unwrap().drain(..).collect();
+    for msg in steer_msgs {
+        session.steer(msg);
+    }
+    for msg in follow_msgs {
+        session.follow_up(msg);
+    }
 
-    tokio::spawn(async move {
-        // ToolWithMeta IS an AgentTool — no unwrapping needed
-        let yoagent_tools: Vec<Box<dyn yoagent::types::AgentTool>> = extensions
-            .iter()
-            .flat_map(|ext| ext.tools())
-            .map(|twm| Box::new(twm) as Box<dyn yoagent::types::AgentTool>)
-            .collect();
-        // Map rab's thinking level string to yoagent enum
-        let thinking = match thinking_level.as_deref() {
-            Some("off") => yoagent::types::ThinkingLevel::Off,
-            Some("low") => yoagent::types::ThinkingLevel::Low,
-            Some("medium") => yoagent::types::ThinkingLevel::Medium,
-            Some("high") | Some("xhigh") => yoagent::types::ThinkingLevel::High,
-            _ => yoagent::types::ThinkingLevel::High,
-        };
-        let mut agent = yoagent::agent::Agent::new(yoagent::provider::OpenAiCompatProvider)
-            .with_model(&model)
-            .with_api_key(&api_key)
-            .with_model_config(yoagent::provider::model::ModelConfig::openai_compat(
+    // Map thinking level
+    let thinking = match app.thinking_level.as_deref() {
+        Some("off") => yoagent::types::ThinkingLevel::Off,
+        Some("low") => yoagent::types::ThinkingLevel::Low,
+        Some("medium") => yoagent::types::ThinkingLevel::Medium,
+        Some("high") | Some("xhigh") => yoagent::types::ThinkingLevel::High,
+        _ => yoagent::types::ThinkingLevel::High,
+    };
+
+    // Initialize the persistent agent on first call
+    if !session.is_agent_initialized() {
+        let params = crate::agent::agent_session::AgentBuildParams {
+            model: app.model.clone(),
+            api_key: app.api_key.clone(),
+            system_prompt: app.system_prompt.clone(),
+            thinking_level: thinking,
+            model_config: yoagent::provider::model::ModelConfig::openai_compat(
                 "https://opencode.ai/zen/go/v1",
-                &model,
+                &app.model,
                 "opencode-go",
                 yoagent::provider::model::OpenAiCompat::deepseek(),
-            ))
-            .with_system_prompt(&system_prompt)
-            .with_thinking(thinking)
-            .with_messages(history)
-            .with_tools(yoagent_tools)
-            .without_context_management();
+            ),
+        };
+        session.init_agent(
+            app.event_tx.clone(),
+            Arc::clone(&app.extensions),
+            params,
+            app.conversation.clone(),
+        );
+    } else {
+        // Update model/thinking on the idle agent for runtime changes
+        session.set_agent_model(&app.model);
+        session.set_agent_thinking(thinking);
+    }
 
-        let (yo_tx, mut yo_rx) = tokio::sync::mpsc::unbounded_channel();
-
-        // Track whether we've forwarded an AgentEnd event.
-        // If the agent task finishes without sending one (e.g. panic),
-        // we synthesize an error to avoid silently hanging the UI.
-        let mut agent_end_seen = false;
-
-        // Spawn agent loop in a separate task (it blocks until done)
-        let inner_handle = tokio::spawn(async move {
-            agent.prompt_with_sender(message, yo_tx).await;
-        });
-
-        // Forward yoagent events directly to the app event channel, cancellable
-        tokio::select! {
-            _ = async {
-                while let Some(event) = yo_rx.recv().await {
-                    if matches!(&event, yoagent::types::AgentEvent::AgentEnd { .. }) {
-                        agent_end_seen = true;
-                    }
-                    if tx.send(event).is_err() {
-                        break;
-                    }
-                }
-            } => {}
-            _ = cancel_rx.changed() => {}
-        }
-
-        // If the agent task finished without sending AgentEnd (panic/crash),
-        // notify the UI so it doesn't stay stuck in streaming state.
-        if !agent_end_seen {
-            let _ = tx.send(yoagent::types::AgentEvent::AgentEnd { messages: vec![] });
-            // Also drop a status message for the user about the crash
-            let _ = tx.send(yoagent::types::AgentEvent::ProgressMessage {
-                tool_call_id: String::new(),
-                tool_name: String::new(),
-                text: "\n⚠ Agent loop ended unexpectedly — it may have crashed or encountered a network error.\n".to_string(),
-            });
-        }
-
-        // Abort the inner task in case it's still running (e.g. cancelled but not stopped)
-        inner_handle.abort();
-    });
+    // Start the turn (takes agent from slot, spawns task, returns when done)
+    session.start_turn(message);
 }
-
 /// Handle keyboard input for the session picker.
 fn handle_session_picker_input(app: &mut App, key: &crossterm::event::KeyEvent) {
     use crossterm::event::KeyCode;

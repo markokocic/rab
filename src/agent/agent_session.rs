@@ -1,10 +1,21 @@
 use crate::agent::branch_summary::{collect_entries_for_branch_summary, generate_branch_summary};
 use crate::agent::compaction::{self, CompactionSettings, compact, prepare_compaction};
+use crate::agent::extension::Extension;
 use crate::agent::session::SessionManager;
 use crate::agent::types::{message_text, tool_result_message, user_message};
 use std::collections::HashSet;
+use std::sync::Arc;
+use tokio::sync::Mutex;
+use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
+use yoagent::agent::Agent;
+use yoagent::provider::OpenAiCompatProvider;
+use yoagent::provider::model::ModelConfig;
+use yoagent::types::AgentEvent;
 use yoagent::types::AgentMessage;
+use yoagent::types::AgentTool;
 use yoagent::types::Content;
+use yoagent::types::ThinkingLevel;
 
 /// Lifecycle layer that bridges the agent loop and session manager.
 ///
@@ -24,6 +35,16 @@ use yoagent::types::Content;
 /// agent_session.on_model_change("opencode_go", "deepseek-v4-pro");
 /// agent_session.on_thinking_level_change("high");
 /// ```
+///
+/// Build parameters for initializing and recreating the Agent.
+#[derive(Clone)]
+pub struct AgentBuildParams {
+    pub model: String,
+    pub api_key: String,
+    pub system_prompt: String,
+    pub thinking_level: ThinkingLevel,
+    pub model_config: ModelConfig,
+}
 pub struct AgentSession {
     session: SessionManager,
     /// Last known model for change detection.
@@ -45,6 +66,20 @@ pub struct AgentSession {
     model_name: String,
     /// API key for compaction LLM calls.
     compaction_api_key: Option<String>,
+
+    // ── Persistent agent (pi-compatible lifecycle) ──
+    /// The Agent, stored between turns. Taken on start_turn, returned on completion.
+    agent_slot: Arc<Mutex<Option<Agent>>>,
+    /// Cancellation token for the current turn's agent loop.
+    cancel_token: Arc<Mutex<Option<CancellationToken>>>,
+    /// JoinHandle of the current turn's spawned task (for abort).
+    current_turn_handle: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
+    /// Persistent event sender (cloned to spawned tasks).
+    event_tx: Option<tokio::sync::mpsc::UnboundedSender<AgentEvent>>,
+    /// Extensions (used to rebuild tools if agent is recreated after abort).
+    extensions: Option<Arc<Vec<Box<dyn Extension>>>>,
+    /// Stored build parameters for recreating the agent after abort.
+    build_params: Option<AgentBuildParams>,
 }
 
 impl AgentSession {
@@ -78,6 +113,12 @@ impl AgentSession {
             context_window: 200_000,
             model_name: String::new(),
             compaction_api_key: None,
+            agent_slot: Arc::new(Mutex::new(None)),
+            cancel_token: Arc::new(Mutex::new(None)),
+            current_turn_handle: Arc::new(Mutex::new(None)),
+            event_tx: None,
+            extensions: None,
+            build_params: None,
         }
     }
 
@@ -123,6 +164,206 @@ impl AgentSession {
     /// Consume the AgentSession and return the inner SessionManager.
     pub fn into_session(self) -> SessionManager {
         self.session
+    }
+
+    // ── Persistent agent lifecycle (pi-compatible) ─────────────────
+
+    /// Initialize the persistent Agent. Call once before the first turn.
+    /// The agent is stored in `agent_slot` and reused across turns.
+    pub fn init_agent(
+        &mut self,
+        event_tx: mpsc::UnboundedSender<AgentEvent>,
+        extensions: Arc<Vec<Box<dyn Extension>>>,
+        params: AgentBuildParams,
+        initial_messages: Vec<AgentMessage>,
+    ) {
+        self.build_params = Some(params.clone());
+        self.event_tx = Some(event_tx);
+        self.extensions = Some(extensions);
+
+        let tools = self._collect_tools();
+        let agent = Self::_build_agent(
+            &params.model,
+            &params.api_key,
+            &params.system_prompt,
+            params.thinking_level,
+            &params.model_config,
+            tools,
+            initial_messages,
+        );
+        self.agent_slot.blocking_lock().replace(agent);
+    }
+
+    /// Check whether the persistent agent has been initialized.
+    pub fn is_agent_initialized(&self) -> bool {
+        self.agent_slot.blocking_lock().is_some()
+    }
+
+    /// Start a new turn with the persistent agent.
+    /// Takes the agent from the slot, spawns a task, returns it when done.
+    /// If the agent was lost (abort), recreates it from stored params.
+    pub fn start_turn(&self, message: String) {
+        let slot = self.agent_slot.clone();
+        let cancel_token = self.cancel_token.clone();
+        let handle_arc = self.current_turn_handle.clone();
+        let event_tx = self.event_tx.clone();
+        let build_params = self.build_params.clone();
+        let extensions = self.extensions.clone();
+
+        let handle_arc2 = handle_arc.clone();
+        let build_params2 = build_params.clone();
+        let handle = tokio::spawn(async move {
+            let mut agent = slot.lock().await.take().unwrap_or_else(|| {
+                // Agent lost (aborted) — recreate from stored params
+                let params = build_params.expect("init_agent must be called before start_turn");
+                let tools: Vec<Box<dyn AgentTool>> = extensions
+                    .as_ref()
+                    .map(|exts| {
+                        exts.iter()
+                            .flat_map(|ext| ext.tools())
+                            .map(|twm| Box::new(twm) as Box<dyn AgentTool>)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                Self::_build_agent(
+                    &params.model,
+                    &params.api_key,
+                    &params.system_prompt,
+                    params.thinking_level,
+                    &params.model_config,
+                    tools,
+                    Vec::new(),
+                )
+            });
+
+            let (yo_tx, mut yo_rx) = mpsc::unbounded_channel();
+
+            let inner_handle = tokio::spawn(async move {
+                agent.prompt_with_sender(message, yo_tx).await;
+                agent
+            });
+
+            // Forward events until AgentEnd
+            while let Some(event) = yo_rx.recv().await {
+                let is_end = matches!(&event, AgentEvent::AgentEnd { .. });
+                if let Some(ref tx) = event_tx {
+                    tx.send(event).ok();
+                }
+                if is_end {
+                    break;
+                }
+            }
+
+            // Get agent back (or recreate if inner task was aborted)
+            let agent = match inner_handle.await {
+                Ok(agent) => agent,
+                Err(_) => {
+                    // Task aborted — create a fresh agent
+                    let params = build_params2.expect("build_params must be set");
+                    let tools: Vec<Box<dyn AgentTool>> = extensions
+                        .as_ref()
+                        .map(|exts| {
+                            exts.iter()
+                                .flat_map(|ext| ext.tools())
+                                .map(|twm| Box::new(twm) as Box<dyn AgentTool>)
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    Self::_build_agent(
+                        &params.model,
+                        &params.api_key,
+                        &params.system_prompt,
+                        params.thinking_level,
+                        &params.model_config,
+                        tools,
+                        Vec::new(),
+                    )
+                }
+            };
+
+            slot.lock().await.replace(agent);
+            cancel_token.lock().await.take();
+            handle_arc2.lock().await.take();
+        });
+
+        *handle_arc.blocking_lock() = Some(handle);
+    }
+
+    /// Push a steering message into the agent's built-in queue.
+    /// Call this before `start_turn` to drain app-level queues into the agent.
+    pub fn steer(&self, msg: AgentMessage) {
+        let mut slot = self.agent_slot.blocking_lock();
+        if let Some(ref mut agent) = *slot {
+            agent.steer(msg);
+        }
+    }
+
+    /// Push a follow-up message into the agent's built-in queue.
+    pub fn follow_up(&self, msg: AgentMessage) {
+        let mut slot = self.agent_slot.blocking_lock();
+        if let Some(ref mut agent) = *slot {
+            agent.follow_up(msg);
+        }
+    }
+
+    /// Abort the current turn. The agent is lost and will be recreated on the next turn.
+    pub fn abort(&self) {
+        if let Some(handle) = self.current_turn_handle.blocking_lock().take() {
+            handle.abort();
+        }
+        self.cancel_token.blocking_lock().take();
+    }
+
+    /// Update the agent's model (Ctrl+P cycling).
+    /// Takes `&mut self` so the caller must not be streaming.
+    pub fn set_agent_model(&mut self, model: &str) {
+        if let Some(ref mut params) = self.build_params {
+            params.model = model.to_string();
+        }
+        let mut slot = self.agent_slot.blocking_lock();
+        if let Some(ref mut agent) = *slot {
+            agent.model = model.to_string();
+        }
+    }
+
+    /// Update the agent's thinking level (Shift+Tab cycling).
+    /// Takes `&mut self` so the caller must not be streaming.
+    pub fn set_agent_thinking(&mut self, level: ThinkingLevel) {
+        let mut slot = self.agent_slot.blocking_lock();
+        if let Some(ref mut agent) = *slot {
+            agent.thinking_level = level;
+        }
+    }
+
+    fn _collect_tools(&self) -> Vec<Box<dyn AgentTool>> {
+        self.extensions
+            .as_ref()
+            .map(|exts| {
+                exts.iter()
+                    .flat_map(|ext| ext.tools())
+                    .map(|twm| Box::new(twm) as Box<dyn AgentTool>)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn _build_agent(
+        model: &str,
+        api_key: &str,
+        system_prompt: &str,
+        thinking_level: ThinkingLevel,
+        model_config: &ModelConfig,
+        tools: Vec<Box<dyn AgentTool>>,
+        initial_messages: Vec<AgentMessage>,
+    ) -> Agent {
+        Agent::new(OpenAiCompatProvider)
+            .with_model(model)
+            .with_api_key(api_key)
+            .with_model_config(model_config.clone())
+            .with_system_prompt(system_prompt)
+            .with_thinking(thinking_level)
+            .with_messages(initial_messages)
+            .with_tools(tools)
     }
 
     // ── Model / thinking / tool change tracking ─────────────────
