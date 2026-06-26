@@ -1,6 +1,5 @@
 /// Extension trait - all capability (built-in or user-provided) comes through this.
 use crate::tui::Theme;
-use async_trait::async_trait;
 use std::borrow::Cow;
 use std::sync::{
     Arc,
@@ -17,13 +16,6 @@ pub struct ToolWithMeta {
     pub snippet: &'static str,
     /// Guideline bullets for the "Guidelines" section of the system prompt.
     pub guidelines: &'static [&'static str],
-}
-/// Reason a tool call was blocked.
-#[derive(Debug, Clone)]
-pub enum BlockReason {
-    Security(String),
-    Policy(String),
-    Other(String),
 }
 
 /// An autocomplete item for slash command arguments.
@@ -166,80 +158,6 @@ impl Default for Cancel {
     }
 }
 
-/// Output from a tool execution, carrying both the full content (shown in expanded
-/// mode / sent to the LLM) and an optional compact label for collapsed UI display.
-#[derive(Debug, Clone)]
-pub struct ToolOutput {
-    /// Full content sent to the LLM and shown when expanded.
-    pub content: String,
-    /// Compact label shown in collapsed mode (e.g. `read docs docs/README.md`).
-    /// When `None`, the full content is always shown.
-    pub compact: Option<String>,
-    /// Whether the result is an error.
-    pub is_error: bool,
-    /// When true, the agent loop stops after this batch of tool calls
-    /// (no more LLM calls). Pi-compatible: `terminate` on tool results.
-    pub terminate: bool,
-    /// Structured rendering details for the UI (pi-compatible).
-    /// Carries data that should NOT be sent to the LLM but IS needed by
-    /// tool renderers (e.g. diff output, patch data).
-    pub details: Option<serde_json::Value>,
-}
-
-impl ToolOutput {
-    pub fn ok(content: impl Into<String>) -> Self {
-        Self {
-            content: content.into(),
-            compact: None,
-            is_error: false,
-            terminate: false,
-            details: None,
-        }
-    }
-
-    pub fn ok_with_compact(content: impl Into<String>, compact: impl Into<String>) -> Self {
-        Self {
-            content: content.into(),
-            compact: Some(compact.into()),
-            is_error: false,
-            terminate: false,
-            details: None,
-        }
-    }
-
-    /// Create an ok result with structured details for UI rendering (pi-compatible).
-    /// The `content` is sent to the LLM; `details` is used by the tool renderer only.
-    pub fn ok_with_details(
-        content: impl Into<String>,
-        details: impl Into<serde_json::Value>,
-    ) -> Self {
-        Self {
-            content: content.into(),
-            compact: None,
-            is_error: false,
-            terminate: false,
-            details: Some(details.into()),
-        }
-    }
-
-    pub fn err(message: impl Into<String>) -> Self {
-        Self {
-            content: message.into(),
-            compact: None,
-            is_error: true,
-            terminate: false,
-            details: None,
-        }
-    }
-
-    /// Mark this tool output as terminal - the agent loop will stop after
-    /// this batch of tool calls when ALL tools in the batch return terminate=true.
-    pub fn with_terminate(mut self, terminate: bool) -> Self {
-        self.terminate = terminate;
-        self
-    }
-}
-
 /// Context passed to ToolRenderer methods (matching pi's ToolRenderContext).
 /// Carries all metadata about the tool execution that renderers may need.
 #[derive(Debug, Clone)]
@@ -314,7 +232,6 @@ pub trait ToolRenderer: Send + Sync {
     }
 }
 
-#[async_trait]
 pub trait Extension: Send + Sync {
     fn name(&self) -> Cow<'static, str>;
 
@@ -327,20 +244,6 @@ pub trait Extension: Send + Sync {
     /// Built-in commands and extension commands use the same interface.
     fn commands(&self) -> Vec<SlashCommand> {
         vec![]
-    }
-
-    /// Called before any tool executes. Return Some(reason) to block.
-    async fn before_tool_call(&self, _tc: &yoagent::types::Content) -> Option<BlockReason> {
-        None
-    }
-
-    /// Called after a tool executes. Return Some(text) to replace result.
-    async fn after_tool_call(
-        &self,
-        _tc: &yoagent::types::Content,
-        _result: &str,
-    ) -> Option<String> {
-        None
     }
 
     /// Tool-specific renderer for the TUI.
