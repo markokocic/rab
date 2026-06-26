@@ -7,7 +7,6 @@ pub mod session;
 pub mod session_repo;
 pub mod session_storage;
 pub mod settings;
-pub mod skills;
 pub mod system_prompt;
 pub mod types;
 pub mod ui;
@@ -19,6 +18,6 @@ pub use session::SessionManager;
 pub use session_repo::{DefaultSessionRepo, SessionRepo};
 pub use session_storage::{InMemorySessionStorage, JsonlSessionStorage, SessionStorage};
 pub use settings::Settings;
-pub use skills::{Skill, SkillSet, load_skills};
+
 pub use system_prompt::{SystemPromptBuilder, ToolSnippet};
 pub use types::{PendingMessageQueue, QueueMode, ToolExecutionMode};

@@ -1269,7 +1269,7 @@ fn submit_message(app: &mut App, message: String) {
 
     // Handle /skill:name [args] expansion (pi-style: before command dispatch)
     if trimmed.starts_with("/skill:") {
-        let expanded = crate::agent::skills::expand_skill_command(&trimmed, &app.skills);
+        let expanded = expand_skill_command(&trimmed, &app.skills);
         chat_add(
             app,
             std::boxed::Box::new(crate::agent::ui::components::UserMessageComponent::new(
@@ -2444,3 +2444,67 @@ fn fmt_time_short(dt: &chrono::DateTime<chrono::Utc>) -> String {
 
 #[cfg(test)]
 mod tests {}
+
+// ── Skills utilities (moved inline from skills.rs) ─────────────────
+
+fn xml_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
+}
+
+fn strip_frontmatter(content: &str) -> String {
+    let content = content.trim_start();
+    if !content.starts_with("---") {
+        return content.to_string();
+    }
+    let remaining = &content[3..];
+    let end = match remaining.find("---") {
+        Some(pos) => pos,
+        None => return content.to_string(),
+    };
+    let body_start = 3 + end + 3;
+    content[body_start..].trim().to_string()
+}
+
+fn read_skill_body(file_path: &std::path::Path) -> Option<String> {
+    let content = std::fs::read_to_string(file_path).ok()?;
+    Some(strip_frontmatter(&content))
+}
+
+fn format_skill_invocation(skill: &yoagent::skills::Skill, extra: Option<&str>) -> String {
+    let body = read_skill_body(&skill.file_path).unwrap_or_default();
+    let base = skill.base_dir.to_string_lossy();
+    let block = format!(
+        r#"<skill name="{}" location="{}">
+References are relative to {}.
+
+{}
+</skill>"#,
+        xml_escape(&skill.name),
+        xml_escape(&skill.file_path.to_string_lossy()),
+        base,
+        body
+    );
+    match extra {
+        Some(instr) if !instr.is_empty() => format!("{}\n\n{}", block, instr),
+        _ => block,
+    }
+}
+
+fn expand_skill_command(text: &str, skills: &[yoagent::skills::Skill]) -> String {
+    if !text.starts_with("/skill:") {
+        return text.to_string();
+    }
+    let rest = &text[7..];
+    let (skill_name, args) = match rest.find(' ') {
+        Some(pos) => (&rest[..pos], rest[pos + 1..].trim()),
+        None => (rest, ""),
+    };
+    match skills.iter().find(|s| s.name == skill_name) {
+        Some(s) => format_skill_invocation(s, if args.is_empty() { None } else { Some(args) }),
+        None => text.to_string(),
+    }
+}

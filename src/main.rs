@@ -414,7 +414,22 @@ async fn main() -> anyhow::Result<()> {
         .build();
 
     // Load skills for startup display and /skill:name expansion
-    let skill_set = rab::agent::load_skills(&cwd, &agent_dir);
+    let mut skill_dirs = Vec::new();
+    skill_dirs.push(agent_dir.join("skills"));
+    if let Some(home) = directories::BaseDirs::new().map(|d| d.home_dir().to_path_buf()) {
+        skill_dirs.push(home.join(".agents").join("skills"));
+    }
+    let mut current = Some(cwd.to_path_buf());
+    while let Some(dir) = current {
+        skill_dirs.push(dir.join(".rab").join("skills"));
+        skill_dirs.push(dir.join(".agents").join("skills"));
+        let parent = match dir.parent() {
+            Some(p) if p != dir => p.to_path_buf(),
+            _ => break,
+        };
+        current = Some(parent);
+    }
+    let skill_set = yoagent::skills::SkillSet::load(&skill_dirs).unwrap_or_default();
     let skills: Vec<yoagent::skills::Skill> = skill_set.skills().to_vec();
 
     // Determine initial thinking level: prefer session's recorded level, fall back to settings.

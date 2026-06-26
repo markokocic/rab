@@ -1,449 +1,453 @@
 # rab Architecture
 
-A minimal Rust reimplementation of [pi-coding-agent](https://pi.dev) - a
-terminal coding harness that gives an LLM tools (read, write, edit, bash) and
-lets it act on your codebase.
-
-## Pi component mapping
-
-| pi (`packages/`) | rab equivalent | Status |
-|---|---|---|
-| `pi-tui` (terminal UI, components, editor) | `src/tui/` + `src/agent/ui/` | ✅ **1/1 complete** - 30 modules, 662 tests. Direct Rust port on crossterm. |
-| `pi-agent-core` (agent loop, session, compaction, skills) | `src/agent/` | ✅ loop, session, skills, types, provider, extension done. ⬜ compaction not implemented. ⬜ steering/follow-up queues infrastructure exists but not actively used. |
-| `coding-agent` (CLI, extensions, tools, settings, commands) | `main.rs`, `builtin/`, `settings.rs`, `commands.rs` | ✅ tools, settings, auth, CLI done. ⬜ models.json not implemented. ✅ hook pipeline (before/after tool call) wired. ✅ 22 slash commands implemented. |
-| `pi-ai` (providers, streaming) | `Provider` trait + `adapter.rs` | ⬜ Single backend (OpenCode Go). Needs multi-backend support (claude→Anthropic, gpt→OpenAI, gemini→Gemini, fallback→Ollama). |
-| `coding-agent/modes/interactive/theme/` | `src/agent/ui/theme.rs` | ✅ JSON theme system with resolution, fallback, detection (698 lines) |
-| `coding-agent/resource-loader.ts` | `src/agent/context_files.rs` | ✅ AGENTS.md/CLAUDE.md discovery |
-| `coding-agent/skills.ts` | `src/agent/skills.rs` | ✅ Skill loading, frontmatter, prompt formatting (825 lines) |
-| `tui/src/components/image.ts` | - | ⬜ Not implemented |
-| `tui/src/terminal-image.ts` | - | ⬜ Not implemented |
-| `coding-agent/utils/image-resize.ts` | - | ⬜ Not implemented |
-| `coding-agent/utils/clipboard-image.ts` | - | ⬜ Not implemented |
-| MCP extensions | `pi-mcp-adapter` (planned) | ⬜ Phase 2 |
-| Config files | `~/.rab/` | ✅ Same schema as pi |
-
-## Design constraints
-
-- **One extension mechanism** - built-in tools and user extensions use the same
-  `Extension` trait. No separate tool registration path. `--no-builtin-tools`
-  just skips loading builtins; user extensions still load.
-- **No live-reload of extensions** - extensions are compiled in, not hot-reloaded.
-  (WASM plugin system deferred to Phase 2.)
-- **Provider layer is isolated behind a trait** - rab defines its own `Provider`
-  trait. The default implementation wraps [genai](https://github.com/jeremychone/rust-genai)
-  (Apache 2.0, 711★, 50 contributors). The agent loop depends only on the trait,
-  so genai can be swapped for another backend without touching loop logic.
-- **Agent loop mirrors pi** - steering queues, follow-up queues, hook-based
-  tool lifecycle, event stream. Ported from pi's `runAgentLoop` in
-  `packages/agent/src/agent-loop.ts`.
-
-## License
-
-rab is **EPL-2.0**. The `genai` dependency is Apache 2.0 (compatible) but
-isolated behind a trait - replaceable with no changes to core logic.
+A lightweight, extensible Rust coding agent inspired by [pi-coding-agent](https://pi.dev).
+rab delegates the core agent loop, types, and provider layer to the **yoagent** crate,
+providing the session layer, TUI, built-in tools, slash commands, and lifecycle management.
 
 ---
 
 ## Layered architecture
 
 ```
-┌──────────────────────────────────────────────────────────┐
-│                     rab (EPL-2.0)                        │
-│                                                          │
-│  ┌──────────────────────────────────────────────────┐   │
-│  │                 main.rs (manual arg parsing)      │   │
-│  │  arg parsing, env reading,                         │   │
-│  │  mode dispatch (print / interactive)              │   │
-│  └────────────────────┬─────────────────────────────┘   │
-│                       │                                   │
-│  ┌────────────────────▼─────────────────────────────┐   │
-│  │               agent.rs                             │   │
-│  │  Agent struct, run_agent_loop(), event stream,    │   │
-│  │  steering/follow-up queues, hook pipeline         │   │
-│  │  depends on: Provider trait (not genai)           │   │
-│  └────┬──────────┬──────────┬──────────┬────────────┘   │
-│       │          │          │          │                  │
-│  ┌────▼──┐ ┌────▼──┐ ┌────▼──┐ ┌────▼──┐ ┌────▼──┐      │
-│  │builtin│ │  tui/  │ │commands│ │settings│ │ sys   │      │
-│  │read   │ │ agent/ │ │.rs     │ │.rs     │ │prompt │      │
-│  │write  │ │ ui/    │ │22 slash│ │~/.rab/ │ │.rs    │      │
-│  │edit   │ │screen  │ │commands│ │settings│ │AGENTS │      │
-│  │find   │ │editor  │ │        │ │        │ │.md    │      │
-│  │grep   │ │list    │ │        │ └────────┘ └───────┘      │
-│  │ls     │ └───────┘ │        │                           │
-│  │commands│          │        │                           │
-│  └──┬────┘          │        │                           │
-│     │          │ crossterm (0.29)                           │
-│     │          │ unicode-segmentation, unicode-width        │
-│  └──┬────┘  impl agent::extension::Extension trait        │         │
-│  ┌──▼──────────────────────────────────────────────────────────┐│
-│  │       agent/extension.rs  (AgentTool, Extension traits)     ││
-│  │  pub trait Extension {                                       ││
-│  │    fn tools(&self) -> Vec<Box<dyn AgentTool>>;               ││
-│  │    fn commands(&self) -> Vec<SlashCommand>;                  ││
-│  │    fn before_tool_call(&self, tc) -> Option<BlockReason>;    ││
-│  │    fn after_tool_call(&self, tc, result) -> Option<String>;  ││
-│  │  }                                                           ││
-│  │  pub trait CommandHandler { execute, completions }           ││
-│  │  pub trait ToolRenderer { render_call, render_result }      ││
-│  │  Builtin + user extensions share this trait                  ││
-│  └──────────────────────────────────────────────────────────────┘│
-│                                                          │
-│  ┌──────────────────────────────────────────────────┐   │
-│  │            agent/provider.rs  (Provider trait)        │   │
-│  │  pub trait Provider { ... }                        │   │
-│  │  pub struct StreamEvent { ... }                    │   │
-│  │  fn set_reasoning_effort(level)                    │   │
-│  │  Agent loop depends ONLY on this, not on genai     │   │
-│  └────────────────────┬─────────────────────────────┘   │
-│                       │                                   │
-│  ┌────────────────────▼─────────────────────────────┐   │
-│  │          adapter.rs  (impl Provider)               │   │
-│  │  struct GenaiProvider { client: genai::Client }    │   │
-│  │  impl Provider for GenaiProvider { ... }           │   │
-│  │  The only file that imports genai                  │   │
-│  └────────────────────┬─────────────────────────────┘   │
-│                       │                                   │
-└───────────────────────┼───────────────────────────────────┘
-                        │
-               ┌────────▼────────┐
-               │ genai (Apache   │
-               │ 2.0)            │
-               │ replaceable     │
-               └─────────────────┘
+┌──────────────────────────────────────────────────────────────────────┐
+│                          rab (EPL-2.0)                               │
+│                                                                      │
+│  ┌──────────────────────────────────────────────────────────────┐   │
+│  │                    main.rs (manual arg parsing)                │   │
+│  │  arg parsing, env reading, session init,                      │   │
+│  │  mode dispatch (print / interactive)                          │   │
+│  └────────────────────┬─────────────────────────────────────────┘   │
+│                       │                                              │
+│  ┌────────────────────▼─────────────────────────────────────────┐   │
+│  │              AgentSession (agent_session.rs)                  │   │
+│  │  Lifecycle layer bridging yoagent events ↔ session storage   │   │
+│  │  - Event-driven message persistence (crash-safe)             │   │
+│  │  - Model/thinking/tool change detection & recording          │   │
+│  │  - Auto/manual compaction (compaction.rs)                    │   │
+│  │  - Branch summarization (branch_summary.rs)                  │   │
+│  │  - Branch navigation (set_branch)                            │   │
+│  └────┬──────────┬──────────┬──────────┬───────────────────────┘   │
+│       │          │          │          │                            │
+│  ┌────▼──┐ ┌────▼──┐ ┌────▼──┐ ┌────▼──┐ ┌────▼──┐ ┌────▼──┐      │
+│  │builtin│ │  tui/  │ │commands│ │settings│ │ sys   │ │ auth  │      │
+│  │read   │ │ agent/ │ │.rs     │ │.rs     │ │prompt │ │.rs    │      │
+│  │write  │ │ ui/    │ │22 slash│ │~/.rab/ │ │.rs    │ │API    │      │
+│  │edit   │ │screen  │ │commands│ │settings│ │AGENTS │ │keys,  │      │
+│  │bash   │ │editor  │ │        │ │        │ │.md    │ │OAuth  │      │
+│  │       │ │list    │ │        │ │        │ │skills │ │       │      │
+│  │       │ └───────┘ │        │ │        │ │       │ │       │      │
+│  └──┬────┘           │        │ └────────┘ └───────┘ └───────┘      │
+│     │                │        │                                     │
+│     │     impl Extension trait + yoagent::types::AgentTool          │
+│     │                                                               │
+│  ┌──▼──────────────────────────────────────────────────────────┐   │
+│  │              agent/extension.rs (Extension trait)            │   │
+│  │  pub trait Extension: Send + Sync {                          │   │
+│  │    fn name(&self) -> Cow<'static, str>;                      │   │
+│  │    fn tools(&self) -> Vec<Box<dyn AgentTool>>;               │   │
+│  │    fn commands(&self) -> Vec<SlashCommand>;                  │   │
+│  │    async fn before_tool_call(&self, tc) -> Option<BlockReason>;│  │
+│  │    async fn after_tool_call(&self, tc, result) -> Option<String>;│ │
+│  │    fn tool_renderer(&self, name) -> Option<Box<dyn ToolRenderer>>;│ │
+│  │    fn tool_snippets(&self) -> Vec<(String, Cow<str>)>;       │   │
+│  │    fn tool_guidelines(&self) -> Vec<(String, String)>;       │   │
+│  │  }                                                           │   │
+│  │  Builtin + user extensions share this trait                  │   │
+│  └──────────────────────────────────────────────────────────────┘   │
+│                       │                                              │
+│  ┌────────────────────▼─────────────────────────────────────────┐   │
+│  │                   yoagent 0.8.4 (MIT)                        │   │
+│  │                                                              │   │
+│  │  ┌──────────────────────────────────────────────────────┐   │   │
+│  │  │           yoagent::types                             │   │   │
+│  │  │  AgentMessage, Message (User/Assistant/ToolResult),   │   │   │
+│  │  │  Content, AgentTool, AgentEvent, Usage, etc.          │   │   │
+│  │  └──────────────────────────────────────────────────────┘   │   │
+│  │  ┌──────────────────────────────────────────────────────┐   │   │
+│  │  │           yoagent::provider                          │   │   │
+│  │  │  Provider trait + OpenAiCompatProvider               │   │   │
+│  │  │  Streaming LLM calls, thinking, tool calls            │   │   │
+│  │  │  Provider auto-detection by model prefix              │   │   │
+│  │  └──────────────────────────────────────────────────────┘   │   │
+│  │  ┌──────────────────────────────────────────────────────┐   │   │
+│  │  │           yoagent::agent                             │   │   │
+│  │  │  Agent struct, run_agent_loop(),                     │   │   │
+│  │  │  text/tool streaming, event emission                 │   │   │
+│  │  └──────────────────────────────────────────────────────┘   │   │
+│  │  ┌──────────────────────────────────────────────────────┐   │   │
+│  │  │           yoagent::skills                            │   │   │
+│  │  │  Skill type, frontmatter parsing                     │   │   │
+│  │  └──────────────────────────────────────────────────────┘   │   │
+│  │                                                              │   │
+│  └──────────────────────────────────────────────────────────────┘   │
+│                       │                                              │
+│  ┌────────────────────▼─────────────────────────────────────────┐   │
+│  │  Provider backends (in yoagent, not rab)                     │   │
+│  │  OpenCode Go (opencode.ai/zen/go/v1) — default               │   │
+│  │  OpenAI, Anthropic, Ollama — auto-detected by model prefix   │   │
+│  └──────────────────────────────────────────────────────────────┘   │
+│                                                                      │
+│  ┌──────────────────────────────────────────────────────────────┐   │
+│  │  TUI (src/tui/ + src/agent/ui/) — 72 modules, ~669 tests    │   │
+│  │  Direct Rust port on crossterm 0.29                          │   │
+│  └──────────────────────────────────────────────────────────────┘   │
+└──────────────────────────────────────────────────────────────────────┘
 ```
+
+## Key architectural decisions
+
+- **yoagent is the core dependency**, not genai. rab delegates the agent loop,
+  provider layer, and message types to yoagent. rab provides the session layer,
+  TUI, built-in tools, slash commands, and lifecycle management on top.
+
+- **One extension mechanism** — built-in tools and user extensions use the same
+  `Extension` trait. No separate tool registration path. All tools, commands,
+  renderers, and hooks go through `Extension`.
+
+- **Provider layer lives in yoagent** — rab has no `adapter.rs` or `provider.rs`.
+  yoagent's `Provider` trait and `OpenAiCompatProvider` handle all LLM
+  communication. OpenCode Go is the default backend; OpenAI, Anthropic, and
+  Ollama are auto-detected by model name prefix.
+
+- **Agent loop lives in yoagent** — rab has no `loop.rs`. yoagent's `Agent`
+  struct handles streaming, tool execution, and event emission. rab subscribes
+  to events via `AgentEvent` for persistence and UI updates.
+
+- **Types from yoagent** — `AgentMessage`, `Message`, `Content`, `AgentTool`
+  are all re-exported from `yoagent::types`. rab's `types.rs` is a thin shim
+  with helper functions and rab-specific enums (`ToolExecutionMode`, `QueueMode`).
+
+## Pi component mapping
+
+| pi component | rab equivalent | Status |
+|---|---|---|
+| `pi-tui` (terminal UI, components, editor) | `src/tui/` + `src/agent/ui/` | ✅ Complete — 72 modules, ~669 tests. Direct Rust port on crossterm 0.29. |
+| `pi-agent-core` (agent loop, session, compaction, skills) | Delegated to **yoagent** (agent loop, types, provider) + rab's `AgentSession` (session lifecycle, compaction, branching) | ✅ Agent loop in yoagent (`yoagent::agent::Agent`). ✅ Session in `session.rs` (2757 lines). ✅ Compaction in `compaction.rs` (679 lines) — fully implemented. ✅ Branch summarization in `branch_summary.rs` (270 lines). ✅ Skills in `skills.rs` (342 lines). |
+| `coding-agent` (CLI, extensions, tools, settings, commands) | `main.rs`, `builtin/`, `settings.rs`, `auth.rs`, `commands.rs` | ✅ Tools (read/write/edit/bash), settings, auth, CLI done. ✅ 22 slash commands implemented. ✅ Hook pipeline (before/after tool call) wired in `Extension` trait. |
+| provider | `yoagent::provider::OpenAiCompatProvider` | ✅ OpenCode Go default. Auto-detection by model prefix (claude → Anthropic, gpt → OpenAI, ollama → Ollama). |
+| Theme system | `src/agent/ui/theme.rs` | ✅ JSON theme system with resolution, fallback, detection (698 lines) |
+| Resource loading (AGENTS.md/CLAUDE.md) | `src/agent/context_files.rs` | ✅ AGENTS.md/CLAUDE.md discovery, `<project_context>` wrapping |
+| Skills | `src/agent/skills.rs` (+ `yoagent::skills`) | ✅ Skill loading, frontmatter, prompt formatting |
+| Image support (Kitty protocol) | `src/tui/components/markdown.rs` (hyperlinks) + base64 data URLs | ✅ Image display via Kitty protocol. Input (clipboard paste) TBD. |
+| Config files | `~/.rab/` | ✅ Same schema as pi. Auth at `~/.rab/agent/auth.json`. |
+| MCP extensions | Not started | ⬜ Phase 2 |
+| WASM plugin system | Not started | ⬜ Phase 2 |
 
 ---
 
 ## Core type system (`src/agent/types.rs`)
 
-### AgentMessage
+A thin shim over `yoagent::types`. Provides helper functions and rab-specific enums.
 
-The universal message type. Every entry in a session transcript is one of these.
+### yoagent types (re-exported)
 
 ```rust
-AgentMessage
-├── id: String                      # UUID v4
-├── parent_id: Option<String>       # for session tree (MVP: linear)
-├── role: Role                      # User | Assistant | ToolResult
-├── content: String                 # text content
-├── tool_calls: Vec<ToolCall>       # present on Assistant messages
-├── tool_call_id: Option<String>    # present on ToolResult messages
-├── usage: Option<Usage>            # tokens in/out/cache, present on Assistant
-├── is_error: bool                  # for ToolResult: was execution an error?
-└── timestamp: i64                  # Unix millis
+// From yoagent::types:
+pub use yoagent::types::{AgentMessage, Content, Message};
+// AgentMessage is an enum:
+//   AgentMessage::Llm(Message) — user, assistant, tool_result
+//   AgentMessage::Extension(...) — extension-specific data
+// Message::User { content, timestamp, ... }
+// Message::Assistant { content, model, provider, usage, ... }
+// Message::ToolResult { tool_call_id, content, is_error, ... }
+// Content::Text { text }
+// Content::ToolCall { id, name, arguments }
+// Content::Thinking { text, signature }
 ```
 
-### AgentTool trait
+### rab-specific enums
 
 ```rust
-#[async_trait]
-pub trait AgentTool: Send + Sync {
-    fn name(&self) -> &str;
-    fn description(&self) -> &str;
-    fn parameters(&self) -> serde_json::Value;  // JSON Schema
-    fn label(&self) -> &str;                    // human-readable for UI
-
-    /// Custom rendering for the tool call header (name + args).
-    fn renderer(&self) -> Option<Box<dyn ToolRenderer>> { None }
-
-    /// Optional argument pre-processing (pi-compatible: `prepareArguments`).
-    fn prepare_arguments(&self, args: Value) -> Value { args }
-
-    /// Execution mode override (defaults to Parallel).
-    fn execution_mode(&self) -> ToolExecutionMode { ToolExecutionMode::Parallel }
-
-    /// Guidelines for the system prompt specific to this tool.
-    fn prompt_guidelines(&self) -> Vec<String> { vec![] }
-
-    async fn execute(&self, tool_call_id: String, args: Value,
-        cancel: Cancel, on_update: Option<UnboundedSender<ToolOutput>>)
-        -> Result<ToolOutput>;
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum ToolExecutionMode {
+    #[default]
+    Parallel,
+    Sequential,
 }
-```
 
-### AgentEvent
-
-Emitted by the loop for consumers (print mode writes to stdout; TUI renders to screen). Mirrors pi's `AgentEvent` union.
-
-```rust
-AgentEvent
-├── AgentStart
-├── TurnStart
-├── TextDelta { delta: String }
-├── ThinkingDelta { delta: String }
-├── ToolCall { id: String, name: String, args: serde_json::Value }
-├── ToolCallArgsUpdate { id: String, args: serde_json::Value }
-├── ToolProgress { content: String, is_error: bool }
-├── ToolResult { id: String, name: String, content: String, compact: Option<String>, is_error: bool }
-├── TurnEnd
-├── AgentEnd { messages: Vec<AgentMessage> }
-├── Aborted { reason: String }
-├── UserMessage { content: String }
-```
-
-### PendingMessageQueue & QueueMode
-
-```rust
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum QueueMode { All, OneAtATime }
 
 pub struct PendingMessageQueue {
     messages: Vec<AgentMessage>,
     mode: QueueMode,
 }
-
-impl PendingMessageQueue {
-    fn new(mode: QueueMode) -> Self;
-    fn enqueue(&mut self, msg: AgentMessage);
-    fn drain(&mut self) -> Vec<AgentMessage>;
-    fn drain_all(&mut self) -> Vec<AgentMessage>;
-    fn len(&self) -> usize;
-    fn is_empty(&self) -> bool;
-}
 ```
 
-Used for steering (mid-stream) and follow-up (post-agent) message delivery.
+### Helper functions
+
+```rust
+pub fn content_text(content: &[Content]) -> String;       // text parts joined
+pub fn content_tool_calls(content: &[Content]) -> Vec<(id, name, args)>;
+pub fn message_text(msg: &AgentMessage) -> String;
+pub fn message_is_user(msg: &AgentMessage) -> bool;
+pub fn message_is_assistant(msg: &AgentMessage) -> bool;
+pub fn message_is_tool_result(msg: &AgentMessage) -> bool;
+pub fn message_is_error(msg: &AgentMessage) -> bool;
+pub fn message_tool_call_id(msg: &AgentMessage) -> Option<&str>;
+pub fn message_usage(msg: &AgentMessage) -> Option<Usage>;
+pub fn message_model(msg: &AgentMessage) -> Option<&str>;
+pub fn message_provider(msg: &AgentMessage) -> Option<&str>;
+pub fn user_message(text: &str) -> AgentMessage;
+pub fn assistant_message(text: &str) -> AgentMessage;
+pub fn tool_result_message(tool_call_id: &str, text: String, is_error: bool) -> AgentMessage;
+```
 
 ---
 
-## Agent loop (`src/agent/loop.rs`)
+## Agent lifecycle (`src/agent/agent_session.rs`)
 
-Adapted directly from pi's `runAgentLoop` in `agent-loop.ts` (1962 lines).
-The loop is the heart of the system - everything else feeds into or reads from it.
-
-### Pseudocode
+The `AgentSession` struct coordinates the session lifecycle, bridging the
+yoagent agent loop event stream with session persistence.
 
 ```rust
-async fn run_agent_loop(
-    prompts: Vec<AgentMessage>,
-    context: &AgentContext,      // system_prompt + tools + history
-    config: &LoopConfig,         // model, thinking, hooks, queues
-    emit: &dyn EventSink,
-    signal: CancellationToken,
-) -> Result<Vec<AgentMessage>> {
-    let mut messages = context.messages.clone();
-    messages.extend(prompts);
-    let mut new_messages: Vec<AgentMessage> = prompts.clone();
-
-    emit(AgentStart);
-    emit(TurnStart);
-
-    // Outer loop: restarts on follow-up messages
-    loop {
-        // Inner loop: stream LLM → execute tools → repeat
-        loop {
-            // 1. Convert AgentMessage[] to LLM format
-            let llm_messages = convert::to_llm(&messages);
-
-            // 2. Stream assistant response
-            let response = stream_assistant(
-                &config.model, &context.system_prompt,
-                &llm_messages, &context.tools, signal
-            ).await?;
-
-            // 2a. Emit deltas as they arrive
-            emit(TextDelta { delta: response.text });
-            messages.push(response.as_message());
-            new_messages.push(response.as_message());
-
-            // 2b. Handle errors / abort
-            if response.stop_reason == "error" || signal.is_cancelled() {
-                emit(AgentEnd { messages: new_messages });
-                return Ok(new_messages);
-            }
-
-            // 3. Execute tool calls (parallel by default)
-            if !response.tool_calls.is_empty() {
-                // Phase 1 (sequential preflight): emit ToolCall events, check before_tool_call hooks
-                for tc in &response.tool_calls {
-                    emit(ToolCall { id: tc.id, name: tc.name, args: tc.args });
-                    // Check before_tool_call hooks
-                    for ext in &context.extensions {
-                        if let Some(reason) = ext.before_tool_call(tc).await {
-                            return ToolResult::blocked(reason);
-                        }
-                    }
-                }
-                // Phase 2 (parallel execution): execute all tools concurrently
-                let results = join_all(response.tool_calls.iter().map(|tc| {
-                    execute_tool(&context.tools, tc, signal)
-                })).await;
-                for result in results {
-                    // Check after_tool_call hooks
-                    for ext in &context.extensions {
-                        if let Some(overridden) = ext.after_tool_call(tc, &result).await {
-                            // patch result
-                        }
-                    }
-                    emit(ToolResult { ... });
-                    messages.push(msg);
-                    new_messages.push(msg);
-                }
-                continue; // loop continues - tool results go back to LLM
-            }
-
-            // 4. No tool calls - turn complete
-            emit(TurnEnd);
-
-            // 5. Check steering queue (inject mid-run)
-            if let Some(steering) = config.poll_steering().await {
-                messages.push(steering.clone());
-                new_messages.push(steering);
-                continue;   // re-enter inner loop with steering message
-            }
-
-            break;  // inner loop done
-        }
-
-        // 6. Check follow-up queue (only after agent would stop)
-        if let Some(follow_up) = config.poll_follow_up().await {
-            messages.push(follow_up.clone());
-            new_messages.push(follow_up);
-            continue;   // re-enter outer loop
-        }
-
-        break;  // outer loop done
-    }
-
-    emit(AgentEnd { messages: new_messages });
-    Ok(new_messages)
+pub struct AgentSession {
+    session: SessionManager,
+    last_model: Option<(String, String)>,           // change detection
+    last_thinking_level: String,                    // change detection
+    last_active_tools: Option<Vec<String>>,          // change detection
+    persisted_message_ids: HashSet<String>,          // dedup tracking
+    persisted_tool_call_ids: HashSet<String>,        // dedup tracking
+    compaction_settings: CompactionSettings,
+    context_window: u64,
+    model_name: String,
+    compaction_api_key: Option<String>,
 }
 ```
 
-### Hook pipeline
+### Responsibilities
 
-Hooks live on the `Extension` trait. When a tool is about to execute, all
-extensions are consulted:
+1. **Event-driven persistence** — `handle_yo_event()` persists `ToolExecutionEnd`
+   events immediately (crash-safe). `on_agent_end()` persists remaining
+   assistant messages not yet captured. Uses `persisted_message_ids` /
+   `persisted_tool_call_ids` for deduplication.
+
+2. **Model/thinking/tool change tracking** — `on_model_change()`,
+   `on_thinking_level_change()`, `on_active_tools_change()` detect changes and
+   append metadata entries to the session (diff-based — only appends when
+   value differs from last known).
+
+3. **Auto-compaction** — `check_auto_compact()` runs after the agent finishes
+   a turn. Checks `should_compact()` against the model's context window,
+   calls `compact()` to generate a summary, and appends a `CompactionEntry`.
+
+4. **Manual compaction** — `run_manual_compact()` for `/compact` command.
+
+5. **Branch summarization** — `summarize_branch_navigation()` summarises
+   abandoned branches when navigating the session tree. `set_branch()` moves
+   the leaf pointer and optionally triggers branch summarization.
+
+6. **New session** — `new_session()` resets all tracked state.
+
+### Typical usage in print mode
 
 ```rust
-// Phase 1 (preflight):
-for tc in &response.tool_calls {
-    for ext in &context.extensions {
-        if let Some(reason) = ext.before_tool_call(tc).await {
-            return ToolResult::blocked(reason);
-        }
-    }
+let mut agent_session = AgentSession::new(session);
+agent_session.set_compaction_config(api_key, &model, context_window);
+
+// Submit user message
+let msg = user_message("list .rs files");
+agent_session.submit_user_message_obj(&msg);
+
+// Spawn yoagent agent loop
+let agent = yoagent::agent::Agent::new(OpenAiCompatProvider)
+    .with_model(&model)
+    .with_api_key(&api_key)
+    .with_system_prompt(&system_prompt)
+    .with_tools(agent_tools);
+
+agent.prompt_with_sender(msg_text, tx).await;
+
+// Process events — AgentSession persists tool results immediately
+while let Some(event) = rx.recv().await {
+    agent_session.handle_yo_event(&event);
+    // Update UI ...
 }
-// Phase 2 (execute):
-let result = tool.execute(args).await;
-// After execution:
-for ext in &context.extensions {
-    if let Some(overridden) = ext.after_tool_call(tc, &final_result).await {
-        // patch result
-    }
-}
+
+// AgentEnd persists remaining messages
+agent_session.check_auto_compact().await;
 ```
-
-### Queue modes
-
-- **Steering queue**: injected after the current assistant turn finishes
-  executing tool calls. Used for mid-run user input. Infrastructure exists
-  (`PendingMessageQueue`, `drain_steering()` in loop.rs), not actively used
-  by TUI yet.
-- **Follow-up queue**: injected only after the agent would otherwise stop
-  (no tool calls, no steering). Infrastructure exists, not actively used.
-- **TUI-level queuing** (implemented): When `is_streaming`, `submit_message`
-  queues to `App.queued_messages` instead of spawning concurrent loops.
-  Queued messages display between chat and editor. On `AgentEnd`, next
-  queued message auto-submits. Ctrl+C restores queue to editor.
-- Both support `one-at-a-time` and `all` drain modes via `QueueMode`.
-
-### Tool execution modes
-
-| Mode | Behaviour | Status |
-|------|-----------|--------|
-| `parallel` (default) | Preflight all tool calls (Phase 1), execute concurrent (Phase 2), emit results in source order | ✅ Implemented |
-| `sequential` | Execute one tool at a time, feed result before starting next | ⬜ Not implemented |
-
-A tool can override the global mode via `AgentTool::execution_mode()`.
 
 ---
 
-## Session layer (`src/agent/session.rs`) - ✅ 1985 lines
+## Session layer (`src/agent/session.rs`) — 2757 lines
 
 ### Format
 
 JSONL file, one object per line. Same format as pi's sessions.
 
 ```jsonl
-{"id":"01J...1","parentId":null,"role":"user","content":"list .rs files","timestamp":1700000000000}
-{"id":"01J...2","parentId":"01J...1","role":"assistant","content":"Found 3 files: ...","usage":{"input":50,"output":80},"timestamp":1700000001000}
-{"id":"01J...3","parentId":"01J...2","role":"toolResult","toolCallId":"tool_01","content":"src/main.rs\nsrc/lib.rs","timestamp":1700000002000}
+{"type":"session","version":3,"id":"01J...","cwd":"/home/user/project",...}
+{"type":"message","id":"m1","parentId":null,"role":"user","content":"list .rs files","timestamp":"..."}
+{"type":"model_change","id":"mc1","parentId":"m1","provider":"opencode_go","model_id":"deepseek-v4-pro","timestamp":"..."}
+{"type":"message","id":"m2","parentId":"mc1","role":"assistant","content":"Found 3 files...","timestamp":"..."}
+{"type":"message","id":"m3","parentId":"m2","role":"toolResult","toolCallId":"tool_01","content":"src/main.rs\n",...}
+{"type":"compaction","id":"c1","parentId":"...","summary":"...","firstKeptEntryId":"...","tokensBefore":45000,...}
+{"type":"branch_summary","id":"bs1","parentId":"...","fromId":"m10","summary":"Explored refactoring...",...}
 ```
 
-### Storage
-
-```
-~/.rab/
-├── agent/
-│   ├── settings.json          # global settings
-│   └── auth.json              # API keys and OAuth credentials
-├── models.json                # ⬜ custom provider/model definitions (not implemented)
-├── keybindings.json           # custom keybinds
-├── SYSTEM.md                  # custom system prompt (full override)
-├── APPEND_SYSTEM.md           # appended to system prompt
-├── AGENTS.md                  # global context file
-├── extensions/                # ⬜ user extensions (Phase 2 - WASM)
-├── skills/                    # agent skills
-├── themes/                    # TUI themes
-└── sessions/
-    └── <cwd-hash>/            # one directory per project
-        ├── 01J...abc.jsonl
-        └── 01J...def.jsonl
-
-./
-├── .rab/
-│   └── settings.json          # project-local overrides
-├── AGENTS.md                  # project context (also walks parent dirs)
-└── CLAUDE.md                  # alias for AGENTS.md
-```
-
-### Session struct
+### Entry types
 
 ```rust
-impl SessionManager {
-    fn create(cwd: &Path) -> Self;
-    fn open(path: &Path) -> Self;
-    fn continue_recent(cwd: &Path) -> Option<Self>;
-    fn append(&mut self, entry: &AgentMessage) -> Result<()>;
-    fn messages(&self) -> Result<Vec<AgentMessage>>;    // walk from root
-    fn id(&self) -> &str;
+pub enum SessionEntry {
+    Message(MessageEntry),                          // conversation messages
+    ThinkingLevelChange(ThinkingLevelChangeEntry),  // metadata
+    ModelChange(ModelChangeEntry),                  // metadata
+    ActiveToolsChange(ActiveToolsChangeEntry),      // metadata
+    Compaction(CompactionEntry),                    // compaction summary
+    BranchSummary(BranchSummaryEntry),              // branch navigation summary
+    SessionInfo(SessionInfoEntry),                  // session name
+    Label(LabelEntry),                              // tree node labels
+    Custom(CustomEntry),                            // extension data
+    CustomMessage(CustomMessageEntry),              // extension messages
+    Leaf(LeafEntry),                                // tree leaf pointer
 }
 ```
 
-Every entry has a `parentId`, so sessions are a tree from day one. Messages
-are resolved by walking from the root along the active branch. Branching
-happens when a new entry points to a non-tail parent - no format changes
-needed.
+### Versioning
 
-## Compaction (`compaction.rs`) - ⬜ NOT IMPLEMENTED
+Current session version: **3**. Each entry has a unique `id` and optional
+`parentId`, forming a tree. Branching moves the leaf pointer without
+modifying history — entries are append-only.
+
+### SessionManager
+
+```rust
+pub struct SessionManager {
+    storage: Box<dyn SessionStorage>,
+    session_id: String,
+    session_file: Option<PathBuf>,
+    session_dir: PathBuf,
+    cwd: PathBuf,
+    persist: bool,
+    session_header: Option<SessionHeader>,
+    file_entries: Vec<SessionEntry>,
+    by_id: HashMap<String, SessionEntry>,
+    leaf_id: Option<String>,
+    // labels_by_id, label_timestamps_by_id
+}
+```
+
+Key methods: `create()`, `open()`, `continue_recent()`, `fork_from()`,
+`append_message()`, `append_model_change()`, `append_thinking_level_change()`,
+`append_compaction()`, `append_branch_summary()`, `build_session_context()`,
+`set_branch()`, `list_sessions()`, `session_info()`.
+
+---
+
+## Session storage (`src/agent/session_storage.rs`)
+
+Abstract storage trait for session persistence:
+
+```rust
+pub trait SessionStorage: Send {
+    fn load(&self) -> (Option<SessionHeader>, Vec<SessionEntry>);
+    fn append(&self, entry: &SessionEntry) -> io::Result<()>;
+    fn write_full(&self, header: &SessionHeader, entries: &[SessionEntry]) -> io::Result<()>;
+    fn path(&self) -> Option<&Path>;
+    fn exists(&self) -> bool;
+}
+```
+
+Implementations:
+- **`JsonlSessionStorage`** — file-backed JSONL file on disk (default).
+- **`InMemorySessionStorage`** — no-op, discards all writes (for `--no-session`).
+
+---
+
+## Session repo (`src/agent/session_repo.rs`)
+
+Higher-level session lifecycle management:
+
+```rust
+pub trait SessionRepo {
+    fn list(&self, session_dir: &Path, filter_cwd: Option<&Path>,
+            progress: Option<&dyn Fn(usize, usize)>) -> Vec<SessionInfo>;
+    fn list_all(&self, progress: Option<&dyn Fn(usize, usize)>) -> Vec<SessionInfo>;
+    fn delete(&self, path: &Path) -> io::Result<()>;
+    fn fork(&self, source_path: &Path, target_dir: &Path,
+            entry_id: Option<&str>, position: Option<&str>) -> io::Result<String>;
+    fn load_info(&self, path: &Path) -> Option<SessionInfo>;
+}
+```
+
+`DefaultSessionRepo` provides progress-aware, concurrent listing with
+cwd filtering for the session picker UI.
+
+---
+
+## Compaction (`src/agent/compaction.rs`) — 679 lines ✅ IMPLEMENTED
 
 When the conversation approaches the model's context window, older messages
 are summarized to free space. Ported from pi's compaction algorithm.
 
-Algorithm:
-1. **Check threshold** - estimate total tokens. If under limit, skip.
-2. **Find cut point** - walk messages from oldest to newest, accumulating
-   tokens. Cut where the tail (newest messages) fits in the remaining budget.
-3. **Generate summary** - prompt a fast model with the older messages to
-   produce a concise summary. The summary replaces the older entries.
-4. **Replace** - swap old messages with a single synthetic user message
-   containing the summary. Tool results are included in what gets summarized.
+### Algorithm
 
-Manual trigger via `/compact` (TUI). Automatic trigger before context
-overflow causes an error.
+1. **Prepare** (`prepare_compaction()`) — Find the previous compaction
+   boundary, scan entries, detect the cut point based on `keep_recent_tokens`.
+   Handles split-turn detection (user message vs. mid-turn cut).
 
-**Current status:** `compact` field exists in `LoopConfig` and `ToolOutput`,
-but no actual compaction/summarization has been implemented.
+2. **Check threshold** (`should_compact()`) — If total tokens exceed
+   `context_window - reserve_tokens`, compaction triggers.
+
+3. **Summarize** (`compact()`) — Send older messages to the provider with a
+   structured summarization prompt. Supports incremental updates (previous
+   summary in `<previous-summary>` tags). Handles turn-prefix summarization
+   for split turns.
+
+4. **Replace** — Append a `CompactionEntry` to the session. The entry
+   contains the summary, `first_kept_entry_id`, token count, and file
+   operation details (readFiles/modifiedFiles).
+
+### Settings
+
+```rust
+pub struct CompactionSettings {
+    pub enabled: bool,
+    pub reserve_tokens: u64,       // tokens reserved for system + response
+    pub keep_recent_tokens: u64,   // newest tokens always kept
+}
+```
+
+Defaults: enabled, 16K reserve, 20K keep recent.
+
+### Manual trigger
+
+Via `/compact` slash command → `AgentSession::run_manual_compact()` →
+`compact()` → append `CompactionEntry`.
+
+### Shared summarization helper
+
+`summarize_text()` (shared with `branch_summary.rs`) calls yoagent's
+`OpenAiCompatProvider` with a non-streaming text completion (no tools,
+low temperature) to generate summaries.
+
+---
+
+## Branch summarization (`src/agent/branch_summary.rs`) — 270 lines ✅ IMPLEMENTED
+
+When the user navigates to a different branch in the session tree, the
+abandoned branch is summarized so context is preserved.
+
+### Algorithm
+
+1. **Collect entries** (`collect_entries_for_branch_summary()`) — Walk from
+   `old_leaf_id` back to the common ancestor with `target_id`. Produces
+   chronological list of abandoned entries.
+
+2. **Prepare messages** (`prepare_branch_entries()`) — Filter entries,
+   respecting token budget. Tool results are skipped (context in assistant's
+   tool calls). Compaction/branch summary entries are prioritized.
+
+3. **Generate summary** (`generate_branch_summary()`) — Call the provider
+   with a structured prompt (Goal / Progress / Key Decisions / Next Steps).
+   Append a `BranchSummaryEntry` with file operation details.
 
 ---
 
 ## Extension trait (`src/agent/extension.rs`)
 
-All capability - built-in or user-provided - comes through the same trait.
-There is no separate tool registration path. **Slash commands use the same
-`Extension` trait as tools** - built-in commands and user-provided commands
-go through the same `commands()` method and the same `CommandHandler` interface.
+All capability — built-in or user-provided — comes through the same trait.
 
 ```rust
 #[async_trait]
@@ -451,315 +455,150 @@ pub trait Extension: Send + Sync {
     fn name(&self) -> Cow<'static, str>;
 
     /// Tools this extension provides (LLM-callable).
-    fn tools(&self) -> Vec<Box<dyn AgentTool>> { vec![] }
+    fn tools(&self) -> Vec<Box<dyn yoagent::types::AgentTool>> { vec![] }
 
     /// Slash commands (e.g. `/quit`, `/model`).
     fn commands(&self) -> Vec<SlashCommand> { vec![] }
 
     /// Called before any tool executes. Return Some(reason) to block.
-    async fn before_tool_call(&self, _tc: &ToolCall) -> Option<BlockReason> { None }
+    async fn before_tool_call(&self, _tc: &yoagent::types::Content) -> Option<BlockReason> { None }
 
     /// Called after a tool executes. Return Some(text) to replace result.
-    async fn after_tool_call(&self, _tc: &ToolCall, _result: &str)
-        -> Option<String> { None }
+    async fn after_tool_call(&self, _tc: &yoagent::types::Content, _result: &str) -> Option<String> { None }
+
+    /// Tool-specific renderer for the TUI.
+    fn tool_renderer(&self, _name: &str) -> Option<Box<dyn ToolRenderer>> { None }
+
+    /// Tool prompt snippets for the system prompt.
+    fn tool_snippets(&self) -> Vec<(String, Cow<'static, str>)> { vec![] }
+
+    /// Tool prompt guidelines for the system prompt.
+    fn tool_guidelines(&self) -> Vec<(String, String)> { vec![] }
 }
+```
+
+### Supporting types
+
+```rust
+pub enum BlockReason { Security(String), Policy(String), Other(String) }
+
+pub struct AutocompleteItem { pub value: String, pub label: String, pub description: Option<String> }
 
 pub trait CommandHandler: Send + Sync {
     fn execute(&self, args: &str) -> anyhow::Result<CommandResult>;
     fn argument_completions(&self, prefix: &str) -> Vec<AutocompleteItem>;
 }
 
-pub enum CommandResult {
-    Info(String),
-    Quit,
-    ModelChanged(String),
-    ShowHelp,
-    Reloaded,
-    NewSession,
-    SessionSwitched { path: PathBuf },
-    SessionInfo { session_id, file_path, name, message_count },
-    OpenSessionSelector,
-    SessionNamed { name: String },
-}
+pub enum CommandResult { Info(String), Quit, ModelChanged(String), ... }
 
-pub struct SlashCommand {
-    pub name: String,
-    pub description: String,
-    pub handler: Box<dyn CommandHandler>,
+pub struct SlashCommand { pub name: String, pub description: String, pub handler: Box<dyn CommandHandler> }
+
+pub struct ToolOutput { pub content: String, pub compact: Option<String>,
+    pub is_error: bool, pub terminate: bool, pub details: Option<Value> }
+
+pub trait ToolRenderer: Send + Sync {
+    fn render_call(&self, args: &Value, width: usize, theme: &dyn Theme, ctx: &ToolRenderContext) -> Vec<String>;
+    fn render_result(&self, content: &str, width: usize, theme: &dyn Theme, ctx: &ToolRenderContext) -> Vec<String>;
+    fn render_self(&self) -> bool;
+    fn render_bg_key(&self) -> Option<&'static str>;
 }
 ```
 
-At startup, extensions are collected from builtins and (later) user-provided
-paths. Tools and commands are derived by flattening all extensions:
+At startup, extensions are collected from builtins:
 
 ```rust
-fn collect_tools(exts: &[Box<dyn Extension>]) -> Vec<Box<dyn AgentTool>> {
-    exts.iter().flat_map(|ext| ext.tools()).collect()
-}
-
-fn collect_commands(exts: &[Box<dyn Extension>]) -> Vec<SlashCommand> {
-    exts.iter().flat_map(|ext| ext.commands()).collect()
-}
+let extensions: Vec<Box<dyn Extension>> = vec![
+    Box::new(CommandsExtension::new(available_models)),
+    Box::new(ReadExtension::new(cwd)),
+    Box::new(WriteExtension::new(cwd)),
+    Box::new(EditExtension::new(cwd)),
+    Box::new(BashExtension::new(cwd)),
+];
 ```
 
-`--no-builtin-tools` simply skips loading builtin extensions; user extensions
-still load. `--no-extensions` skips both.
+Tools, commands, snippets, renderers, and hooks are all derived by
+flattening all extensions — no separate registration path.
 
 ---
 
 ## Built-in extensions (`builtin/`)
 
-Each built-in is an `Extension` that provides tools or commands. They serve
-as the reference implementation for user extensions.
-
-### commands - ✅ 22 commands implemented
-
-Provides core slash commands via the `CommandHandler` trait.
-Same interface as user-provided commands - no special path for built-ins.
-
-| Command | Handler | Description |
-|---------|---------|-------------|
-| `/quit` | `QuitCommand` | Returns `CommandResult::Quit`, TUI breaks event loop |
-| `/model <name>` | `ModelCommand` | Switches active model; no args shows available models. Provides argument completions. |
-| `/settings` | `SettingsCommand` | Opens settings menu overlay |
-| `/scoped-models` | `ScopedModelsCommand` | Enable/disable models for Ctrl+P cycling |
-| `/export [path]` | `ExportCommand` | Export session (HTML default, or .jsonl) |
-| `/import <path>` | `ImportCommand` | Import and resume a session from JSONL |
-| `/share` | `ShareCommand` | Share session as secret GitHub gist |
-| `/copy` | `CopyCommand` | Copy last assistant message to clipboard |
-| `/name <name>` | `NameCommand` | Sets session display name |
-| `/session` | `SessionInfoCommand` | Shows session info (ID, file, message count, tokens, cost) |
-| `/changelog` | `ChangelogCommand` | Shows changelog overlay |
-| `/hotkeys` | `HotkeysCommand` | Shows keyboard shortcuts overlay |
-| `/fork [msg-id]` | `ForkCommand` | Fork session from a previous message |
-| `/clone` | `CloneCommand` | Duplicate current session |
-| `/tree` | `TreeCommand` | Navigate session tree (switch branches) |
-| `/trust <decision>` | `TrustCommand` | Save project trust decision |
-| `/login [provider]` | `LoginCommand` | Configure provider authentication |
-| `/logout [provider]` | `LogoutCommand` | Remove provider authentication |
-| `/new` | `NewCommand` | Clears conversation, starts new session |
-| `/compact` | `CompactCommand` | Manually compact the session context |
-| `/resume` | `ResumeCommand` | Opens session selector |
-| `/reload` | `ReloadCommand` | Reloads keybindings, extensions, skills, prompts, and themes |
-
-### read
-
-| Field | Value |
-|-------|-------|
-| **Parameters** | `path: string`, `offset?: int`, `limit?: int` |
-| **Behaviour** | Reads file contents. Prefixed line numbers. Truncated at 50KB. |
-| **Image support** | If path ends in `.png`/`.jpg`/`.gif`/`.webp`, reads as base64 image (passed via the `Provider` trait's multimodal payload, adapter-specific) |
-
-### write
-
-| Field | Value |
-|-------|-------|
-| **Parameters** | `path: string`, `content: string` |
-| **Behaviour** | Creates parent directories. Writes to temp file, then atomic rename. Returns success/error message. |
-
-### edit
-
-| Field | Value |
-|-------|-------|
-| **Parameters** | `path: string`, `search: string` (array or string), `replace: string` |
-| **Behaviour** | Reads file, finds exact-match `search`, replaces with `replace`. Error if `search` appears zero or >1 times. Supports old/new edit format. Diff rendering via `render_diff()` with intra-line character-level inverse. |
-
-### bash
-
-| Field | Value |
-|-------|-------|
-| **Parameters** | `command: string`, `timeout_secs?: int` (default 120) |
-| **Behaviour** | Runs `sh -c <command>`. Captures stdout + stderr combined. Truncated to last 2000 lines / 50KB. |
-| **Security** | Command deny-list (optional for MVP). Working directory is the project root. Live streaming via `ToolProgress` events. |
-
----
-
-## Slash commands
-
-**Slash commands use the same `Extension` trait as tools.** Built-in commands
-and extension commands go through the same `CommandHandler` interface - there
-is no separate path for core vs. user commands.
-
-When the user types a slash command (e.g. `/quit`, `/model deepseek-v4-pro`),
-the TUI dispatches it to the matching `CommandHandler::execute()`. The result
-(`CommandResult`) determines what happens: show info, quit, switch models,
-open session selector, etc.
-
-### Built-in commands (via `CommandsExtension`) - ✅ 22 implemented
+### commands — ✅ 22 slash commands
 
 | Command | Result | Description |
 |---------|--------|-------------|
-| `/quit` | `CommandResult::Quit` | Graceful shutdown |
-| `/model <name>` | `CommandResult::ModelChanged(name)` or `Info` | Switch model; no args lists available models |
-| `/settings` | `CommandResult::OpenSettings` | Open settings menu overlay |
-| `/scoped-models` | `CommandResult::ScopedModels` | Enable/disable models for Ctrl+P cycling |
-| `/export [path]` | `CommandResult::ExportSession { path }` | Export session (HTML or .jsonl) |
-| `/import <path>` | `CommandResult::ImportSession { path }` | Import and resume a session |
-| `/share` | `CommandResult::ShareSession` | Share as secret GitHub gist |
-| `/copy` | `CommandResult::CopyLastMessage` | Copy last assistant message to clipboard |
-| `/name <name>` | `CommandResult::SessionNamed { name }` | Set session display name |
-| `/session` | `CommandResult::SessionInfo { ... }` | Show session info and stats |
-| `/changelog` | `CommandResult::ShowChangelog` | Show changelog entries |
-| `/hotkeys` | `CommandResult::ShowHelp` | Show keyboard shortcuts |
-| `/fork [msg-id]` | `CommandResult::ForkSession { message_id }` | Fork from a previous user message |
-| `/clone` | `CommandResult::CloneSession` | Duplicate the current session |
-| `/tree` | `CommandResult::SessionTree` | Navigate session tree |
-| `/trust <decision>` | `CommandResult::TrustDecision { decision }` | Save project trust decision |
-| `/login [provider]` | `CommandResult::Login { provider }` | Configure provider auth |
-| `/logout [provider]` | `CommandResult::Logout { provider }` | Remove provider auth |
-| `/new` | `CommandResult::NewSession` | Clear conversation |
-| `/compact` | `CommandResult::CompactSession` | Manually compact session context |
-| `/resume` | `CommandResult::OpenSessionSelector` | Open session selector |
-| `/reload` | `CommandResult::Reloaded` | Reload keybindings, extensions, skills, prompts, themes |
+| `/quit` | `Quit` | Graceful shutdown |
+| `/model <name>` | `ModelChanged(name)` / `Info` | Switch model; no args lists available |
+| `/settings` | `OpenSettings` | Open settings menu overlay |
+| `/scoped-models` | `ScopedModels` | Enable/disable models for Ctrl+P cycling |
+| `/export [path]` | `ExportSession { path }` | Export session (HTML or .jsonl) |
+| `/import <path>` | `ImportSession { path }` | Import and resume a session |
+| `/share` | `ShareSession` | Share as secret GitHub gist |
+| `/copy` | `CopyLastMessage` | Copy last assistant message to clipboard |
+| `/name <name>` | `SessionNamed { name }` | Set session display name |
+| `/session` | `SessionInfo { ... }` | Show session info and stats |
+| `/changelog` | `ShowChangelog` | Show changelog entries |
+| `/hotkeys` | `ShowHelp` | Show keyboard shortcuts |
+| `/fork [msg-id]` | `ForkSession { message_id }` | Fork from a previous message |
+| `/clone` | `CloneSession` | Duplicate the current session |
+| `/tree` | `SessionTree` | Navigate session tree |
+| `/trust <decision>` | `TrustDecision { decision }` | Save project trust decision |
+| `/login [provider]` | `Login { provider }` | Configure provider auth |
+| `/logout [provider]` | `Logout { provider }` | Remove provider auth |
+| `/new` | `NewSession` | Clear conversation |
+| `/compact` | `CompactSession` | Manually compact session context |
+| `/resume` | `OpenSessionSelector` | Open session selector |
+| `/reload` | `Reloaded` | Reload keybindings, extensions, skills, prompts, themes |
 
-### Extension commands
+### Built-in tools
 
-User extensions provide commands through the exact same interface:
-
-```rust
-// In any Extension impl:
-fn commands(&self) -> Vec<SlashCommand> {
-    vec![SlashCommand {
-        name: "mycommand".into(),
-        description: "Does something useful".into(),
-        handler: Box::new(MyCommandHandler),
-    }]
-}
-```
-
-Conflict resolution: first registered wins (builtins first, then user extensions
-in load order). Commands are deduplicated by name when collected.
+| Tool | Key features |
+|------|-------------|
+| **read** | Path resolution, line numbers, 50KB truncation. Image support (base64 data URL). |
+| **write** | Temp file + atomic rename, parent dir creation |
+| **edit** | Exact-match search/replace, error on zero/multiple matches. Diff rendering with intra-line character-level inverse. |
+| **bash** | `sh -c <command>`, 120s default timeout, streaming via ToolProgress. Last 2000 lines / 50KB truncation. Security: no deny-list (run anything). |
 
 ---
 
-## System prompt (`system_prompt.rs`) ✅
+## Auth (`src/auth.rs`)
 
-Built from the same sources as pi, concatenated via `SystemPromptBuilder`:
+API key and OAuth credential storage, loaded from `~/.rab/agent/auth.json`.
 
-1. **Default prompt** or **custom SYSTEM.md** - tool descriptions, response format.
-   Custom prompt from `~/.rab/SYSTEM.md` (global) or `.rab/SYSTEM.md` (project) replaces default.
-2. **Append prompt** - `APPEND_SYSTEM.md` appended after custom or default.
-3. **Project context files** - walked up from cwd, loads `AGENTS.md` and
-   `CLAUDE.md` (alias) from every ancestor directory. Each file wrapped in
-   `<project_instructions path="...">` tags inside `<project_context>`.
-4. **Skills** - available skills listed as `<available_skills><skill name="...">` XML.
-5. **Date and cwd** - `Current date: YYYY-MM-DD` and `Current working directory: /path`.
+```rust
+pub enum AuthCredential {
+    ApiKey { key: String },
+    Oauth { access: String, refresh: Option<String>, expires: Option<i64>, enterprise_url: Option<String> },
+}
 
-CLI flags: `--no-context-files` / `-nc`, `--system-prompt <text>`, `--append-system-prompt <text>`.
-See `src/agent/context_files.rs` for the discovery logic.
+pub struct AuthStorage(HashMap<String, AuthCredential>);
+```
+
+Load order: `~/.rab/agent/auth.json`. Currently only `opencode-go` provider
+is configured (API key from `oc_...`).
 
 ---
 
-## Provider trait (`src/agent/provider.rs`)
+## Settings (`src/agent/settings.rs`) — 798 lines
 
-rab defines its own provider abstraction. The agent loop depends on this
-trait, never on genai directly. To swap backends, write a new impl - no
-changes to `src/agent/`.
-
-```rust
-/// Events emitted during a streaming LLM request.
-pub enum StreamEvent {
-    TextDelta { text: String },
-    ThinkingDelta { text: String },
-    ToolCall { id: String, name: String, arguments: String },
-    Done {
-        text: String,
-        usage: Usage,
-        stop_reason: StopReason,
-        tool_calls: Vec<ToolCall>,
-    },
-    Error { message: String },
-}
-
-pub enum StopReason {
-    EndTurn,
-    ToolUse,
-    MaxTokens,
-    Error,
-}
-
-/// The one thing the agent loop needs from a provider.
-#[async_trait]
-pub trait Provider: Send + Sync {
-    async fn stream(
-        &self,
-        model: &str,
-        system_prompt: &str,
-        messages: &[AgentMessage],
-        tools: &[ToolDef],
-    ) -> Result<Pin<Box<dyn Stream<Item = StreamEvent> + Send>>>;
-
-    /// Update reasoning effort for the provider (maps to thinking level).
-    fn set_reasoning_effort(&self, level: Option<&str>);
-}
-```
-
-The trait takes `AgentMessage` directly - no intermediate conversion layer.
-Each adapter translates rab types into its own backend format internally.
-
-### Genai adapter (`adapter.rs`) - ✅ single backend
-
-The **only file** that imports genai. Wraps `genai::Client` (via `GenaiProvider`), configured for the
-target provider.
-
-**Current:** Client configured for OpenCode Go (`https://opencode.ai/zen/go/v1`)
-using genai's OpenAI adapter. Models: `opencode_go::deepseek-v4-flash` (default),
-`opencode_go::deepseek-v4-pro`.
-
-**Future:** Extended with provider auto-detection from model name prefix -
-`claude*` → Anthropic, `gpt*` → OpenAI, `gemini*` → Google, fallback → Ollama.
-OpenCode Go remains available as an explicit provider.
-
-```rust
-pub struct GenaiProvider {
-    client: genai::Client,
-    model_prefix: String,
-    reasoning_effort: RwLock<Option<ReasoningEffort>>,
-}
-
-impl Provider for GenaiProvider {
-    async fn stream(&self, model: &str, system: &str,
-                    messages: &[AgentMessage], tools: &[ToolDef])
-        -> Result<Pin<Box<dyn Stream<Item = StreamEvent> + Send>>>
-    {
-        let req = ChatRequest::new(to_genai_messages(messages))
-            .with_system(system)
-            .with_tools(to_genai_tools(tools));
-        let genai_stream = self.client
-            .exec_chat_stream(&full_model, req, Some(&options)).await?;
-        Ok(Box::pin(genai_stream.map(|ev| convert_event(ev))))
-    }
-}
-```
-
-`src/agent/` only sees `Box<dyn Provider>`.
-
----
-
-## Settings (`src/agent/settings.rs`) - ✅
-
-Same file names and format as pi, under `~/.rab/agent/`. Auth in `~/.rab/agent/auth.json`,
-settings in `~/.rab/agent/settings.json`. Keybindings in `~/.rab/keybindings.json`.
-`~/.rab/models.json` for custom provider/models is **not yet implemented**.
+Same file names and format as pi, under `~/.rab/agent/`.
 
 ### Config files
 
 | Pi path | rab path | Status |
 |---|---|---|
 | `~/.pi/agent/settings.json` | `~/.rab/agent/settings.json` | ✅ |
-| `.pi/settings.json` | `.rab/settings.json` | ✅ |
+| `.pi/settings.json` | `.rab/settings.json` | ✅ (project-local overrides) |
 | `~/.pi/agent/auth.json` | `~/.rab/agent/auth.json` | ✅ |
 | `~/.pi/agent/models.json` | `~/.rab/models.json` | ⬜ Not implemented |
 | `~/.pi/agent/AGENTS.md` | `~/.rab/AGENTS.md` | ✅ |
-| `AGENTS.md` / `CLAUDE.md` | `AGENTS.md` / `CLAUDE.md` | ✅ |
+| `AGENTS.md` / `CLAUDE.md` | `AGENTS.md` / `CLAUDE.md` | ✅ (project + ancestor walk) |
 | `~/.pi/agent/keybindings.json` | `~/.rab/keybindings.json` | ✅ |
 | `~/.pi/agent/sessions/` | `~/.rab/sessions/` | ✅ |
 | `~/.pi/agent/skills/` | `~/.rab/skills/` | ✅ |
 | `~/.pi/agent/themes/` | `~/.rab/themes/` + embedded | ✅ |
 
 ### `settings.json` format
-
-Same JSON schema as pi:
 
 ```json
 {
@@ -769,45 +608,53 @@ Same JSON schema as pi:
     "tools": ["read", "write", "edit", "bash"],
     "excludeTools": [],
     "theme": "dark",
-    "verbose": false
+    "verbose": false,
+    "hideThinking": true,
+    "collapseToolOutput": true
 }
 ```
 
-### `auth.json` format
-
-Same JSON schema as pi:
-
-```json
-{
-    "opencode_go": {
-        "type": "api_key",
-        "key": "oc_..."
-    }
-}
-```
-
-Load order: global `~/.rab/agent/settings.json` first, then project `.rab/settings.json`
-overlays. CLI flags (`--model`, `--thinking`, `--no-tools`) take precedence
-over both.
+Load order: global `~/.rab/agent/settings.json`, then project `.rab/settings.json`
+overlays. CLI flags (`--model`, `--thinking`, `--no-context-files`, etc.) take
+precedence over both.
 
 ---
 
-## CLI (inline in `main.rs`) - ✅ manual arg parsing
+## System prompt (`system_prompt.rs`) — 399 lines
+
+Built via `SystemPromptBuilder`:
+
+1. **Default prompt** — tool descriptions, response format, tool guidelines.
+2. **Custom SYSTEM.md** — `~/.rab/agent/SYSTEM.md` (global) or `.rab/SYSTEM.md`
+   (project). Replaces the default prompt.
+3. **APPEND_SYSTEM.md** — appended after all prompts.
+4. **Context files** — AGENTS.md/CLAUDE.md walked from cwd to root,
+   wrapped in `<project_instructions path="...">` tags.
+5. **Skills** — available skills listed as `<available_skills>` XML.
+6. **Date and cwd** — `Current date: YYYY-MM-DD`, `Current working directory: /path`.
+
+---
+
+## CLI (`main.rs`) — manual arg parsing
 
 ```
 rab [MESSAGE]...
 
 Session:
   -c, --continue             Continue most recent session in cwd
-  --session PATH             Open specific session file
+  -r, --resume               Open interactive session picker
+  --session PATH             Open specific session file (path or partial ID)
+  --session-id ID            Create/open session with explicit ID
+  --fork PATH                Fork a session from another session file
+  --export PATH              Export session and exit (⚠ not yet implemented)
   --no-session               Ephemeral, don't save
   -n, --name <name>          Set session name
 
 Model:
-  --model MODEL              Model name
+  --model MODEL              Model name (default: from settings.json)
 
 Context:
-  -nc, --no-context-files    Skip AGENTS.md loading
+  -nc, --no-context-files    Skip AGENTS.md/CLAUDE.md loading
   --system-prompt <text>     Replace default system prompt
   --append-system-prompt <text>  Append to system prompt
 
@@ -815,7 +662,9 @@ Other:
   --session-dir <path>       Session storage directory override
 ```
 
-**(Currently only OpenCode Go is implemented. Model auto-detection by prefix planned.)**
+**Currently only OpenCode Go is configured** (via `yoagent::provider::OpenAiCompatProvider`
+with `openai_compat()` model config pointing to `opencode.ai/zen/go/v1`).
+Models: `deepseek-v4-flash` (default), `deepseek-v4-pro`.
 
 ---
 
@@ -830,365 +679,148 @@ Shows the current state of the working directory and staging area...
 
 ```
 $ cat README.md | rab "Summarize this"
-This README describes a project that...
 ```
 
-Streams the response to stdout. Thinking blocks shown dimmed. Tool calls and
-results shown prefixed.
+Streams the response to stdout. Thinking blocks shown dimmed on stderr.
+Tool calls and results shown prefixed. Uses a simple event loop:
+`yoagent::agent::Agent::prompt_with_sender()` → process `AgentEvent` stream →
+`AgentSession::handle_yo_event()` for persistence.
 
-### Interactive mode
+### Interactive (TUI) mode
 
 Same agent loop, different sink: `App` in `src/agent/ui/` subscribes to the
 agent event stream and renders to a pi-tui-style main-screen TUI instead of
-stdout. Same crate - no separate abstraction layer needed.
+stdout. Uses `yoagent::agent::Agent::prompt_with_sender()` with event channnels.
 
 ---
 
-## TUI (`src/tui/` + `src/agent/ui/`) - ✅ COMPLETE
+## TUI (`src/tui/` + `src/agent/ui/`) — 72 modules, ~669 tests
 
-The TUI library is a 1/1 port of pi's `@earendil-works/pi-tui` (30 modules, 662 tests).
-**Core**: Component trait, Container, Focusable, Screen diff renderer, overlay
-system (show/hide/composite, anchor-based positioning), cursor marker extraction,
-hardware cursor positioning, synchronized output.
+The TUI library is a 1/1 port of pi's `@earendil-works/pi-tui`.
 
-**Terminal**: TerminalTrait, ProcessTerminal, crossterm event polling, raw mode,
-cursor hide/show, synchronized output.
+### Core (`src/tui/`)
 
-**Keys & keybindings**: String-based key IDs (`matches_key()`, `key_event_to_id()`),
-27+ action IDs with defaults, JSON config loading from `~/.rab/keybindings.json`.
+| Module | Description |
+|--------|-------------|
+| `tui_core.rs` | `TUI` struct — event loop, render loop, overlay system, screen diff |
+| `component.rs` | `Component` trait, `Size`, `RenderContext` |
+| `container.rs` | Container layout — vertical, centered, flex-grow, children |
+| `focusable.rs` | Focus management — `Focusable` trait, focus ring |
+| `screen.rs` | Screen diff renderer — line-by-line comparison with cursor markers |
+| `overlay.rs` | Overlay system — show/hide/composite, anchor-based positioning |
+| `terminal.rs` | Terminal abstraction — `TerminalTrait`, `ProcessTerminal`, raw mode, cursor hide/show, synchronized output |
+| `keys.rs` | Key event handling — `key_event_to_id()`, 27+ action IDs |
+| `keybindings.rs` | JSON keybinding loading from `~/.rab/keybindings.json`, merge, resolution |
+| `theme.rs` | Theme trait + default JSON theme loader |
+| `fuzzy.rs` | Fuzzy matching for autocomplete |
+| `kill_ring.rs` | Kill ring for editor cut/copy/paste |
+| `undo_stack.rs` | Undo/redo for editor |
+| `word_nav.rs` | Word-boundary navigation utilities |
+| `visual_truncate.rs` | Shared `truncate_to_visual_lines()` utility |
+| `util.rs` | Shared utilities |
 
-**Components**:
-- Editor (multi-line, word-wrap, kill ring, undo stack, paste markers, bracketed paste,
-  history recall, character jump, sticky column, border_color, AutocompleteProvider
-  integration, slash command completion)
-- Input (single-line, undo coalescing, smart scroll centering, paste handling)
-- SelectList (two-column layout, layout options, prefix filter, selection change callback)
-- SettingsList (submenu support, two-column layout, description wrapping, search)
-- Loader / CancellableLoader (color functions, timer-based animation, abort support)
-- Box (render cache), Text/TruncatedText (RefCell cache), Spacer
-- Markdown (pulldown-cmark renderer with syntax highlighting, tables, code blocks)
-- Diff (unified diff with colored +/lines and intra-line character-level inverse)
-- Image (Kitty protocol image sequences, data URL encoding)
-- VisualTruncate (shared `truncate_to_visual_lines()` utility)
-- DynamicLines (dynamically-sized section component)
-- RcRefCellComponent (bridge for shared ownership components)
+### Components (`src/tui/components/`)
 
-**Autocomplete**: AutocompleteProvider trait, CombinedAutocompleteProvider (slash
-commands + file path completion via read_dir)
+| Module | Description |
+|--------|-------------|
+| `editor.rs` | Multi-line editor — word-wrap, undo stack, kill ring, paste markers, bracketed paste, history recall, character jump, sticky column, border_color, autocomplete |
+| `markdown.rs` | pulldown-cmark renderer with syntax highlighting, tables, code blocks, Kitty hyperlinks |
+| `diff.rs` | Unified diff with colored +/lines and intra-line character-level inverse |
+| `box.rs` | `Box` component with render cache, borders, backgrounds |
+| `text.rs` | `Text` / `TruncatedText` with RefCell cache |
+| `spacer.rs` | Vertical spacer |
+| `select_list.rs` | Two-column selectable list with prefix filter |
+| `loader.rs` | Animated loader with timer, colors, abort support |
+| `dynamic_lines.rs` | Dynamically-sized section component |
+| `rc_ref_cell_component.rs` | `RcRefCellComponent` bridge for shared ownership components |
 
-**App layer**: ChatEditor, Messages, WorkingIndicator, Footer, ModelSelector,
-HelpOverlay. All message components (UserMessageComponent, AssistantMessageComponent,
-ToolExecComponent, BashExecution, EditorComponent, FooterComponent, HeaderComponent,
-InfoMessageComponent). All wired through `TUI.show_overlay()`.
-Header/messages/editor/footer layout matching pi exactly.
+### App layer (`src/agent/ui/`)
+
+| Module | Description |
+|--------|-------------|
+| `app.rs` | Main `App` struct — event handler, agent loop management, message queuing, compose_ui |
+| `chat_editor.rs` | `ChatEditor` wrapper — input processing, slash command dispatch, /skill:name expansion |
+| `messages.rs` | `DisplayMsg` — user/assistant/tool/info message types and layout |
+| `theme.rs` | `RabTheme` — JSON theme resolution, fallback, color detection, 130+ theme keys |
+| `working.rs` | `WorkingIndicator` — timer-based working animation |
+| `model_selector.rs` | `ModelSelector` — Ctrl+P model cycling with scoped-models support |
+| `footer.rs` | `Footer` — cwd, git branch, token usage, model, auto-compact indicator |
+| `help.rs` | Help overlay with keybinding display |
+| `components/header.rs` | Header — "rab" logo, keybinding hints |
+| `components/footer_component.rs` | Footer component |
+| `components/editor_component.rs` | Editor component with border_color |
+| `components/user_message.rs` | User message component (box + markdown) |
+| `components/assistant_message.rs` | Streaming assistant message with thinking blocks |
+| `components/tool_messages.rs` | Tool execution components (read, write, edit, bash) |
+| `components/bash_execution.rs` | Bash execution component with streaming, duration, borders |
+| `components/info_message.rs` | Info message component (dim text) |
+| `components/message_components.rs` | Shared message rendering utilities |
+| `components/session_picker.rs` | Session selector overlay |
+| `components/mod.rs` | Component re-exports |
 
 ### Layout (component tree)
 
 ```
-Terminal (main screen, no alternate screen):
+Terminal (no alternate screen):
 TUI.root (Container):
-  ├── HeaderComponent
-  │   ├── "rab" logo
-  │   └── keybinding hints (expandable via Ctrl+O)
-  │
+  ├── HeaderComponent ("rab" logo, keybinding hints)
   ├── chat_container (RefContainer)
   │   ├── UserMessageComponent
-  │   │   └── Box(userMessageBg) + Markdown(userMessageText) + OSC133
-  │   ├── ToolExecComponent
-  │   │   ├── Background: toolPendingBg → toolSuccessBg/toolErrorBg
-  │   │   ├── Header: per-tool formatting (read docs/path, $ command, write path, etc.)
-  │   │   └── Result: syntax-highlighted (read) / diff-colored (edit) / plain (toolOutput)
-  │   ├── RcRefCellComponent (streaming)
-  │   │   └── AssistantMessageComponent: Markdown + thinking blocks + OSC133
+  │   ├── ToolExecComponent (read/write/edit/bash)
+  │   ├── RcRefCellComponent → AssistantMessageComponent
   │   ├── BashExecutionComponent
-  │   │   ├── Borders (bashMode color), spinner, streaming output
-  │   │   └── Duration: "Elapsed X.Xs" / "Took X.Xs"
-  │   ├── InfoMessageComponent (dim text)
-  │   └── Spacer(1) between each (via chat_add helper)
-  │
-  ├── pending_section (DynamicLines - streaming text/thinking)
-  ├── status_section (DynamicLines - transient status)
-  ├── queued_section (DynamicLines - ◷ queued messages)
-  ├── working_section (DynamicLines - ⠋ Working...)
+  │   ├── InfoMessageComponent
+  │   └── Spacer(1) between each
+  ├── pending_section (DynamicLines — streaming text/thinking)
+  ├── status_section (DynamicLines — transient status)
+  ├── queued_section (DynamicLines — ◷ queued messages)
+  ├── working_section (DynamicLines — ⠋ Working...)
   ├── EditorComponent (border color: thinking level / bash mode)
   └── FooterComponent (cwd, git branch, token usage, model, auto-compact)
 ```
 
-The component tree is rendered recursively: `TUI.render()` calls
-`root.render(width)` which calls each child's `render()` in order. The
-resulting lines are composited with overlays and diff-rendered via `Screen`.
-
-Tool execution components use `Rc<RefCell<>>` + `Weak` for in-place updates:
-- `streaming_component: Option<Weak<RefCell<AssistantMessageComponent>>>`
-  - created on first `TextDelta`, updated with `append_text()`/`add_thinking()`
-- `pending_tools: HashMap<String, Weak<RefCell<ToolExecComponent>>>`
-  - created on `ToolCall`, updated with `set_result()` on `ToolResult`
-- `bash_component: Option<Weak<RefCell<BashExecution>>>`
-  - created on bang command, updated with `append_chunk()` on `ToolProgress`
-
 ### Message queuing
 
-When the user submits a message while streaming, it is **queued** (not sent to
-a new concurrent agent loop). Queued messages appear between chat and editor
-(pi's `pendingMessagesContainer` style). On `AgentEnd`, the next queued
-message is automatically submitted. Ctrl+C during streaming restores queued
-messages to the editor for editing.
+When the user submits a message while streaming, it is queued (not sent to
+a new concurrent agent loop). Queued messages appear between chat and editor.
+On `AgentEnd`, the next queued message is auto-submitted. Ctrl+C during
+streaming restores queued messages to the editor.
 
 ### Transient status
 
 Toggle messages (Ctrl+T thinking, Ctrl+O tool output, model switch, interrupt)
-use a transient `status_text: Option<String>` that appears for one frame then
-clears, matching pi's `showStatus()` behavior. Status messages replace the
-previous status - they don't accumulate in the chat history.
+use `status_section` that appears for one frame then clears.
 
 ---
 
-## Phase 2
-
-### User extensions (compile-time)
-
-Same `Extension` trait used by builtins. To add a custom tool, implement the
-trait and register it at startup:
-
-```rust
-struct MyTool;
-impl Extension for MyTool {
-    fn name(&self) -> &str { "my-tool" }
-    fn tools(&self) -> vec![ /* ... */ ]
-}
-
-// main.rs - alongside builtins
-if !args.no_extensions {
-    exts.push(Box::new(MyTool));
-}
-```
-
-### Dynamic plugin system (WASM via wasmtime) - ⬜ NOT STARTED
-
-The primary mechanism for user plugins. Plugins are `.wasm` components loaded
-at runtime from `~/.rab/extensions/` (global) and `.rab/extensions/` (project).
-WASM was chosen because: sandboxed by default (plugin crashes can't take down the
-host), hot reload is trivial (recompile → replace file), and the WIT interface
-is stable across Rust compiler versions (unlike C ABI for dylib). For plugins that
-need C libraries (rare), a native dylib escape hatch can be added later.
-
-#### Architecture
+## Storage layout (`~/.rab/`)
 
 ```
-┌──────────────────────────────────────────────────────────┐
-│                      rab host                             │
-│                                                          │
-│  ┌──────────────────────┐   ┌────────────────────────┐  │
-│  │   BuiltinExtension   │   │   WasmExtension         │  │
-│  │   (read/write/...)   │   │                         │  │
-│  │   impl Extension     │   │   impl Extension {      │  │
-│  │                      │   │     name()              │  │
-│  │                      │   │     tools() → delegates │  │
-│  │                      │   │       to wasm instance  │  │
-│  │                      │   │   }                     │  │
-│  └──────────────────────┘   └───────────┬────────────┘  │
-│                                         │ WIT calls      │
-│                               ┌─────────▼────────────┐  │
-│                               │  PluginRegistry       │  │
-│                               │  ├─ wasmtime Engine   │  │
-│                               │  ├─ Vec<LoadedPlugin> │  │
-│                               │  ├─ load(path)        │  │
-│                               │  ├─ unload(name)      │  │
-│                               │  └─ reload_all()      │  │
-│                               └───────────────────────┘  │
-└──────────────────────────────────────────────────────────┘
+~/.rab/
+├── agent/
+│   ├── settings.json          # global settings
+│   ├── auth.json              # API keys and OAuth credentials
+│   ├── SYSTEM.md              # custom system prompt (full override)
+│   ├── APPEND_SYSTEM.md       # appended to system prompt
+│   └── AGENTS.md              # global context file
+├── models.json                # ⬜ custom provider/model definitions (not implemented)
+├── keybindings.json           # custom keybindings
+├── extensions/                # ⬜ WASM plugins (Phase 2)
+├── skills/                    # agent skills (SKILL.md files)
+├── themes/                    # TUI themes
+└── sessions/
+    └── <cwd-hash>/            # one directory per project
+        ├── 01J...abc.jsonl
+        └── 01J...def.jsonl
+
+./
+├── .rab/
+│   ├── settings.json          # project-local overrides
+│   ├── SYSTEM.md              # project-local system prompt
+│   └── APPEND_SYSTEM.md       # project-local append prompt
+├── AGENTS.md                  # project context (also walks parent dirs)
+└── CLAUDE.md                  # alias for AGENTS.md
 ```
-
-`WasmExtension` implements the host `Extension` trait by forwarding calls into
-a wasm component via WIT bindings. The agent loop sees no difference between
-a builtin and a wasm plugin.
-
-#### WIT interface
-
-```wit
-package rab:plugin;
-
-interface types {
-    record tool-def {
-        name: string,
-        description: string,
-        parameters: string,   // JSON Schema
-        label: string,
-    }
-
-    record slash-command {
-        name: string,
-        description: string,
-    }
-}
-
-world rab-plugin {
-    export name: func() -> string;
-    export tools: func() -> list<tool-def>;
-    export commands: func() -> list<slash-command>;
-    export execute-tool: func(
-        tool-name: string,
-        tool-call-id: string,
-        args-json: string
-    ) -> result<string, string>;
-}
-```
-
-#### Plugin author experience
-
-A `rab-plugin-sdk` crate provides a `Plugin` trait and an `export_plugin!` macro
-that hides WIT internals. Plugin authors write plain Rust - no `extern "C"`,
-no `#[repr(C)]`, no unsafe:
-
-```rust
-// my-plugin/src/lib.rs
-use rab_plugin_sdk::*;
-
-struct MyPlugin;
-
-impl Plugin for MyPlugin {
-    fn name() -> String { "my-tool".into() }
-
-    fn tools() -> Vec<ToolDef> {
-        vec![ToolDef {
-            name: "hello".into(),
-            description: "Says hello".into(),
-            parameters: json!({"type": "object", "properties": {}}),
-            label: "Hello Tool".into(),
-        }]
-    }
-
-    fn execute(tool: &str, call_id: &str, args: Value) -> Result<String, String> {
-        match tool {
-            "hello" => Ok(format!("Hello from plugin! call_id={call_id}")),
-            _ => Err(format!("Unknown tool: {tool}")),
-        }
-    }
-}
-
-export_plugin!(MyPlugin);
-```
-
-Minimal `Cargo.toml`:
-
-```toml
-[package]
-name = "my-plugin"
-version = "0.1.0"
-edition = "2021"
-
-[lib]
-crate-type = ["cdylib"]
-
-[dependencies]
-rab-plugin-sdk = "0.1"
-serde_json = "1"
-```
-
-Build: `cargo build --target wasm32-wasip2 --release`, copy the `.wasm` to
-`~/.rab/extensions/`. The host picks it up on next startup (and on `/reload`
-in TUI mode).
-
-Scaffolding: `rab plugin new my-plugin` generates the Cargo.toml, lib.rs, and
-WIT file automatically.
-
-#### Plugin lifecycle
-
-| Operation | Behaviour |
-|---|---|
-| **Load** | `PluginRegistry::load(path)` compiles `.wasm` → native via cranelift, instantiates the component, calls `name()` and `tools()` for metadata |
-| **Unload** | Drop the `WasmExtension` + `Store` + `Instance`. Wasmtime releases all guest memory |
-| **Hot reload** | File watcher (`notify` crate) detects change → unload old → load new. `/reload-plugins` slash command for manual trigger |
-| **Validation** | On load, call `self-test` export (optional). If it returns `err`, print warning, skip plugin |
-| **Error isolation** | If tool execution panics inside wasm, wasmtime catches it as a `Trap`. `WasmExtension` returns `ToolResult::error`. Host process unaffected |
-| **Resource limits** | `Store::set_fuel(1_000_000)` ~covers most tool logic. Configurable per-plugin in `.rab/extensions.toml` (future) |
-
-#### Directory layout
-
-```
-~/.rab/extensions/           ← global plugins (available in every project)
-├── hello.wasm
-├── code-reviewer/
-│   ├── code-reviewer.wasm
-│   └── config.toml          ← plugin metadata, resource limits (future)
-└── sources/                 ← optional: keep source alongside
-
-./.rab/extensions/           ← project-local plugins
-└── project-tool.wasm
-```
-
-#### Future: native dylib escape hatch
-
-For plugins that need C libraries (e.g. `libgit2`, `tree-sitter`), a parallel
-native path via `crate-type = ["cdylib"]` + `dlopen2`. Same `Plugin` trait,
-different compile target. Requires matching Rust compiler version between host
-and plugin - documented as a power-user feature, not the default path.
-
-### Skills ✅
-
-Skills are markdown files following the [Agent Skills standard](https://agentskills.io).
-Loaded from `~/.rab/skills/` and `.rab/skills/` via `src/agent/skills.rs` (825 lines).
-
-**Implemented:**
-- `load_skills()` - discovers SKILL.md files, parses YAML-like frontmatter (`name:`, `description:`, `disable-model-invocation:`)
-- `format_skills_for_prompt()` - lists available skills as `<available_skills>` XML in the system prompt
-- `format_skill_invocation()` - creates `<skill name="..." location="...">` blocks for explicit invocation
-- `expand_skill_command()` - `/skill:name [args]` expansion in user input (pi-style)
-- Startup resource listing shows skill names in the welcome message
-
-### pi-mcp-adapter - ⬜ NOT STARTED
-
-An `Extension` that connects to MCP (Model Context Protocol) servers and
-exposes their tools to the agent. Uses the `rmcp` crate for client-side MCP
-protocol (stdio + SSE transports). Each connected MCP server's tools appear
-as regular `AgentTool` instances, indistinguishable from builtins.
-
-```rust
-struct McpAdapter;
-impl Extension for McpAdapter {
-    fn name(&self) -> &str { "mcp-adapter" }
-    fn tools(&self) -> Vec<Box<dyn AgentTool>> {
-        // Discover and wrap MCP server tools
-        self.mcp_clients.iter()
-            .flat_map(|client| client.list_tools())
-            .map(|tool| Box::new(McpToolWrapper::new(tool)))
-            .collect()
-    }
-}
-```
-
-Configured via `.rab/mcp.json`:
-
-```json
-{
-    "servers": [
-        { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"] },
-        { "url": "https://mcp.example.com/sse" }
-    ]
-}
-```
-
-This mirrors what pi users do with MCP extensions, but as a first-party
-built-in Phase 2 extension.
-
----
-
-## Open questions
-
-- **Dynamic extension loading** - Resolved: WASM via wasmtime + WIT
-  Component Model. See §Dynamic plugin system.
-- **OAuth** - genai's `AuthResolver` supports dynamic tokens, but browser
-  login flow, token refresh, and credential storage need a separate crate
-  (e.g. `oauth2`). MVP uses env API keys only.
-- **Image paste in TUI** - clipboard integration differs per platform (wl-paste,
-  pbpaste, PowerShell). Kitty protocol covers display; input is TBD.
-- **Command deny-list** - bash tool currently runs anything. A deny-list or
-  sandbox (bubblewrap, landlock) should be configurable per project.
-- **Multi-model cycling** - Ctrl+P model switching like pi requires a model
-  registry. genai auto-detects from name prefix; a full registry with metadata
-  (context window, costs) is future work.
-- **Provider fallback** - if the primary provider fails, should rab retry
-  with another? pi doesn't do this; worth considering.
 
 ---
 
@@ -1196,41 +828,78 @@ built-in Phase 2 extension.
 
 ```
 rab (EPL-2.0)
-├── genai 0.6              (Apache 2.0) - isolated: only adapter.rs imports this
-├── clap 4                 (MIT)        - CLI parsing
-├── tokio 1                (MIT)        - async runtime
-├── serde + serde_json 1   (MIT)        - JSON serialization
-├── uuid 1                 (MIT)        - message/session IDs
-├── chrono 0.4             (MIT)        - timestamps
-├── directories 6          (MIT)        - XDG paths
-├── anyhow 1               (MIT)        - error handling
-├── futures 0.3            (MIT)        - StreamExt
-├── async-trait 0.1        (MIT)        - trait async fn
-├── colored 3              (MPL-2.0)    - terminal colors
-├── tracing 0.1            (MIT)        - structured logging
-├── crossterm 0.29         (MIT)        - terminal I/O (raw mode, events, cursor)
-├── unicode-segmentation 1 (MIT)        - grapheme-aware cursor movement
-├── unicode-width 0.2      (MIT)        - character display width
-├── pulldown-cmark 0.13    (MIT)        - markdown parsing
-├── syntect 5.3            (MIT)        - syntax highlighting (optional feature)
-├── diff 0.1               (MIT)        - diff algorithm for edit tool
-├── base64 0.22            (MIT)        - image data URL encoding
-├── async-stream 0.3       (MIT)        - async stream generation
-├── reqwest 0.13           (MIT)        - HTTP client
-├── rustls 0.23            (MIT)        - TLS
-├── webpki-roots 1         (ISC)        - CA certificates
-├── libc 0.2               (MIT)        - system calls
-├── regex 1.12             (MIT)        - regex
-# wasmtime 26+ (phase 2, Apache 2.0)
-# notify 7    (phase 2, CC0-1.0) - file watcher for plugin hot reload (phase 2)
-└── rmcp 1                 (MIT)        - MCP client for pi-mcp-adapter (phase 2)
+├── yoagent 0.8.4         (MIT)        - agent loop, provider, types, skills
+│   └── reqwest           (Apache 2.0) - HTTP client (inside yoagent)
+├── tokio 1               (MIT)        - async runtime
+├── tokio-util 0.7        (MIT)        - CancellationToken
+├── serde + serde_json 1  (MIT)        - JSON serialization
+├── uuid 1                (MIT)        - message/session IDs
+├── chrono 0.4            (MIT)        - timestamps
+├── directories 6         (MIT)        - XDG paths
+├── anyhow 1              (MIT)        - error handling
+├── futures 0.3           (MIT)        - StreamExt
+├── async-trait 0.1       (MIT)        - trait async fn
+├── colored 3             (MPL-2.0)    - terminal colors
+├── tracing 0.1           (MIT)        - structured logging
+├── crossterm 0.29        (MIT)        - terminal I/O
+├── unicode-segmentation 1 (MIT)       - grapheme-aware cursor movement
+├── unicode-width 0.2     (MIT)        - character display width
+├── unicode-normalization 0.1 (MIT)    - Unicode normalization
+├── comrak 0.52           (MIT)        - markdown parsing (GFM)
+├── syntect 5.3           (MIT)        - syntax highlighting (optional feature)
+├── base64 0.22           (MIT)        - image data URL encoding
+├── async-stream 0.3      (MIT)        - async stream generation
+├── regex 1.12            (MIT)        - regex
+├── reqwest 0.12          (MIT)        - HTTP client
+├── rustls 0.23           (MIT)        - TLS
+├── openssl-sys 0.9       (MIT)        - vendored OpenSSL
+├── libc 0.2              (MIT)        - system calls
+# wasmtime 26+ (Phase 2, Apache 2.0)
+# notify 7    (Phase 2, CC0-1.0)
+# rmcp 1      (Phase 2, MIT)
 ```
 
-No GPL dependencies. All are permissive (MIT / Apache 2.0 / MPL-2.0 / CC0-1.0), fully
-compatible with EPL-2.0. genai is the only external provider dependency and
-is swappable via the `Provider` trait - replace or remove it without touching
-core logic.
+No GPL dependencies. All permissive (MIT / Apache 2.0 / MPL-2.0), fully
+compatible with EPL-2.0. Phase 2 dependencies (wasmtime, notify, rmcp) are
+gated behind Cargo features: `plugins` and `mcp`. MVP compiles without them.
 
-Phase 2 dependencies (wasmtime, notify, rmcp)
-are gated behind Cargo features: `plugins` and `mcp`. MVP compiles
-without them.
+---
+
+## Phase 2
+
+### WASM plugin system — ⬜ NOT STARTED
+
+Planned: WASM components via wasmtime, loaded from `~/.rab/extensions/`.
+Same `Extension` trait used by builtins — plugins implement it via WIT
+bindings. Hot reload via file watcher.
+
+See the old architecture doc for the detailed WIT interface and
+plugin author experience (design deferred to Phase 2).
+
+### MCP adapter — ⬜ NOT STARTED
+
+Planned: An `Extension` that connects to MCP servers via `rmcp` and
+exposes their tools. Configured via `.rab/mcp.json`.
+
+### models.json — ⬜ NOT IMPLEMENTED
+
+Custom provider/model definitions. Currently OpenCode Go is the only
+configured backend.
+
+### User extensions (compile-time)
+
+Already possible today — implement the `Extension` trait and register in
+`main.rs`. No dynamic loading yet.
+
+---
+
+## Open questions
+
+- **Image paste in TUI** — clipboard integration differs per platform
+  (wl-paste, pbpaste, PowerShell). Kitty protocol covers display; input TBD.
+- **Command deny-list** — bash tool currently runs anything. A deny-list or
+  sandbox (bubblewrap, landlock) should be configurable.
+- **Provider fallback** — if the primary provider fails, should rab retry
+  with another? yoagent handles basic retry; full fallback chain TBD.
+- **Multi-model cycling** — Ctrl+P model switching uses a static list.
+  A full model registry with metadata (context window, costs) is future work.
