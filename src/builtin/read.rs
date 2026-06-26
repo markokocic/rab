@@ -6,15 +6,58 @@ use crate::tui::ThemeKey;
 use base64::Engine as _;
 use std::borrow::Cow;
 use std::path::Path;
+use std::sync::Arc;
 use unicode_normalization::UnicodeNormalization;
+
+// ── ReadOperations (pluggable) ───────────────────────────────────
+
+/// Pluggable operations for the read tool (matching pi's ReadOperations).
+/// Override these to delegate file reading to remote systems (for example SSH).
+pub trait ReadOperations: Send + Sync {
+    /// Read entire file as raw bytes.
+    fn read_file(&self, absolute_path: &Path) -> anyhow::Result<Vec<u8>>;
+    /// Get file size in bytes.
+    fn file_size(&self, absolute_path: &Path) -> anyhow::Result<u64>;
+    /// Detect image MIME type from magic bytes. Returns `None` for non-images.
+    fn detect_image_mime(&self, absolute_path: &Path) -> anyhow::Result<Option<&'static str>>;
+    /// Read entire file as a UTF-8 string.
+    fn read_text_file(&self, absolute_path: &Path) -> anyhow::Result<String>;
+}
+
+struct DefaultReadOperations;
+
+impl ReadOperations for DefaultReadOperations {
+    fn read_file(&self, absolute_path: &Path) -> anyhow::Result<Vec<u8>> {
+        Ok(std::fs::read(absolute_path)?)
+    }
+    fn file_size(&self, absolute_path: &Path) -> anyhow::Result<u64> {
+        Ok(std::fs::metadata(absolute_path)?.len())
+    }
+    fn detect_image_mime(&self, absolute_path: &Path) -> anyhow::Result<Option<&'static str>> {
+        detect_image_mime(absolute_path).map_err(anyhow::Error::from)
+    }
+    fn read_text_file(&self, absolute_path: &Path) -> anyhow::Result<String> {
+        Ok(std::fs::read_to_string(absolute_path)?)
+    }
+}
 
 pub struct ReadExtension {
     cwd: std::path::PathBuf,
+    operations: Arc<dyn ReadOperations>,
 }
 
 impl ReadExtension {
     pub fn new(cwd: std::path::PathBuf) -> Self {
-        Self { cwd }
+        Self {
+            cwd,
+            operations: Arc::new(DefaultReadOperations),
+        }
+    }
+
+    /// Set custom read operations (e.g. for SSH targets).
+    pub fn with_operations(mut self, operations: Arc<dyn ReadOperations>) -> Self {
+        self.operations = operations;
+        self
     }
 }
 
@@ -27,10 +70,13 @@ impl Extension for ReadExtension {
         vec![ToolWithMeta {
             tool: Box::new(ReadTool {
                 cwd: self.cwd.clone(),
+                operations: self.operations.clone(),
             }),
             snippet: "Read file contents",
             guidelines: &["Use read to examine files instead of cat or sed."],
             prepare_arguments: None,
+            before_tool_call: None,
+            after_tool_call: None,
         }]
     }
 
@@ -47,6 +93,7 @@ impl Extension for ReadExtension {
 
 struct ReadTool {
     cwd: std::path::PathBuf,
+    operations: Arc<dyn ReadOperations>,
 }
 
 // ── Constants ────────────────────────────────────────────────────
@@ -350,17 +397,14 @@ impl yoagent::types::AgentTool for ReadTool {
         }
 
         // Check if the file is an image (magic byte detection, matching pi)
-        if let Ok(Some(mime)) = detect_image_mime(&abs_path) {
+        if let Ok(Some(mime)) = self.operations.detect_image_mime(&abs_path) {
             let file_name = abs_path
                 .file_name()
                 .map(|n| n.to_string_lossy())
                 .unwrap_or_default()
                 .to_string();
-            let file_len = std::fs::metadata(&abs_path)
-                .ok()
-                .map(|m| m.len() as usize)
-                .unwrap_or(0);
-            let binary = std::fs::read(&abs_path).map_err(|e| {
+            let file_len = self.operations.file_size(&abs_path).unwrap_or(0) as usize;
+            let binary = self.operations.read_file(&abs_path).map_err(|e| {
                 yoagent::types::ToolError::Failed(format!(
                     "Failed to read image {}: {}",
                     abs_path.display(),
@@ -388,7 +432,7 @@ impl yoagent::types::AgentTool for ReadTool {
             });
         }
 
-        let content = std::fs::read_to_string(&abs_path).map_err(|e| {
+        let content = self.operations.read_text_file(&abs_path).map_err(|e| {
             yoagent::types::ToolError::Failed(format!(
                 "Failed to read {}: {}",
                 abs_path.display(),
@@ -806,7 +850,13 @@ mod tests {
 
     fn make_tool() -> (ReadTool, std::path::PathBuf) {
         let tmp = tmp_dir();
-        (ReadTool { cwd: tmp.clone() }, tmp)
+        (
+            ReadTool {
+                cwd: tmp.clone(),
+                operations: Arc::new(DefaultReadOperations),
+            },
+            tmp,
+        )
     }
 
     fn tool_ctx() -> yoagent::types::ToolContext {

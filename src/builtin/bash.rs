@@ -86,6 +86,8 @@ impl Extension for BashExtension {
             snippet: "Execute bash commands (ls, grep, find, etc.)",
             guidelines: &[],
             prepare_arguments: None,
+            before_tool_call: None,
+            after_tool_call: None,
         }]
     }
 

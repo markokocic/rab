@@ -4,15 +4,148 @@ use crate::tui::ThemeKey;
 use async_trait::async_trait;
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+// ── Shared command execution ─────────────────────────────────────
+
+/// Output of a shell command execution.
+pub struct ExecOutput {
+    pub stdout: String,
+    pub stderr: String,
+    pub exit_code: Option<i32>,
+}
+
+/// Run a shell command in the given working directory (shared helper for default ops).
+async fn run_shell_command(command: &str, cwd: &Path) -> anyhow::Result<ExecOutput> {
+    let output = tokio::process::Command::new("sh")
+        .arg("-c")
+        .arg(command)
+        .current_dir(cwd)
+        .output()
+        .await?;
+    Ok(ExecOutput {
+        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+        exit_code: output.status.code(),
+    })
+}
+
+// ── GrepOperations (pluggable) ──────────────────────────────────
+
+/// Pluggable operations for the grep tool (matching pi's GrepOperations).
+/// Override these to delegate command execution to remote systems.
+#[async_trait]
+pub trait GrepOperations: Send + Sync {
+    /// Execute a shell command in the given working directory.
+    /// Returns stdout, stderr, and exit code.
+    async fn exec(&self, command: &str, cwd: &Path) -> anyhow::Result<ExecOutput>;
+}
+
+struct DefaultGrepOperations;
+
+#[async_trait]
+impl GrepOperations for DefaultGrepOperations {
+    async fn exec(&self, command: &str, cwd: &Path) -> anyhow::Result<ExecOutput> {
+        run_shell_command(command, cwd).await
+    }
+}
+
+// ── FindOperations (pluggable) ───────────────────────────────────
+
+/// Pluggable operations for the find tool (matching pi's FindOperations).
+/// Override these to delegate command execution to remote systems.
+#[async_trait]
+pub trait FindOperations: Send + Sync {
+    /// Execute a shell command in the given working directory.
+    /// Returns stdout, stderr, and exit code.
+    async fn exec(&self, command: &str, cwd: &Path) -> anyhow::Result<ExecOutput>;
+}
+
+struct DefaultFindOperations;
+
+#[async_trait]
+impl FindOperations for DefaultFindOperations {
+    async fn exec(&self, command: &str, cwd: &Path) -> anyhow::Result<ExecOutput> {
+        run_shell_command(command, cwd).await
+    }
+}
+
+// ── LsOperations (pluggable) ─────────────────────────────────────
+
+/// A directory entry for the ls tool.
+pub struct DirEntry {
+    pub name: String,
+    pub is_dir: bool,
+}
+
+/// Pluggable operations for the ls tool (matching pi's LsOperations).
+/// Override these to delegate directory listing to remote systems.
+pub trait LsOperations: Send + Sync {
+    /// List entries in a directory, returning name and type.
+    fn read_dir(&self, path: &Path) -> anyhow::Result<Vec<DirEntry>>;
+    /// Check if path is a directory.
+    fn is_dir(&self, path: &Path) -> anyhow::Result<bool>;
+    /// Check if path exists.
+    fn path_exists(&self, path: &Path) -> anyhow::Result<bool>;
+}
+
+struct DefaultLsOperations;
+
+impl LsOperations for DefaultLsOperations {
+    fn read_dir(&self, path: &Path) -> anyhow::Result<Vec<DirEntry>> {
+        let rd = std::fs::read_dir(path)?;
+        let mut items: Vec<DirEntry> = rd
+            .flatten()
+            .map(|entry| DirEntry {
+                name: entry.file_name().to_string_lossy().to_string(),
+                is_dir: entry.file_type().map(|t| t.is_dir()).unwrap_or(false),
+            })
+            .collect();
+        items.sort_by_key(|e| e.name.to_lowercase());
+        Ok(items)
+    }
+    fn is_dir(&self, path: &Path) -> anyhow::Result<bool> {
+        Ok(std::fs::metadata(path).map(|m| m.is_dir()).unwrap_or(false))
+    }
+    fn path_exists(&self, path: &Path) -> anyhow::Result<bool> {
+        Ok(path.exists())
+    }
+}
 
 /// Combined filesystem extension providing grep, find, and ls tools.
 pub struct FilesystemExtension {
     cwd: PathBuf,
+    grep_operations: Arc<dyn GrepOperations>,
+    find_operations: Arc<dyn FindOperations>,
+    ls_operations: Arc<dyn LsOperations>,
 }
 
 impl FilesystemExtension {
     pub fn new(cwd: PathBuf) -> Self {
-        Self { cwd }
+        Self {
+            cwd,
+            grep_operations: Arc::new(DefaultGrepOperations),
+            find_operations: Arc::new(DefaultFindOperations),
+            ls_operations: Arc::new(DefaultLsOperations),
+        }
+    }
+
+    /// Set custom grep operations (e.g. for SSH targets).
+    pub fn with_grep_operations(mut self, ops: Arc<dyn GrepOperations>) -> Self {
+        self.grep_operations = ops;
+        self
+    }
+
+    /// Set custom find operations (e.g. for SSH targets).
+    pub fn with_find_operations(mut self, ops: Arc<dyn FindOperations>) -> Self {
+        self.find_operations = ops;
+        self
+    }
+
+    /// Set custom ls operations (e.g. for SSH targets).
+    pub fn with_ls_operations(mut self, ops: Arc<dyn LsOperations>) -> Self {
+        self.ls_operations = ops;
+        self
     }
 }
 
@@ -26,26 +159,35 @@ impl Extension for FilesystemExtension {
             ToolWithMeta {
                 tool: Box::new(GrepTool {
                     cwd: self.cwd.clone(),
+                    operations: self.grep_operations.clone(),
                 }),
                 snippet: "Search file contents for patterns (respects .gitignore)",
                 guidelines: &["Use grep for searching file contents with patterns"],
                 prepare_arguments: None,
+                before_tool_call: None,
+                after_tool_call: None,
             },
             ToolWithMeta {
                 tool: Box::new(FindTool {
                     cwd: self.cwd.clone(),
+                    operations: self.find_operations.clone(),
                 }),
                 snippet: "Find files by glob pattern (respects .gitignore)",
                 guidelines: &["Use find for locating files by pattern"],
                 prepare_arguments: None,
+                before_tool_call: None,
+                after_tool_call: None,
             },
             ToolWithMeta {
                 tool: Box::new(LsTool {
                     cwd: self.cwd.clone(),
+                    operations: self.ls_operations.clone(),
                 }),
                 snippet: "List directory contents",
                 guidelines: &["Use ls for exploring directory structure"],
                 prepare_arguments: None,
+                before_tool_call: None,
+                after_tool_call: None,
             },
         ]
     }
@@ -73,6 +215,7 @@ const LS_DEFAULT_LIMIT: u64 = 500;
 
 struct GrepTool {
     cwd: PathBuf,
+    operations: Arc<dyn GrepOperations>,
 }
 
 #[async_trait]
@@ -134,13 +277,14 @@ impl yoagent::types::AgentTool for GrepTool {
             yoagent::types::ToolError::InvalidArgs("Missing 'pattern' argument".into())
         })?;
         let search_path = params["path"].as_str().unwrap_or(".");
+        let search_owned = resolve_path(search_path, &self.cwd);
+        let abs_search = &search_owned;
+
         let glob = params["glob"].as_str();
         let ignore_case = params["ignoreCase"].as_bool().unwrap_or(false);
         let literal = params["literal"].as_bool().unwrap_or(false);
         let context = params["context"].as_u64().unwrap_or(0);
         let limit = params["limit"].as_u64().unwrap_or(GREP_DEFAULT_LIMIT);
-
-        let abs_search = resolve_path(search_path, &self.cwd);
 
         if !abs_search.exists() {
             return Err(yoagent::types::ToolError::Failed(format!(
@@ -155,10 +299,12 @@ impl yoagent::types::AgentTool for GrepTool {
 
         // Try ripgrep first, fall back to grep
         let output = if let Some(rg) = which("rg") {
-            run_rg(
+            run_rg_with_ops(
+                self.operations.as_ref(),
+                &self.cwd,
                 &rg,
                 pattern,
-                &abs_search,
+                abs_search,
                 glob,
                 ignore_case,
                 literal,
@@ -167,7 +313,17 @@ impl yoagent::types::AgentTool for GrepTool {
             )
             .await?
         } else {
-            run_grep(pattern, &abs_search, ignore_case, literal, context, limit).await?
+            run_grep_with_ops(
+                self.operations.as_ref(),
+                &self.cwd,
+                pattern,
+                abs_search,
+                ignore_case,
+                literal,
+                context,
+                limit,
+            )
+            .await?
         };
 
         if ctx.cancel.is_cancelled() {
@@ -181,8 +337,11 @@ impl yoagent::types::AgentTool for GrepTool {
     }
 }
 
+/// Build a ripgrep command string and execute via operations.
 #[allow(clippy::too_many_arguments)]
-async fn run_rg(
+async fn run_rg_with_ops(
+    ops: &dyn GrepOperations,
+    cwd: &Path,
     rg: &Path,
     pattern: &str,
     search_path: &Path,
@@ -192,38 +351,48 @@ async fn run_rg(
     context: u64,
     limit: u64,
 ) -> Result<String, yoagent::types::ToolError> {
-    let mut cmd = tokio::process::Command::new(rg);
-    cmd.args(["--json", "--line-number", "--color=never", "--hidden"]);
+    let mut cmd_parts: Vec<String> = vec![
+        rg.to_string_lossy().to_string(),
+        "--json".into(),
+        "--line-number".into(),
+        "--color=never".into(),
+        "--hidden".into(),
+    ];
     if ignore_case {
-        cmd.arg("--ignore-case");
+        cmd_parts.push("--ignore-case".into());
     }
     if literal {
-        cmd.arg("--fixed-strings");
+        cmd_parts.push("--fixed-strings".into());
     }
     if let Some(g) = glob {
-        cmd.args(["--glob", g]);
+        cmd_parts.push("--glob".into());
+        cmd_parts.push(g.to_string());
     }
     if context > 0 {
-        cmd.arg("-C").arg(context.to_string());
+        cmd_parts.push("-C".into());
+        cmd_parts.push(context.to_string());
     }
-    cmd.arg("--max-count").arg(limit.to_string());
-    cmd.arg("--").arg(pattern).arg(search_path);
+    cmd_parts.push("--max-count".into());
+    cmd_parts.push(limit.to_string());
+    cmd_parts.push("--".into());
+    cmd_parts.push(pattern.to_string());
+    cmd_parts.push(search_path.to_string_lossy().to_string());
 
-    let output = cmd
-        .output()
+    let command = cmd_parts.join(" ");
+    let exec_output = ops
+        .exec(&command, cwd)
         .await
         .map_err(|e| yoagent::types::ToolError::Failed(format!("Failed to run rg: {}", e)))?;
 
-    let exit_code = output.status.code().unwrap_or(-1);
+    let exit_code = exec_output.exit_code.unwrap_or(-1);
     if exit_code == 2 {
-        let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(yoagent::types::ToolError::Failed(format!(
             "ripgrep error: {}",
-            stderr.trim()
+            exec_output.stderr.trim()
         )));
     }
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stdout = &exec_output.stdout;
     let mut results: Vec<String> = Vec::new();
     let mut line_count = 0u64;
 
@@ -265,7 +434,10 @@ async fn run_rg(
     Ok(results.join("\n"))
 }
 
-async fn run_grep(
+#[allow(clippy::too_many_arguments)]
+async fn run_grep_with_ops(
+    ops: &dyn GrepOperations,
+    cwd: &Path,
     pattern: &str,
     search_path: &Path,
     ignore_case: bool,
@@ -273,40 +445,44 @@ async fn run_grep(
     context: u64,
     limit: u64,
 ) -> Result<String, yoagent::types::ToolError> {
-    let mut cmd = tokio::process::Command::new("grep");
-    cmd.args([
-        "--line-number",
-        "--color=never",
-        "--binary-files=without-match",
-    ]);
+    let mut cmd_parts: Vec<String> = vec![
+        "grep".into(),
+        "--line-number".into(),
+        "--color=never".into(),
+        "--binary-files=without-match".into(),
+    ];
     if ignore_case {
-        cmd.arg("-i");
+        cmd_parts.push("-i".into());
     }
     if literal {
-        cmd.arg("-F");
+        cmd_parts.push("-F".into());
     }
     if context > 0 {
-        cmd.arg("-C").arg(context.to_string());
+        cmd_parts.push("-C".into());
+        cmd_parts.push(context.to_string());
     }
-    cmd.arg("--max-count").arg(limit.to_string());
-    cmd.arg("-r").arg("--").arg(pattern).arg(search_path);
+    cmd_parts.push("--max-count".into());
+    cmd_parts.push(limit.to_string());
+    cmd_parts.push("-r".into());
+    cmd_parts.push("--".into());
+    cmd_parts.push(pattern.to_string());
+    cmd_parts.push(search_path.to_string_lossy().to_string());
 
-    let output = cmd
-        .output()
+    let command = cmd_parts.join(" ");
+    let exec_output = ops
+        .exec(&command, cwd)
         .await
         .map_err(|e| yoagent::types::ToolError::Failed(format!("Failed to run grep: {}", e)))?;
 
-    let exit_code = output.status.code().unwrap_or(-1);
+    let exit_code = exec_output.exit_code.unwrap_or(-1);
     if exit_code == 2 {
-        let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(yoagent::types::ToolError::Failed(format!(
             "grep error: {}",
-            stderr.trim()
+            exec_output.stderr.trim()
         )));
     }
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let trimmed = stdout.trim();
+    let trimmed = exec_output.stdout.trim();
     if trimmed.is_empty() {
         return Ok("No matches found".to_string());
     }
@@ -327,6 +503,7 @@ async fn run_grep(
 
 struct FindTool {
     cwd: PathBuf,
+    operations: Arc<dyn FindOperations>,
 }
 
 #[async_trait]
@@ -371,9 +548,9 @@ impl yoagent::types::AgentTool for FindTool {
             yoagent::types::ToolError::InvalidArgs("Missing 'pattern' argument".into())
         })?;
         let search_path = params["path"].as_str().unwrap_or(".");
+        let search_owned = resolve_path(search_path, &self.cwd);
+        let abs_search = &search_owned;
         let limit = params["limit"].as_u64().unwrap_or(FIND_DEFAULT_LIMIT);
-
-        let abs_search = resolve_path(search_path, &self.cwd);
 
         if !abs_search.exists() {
             return Err(yoagent::types::ToolError::Failed(format!(
@@ -387,9 +564,24 @@ impl yoagent::types::AgentTool for FindTool {
         }
 
         let output = if let Some(fd_path) = which("fd") {
-            run_fd(&fd_path, pattern, &abs_search, limit).await?
+            run_fd_with_ops(
+                self.operations.as_ref(),
+                &self.cwd,
+                &fd_path,
+                pattern,
+                abs_search,
+                limit,
+            )
+            .await?
         } else {
-            run_find(pattern, &abs_search, limit).await?
+            run_find_with_ops(
+                self.operations.as_ref(),
+                &self.cwd,
+                pattern,
+                abs_search,
+                limit,
+            )
+            .await?
         };
 
         if ctx.cancel.is_cancelled() {
@@ -403,24 +595,16 @@ impl yoagent::types::AgentTool for FindTool {
     }
 }
 
-async fn run_fd(
+async fn run_fd_with_ops(
+    ops: &dyn FindOperations,
+    cwd: &Path,
     fd: &Path,
     pattern: &str,
     search_path: &Path,
     limit: u64,
 ) -> Result<String, yoagent::types::ToolError> {
-    let mut cmd = tokio::process::Command::new(fd);
-    cmd.args([
-        "--glob",
-        "--color=never",
-        "--hidden",
-        "--no-require-git",
-        "--max-results",
-        &limit.to_string(),
-    ]);
-
+    // Build effective pattern for fd
     let effective_pattern = if pattern.contains('/') {
-        cmd.arg("--full-path");
         if !pattern.starts_with('/') && !pattern.starts_with("**/") && pattern != "**" {
             format!("**/{}", pattern)
         } else {
@@ -430,27 +614,39 @@ async fn run_fd(
         pattern.to_string()
     };
 
-    cmd.arg("--").arg(&effective_pattern).arg(search_path);
+    // Build fd command string
+    let mut cmd_parts: Vec<String> = vec![
+        fd.to_string_lossy().to_string(),
+        "--glob".into(),
+        "--color=never".into(),
+        "--hidden".into(),
+        "--no-require-git".into(),
+        "--max-results".into(),
+        limit.to_string(),
+    ];
+    if pattern.contains('/') {
+        cmd_parts.push("--full-path".into());
+    }
+    cmd_parts.push("--".into());
+    cmd_parts.push(effective_pattern);
+    cmd_parts.push(search_path.to_string_lossy().to_string());
 
-    let output = cmd
-        .output()
+    let command = cmd_parts.join(" ");
+    let exec_output = ops
+        .exec(&command, cwd)
         .await
         .map_err(|e| yoagent::types::ToolError::Failed(format!("Failed to run fd: {}", e)))?;
 
-    let exit_code = output.status.code().unwrap_or(-1);
-    if exit_code != 0 && exit_code != 1 {
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        if stdout.trim().is_empty() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(yoagent::types::ToolError::Failed(format!(
-                "fd error: {}",
-                stderr.trim()
-            )));
-        }
+    let exit_code = exec_output.exit_code.unwrap_or(-1);
+    if exit_code != 0 && exit_code != 1 && exec_output.stdout.trim().is_empty() {
+        return Err(yoagent::types::ToolError::Failed(format!(
+            "fd error: {}",
+            exec_output.stderr.trim()
+        )));
     }
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let results: Vec<String> = stdout
+    let results: Vec<String> = exec_output
+        .stdout
         .lines()
         .map(|l| l.trim().to_string())
         .filter(|l| !l.is_empty())
@@ -477,40 +673,44 @@ async fn run_fd(
     Ok(output)
 }
 
-async fn run_find(
+async fn run_find_with_ops(
+    ops: &dyn FindOperations,
+    cwd: &Path,
     pattern: &str,
     search_path: &Path,
     limit: u64,
 ) -> Result<String, yoagent::types::ToolError> {
     let name_pattern = pattern.trim_start_matches("**/").trim_start_matches("*/");
 
-    let mut cmd = tokio::process::Command::new("find");
-    cmd.arg(search_path)
-        .arg("-name")
-        .arg(name_pattern)
-        .arg("-not")
-        .arg("-path")
-        .arg("*/node_modules/*")
-        .arg("-not")
-        .arg("-path")
-        .arg("*/.git/*");
+    let cmd_parts: Vec<String> = vec![
+        "find".into(),
+        search_path.to_string_lossy().to_string(),
+        "-name".into(),
+        name_pattern.to_string(),
+        "-not".into(),
+        "-path".into(),
+        "*/node_modules/*".into(),
+        "-not".into(),
+        "-path".into(),
+        "*/.git/*".into(),
+    ];
 
-    let output = cmd
-        .output()
+    let command = cmd_parts.join(" ");
+    let exec_output = ops
+        .exec(&command, cwd)
         .await
         .map_err(|e| yoagent::types::ToolError::Failed(format!("Failed to run find: {}", e)))?;
 
-    let exit_code = output.status.code().unwrap_or(-1);
+    let exit_code = exec_output.exit_code.unwrap_or(-1);
     if exit_code != 0 && exit_code != 1 {
-        let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(yoagent::types::ToolError::Failed(format!(
             "find error: {}",
-            stderr.trim()
+            exec_output.stderr.trim()
         )));
     }
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let lines: Vec<String> = stdout
+    let lines: Vec<String> = exec_output
+        .stdout
         .lines()
         .map(|l| l.trim().to_string())
         .filter(|l| !l.is_empty())
@@ -544,6 +744,7 @@ async fn run_find(
 
 struct LsTool {
     cwd: PathBuf,
+    operations: Arc<dyn LsOperations>,
 }
 
 #[async_trait]
@@ -584,13 +785,13 @@ impl yoagent::types::AgentTool for LsTool {
 
         let abs_path = resolve_path(search_path, &self.cwd);
 
-        if !abs_path.exists() {
+        if !self.operations.path_exists(&abs_path).unwrap_or(false) {
             return Err(yoagent::types::ToolError::Failed(format!(
                 "Path not found: {}",
                 abs_path.display()
             )));
         }
-        if !abs_path.is_dir() {
+        if !self.operations.is_dir(&abs_path).unwrap_or(false) {
             return Err(yoagent::types::ToolError::Failed(format!(
                 "Not a directory: {}",
                 abs_path.display()
@@ -601,15 +802,11 @@ impl yoagent::types::AgentTool for LsTool {
             return Err(yoagent::types::ToolError::Cancelled);
         }
 
-        let entries: Vec<String> = match std::fs::read_dir(&abs_path) {
-            Ok(rd) => {
-                let mut items: Vec<(String, bool)> = rd
-                    .flatten()
-                    .map(|entry| {
-                        let name = entry.file_name().to_string_lossy().to_string();
-                        let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
-                        (name, is_dir)
-                    })
+        let entries: Vec<String> = match self.operations.read_dir(&abs_path) {
+            Ok(items) => {
+                let mut items: Vec<(String, bool)> = items
+                    .into_iter()
+                    .map(|entry| (entry.name, entry.is_dir))
                     .collect();
                 items.sort_by_key(|(a, _)| a.to_lowercase());
                 items

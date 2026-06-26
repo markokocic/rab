@@ -6,6 +6,28 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
+// ── Tool call hooks (matching pi's beforeToolCall / afterToolCall) ──
+
+/// Result returned from `before_tool_call` (matching pi's `BeforeToolCallResult`).
+/// Returning `{ block: true }` prevents execution; `reason` becomes the error text.
+pub struct BeforeToolCallResult {
+    /// If true, the tool execution is blocked.
+    pub block: bool,
+    /// Error message shown when `block` is true. If empty, a default message is used.
+    pub reason: String,
+}
+
+/// Partial override returned from `after_tool_call` (matching pi's `AfterToolCallResult`).
+/// Merge semantics are field-by-field: provided fields replace the original; omitted fields keep their values.
+pub struct AfterToolCallResult {
+    /// If provided, replaces the tool result content array in full.
+    pub content: Option<Vec<yoagent::types::Content>>,
+    /// If provided, replaces the tool result details value in full.
+    pub details: Option<serde_json::Value>,
+    /// If provided, replaces the tool result error flag.
+    pub is_error: Option<bool>,
+}
+
 /// A tool bundled with its prompt metadata.
 ///
 /// Mirrors pi's `ToolDefinition` which carries `promptSnippet`,
@@ -19,6 +41,351 @@ pub struct ToolWithMeta {
     /// Optional pre-processing of raw LLM arguments before execute().
     /// Receives raw arguments, returns normalized arguments or an error message.
     pub prepare_arguments: Option<fn(serde_json::Value) -> Result<serde_json::Value, String>>,
+    /// Called before tool execution, after argument validation (matching pi's `beforeToolCall`).
+    /// Return `Some(BeforeToolCallResult { block: true, reason: "..." })` to block execution.
+    pub before_tool_call: Option<fn(&serde_json::Value) -> Option<BeforeToolCallResult>>,
+    /// Called after tool execution, before the result is returned (matching pi's `afterToolCall`).
+    pub after_tool_call:
+        Option<fn(&yoagent::types::ToolResult, bool) -> Option<AfterToolCallResult>>,
+}
+
+// ── Generic argument type coercion & validation ─────────────────
+
+/// Coerce a single JSON value to match a JSON Schema type (modifies in place).
+/// This handles common LLM mistakes: sending numbers as strings, booleans as strings, etc.
+pub fn coerce_primitive_by_type(schema_type: &str, value: &mut serde_json::Value) {
+    match schema_type {
+        "string" => {
+            if value.is_number() || value.is_boolean() {
+                *value = serde_json::Value::String(match value {
+                    serde_json::Value::Number(n) => n.to_string(),
+                    serde_json::Value::Bool(b) => b.to_string(),
+                    _ => unreachable!(),
+                });
+            } else if value.is_null() {
+                *value = serde_json::Value::String(String::new());
+            }
+        }
+        "number" => {
+            if let Some(s) = value.as_str() {
+                if let Ok(n) = s.parse::<f64>() {
+                    *value = serde_json::json!(n);
+                }
+            } else if value.is_boolean() {
+                *value = serde_json::json!(if value.as_bool().unwrap() { 1.0 } else { 0.0 });
+            } else if value.is_null() {
+                *value = serde_json::json!(0.0);
+            }
+        }
+        "integer" => {
+            if let Some(s) = value.as_str() {
+                if let Ok(n) = s.parse::<f64>() {
+                    *value = serde_json::json!(n as i64);
+                }
+            } else if value.is_boolean() {
+                *value = serde_json::json!(if value.as_bool().unwrap() { 1i64 } else { 0i64 });
+            } else if value.is_null() {
+                *value = serde_json::json!(0i64);
+            } else if let Some(n) = value.as_f64() {
+                *value = serde_json::json!(n as i64);
+            }
+        }
+        "boolean" => {
+            if let Some(s) = value.as_str() {
+                match s.trim().to_lowercase().as_str() {
+                    "true" | "1" | "yes" | "on" => *value = serde_json::Value::Bool(true),
+                    "false" | "0" | "no" | "off" => *value = serde_json::Value::Bool(false),
+                    _ => {} // Leave as-is if unrecognized
+                }
+            } else if value.is_number() {
+                *value = serde_json::Value::Bool(value.as_f64().unwrap_or(0.0) != 0.0);
+            } else if value.is_null() {
+                *value = serde_json::Value::Bool(false);
+            }
+        }
+        "array" => {
+            if !value.is_array() && !value.is_null() {
+                let v = std::mem::take(value);
+                *value = serde_json::Value::Array(vec![v]);
+            } else if value.is_null() {
+                *value = serde_json::Value::Array(vec![]);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Recursively coerce tool arguments to match a JSON Schema (modifies in place).
+pub fn coerce_with_json_schema(schema: &serde_json::Value, args: &mut serde_json::Value) {
+    if !args.is_object() {
+        return;
+    }
+    let Some(properties) = schema.get("properties").and_then(|p| p.as_object()) else {
+        return;
+    };
+    for (key, prop_schema) in properties {
+        if args.get(key).is_none() {
+            continue;
+        }
+        let type_str = match resolve_schema_type(prop_schema) {
+            Some(t) => t,
+            None => continue,
+        };
+        let arg_value = args.get_mut(key).unwrap();
+        coerce_primitive_by_type(type_str, arg_value);
+        if type_str == "object" {
+            coerce_with_json_schema(prop_schema, arg_value);
+        }
+        if type_str == "array"
+            && let Some(items_schema) = prop_schema.get("items")
+            && let Some(arr) = arg_value.as_array_mut()
+        {
+            for item in arr.iter_mut() {
+                coerce_with_json_schema(items_schema, item);
+            }
+        }
+    }
+}
+
+// ── Schema validation (matching pi's validateToolArguments) ──────
+
+/// Extracts the effective JSON Schema type from a property schema.
+/// Returns `None` when the schema has no recognizable type.
+fn resolve_schema_type(schema: &serde_json::Value) -> Option<&str> {
+    let type_val = schema.get("type")?;
+    if type_val.is_string() {
+        return type_val.as_str();
+    }
+    if type_val.is_array() {
+        // Use the first non-null type (handles ["string", "null"])
+        return type_val
+            .as_array()
+            .and_then(|arr| arr.iter().find_map(|t| t.as_str().filter(|&s| s != "null")));
+    }
+    None
+}
+
+/// Check whether a JSON value matches a JSON Schema type.
+fn matches_json_type(value: &serde_json::Value, schema_type: &str) -> bool {
+    match schema_type {
+        "string" => value.is_string(),
+        "number" => value.is_number(),
+        "integer" => value.is_i64() || value.is_u64(),
+        "boolean" => value.is_boolean(),
+        "null" => value.is_null(),
+        "array" => value.is_array(),
+        "object" => value.is_object(),
+        _ => true, // unknown type — don't reject
+    }
+}
+
+/// Check whether a value matches at least one of the schema's types (handles ["string", "null"]).
+fn value_matches_schema_types(schema: &serde_json::Value, value: &serde_json::Value) -> bool {
+    let type_val = match schema.get("type") {
+        Some(t) => t,
+        None => return true,
+    };
+    if type_val.is_string() {
+        return matches_json_type(value, type_val.as_str().unwrap());
+    }
+    if let Some(types) = type_val.as_array() {
+        return types
+            .iter()
+            .filter_map(|t| t.as_str())
+            .any(|t| matches_json_type(value, t));
+    }
+    true
+}
+
+/// Recursively collect validation errors for a value against a JSON Schema.
+/// Path format matches pi's formatValidationPath: "root", "edits", "edits.0.oldText".
+fn collect_validation_errors(
+    schema: &serde_json::Value,
+    value: &serde_json::Value,
+    path: &str,
+    errors: &mut Vec<ValidationError>,
+) {
+    // Root must be an object — every tool schema is "type": "object"
+    if (path.is_empty() || path == "root")
+        && let Some(schema_type) = resolve_schema_type(schema)
+        && schema_type == "object"
+        && !value.is_object()
+    {
+        errors.push(ValidationError {
+            path: path.to_string(),
+            message: "Expected object".to_string(),
+        });
+        return;
+    }
+
+    // Not an object — only check type (won't recurse)
+    if !value.is_object()
+        && let Some(schema_type) = resolve_schema_type(schema)
+        && !matches_json_type(value, schema_type)
+    {
+        let expected = if schema_type == "integer" {
+            "integer"
+        } else {
+            schema_type
+        };
+        errors.push(ValidationError {
+            path: path.to_string(),
+            message: format!("Expected {}", expected),
+        });
+        return;
+    }
+
+    if !value.is_object() {
+        return;
+    }
+
+    let obj = value.as_object().unwrap();
+    let properties = schema.get("properties").and_then(|p| p.as_object());
+    let known_keys: std::collections::HashSet<&str> = properties
+        .map(|p| p.keys().map(|k| k.as_str()).collect())
+        .unwrap_or_default();
+
+    // Check required properties
+    if let Some(required) = schema.get("required").and_then(|r| r.as_array()) {
+        for required_val in required {
+            if let Some(required_key) = required_val.as_str()
+                && !obj.contains_key(required_key)
+            {
+                let err_path = if path.is_empty() || path == "root" {
+                    required_key.to_string()
+                } else {
+                    format!("{}.{}", path, required_key)
+                };
+                errors.push(ValidationError {
+                    path: err_path,
+                    message: "Required".to_string(),
+                });
+            }
+        }
+    }
+
+    // Check additionalProperties
+    if schema.get("additionalProperties") == Some(&serde_json::Value::Bool(false)) {
+        for key in obj.keys() {
+            if !known_keys.contains(key.as_str()) {
+                let err_path = if path.is_empty() || path == "root" {
+                    key.clone()
+                } else {
+                    format!("{}.{}", path, key)
+                };
+                errors.push(ValidationError {
+                    path: err_path,
+                    message: "must NOT have additional properties".to_string(),
+                });
+            }
+        }
+    }
+
+    // Validate each property
+    if let Some(props) = properties {
+        for (key, prop_schema) in props {
+            if let Some(val) = value.get(key) {
+                let child_path = if path.is_empty() || path == "root" {
+                    key.clone()
+                } else {
+                    format!("{}.{}", path, key)
+                };
+                validate_property(prop_schema, val, &child_path, errors);
+            }
+        }
+    }
+}
+
+/// Validate a single property value against its schema, recursing into objects/arrays.
+fn validate_property(
+    schema: &serde_json::Value,
+    value: &serde_json::Value,
+    path: &str,
+    errors: &mut Vec<ValidationError>,
+) {
+    // Check type match
+    if !value_matches_schema_types(schema, value) {
+        let schema_type = resolve_schema_type(schema).unwrap_or("unknown");
+        let expected = if schema_type == "integer" {
+            "integer"
+        } else {
+            schema_type
+        };
+        errors.push(ValidationError {
+            path: path.to_string(),
+            message: format!("Expected {}", expected),
+        });
+        return; // Don't recurse into wrong-typed values
+    }
+
+    // Recurse into objects
+    if value.is_object() {
+        // Only recurse if the schema also describes an object
+        let schema_type = resolve_schema_type(schema);
+        if schema_type == Some("object") {
+            collect_validation_errors(schema, value, path, errors);
+        }
+        return;
+    }
+
+    // Recurse into array items
+    if let Some(arr) = value.as_array()
+        && resolve_schema_type(schema) == Some("array")
+        && let Some(items_schema) = schema.get("items")
+    {
+        for (i, item) in arr.iter().enumerate() {
+            let item_path = format!("{}.{}", path, i);
+            validate_property(items_schema, item, &item_path, errors);
+        }
+    }
+}
+
+/// A single validation error, matching pi's TypeBox error structure.
+#[derive(Debug, Clone)]
+pub struct ValidationError {
+    /// Path to the field, e.g. "edits.0.oldText" or "root"
+    pub path: String,
+    /// Error message, e.g. "Required" or "must NOT have additional properties"
+    pub message: String,
+}
+
+/// Validate tool arguments against its JSON Schema (matching pi's validateToolArguments).
+///
+/// Returns `Ok(())` on success, or `Err` with pi-compatible format:
+/// ```text
+/// Validation failed for tool "edit":
+///   - path: Required
+///   - edits[0].oldText: Required
+///
+/// Received arguments:
+/// {
+///   "path": "/foo.txt"
+/// }
+/// ```
+pub fn validate_tool_arguments(
+    tool_name: &str,
+    schema: &serde_json::Value,
+    args: &serde_json::Value,
+) -> Result<(), String> {
+    let mut errors: Vec<ValidationError> = Vec::new();
+    collect_validation_errors(schema, args, "root", &mut errors);
+
+    if errors.is_empty() {
+        return Ok(());
+    }
+
+    let error_lines: Vec<String> = errors
+        .iter()
+        .map(|e| format!("  - {}: {}", e.path, e.message))
+        .collect();
+
+    let pretty_args =
+        serde_json::to_string_pretty(args).unwrap_or_else(|_| "<unprintable>".to_string());
+
+    Err(format!(
+        "Validation failed for tool \"{tool_name}\":\n{}\n\nReceived arguments:\n{pretty_args}",
+        error_lines.join("\n"),
+    ))
 }
 
 /// An autocomplete item for slash command arguments.
@@ -258,11 +625,79 @@ impl yoagent::types::AgentTool for ToolWithMeta {
         params: serde_json::Value,
         ctx: yoagent::types::ToolContext,
     ) -> std::result::Result<yoagent::types::ToolResult, yoagent::types::ToolError> {
-        let params = match self.prepare_arguments {
+        let mut params = match self.prepare_arguments {
             Some(prepare) => prepare(params).map_err(yoagent::types::ToolError::InvalidArgs)?,
             None => params,
         };
-        self.tool.execute(params, ctx).await
+        // Step 1: type coercion (matching pi's Value.Convert + coerceWithJsonSchema)
+        let schema = self.tool.parameters_schema();
+        coerce_with_json_schema(&schema, &mut params);
+
+        // Step 2: validate against schema (matching pi's validateToolArguments)
+        let tool_name = self.tool.name();
+        validate_tool_arguments(tool_name, &schema, &params)
+            .map_err(yoagent::types::ToolError::InvalidArgs)?;
+
+        // Step 3: before_tool_call hook (matching pi's beforeToolCall)
+        if let Some(ref hook) = self.before_tool_call
+            && let Some(result) = hook(&params)
+            && result.block
+        {
+            let reason = if result.reason.is_empty() {
+                format!("Tool {} execution blocked", tool_name)
+            } else {
+                result.reason
+            };
+            return Err(yoagent::types::ToolError::Failed(reason));
+        }
+
+        // Step 4: execute the inner tool
+        let (mut tool_result, mut is_error) = match self.tool.execute(params, ctx).await {
+            Ok(r) => (r, false),
+            Err(e) => {
+                let err_text = e.to_string();
+                (
+                    yoagent::types::ToolResult {
+                        content: vec![yoagent::types::Content::Text { text: err_text }],
+                        details: serde_json::Value::Null,
+                    },
+                    true,
+                )
+            }
+        };
+
+        // Step 5: after_tool_call hook (matching pi's afterToolCall)
+        if let Some(ref hook) = self.after_tool_call
+            && let Some(override_result) = hook(&tool_result, is_error)
+        {
+            if let Some(content) = override_result.content {
+                tool_result.content = content;
+            }
+            if let Some(details) = override_result.details {
+                tool_result.details = details;
+            }
+            if let Some(err) = override_result.is_error {
+                is_error = err;
+            }
+        }
+
+        if is_error {
+            let error_text: String = tool_result
+                .content
+                .iter()
+                .filter_map(|c| {
+                    if let yoagent::types::Content::Text { text } = c {
+                        Some(text.as_str())
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            Err(yoagent::types::ToolError::Failed(error_text))
+        } else {
+            Ok(tool_result)
+        }
     }
 }
 

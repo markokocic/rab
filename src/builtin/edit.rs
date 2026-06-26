@@ -84,6 +84,8 @@ impl Extension for EditExtension {
                 "Keep edits[].oldText as small as possible while still being unique in the file. Do not pad with large unchanged regions.",
             ],
             prepare_arguments: Some(prepare_edit_args),
+            before_tool_call: None,
+            after_tool_call: None,
         }]
     }
 
@@ -216,8 +218,19 @@ fn prepare_edit_arguments(args: &serde_json::Value) -> Result<(String, Vec<Edit>
             old_text: old_text.to_string(),
             new_text: new_text.to_string(),
         }]
+    } else if let (Some(old), Some(new)) = (args.get("old_text"), args.get("new_text")) {
+        let old_text = old
+            .as_str()
+            .ok_or_else(|| "Invalid 'old_text' argument: expected string".to_string())?;
+        let new_text = new
+            .as_str()
+            .ok_or_else(|| "Invalid 'new_text' argument: expected string".to_string())?;
+        vec![Edit {
+            old_text: old_text.to_string(),
+            new_text: new_text.to_string(),
+        }]
     } else {
-        return Err("Missing 'edits' array (or 'oldText'/'newText' for legacy format)".to_string());
+        return Err("Missing 'edits' array (or 'oldText'/'newText' or 'old_text'/'new_text' for legacy format)".to_string());
     };
 
     if edits.is_empty() {
@@ -814,6 +827,7 @@ impl yoagent::types::AgentTool for EditTool {
         serde_json::json!({
             "type": "object",
             "required": ["path", "edits"],
+            "additionalProperties": false,
             "properties": {
                 "path": {
                     "type": "string",
@@ -824,6 +838,7 @@ impl yoagent::types::AgentTool for EditTool {
                     "items": {
                         "type": "object",
                         "required": ["oldText", "newText"],
+                        "additionalProperties": false,
                         "properties": {
                             "oldText": {
                                 "type": "string",

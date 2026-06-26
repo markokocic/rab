@@ -8,6 +8,40 @@ use std::borrow::Cow;
 use std::path::Path;
 use std::sync::Arc;
 
+/// Normalize and coerce write tool arguments.
+/// Ensures `path` and `content` are strings, coercing numbers/bools/null as needed.
+pub fn prepare_write_args(mut args: serde_json::Value) -> Result<serde_json::Value, String> {
+    // Coerce path to string if possible
+    if let Some(val) = args.get("path")
+        && !val.is_string()
+    {
+        if val.is_number() || val.is_boolean() {
+            args["path"] = serde_json::Value::String(match val {
+                serde_json::Value::Number(n) => n.to_string(),
+                serde_json::Value::Bool(b) => b.to_string(),
+                _ => unreachable!(),
+            });
+        } else if val.is_null() {
+            return Err("Missing 'path' argument".to_string());
+        }
+    }
+
+    // Coerce content to string if possible
+    if let Some(val) = args.get("content")
+        && !val.is_string()
+        && (val.is_number() || val.is_boolean() || val.is_null())
+    {
+        args["content"] = serde_json::Value::String(match val {
+            serde_json::Value::Number(n) => n.to_string(),
+            serde_json::Value::Bool(b) => b.to_string(),
+            serde_json::Value::Null => String::new(),
+            _ => unreachable!(),
+        });
+    }
+
+    Ok(args)
+}
+
 /// Number of preview lines when collapsed (matching pi's PREVIEW_LINES).
 const PREVIEW_LINES: usize = 10;
 
@@ -85,7 +119,9 @@ impl Extension for WriteExtension {
             }),
             snippet: "Create or overwrite files",
             guidelines: &["Use write only for new files or complete rewrites."],
-            prepare_arguments: None,
+            prepare_arguments: Some(prepare_write_args),
+            before_tool_call: None,
+            after_tool_call: None,
         }]
     }
 
