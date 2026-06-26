@@ -23,17 +23,4 @@ pub fn thinking_level_color(level: &str) -> Option<&'static str> {
     }
 }
 
-/// Format token count for compact display (pi style).
-pub fn fmt_tokens(count: f64) -> String {
-    if count < 1000.0 {
-        format!("{}", count as u64)
-    } else if count < 10000.0 {
-        format!("{:.1}k", count / 1000.0)
-    } else if count < 1_000_000.0 {
-        format!("{}k", (count / 1000.0) as u64)
-    } else if count < 10_000_000.0 {
-        format!("{:.1}M", count / 1_000_000.0)
-    } else {
-        format!("{}M", (count / 1_000_000.0) as u64)
-    }
-}
+

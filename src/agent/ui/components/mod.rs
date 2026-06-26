@@ -15,5 +15,5 @@ pub use footer_component::FooterComponent;
 pub use header::HeaderComponent;
 pub use info_message::InfoMessageComponent;
 pub use session_picker::SessionPicker;
-pub use tool_messages::{RcToolExec, ToolCallComponent, ToolExecComponent, ToolResultComponent};
+pub use tool_messages::{RcToolExec, ToolExecComponent};
 pub use user_message::UserMessageComponent;
