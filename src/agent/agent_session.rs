@@ -279,7 +279,13 @@ impl AgentSession {
                                 }
                             }
                             None => {
-                                // Channel closed — agent loop finished (or panicked)
+                                // Channel closed — agent loop finished.
+                                // If the last event wasn't AgentEnd (e.g. panic before
+                                // agent_loop could send it), send a synthetic one so
+                                // the UI doesn't hang with is_streaming=true.
+                                if let Some(ref tx) = event_tx {
+                                    tx.send(AgentEvent::AgentEnd { messages: vec![] }).ok();
+                                }
                                 break;
                             }
                         }

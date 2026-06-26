@@ -1154,6 +1154,15 @@ fn interrupt_streaming(app: &mut App) {
     app.working.stop();
     app.footer.borrow_mut().set_streaming(false);
 
+    // Rebuild in-memory conversation from the session to pick up any
+    // messages that were persisted via message_end during the aborted turn
+    // but were never added to app.conversation (which only updates on AgentEnd).
+    // This ensures the next LLM turn has full context.
+    if let Some(ref s) = app.session {
+        let ctx = s.session().build_session_context();
+        app.conversation = ctx.messages;
+    }
+
     // Restore follow-up queue messages to editor (steering are mid-stream, not restorable).
     // Use try_lock to avoid deadlock if the agent loop holds the mutex when abort is called.
     if let Ok(mut follow_up) = app.follow_up_queue.try_lock() {
@@ -2322,6 +2331,7 @@ fn handle_agent_event(app: &mut App, event: yoagent::types::AgentEvent) {
             result,
             is_error,
         } => {
+            app.last_streaming_event = std::time::Instant::now();
             let content: String = result
                 .content
                 .iter()
@@ -2352,6 +2362,7 @@ fn handle_agent_event(app: &mut App, event: yoagent::types::AgentEvent) {
         E::ProgressMessage {
             text, tool_name, ..
         } => {
+            app.last_streaming_event = std::time::Instant::now();
             if let Some(weak) = app.bash_component.as_ref().and_then(|w| w.upgrade()) {
                 weak.borrow_mut().append_output(&text);
             } else if tool_name.is_empty() {
@@ -2360,6 +2371,7 @@ fn handle_agent_event(app: &mut App, event: yoagent::types::AgentEvent) {
             }
         }
         E::TurnEnd { .. } => {
+            app.last_streaming_event = std::time::Instant::now();
             flush_all(app);
             app.streaming_component = None;
         }
