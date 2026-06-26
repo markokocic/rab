@@ -3,7 +3,7 @@ use std::sync::LazyLock;
 use std::sync::Mutex;
 use std::time::Duration;
 
-use crossterm::event::{self, Event, KeyEvent};
+use crossterm::event::{self, Event, KeyEvent, KeyboardEnhancementFlags};
 
 // =============================================================================
 // TerminalEvent — events that can come from the terminal beyond just keys
@@ -235,8 +235,27 @@ impl ProcessTerminal {
         writer.flush()
     }
 
+    fn enable_kitty_protocol(&mut self, writer: &mut dyn Write) -> io::Result<()> {
+        if self.kitty_active {
+            return Ok(());
+        }
+        // Push flags: DISAMBIGUATE_ESCAPE_CODES (1) | REPORT_EVENT_TYPES (2) | REPORT_ALTERNATE_KEYS (4)
+        // This enables:
+        //   - Disambiguate escape codes (all keys use CSI-u format)
+        //   - Report event types (press/repeat/release)
+        //   - Report alternate keys (shifted key according to keyboard layout)
+        let flags = KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+            | KeyboardEnhancementFlags::REPORT_EVENT_TYPES
+            | KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS;
+        write!(writer, "\x1b[>{}u", flags.bits())?;
+        writer.flush()?;
+        self.kitty_active = true;
+        Ok(())
+    }
+
     fn disable_kitty_protocol(&mut self, writer: &mut dyn Write) -> io::Result<()> {
         if self.kitty_active {
+            // Pop one level of keyboard enhancement flags
             write!(writer, "\x1b[<u")?;
             writer.flush()?;
             self.kitty_active = false;
@@ -264,9 +283,14 @@ impl TerminalTrait for ProcessTerminal {
         crossterm::terminal::enable_raw_mode()?;
         self.was_raw = true;
         self.enable_bracketed_paste(writer)?;
-        // Kitty keyboard protocol disabled — it can cause crossterm's event
-        // parser to hang on partial escape sequences, freezing the main loop.
-        // self.enable_kitty_protocol(writer)?;
+        // Enable Kitty keyboard protocol for:
+        //   - Disambiguated escape codes (no more ambiguity between Esc and Alt+key)
+        //   - Key event types (press/repeat/release)
+        //   - Alternate key reporting (shifted key according to keyboard layout)
+        // Crossterm 0.29+ parses Kitty CSI-u sequences natively via
+        // parse_csi_u_encoded_key_code. The enhancement flags response is
+        // consumed internally by crossterm and doesn't interfere with event reading.
+        self.enable_kitty_protocol(writer)?;
         // Refresh terminal dimensions
         let _ = crossterm::terminal::size();
         Ok(())
@@ -283,7 +307,7 @@ impl TerminalTrait for ProcessTerminal {
     }
 
     fn drain_input(&mut self, max_ms: u64) -> io::Result<()> {
-        // Disable Kitty protocol so trailing release events don't leak
+        // Pop Kitty keyboard protocol so trailing release events don't leak
         let mut buf = Vec::new();
         self.disable_kitty_protocol(&mut buf)?;
         if !buf.is_empty() {
