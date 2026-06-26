@@ -38,17 +38,6 @@ impl Extension for ReadExtension {
             None
         }
     }
-
-    fn tool_snippets(&self) -> Vec<(String, std::borrow::Cow<'static, str>)> {
-        vec![("read".into(), "Read file contents".into())]
-    }
-
-    fn tool_guidelines(&self) -> Vec<(String, String)> {
-        vec![(
-            "read".into(),
-            "Use read to examine files instead of cat or sed.".into(),
-        )]
-    }
 }
 
 struct ReadTool {

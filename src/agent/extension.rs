@@ -336,16 +336,6 @@ pub trait Extension: Send + Sync {
         None
     }
 
-    /// Tool prompt snippets for the "Available tools" section.
-    fn tool_snippets(&self) -> Vec<(String, Cow<'static, str>)> {
-        vec![]
-    }
-
-    /// Tool prompt guidelines for the system prompt.
-    fn tool_guidelines(&self) -> Vec<(String, String)> {
-        vec![]
-    }
-
     /// Skills this extension provides (AgentSkills-compatible).
     /// Merged into the session's skill set for /skill:name expansion and system prompt.
     fn skills(&self) -> yoagent::skills::SkillSet {

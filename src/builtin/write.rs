@@ -91,17 +91,6 @@ impl Extension for WriteExtension {
             None
         }
     }
-
-    fn tool_snippets(&self) -> Vec<(String, std::borrow::Cow<'static, str>)> {
-        vec![("write".into(), "Write content to a file".into())]
-    }
-
-    fn tool_guidelines(&self) -> Vec<(String, String)> {
-        vec![(
-            "write".into(),
-            "Use write to create or overwrite files.".into(),
-        )]
-    }
 }
 
 // ── Tool ─────────────────────────────────────────────────────────

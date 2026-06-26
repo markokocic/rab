@@ -84,20 +84,6 @@ impl Extension for EditExtension {
             None
         }
     }
-
-    fn tool_snippets(&self) -> Vec<(String, std::borrow::Cow<'static, str>)> {
-        vec![(
-            "edit".into(),
-            "Edit files with targeted search-and-replace".into(),
-        )]
-    }
-
-    fn tool_guidelines(&self) -> Vec<(String, String)> {
-        vec![(
-            "edit".into(),
-            "Use edit for targeted file changes instead of rewriting entire files.".into(),
-        )]
-    }
 }
 
 struct EditTool {

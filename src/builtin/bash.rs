@@ -91,17 +91,6 @@ impl Extension for BashExtension {
             None
         }
     }
-
-    fn tool_snippets(&self) -> Vec<(String, std::borrow::Cow<'static, str>)> {
-        vec![("bash".into(), "Execute bash commands".into())]
-    }
-
-    fn tool_guidelines(&self) -> Vec<(String, String)> {
-        vec![(
-            "bash".into(),
-            "Use bash to execute commands instead of running them manually.".into(),
-        )]
-    }
 }
 
 struct BashTool {

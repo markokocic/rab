@@ -382,26 +382,35 @@ async fn main() -> anyhow::Result<()> {
         .map(|cf| format_context_path(&cf.path, &cwd))
         .collect();
 
-    // Build tool snippets from extensions
-    let tool_snippets: Vec<rab::agent::ToolSnippet> = extensions
-        .iter()
-        .flat_map(|ext| ext.tool_snippets())
-        .map(|(name, snippet)| rab::agent::ToolSnippet {
-            name,
-            description: snippet.to_string(),
-        })
-        .collect();
-
-    // Collect prompt guidelines from all extensions
-    let tool_guidelines: Vec<String> = extensions
-        .iter()
-        .flat_map(|ext| ext.tool_guidelines())
-        .map(|(_name, guideline)| guideline)
-        .collect();
-
     // Collect LLM-callable tools from all extensions
     let agent_tools: Vec<Box<dyn yoagent::types::AgentTool>> =
         extensions.iter().flat_map(|ext| ext.tools()).collect();
+
+    // Build tool snippets from tools (using name + label from yoagent's AgentTool)
+    let tool_snippets: Vec<rab::agent::ToolSnippet> = agent_tools
+        .iter()
+        .map(|t| rab::agent::ToolSnippet {
+            name: t.name().to_string(),
+            description: t.label().to_string(),
+        })
+        .collect();
+
+    // Build tool guidelines from tools (static per tool name)
+    fn tool_guideline(name: &str) -> Option<String> {
+        match name {
+            "bash" => Some("Use bash to execute commands instead of running them manually.".into()),
+            "edit" => {
+                Some("Use edit for targeted file changes instead of rewriting entire files.".into())
+            }
+            "read" => Some("Use read to examine files instead of cat or sed.".into()),
+            "write" => Some("Use write to create or overwrite files.".into()),
+            _ => None,
+        }
+    }
+    let tool_guidelines: Vec<String> = agent_tools
+        .iter()
+        .filter_map(|t| tool_guideline(t.name()))
+        .collect();
 
     // Build system prompt using the new builder
     let system_prompt = rab::agent::SystemPromptBuilder::new()
