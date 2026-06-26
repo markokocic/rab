@@ -236,6 +236,11 @@ impl AgentSession {
                 )
             });
 
+            // Create a cancellation token and store it so abort() can cancel
+            // cooperatively instead of just killing the outer JoinHandle.
+            let cancel = tokio_util::sync::CancellationToken::new();
+            cancel_token.lock().unwrap().replace(cancel.clone());
+
             let (yo_tx, mut yo_rx) = mpsc::unbounded_channel();
 
             let inner_handle = tokio::spawn(async move {
@@ -243,56 +248,107 @@ impl AgentSession {
                 agent
             });
 
-            // Forward events until AgentEnd
-            while let Some(event) = yo_rx.recv().await {
-                let is_end = matches!(&event, AgentEvent::AgentEnd { .. });
-                if let Some(ref tx) = event_tx {
-                    tx.send(event).ok();
-                }
-                if is_end {
-                    break;
+            // Forward events until AgentEnd or cancellation
+            let mut aborted_by_cancel = false;
+            loop {
+                tokio::select! {
+                    biased;
+                    _ = cancel.cancelled() => {
+                        // abort() was called — abort inner task and send synthetic AgentEnd
+                        inner_handle.abort();
+                        if let Some(ref tx) = event_tx {
+                            tx.send(AgentEvent::AgentEnd { messages: vec![] }).ok();
+                            tx.send(AgentEvent::ProgressMessage {
+                                tool_call_id: String::new(),
+                                tool_name: String::new(),
+                                text: "\n\u{26a0} Agent loop aborted.\n".to_string(),
+                            }).ok();
+                        }
+                        aborted_by_cancel = true;
+                        break;
+                    }
+                    event = yo_rx.recv() => {
+                        match event {
+                            Some(event) => {
+                                let is_end = matches!(&event, AgentEvent::AgentEnd { .. });
+                                if let Some(ref tx) = event_tx {
+                                    tx.send(event).ok();
+                                }
+                                if is_end {
+                                    break;
+                                }
+                            }
+                            None => {
+                                // Channel closed — agent loop finished (or panicked)
+                                break;
+                            }
+                        }
+                    }
                 }
             }
 
             // Get agent back (or recreate if inner task was aborted/panicked)
-            let agent = match inner_handle.await {
-                Ok(agent) => agent,
-                Err(_) => {
-                    // Send synthetic AgentEnd to unstick the UI
-                    if let Some(ref tx) = event_tx {
-                        tx.send(AgentEvent::AgentEnd { messages: vec![] }).ok();
-                        tx.send(AgentEvent::ProgressMessage {
-                            tool_call_id: String::new(),
-                            tool_name: String::new(),
-                            text: "\n\u{26a0} Agent loop ended unexpectedly — it may have crashed or encountered a network error.\n".to_string(),
-                        }).ok();
+            let agent = if aborted_by_cancel {
+                // Agent was lost (inner task aborted). Create fresh from stored params.
+                let params = build_params2.expect("build_params must be set");
+                let tools: Vec<Box<dyn AgentTool>> = extensions
+                    .as_ref()
+                    .map(|exts| {
+                        exts.iter()
+                            .flat_map(|ext| ext.tools())
+                            .map(|twm| Box::new(twm) as Box<dyn AgentTool>)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                Self::_build_agent(
+                    &params.model,
+                    &params.api_key,
+                    &params.system_prompt,
+                    params.thinking_level,
+                    &params.model_config,
+                    tools,
+                    Vec::new(),
+                )
+            } else {
+                match inner_handle.await {
+                    Ok(agent) => agent,
+                    Err(_) => {
+                        // Send synthetic AgentEnd to unstick the UI
+                        if let Some(ref tx) = event_tx {
+                            tx.send(AgentEvent::AgentEnd { messages: vec![] }).ok();
+                            tx.send(AgentEvent::ProgressMessage {
+                                tool_call_id: String::new(),
+                                tool_name: String::new(),
+                                text: "\n\u{26a0} Agent loop ended unexpectedly — it may have crashed or encountered a network error.\n".to_string(),
+                            }).ok();
+                        }
+                        // Task aborted/panicked — create a fresh agent
+                        let params = build_params2.expect("build_params must be set");
+                        let tools: Vec<Box<dyn AgentTool>> = extensions
+                            .as_ref()
+                            .map(|exts| {
+                                exts.iter()
+                                    .flat_map(|ext| ext.tools())
+                                    .map(|twm| Box::new(twm) as Box<dyn AgentTool>)
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        Self::_build_agent(
+                            &params.model,
+                            &params.api_key,
+                            &params.system_prompt,
+                            params.thinking_level,
+                            &params.model_config,
+                            tools,
+                            Vec::new(),
+                        )
                     }
-                    // Task aborted — create a fresh agent
-                    let params = build_params2.expect("build_params must be set");
-                    let tools: Vec<Box<dyn AgentTool>> = extensions
-                        .as_ref()
-                        .map(|exts| {
-                            exts.iter()
-                                .flat_map(|ext| ext.tools())
-                                .map(|twm| Box::new(twm) as Box<dyn AgentTool>)
-                                .collect()
-                        })
-                        .unwrap_or_default();
-                    Self::_build_agent(
-                        &params.model,
-                        &params.api_key,
-                        &params.system_prompt,
-                        params.thinking_level,
-                        &params.model_config,
-                        tools,
-                        Vec::new(),
-                    )
                 }
             };
 
             slot.lock().unwrap().replace(agent);
-            cancel_token.lock().unwrap().take();
             handle_arc2.lock().unwrap().take();
+            // cancel_token is consumed by abort() or the next prompt() call
         });
 
         *handle_arc.lock().unwrap() = Some(handle);
@@ -317,10 +373,20 @@ impl AgentSession {
 
     /// Abort the current turn. The agent is lost and will be recreated on the next turn.
     pub fn abort(&self) {
+        // Cancel the token first (cooperative cancellation). The spawned task
+        // checks this inside the forwarding loop and aborts the inner agent
+        // loop cleanly, sending a synthetic AgentEnd to unstick the UI.
+        let guard = self.cancel_token.lock().unwrap();
+        if let Some(token) = guard.as_ref() {
+            token.cancel();
+        }
+        drop(guard);
+
+        // Abort the JoinHandle as a fallback (forceful cancellation).
+        // If the token was already consumed (normal completion), this is a no-op.
         if let Some(handle) = self.current_turn_handle.lock().unwrap().take() {
             handle.abort();
         }
-        self.cancel_token.lock().unwrap().take();
     }
 
     /// Set the model on the idle agent (pi-compatible: setModel).
