@@ -410,6 +410,13 @@ impl AgentSession {
         Ok(summary)
     }
 
+    /// Persist a tool result message (public so the agent loop can persist crash-safely).
+    /// Deduplicates by tool_call_id.
+    pub fn persist_tool_result(&mut self, tool_call_id: &str, content: String, is_error: bool) {
+        let msg = tool_result_message(tool_call_id, content, is_error);
+        self.persist_message(&msg);
+    }
+
     // ── Internal helpers ──────────────────────────────────────────
 
     /// Persist a single message, skipping if already persisted (dedup).

@@ -1232,6 +1232,13 @@ fn submit_message(app: &mut App, message: String) {
         )),
     );
 
+    // Persist user message to session and update in-memory conversation
+    if let Some(ref mut agent_session) = app.session {
+        agent_session.submit_user_message(&trimmed);
+    }
+    app.conversation
+        .push(crate::agent::types::user_message(&trimmed));
+
     if app.is_streaming {
         // Safety check: if is_streaming is true but no events arrived for >5s,
         // the spawned task may have crashed without sending AgentEnd (e.g. panic
@@ -1272,6 +1279,10 @@ fn start_agent_loop(app: &mut App, message: String) {
     app.pending_text = None;
     app.pending_thinking = None;
 
+    // Capture conversation history and thinking level before spawning
+    let history = app.conversation.clone();
+    let thinking_level = app.thinking_level.clone();
+
     let (cancel_tx, mut cancel_rx) = tokio::sync::watch::channel(false);
     app.cancel_tx = Some(cancel_tx);
 
@@ -1282,17 +1293,26 @@ fn start_agent_loop(app: &mut App, message: String) {
             .flat_map(|ext| ext.tools())
             .map(|twm| Box::new(twm) as Box<dyn yoagent::types::AgentTool>)
             .collect();
+        // Map rab's thinking level string to yoagent enum
+        let thinking = match thinking_level.as_deref() {
+            Some("off") => yoagent::types::ThinkingLevel::Off,
+            Some("low") => yoagent::types::ThinkingLevel::Low,
+            Some("medium") => yoagent::types::ThinkingLevel::Medium,
+            Some("high") | Some("xhigh") => yoagent::types::ThinkingLevel::High,
+            _ => yoagent::types::ThinkingLevel::High,
+        };
         let mut agent = yoagent::agent::Agent::new(yoagent::provider::OpenAiCompatProvider)
             .with_model(&model)
             .with_api_key(&api_key)
             .with_model_config(yoagent::provider::model::ModelConfig::openai_compat(
                 "https://opencode.ai/zen/go/v1",
-                "deepseek-v4-flash",
+                &model,
                 "opencode-go",
                 yoagent::provider::model::OpenAiCompat::deepseek(),
             ))
             .with_system_prompt(&system_prompt)
-            .with_thinking(yoagent::types::ThinkingLevel::High)
+            .with_thinking(thinking)
+            .with_messages(history)
             .with_tools(yoagent_tools)
             .without_context_management();
 
@@ -2350,6 +2370,10 @@ fn handle_agent_event(app: &mut App, event: yoagent::types::AgentEvent) {
                         .set_final_duration(start.elapsed().as_secs_f64());
                 }
             }
+            // Crash-safe persistence: persist tool result immediately
+            if let Some(ref mut s) = app.session {
+                s.persist_tool_result(&tool_call_id, content.clone(), is_error);
+            }
         }
         E::ProgressMessage {
             text, tool_name, ..
@@ -2365,13 +2389,20 @@ fn handle_agent_event(app: &mut App, event: yoagent::types::AgentEvent) {
             flush_all(app);
             app.streaming_component = None;
         }
-        E::AgentEnd { .. } => {
+        E::AgentEnd { messages } => {
             flush_all(app);
             app.is_streaming = false;
             app.working.stop();
             app.footer.borrow_mut().set_streaming(false);
+            // Update in-memory conversation with assistant messages from this turn
+            for msg in &messages {
+                if !crate::agent::types::message_is_user(msg) {
+                    app.conversation.push(msg.clone());
+                }
+            }
+            // Persist remaining messages (assistant + tool results) to session
             if let Some(ref mut s) = app.session {
-                s.handle_yo_event(&event);
+                s.on_agent_end(&messages);
             }
         }
         E::MessageEnd { message } => {
