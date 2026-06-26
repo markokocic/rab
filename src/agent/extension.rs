@@ -1,5 +1,6 @@
 /// Extension trait - all capability (built-in or user-provided) comes through this.
 use crate::tui::Theme;
+use serde_json::Value;
 use std::borrow::Cow;
 use std::sync::{
     Arc,
@@ -235,8 +236,36 @@ pub trait ToolRenderer: Send + Sync {
     }
 }
 
-/// ToolWithMeta IS an AgentTool — delegates to the inner tool with optional
-/// argument pre-processing.
+/// Human-readable label for a JSON value's type.
+fn json_type_label(v: &Value) -> &'static str {
+    match v {
+        Value::Null => "null",
+        Value::Bool(_) => "boolean",
+        Value::Number(_) => "number",
+        Value::String(_) => "string",
+        Value::Array(_) => "array",
+        Value::Object(_) => "object",
+    }
+}
+
+/// Recursively remove null-valued keys from objects.
+/// Null is never valid data — removing it is equivalent to
+/// omitting the key, which tools already handle gracefully.
+fn strip_nulls(value: Value) -> Value {
+    match value {
+        Value::Object(map) => {
+            let cleaned: serde_json::Map<String, Value> = map
+                .into_iter()
+                .filter(|(_, v)| !v.is_null())
+                .map(|(k, v)| (k, strip_nulls(v)))
+                .collect();
+            Value::Object(cleaned)
+        }
+        Value::Array(arr) => Value::Array(arr.into_iter().map(strip_nulls).collect()),
+        other => other,
+    }
+}
+
 #[async_trait::async_trait]
 impl yoagent::types::AgentTool for ToolWithMeta {
     fn name(&self) -> &str {
@@ -260,10 +289,25 @@ impl yoagent::types::AgentTool for ToolWithMeta {
         params: serde_json::Value,
         ctx: yoagent::types::ToolContext,
     ) -> std::result::Result<yoagent::types::ToolResult, yoagent::types::ToolError> {
+        // 1. Shape guard: every tool expects an object at the root.
+        if !params.is_object() {
+            return Err(yoagent::types::ToolError::InvalidArgs(format!(
+                "Expected object arguments for tool '{}', got {}",
+                self.name(),
+                json_type_label(&params),
+            )));
+        }
+
+        // 2. Null stripping: null-valued optional keys are never valid.
+        let params = strip_nulls(params);
+
+        // 3. Per-tool argument normalization.
         let params = match self.prepare_arguments {
             Some(prepare) => prepare(params).map_err(yoagent::types::ToolError::InvalidArgs)?,
             None => params,
         };
+
+        // 4. Delegate to inner tool.
         self.tool.execute(params, ctx).await
     }
 }
