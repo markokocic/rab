@@ -1,7 +1,7 @@
 use crate::agent::compaction::{CompactionSettings, estimate_tokens};
 use crate::agent::session::{SessionEntry, SessionManager};
 use crate::agent::types::{AgentMessage, Role};
-use crate::agent::yo_bridge;
+use crate::agent::tool_adapter;
 use std::collections::HashSet;
 
 /// Collect entries from an abandoned branch path for summarization.
@@ -211,7 +211,7 @@ Keep it concise. Preserve exact file paths, function names, and error messages."
     let summary_msg = AgentMessage::user(&prompt);
     let system_prompt = "You are a precise summarizer. Summarize the conversation branch above.";
 
-    let summary = yo_bridge::summarize_text(api_key, model, system_prompt, &[summary_msg]).await?;
+    let summary = tool_adapter::summarize_text(api_key, model, system_prompt, &[summary_msg]).await?;
 
     if summary.is_empty() {
         return Err("Branch summarization returned empty response".to_string());

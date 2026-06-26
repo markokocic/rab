@@ -8,7 +8,6 @@ use std::time::Duration;
 
 use crate::agent::AgentSession;
 use crate::agent::extension::{AgentTool, CommandResult, Extension};
-use crate::agent::provider::ToolDef;
 use crate::agent::session::SessionManager;
 use crate::agent::types::{AgentMessage, PendingMessageQueue, QueueMode, ToolExecutionMode, Usage};
 use crate::agent::ui::chat_editor::{ChatEditor, InputAction};
@@ -1376,7 +1375,7 @@ fn start_agent_loop(app: &mut App, message: String) {
         let mut agent = yoagent::agent::Agent::new(yoagent::provider::OpenAiCompatProvider)
             .with_model(&model)
             .with_api_key(&api_key)
-            .with_model_config(yo_bridge::opencode_model_config())
+            .with_model_config(tool_adapter::opencode_model_config())
             .with_system_prompt(&system_prompt)
             .with_thinking(yoagent::types::ThinkingLevel::High)
             .with_tools(yoagent_tools)
@@ -2548,22 +2547,6 @@ fn flush_thinking(app: &mut App) {
 fn flush_all(app: &mut App) {
     flush_text(app);
     flush_thinking(app);
-}
-
-/// Collect tool definitions from the app's agent tools.
-#[allow(dead_code)]
-fn collect_tool_defs(app: &App) -> Vec<ToolDef> {
-    let mut defs = Vec::new();
-    for tool in app.agent_tools.iter() {
-        if !defs.iter().any(|d: &ToolDef| d.name == tool.name()) {
-            defs.push(ToolDef {
-                name: tool.name().to_string(),
-                description: tool.description().to_string(),
-                parameters: tool.parameters(),
-            });
-        }
-    }
-    defs
 }
 
 /// Parse a ! or !! bang command from input.

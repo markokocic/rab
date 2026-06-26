@@ -2,7 +2,7 @@ use serde::Serialize;
 
 use crate::agent::session::SessionEntry;
 use crate::agent::types::{AgentMessage, Role};
-use crate::agent::yo_bridge;
+use crate::agent::tool_adapter;
 
 // ── CompactionSettings ─────────────────────────────────────────────
 
@@ -558,7 +558,7 @@ pub async fn compact(
     let summary_msg = AgentMessage::user(&prompt);
 
     // Get summary from provider via yoagent
-    let summary_text = yo_bridge::summarize_text(api_key, model, system, &[summary_msg]).await?;
+    let summary_text = tool_adapter::summarize_text(api_key, model, system, &[summary_msg]).await?;
 
     // Extract file operations from messages being summarised
     let mut all_messages = preparation.messages_to_summarize.clone();
