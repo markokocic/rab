@@ -72,12 +72,28 @@ async fn run_mock_agent(
             for m in messages {
                 if let yoagent::types::AgentMessage::Llm(msg) = m {
                     let content = match msg {
-                        yoagent::types::Message::Assistant { content, .. } => {
-                            content.iter().filter_map(|c| if let yoagent::types::Content::Text { text } = c { Some(text.clone()) } else { None }).collect::<Vec<_>>().join("")
-                        }
-                        yoagent::types::Message::User { content, .. } => {
-                            content.iter().filter_map(|c| if let yoagent::types::Content::Text { text } = c { Some(text.clone()) } else { None }).collect::<Vec<_>>().join("")
-                        }
+                        yoagent::types::Message::Assistant { content, .. } => content
+                            .iter()
+                            .filter_map(|c| {
+                                if let yoagent::types::Content::Text { text } = c {
+                                    Some(text.clone())
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect::<Vec<_>>()
+                            .join(""),
+                        yoagent::types::Message::User { content, .. } => content
+                            .iter()
+                            .filter_map(|c| {
+                                if let yoagent::types::Content::Text { text } = c {
+                                    Some(text.clone())
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect::<Vec<_>>()
+                            .join(""),
                         _ => String::new(),
                     };
                     if !content.is_empty() {
@@ -108,9 +124,15 @@ async fn test_agent_loop_with_history() {
     let (_new_messages, events) =
         run_mock_agent(vec![AgentMessage::user("new question")], history).await;
 
-    let has_text = events
-        .iter()
-        .any(|e| matches!(e, yoagent::types::AgentEvent::MessageUpdate { delta: yoagent::types::StreamDelta::Text { .. }, .. }));
+    let has_text = events.iter().any(|e| {
+        matches!(
+            e,
+            yoagent::types::AgentEvent::MessageUpdate {
+                delta: yoagent::types::StreamDelta::Text { .. },
+                ..
+            }
+        )
+    });
     assert!(has_text, "Expected TextDelta events");
 
     let has_end = events

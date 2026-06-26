@@ -14,9 +14,18 @@ fn tool_ctx() -> ToolContext {
 }
 
 fn text_content(result: &ToolResult) -> String {
-    result.content.iter()
-        .filter_map(|c| if let Content::Text { text } = c { Some(text.clone()) } else { None })
-        .collect::<Vec<_>>().join("")
+    result
+        .content
+        .iter()
+        .filter_map(|c| {
+            if let Content::Text { text } = c {
+                Some(text.clone())
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("")
 }
 
 fn setup() -> (tempfile::TempDir, std::path::PathBuf) {
@@ -46,15 +55,15 @@ async fn execute_with_cwd() {
     let tools = ext.tools();
     let tool = &tools[0];
     let result = tool
-        .execute(
-            serde_json::json!({"command": "pwd"}),
-            tool_ctx(),
-        )
+        .execute(serde_json::json!({"command": "pwd"}), tool_ctx())
         .await
         .unwrap();
     // pwd should match the cwd we set
     // The tool uses the extension's cwd, which is dir
-    assert!(text_content(&result).trim() == dir.to_string_lossy().as_ref() || true, "pwd output");
+    assert!(
+        text_content(&result).trim() == dir.to_string_lossy().as_ref() || true,
+        "pwd output"
+    );
 }
 
 #[tokio::test]

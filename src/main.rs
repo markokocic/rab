@@ -6,7 +6,6 @@ use rab::builtin::{
     bash::BashExtension, commands::CommandsExtension, edit::EditExtension, read::ReadExtension,
     write::WriteExtension,
 };
-use colored::Colorize;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -546,7 +545,9 @@ async fn run_print_mode(
                     _ => {}
                 }
             }
-            yoagent::types::AgentEvent::ToolExecutionStart { tool_name, args, .. } => {
+            yoagent::types::AgentEvent::ToolExecutionStart {
+                tool_name, args, ..
+            } => {
                 eprintln!(
                     "\n{} {} {}",
                     colored::Colorize::dimmed("⚙"),
@@ -560,9 +561,18 @@ async fn run_print_mode(
             yoagent::types::AgentEvent::ToolExecutionEnd {
                 result, is_error, ..
             } => {
-                let content: String = result.content.iter()
-                    .filter_map(|c| if let yoagent::types::Content::Text { text } = c { Some(text.clone()) } else { None })
-                    .collect::<Vec<_>>().join("");
+                let content: String = result
+                    .content
+                    .iter()
+                    .filter_map(|c| {
+                        if let yoagent::types::Content::Text { text } = c {
+                            Some(text.clone())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join("");
                 if *is_error {
                     eprintln!(
                         "{} {}",

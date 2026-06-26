@@ -85,7 +85,11 @@ impl Extension for BashExtension {
     }
 
     fn tool_renderer(&self, name: &str) -> Option<Box<dyn ToolRenderer>> {
-        if name == "bash" { Some(Box::new(BashRenderer)) } else { None }
+        if name == "bash" {
+            Some(Box::new(BashRenderer))
+        } else {
+            None
+        }
     }
 
     fn tool_snippets(&self) -> Vec<(String, std::borrow::Cow<'static, str>)> {
@@ -93,7 +97,10 @@ impl Extension for BashExtension {
     }
 
     fn tool_guidelines(&self) -> Vec<(String, String)> {
-        vec![("bash".into(), "Use bash to execute commands instead of running them manually.".into())]
+        vec![(
+            "bash".into(),
+            "Use bash to execute commands instead of running them manually.".into(),
+        )]
     }
 }
 
@@ -465,44 +472,6 @@ fn finish_bash_execution(
 
 #[async_trait]
 impl AgentTool for BashTool {
-    fn clone_boxed(&self) -> Box<dyn AgentTool> {
-        Box::new(Self {
-            cwd: self.cwd.clone(),
-            shell_path: self.shell_path.clone(),
-            command_prefix: self.command_prefix.clone(),
-            operations: self.operations.clone(),
-        })
-    }
-
-    fn name(&self) -> &str {
-        "bash"
-    }
-
-    fn description(&self) -> &str {
-        "Execute a bash command in the current working directory. Returns stdout and stderr. \
-         Output is truncated to last 2000 lines or 50KB (whichever is hit first). If truncated, \
-         full output is saved to a temp file. Optionally provide a timeout in seconds."
-    }
-
-    fn parameters(&self) -> serde_json::Value {
-        serde_json::json!({
-            "type": "object",
-            "required": ["command"],
-            "properties": {
-                "command": {
-                    "type": "string",
-                    "description": "Bash command to execute"
-                },
-                "timeout": {
-                    "type": "number",
-                    "description": "Timeout in seconds (optional, no default timeout)"
-                }
-            }
-        })
-    }
-
-
-
     async fn execute(
         &self,
         tool_call_id: String,
@@ -860,8 +829,12 @@ fn strip_context_truncation_footer(output: &str) -> String {
 
 #[async_trait::async_trait]
 impl yoagent::types::AgentTool for BashTool {
-    fn name(&self) -> &str { "bash" }
-    fn label(&self) -> &str { "bash" }
+    fn name(&self) -> &str {
+        "bash"
+    }
+    fn label(&self) -> &str {
+        "bash"
+    }
     fn description(&self) -> &str {
         "Execute a bash command in the current working directory. Use with caution. \
          Streams output in real-time. Cancellable."

@@ -21,9 +21,7 @@ pub struct ToolSnippet {
     pub description: String,
 }
 
-impl ToolSnippet {
-
-}
+impl ToolSnippet {}
 
 /// Builder for constructing the full system prompt.
 ///

@@ -1,10 +1,10 @@
 use crate::agent::branch_summary::{collect_entries_for_branch_summary, generate_branch_summary};
 use crate::agent::compaction::{self, CompactionSettings, compact, prepare_compaction};
 use crate::agent::provider::AgentEvent;
-use yoagent::types::Content;
 use crate::agent::session::SessionManager;
 use crate::agent::types::{AgentMessage, Role};
 use std::collections::HashSet;
+use yoagent::types::Content;
 
 /// Convert a yoagent Message to rab AgentMessage (for session persistence).
 fn yo_msg_to_rab(msg: &yoagent::types::Message) -> AgentMessage {
@@ -22,7 +22,13 @@ fn yo_msg_to_rab(msg: &yoagent::types::Message) -> AgentMessage {
             let tcs = content
                 .iter()
                 .filter_map(|c| {
-                    if let Content::ToolCall { id, name, arguments, .. } = c {
+                    if let Content::ToolCall {
+                        id,
+                        name,
+                        arguments,
+                        ..
+                    } = c
+                    {
                         Some(crate::agent::types::ToolCall {
                             id: id.clone(),
                             name: name.clone(),

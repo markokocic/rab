@@ -74,27 +74,35 @@ impl Extension for EditExtension {
     fn tools(&self) -> Vec<Box<dyn yoagent::types::AgentTool>> {
         vec![Box::new(EditTool {
             cwd: self.cwd.clone(),
-            renderer: EditRenderer::new(),
             operations: self.operations.clone(),
         })]
     }
 
     fn tool_renderer(&self, name: &str) -> Option<Box<dyn ToolRenderer>> {
-        if name == "edit" { Some(Box::new(EditRenderer::new())) } else { None }
+        if name == "edit" {
+            Some(Box::new(EditRenderer::new()))
+        } else {
+            None
+        }
     }
 
     fn tool_snippets(&self) -> Vec<(String, std::borrow::Cow<'static, str>)> {
-        vec![("edit".into(), "Edit files with targeted search-and-replace".into())]
+        vec![(
+            "edit".into(),
+            "Edit files with targeted search-and-replace".into(),
+        )]
     }
 
     fn tool_guidelines(&self) -> Vec<(String, String)> {
-        vec![("edit".into(), "Use edit for targeted file changes instead of rewriting entire files.".into())]
+        vec![(
+            "edit".into(),
+            "Use edit for targeted file changes instead of rewriting entire files.".into(),
+        )]
     }
 }
 
 struct EditTool {
     cwd: PathBuf,
-    renderer: EditRenderer,
     operations: Arc<dyn EditOperations>,
 }
 
@@ -189,6 +197,7 @@ fn normalize_for_fuzzy_match(text: &str) -> String {
 // ── Input normalization ──────────────────────────────────────────
 
 /// Normalize tool arguments: handle `edits` as JSON string, legacy `oldText`/`newText`.
+#[allow(dead_code)]
 fn prepare_edit_arguments(args: &serde_json::Value) -> Result<(String, Vec<Edit>), String> {
     let path = args["path"]
         .as_str()
@@ -196,7 +205,6 @@ fn prepare_edit_arguments(args: &serde_json::Value) -> Result<(String, Vec<Edit>
 
     let edits = if let Some(edits_val) = args.get("edits") {
         if let Some(s) = edits_val.as_str() {
-            // Some models send edits as a JSON string instead of an array
             serde_json::from_str::<Vec<Edit>>(s)
                 .map_err(|e| format!("Invalid edits JSON string: {}", e))?
         } else {
@@ -204,7 +212,6 @@ fn prepare_edit_arguments(args: &serde_json::Value) -> Result<(String, Vec<Edit>
                 .map_err(|e| format!("Invalid edits array: {}", e))?
         }
     } else if let (Some(old), Some(new)) = (args.get("oldText"), args.get("newText")) {
-        // Legacy: oldText + newText at top level
         let old_text = old
             .as_str()
             .ok_or_else(|| "Invalid 'oldText' argument: expected string".to_string())?;
@@ -224,6 +231,22 @@ fn prepare_edit_arguments(args: &serde_json::Value) -> Result<(String, Vec<Edit>
     }
 
     Ok((path.to_string(), edits))
+}
+
+/// Normalize tool arguments before execution (test-only).
+#[allow(dead_code)]
+fn prepare_edit_tool_args(args: serde_json::Value) -> serde_json::Value {
+    let (path_str, edits) = match prepare_edit_arguments(&args) {
+        Ok(result) => result,
+        Err(_) => return args,
+    };
+    serde_json::json!({
+        "path": path_str,
+        "edits": edits.iter().map(|e| serde_json::json!({
+            "oldText": e.old_text,
+            "newText": e.new_text
+        })).collect::<Vec<_>>()
+    })
 }
 
 // ── Line-span tracking for fuzzy mapping ────────────────────────
@@ -769,56 +792,6 @@ fn compute_edits_diff(
 
 #[async_trait]
 impl AgentTool for EditTool {
-    fn clone_boxed(&self) -> Box<dyn AgentTool> {
-        Box::new(Self {
-            cwd: self.cwd.clone(),
-            renderer: self.renderer.clone(),
-            operations: self.operations.clone(),
-        })
-    }
-
-    fn name(&self) -> &str {
-        "edit"
-    }
-
-    fn description(&self) -> &str {
-        "Edit a single file using exact text replacement. Every edits[].oldText must match a \
-         unique, non-overlapping region of the original file. If two changes affect the same \
-         block or nearby lines, merge them into one edit instead of emitting overlapping edits. \
-         Do not include large unchanged regions just to connect distant changes."
-    }
-
-    fn parameters(&self) -> serde_json::Value {
-        serde_json::json!({
-            "type": "object",
-            "required": ["path", "edits"],
-            "properties": {
-                "path": {
-                    "type": "string",
-                    "description": "Path to the file to edit (relative or absolute)"
-                },
-                "edits": {
-                    "type": "array",
-                    "description": "One or more targeted replacements. Each edit is matched against the original file, not incrementally. Do not include overlapping or nested edits. If two changes touch the same block or nearby lines, merge them into one edit instead.",
-                    "items": {
-                        "type": "object",
-                        "required": ["oldText", "newText"],
-                        "properties": {
-                            "oldText": {
-                                "type": "string",
-                                "description": "Exact text for one targeted replacement. It must be unique in the original file and must not overlap with any other edits[].oldText in the same call."
-                            },
-                            "newText": {
-                                "type": "string",
-                                "description": "Replacement text for this targeted edit."
-                            }
-                        }
-                    }
-                }
-            }
-        })
-    }
-
     async fn execute(
         &self,
         tool_call_id: String,
@@ -918,26 +891,14 @@ impl AgentTool for EditTool {
     }
 }
 
-impl EditTool {
-    fn prepare_arguments(&self, args: serde_json::Value) -> serde_json::Value {
-        let (path_str, edits) = match prepare_edit_arguments(&args) {
-            Ok(result) => result,
-            Err(_) => return args,
-        };
-        serde_json::json!({
-            "path": path_str,
-            "edits": edits.iter().map(|e| serde_json::json!({
-                "oldText": e.old_text,
-                "newText": e.new_text
-            })).collect::<Vec<_>>()
-        })
-    }
-}
-
 #[async_trait::async_trait]
 impl yoagent::types::AgentTool for EditTool {
-    fn name(&self) -> &str { "edit" }
-    fn label(&self) -> &str { "edit" }
+    fn name(&self) -> &str {
+        "edit"
+    }
+    fn label(&self) -> &str {
+        "edit"
+    }
     fn description(&self) -> &str {
         "Edit a single file using exact text replacement. Every edits[].oldText must match a \
          unique, non-overlapping region of the original file. If two changes affect the same \
@@ -1362,14 +1323,13 @@ mod tests {
         let tmp = tmp_dir();
         let tool = EditTool {
             cwd: tmp.clone(),
-            renderer: EditRenderer::new(),
             operations: Arc::new(DefaultEditOperations),
         };
         (tool, tmp)
     }
 
     async fn exec_ok(tool: &EditTool, args: serde_json::Value) -> String {
-        let args = tool.prepare_arguments(args);
+        let args = prepare_edit_tool_args(args);
         tool.execute("id".into(), args, Cancel::new(), None)
             .await
             .unwrap()
@@ -1380,7 +1340,7 @@ mod tests {
         tool: &EditTool,
         args: serde_json::Value,
     ) -> (String, Option<serde_json::Value>) {
-        let args = tool.prepare_arguments(args);
+        let args = prepare_edit_tool_args(args);
         let result = tool
             .execute("id".into(), args, Cancel::new(), None)
             .await
@@ -1389,7 +1349,7 @@ mod tests {
     }
 
     async fn exec_err(tool: &EditTool, args: serde_json::Value) -> String {
-        let args = tool.prepare_arguments(args);
+        let args = prepare_edit_tool_args(args);
         tool.execute("id".into(), args, Cancel::new(), None)
             .await
             .unwrap_err()
@@ -1397,7 +1357,7 @@ mod tests {
     }
 
     async fn is_err(tool: &EditTool, args: serde_json::Value) -> bool {
-        let args = tool.prepare_arguments(args);
+        let args = prepare_edit_tool_args(args);
         tool.execute("id".into(), args, Cancel::new(), None)
             .await
             .is_err()

@@ -1,7 +1,5 @@
 /// Extension trait - all capability (built-in or user-provided) comes through this.
 use crate::agent::types::ToolCall;
-use tokio::sync::mpsc;
-use yoagent::types::{Content, ToolContext, ToolError, ToolResult};
 use crate::tui::Theme;
 use async_trait::async_trait;
 use std::borrow::Cow;
@@ -9,7 +7,9 @@ use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
 };
+use tokio::sync::mpsc;
 use tokio::sync::mpsc::UnboundedSender;
+use yoagent::types::{Content, ToolContext, ToolError, ToolResult};
 
 /// Bridge: execute a rab AgentTool via yoagent ToolContext.
 /// Used internally by builtin tools that implement both traits.
@@ -33,7 +33,9 @@ pub(crate) async fn execute_via_rab_tool(
         let on_update = on_update.clone();
         tokio::spawn(async move {
             while let Some(output) = update_rx.recv().await {
-                let content = vec![Content::Text { text: output.content }];
+                let content = vec![Content::Text {
+                    text: output.content,
+                }];
                 on_update(ToolResult {
                     content,
                     details: output.details.unwrap_or(serde_json::Value::Null),
@@ -42,9 +44,14 @@ pub(crate) async fn execute_via_rab_tool(
         });
     }
 
-    match tool.execute(tool_call_id, params, rab_cancel, Some(update_tx)).await {
+    match tool
+        .execute(tool_call_id, params, rab_cancel, Some(update_tx))
+        .await
+    {
         Ok(output) => {
-            let content = vec![Content::Text { text: output.content }];
+            let content = vec![Content::Text {
+                text: output.content,
+            }];
             Ok(ToolResult {
                 content,
                 details: output.details.unwrap_or(serde_json::Value::Null),
@@ -352,39 +359,12 @@ pub trait ToolRenderer: Send + Sync {
 
 /// An LLM-callable tool.
 #[async_trait]
+/// An LLM-callable tool — executed via the yoagent bridge.
+///
+/// Only `execute()` is used; all other metadata comes from the
+/// `yoagent::types::AgentTool` implementation instead.
+#[async_trait]
 pub(crate) trait AgentTool: Send + Sync {
-    fn name(&self) -> &str;
-    fn description(&self) -> &str;
-    fn parameters(&self) -> serde_json::Value;
-
-    /// Clone this tool into a boxed trait object.
-    /// Only needed if you use `RabToolAdapter` to wrap tools for yoagent.
-    /// Default impl panics — override in real tools.
-    fn clone_boxed(&self) -> Box<dyn AgentTool> {
-        panic!("clone_boxed not implemented for {}", self.name())
-    }
-
-
-
-
-
-    /// One-line snippet shown in the "Available tools" section of the system prompt.
-    /// When None, falls back to description().
-    fn prompt_snippet(&self) -> Option<Cow<'static, str>> {
-        None
-    }
-
-    /// Provide a tool-specific renderer for the UI.
-    /// When None (the default), ToolExecComponent falls back to generic rendering.
-    fn renderer(&self) -> Option<Box<dyn ToolRenderer>> {
-        None
-    }
-
-    /// Guidelines for the system prompt specific to this tool.
-    fn prompt_guidelines(&self) -> Vec<String> {
-        vec![]
-    }
-
     /// Execute the tool. Returns output carrying both the full content (sent to LLM)
     /// and an optional compact label for collapsed UI display.
     ///

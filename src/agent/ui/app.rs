@@ -9,7 +9,7 @@ use std::time::Duration;
 use crate::agent::AgentSession;
 use crate::agent::extension::{CommandResult, Extension};
 use crate::agent::session::SessionManager;
-use crate::agent::types::{AgentMessage, PendingMessageQueue, QueueMode, ToolExecutionMode, Usage};
+use crate::agent::types::{AgentMessage, PendingMessageQueue, QueueMode, ToolExecutionMode};
 use crate::agent::ui::chat_editor::{ChatEditor, InputAction};
 use crate::agent::ui::components::EditorComponent;
 use crate::agent::ui::components::FooterComponent;
@@ -19,7 +19,6 @@ use crate::agent::ui::messages::{DisplayMsg, session_messages_to_display};
 use crate::agent::ui::model_selector::ModelSelector;
 use crate::agent::ui::theme::RabTheme;
 use crate::agent::ui::working::WorkingIndicator;
-use crate::agent::AgentEvent;
 use crate::builtin::commands::SessionInfoInternal;
 use crate::tui::Component;
 use crate::tui::TUI;
@@ -128,9 +127,6 @@ pub struct App {
 
     /// Timestamp of last agent event received (used for streaming safety timeout).
     last_streaming_event: std::time::Instant,
-
-    /// Token usage from last response.
-    last_usage: Option<Usage>,
 
     /// Agent cancellation sender for Ctrl+C / ESC.
     cancel_tx: Option<tokio::sync::watch::Sender<bool>>,
@@ -440,7 +436,6 @@ impl App {
 
             should_quit: false,
             last_streaming_event: std::time::Instant::now(),
-            last_usage: None,
             cancel_tx: None,
             bash_abort_handle: None,
             session: Some(agent_session),
@@ -1361,10 +1356,8 @@ fn start_agent_loop(app: &mut App, message: String) {
 
     tokio::spawn(async move {
         // Create yoagent tools from extensions
-        let yoagent_tools: Vec<Box<dyn yoagent::types::AgentTool>> = extensions
-            .iter()
-            .flat_map(|ext| ext.tools())
-            .collect();
+        let yoagent_tools: Vec<Box<dyn yoagent::types::AgentTool>> =
+            extensions.iter().flat_map(|ext| ext.tools()).collect();
         let mut agent = yoagent::agent::Agent::new(yoagent::provider::OpenAiCompatProvider)
             .with_model(&model)
             .with_api_key(&api_key)
@@ -2075,7 +2068,12 @@ fn handle_bang_command(app: &mut App, command: String) {
                 let _ = tx.send(YoEvent::ToolExecutionEnd {
                     tool_call_id: String::new(),
                     tool_name: "bash".into(),
-                    result: YoResult { content: vec![YoContent::Text { text: format!("Failed to execute: {:#}", e) }], details: serde_json::Value::Null },
+                    result: YoResult {
+                        content: vec![YoContent::Text {
+                            text: format!("Failed to execute: {:#}", e),
+                        }],
+                        details: serde_json::Value::Null,
+                    },
                     is_error: true,
                 });
                 guard.sent = true;
@@ -2151,7 +2149,14 @@ fn handle_bang_command(app: &mut App, command: String) {
             tool_call_id: String::new(),
             tool_name: "bash".into(),
             result: YoResult {
-                content: vec![YoContent::Text { text: format!("$ {}\n\n{}\n\n[{}s]", command, result, elapsed.as_secs_f64()) }],
+                content: vec![YoContent::Text {
+                    text: format!(
+                        "$ {}\n\n{}\n\n[{}s]",
+                        command,
+                        result,
+                        elapsed.as_secs_f64()
+                    ),
+                }],
                 details: serde_json::Value::Null,
             },
             is_error,
@@ -2226,76 +2231,125 @@ fn handle_agent_event(app: &mut App, event: yoagent::types::AgentEvent) {
                         let comp = Rc::new(RefCell::new(
                             crate::agent::ui::components::AssistantMessageComponent::new(&delta),
                         ));
-                        if app.hide_thinking { comp.borrow_mut().set_hide_thinking(true); }
+                        if app.hide_thinking {
+                            comp.borrow_mut().set_hide_thinking(true);
+                        }
                         app.streaming_component = Some(Rc::downgrade(&comp));
-                        app.chat_container.borrow_mut().add_child(std::boxed::Box::new(RcRefCellComponent(comp)));
+                        app.chat_container
+                            .borrow_mut()
+                            .add_child(std::boxed::Box::new(RcRefCellComponent(comp)));
                     }
                 }
                 StreamDelta::Thinking { delta } => {
                     if let Some(weak) = app.streaming_component.as_ref().and_then(|w| w.upgrade()) {
-                        weak.borrow_mut().add_thinking(&delta, app.thinking_level.clone());
+                        weak.borrow_mut()
+                            .add_thinking(&delta, app.thinking_level.clone());
                     } else {
                         use crate::tui::components::rc_ref_cell_component::RcRefCellComponent;
-                        let mut comp = crate::agent::ui::components::AssistantMessageComponent::new("");
+                        let mut comp =
+                            crate::agent::ui::components::AssistantMessageComponent::new("");
                         comp.add_thinking(&delta, app.thinking_level.clone());
-                        if app.hide_thinking { comp.set_hide_thinking(true); }
+                        if app.hide_thinking {
+                            comp.set_hide_thinking(true);
+                        }
                         let comp = Rc::new(RefCell::new(comp));
                         app.streaming_component = Some(Rc::downgrade(&comp));
-                        app.chat_container.borrow_mut().add_child(std::boxed::Box::new(RcRefCellComponent(comp)));
+                        app.chat_container
+                            .borrow_mut()
+                            .add_child(std::boxed::Box::new(RcRefCellComponent(comp)));
                     }
                 }
                 StreamDelta::ToolCallDelta { .. } => {}
             }
         }
-        E::ToolExecutionStart { tool_call_id, tool_name, args } => {
+        E::ToolExecutionStart {
+            tool_call_id,
+            tool_name,
+            args,
+        } => {
             app.last_streaming_event = std::time::Instant::now();
             flush_all(app);
             app.streaming_component = None;
             let name = tool_name;
-            let renderer = app.extensions.iter().find_map(|ext| ext.tool_renderer(&name));
+            let renderer = app
+                .extensions
+                .iter()
+                .find_map(|ext| ext.tool_renderer(&name));
             let started_at = std::time::Instant::now();
             let (invalidate_tx, invalidate_rx) =
                 crate::agent::ui::components::ToolExecComponent::make_invalidation_channel();
             app.invalidate_rxs.push(invalidate_rx);
             let comp: Rc<RefCell<_>> = {
-                let mut tool = crate::agent::ui::components::ToolExecComponent::new(&name, renderer, args.clone(), app.cwd.to_string_lossy().to_string());
+                let mut tool = crate::agent::ui::components::ToolExecComponent::new(
+                    &name,
+                    renderer,
+                    args.clone(),
+                    app.cwd.to_string_lossy().to_string(),
+                );
                 tool.set_started_at(std::time::Instant::now());
                 tool.set_invalidate_tx(invalidate_tx);
                 Rc::new(RefCell::new(tool))
             };
             comp.borrow_mut().set_expanded(app.tools_expanded);
-            app.pending_tools.insert(tool_call_id.clone(), Rc::downgrade(&comp));
-            app.tool_call_start_times.insert(tool_call_id.clone(), started_at);
-            chat_add(app, std::boxed::Box::new(crate::agent::ui::components::RcToolExec(comp)));
+            app.pending_tools
+                .insert(tool_call_id.clone(), Rc::downgrade(&comp));
+            app.tool_call_start_times
+                .insert(tool_call_id.clone(), started_at);
+            chat_add(
+                app,
+                std::boxed::Box::new(crate::agent::ui::components::RcToolExec(comp)),
+            );
             let args_str = serde_json::to_string(&args).unwrap_or_default();
-            app.messages.push(DisplayMsg::ToolCall { name, args: args_str });
+            app.messages.push(DisplayMsg::ToolCall {
+                name,
+                args: args_str,
+            });
         }
-        E::ToolExecutionEnd { tool_call_id, tool_name: _, result, is_error } => {
-            let content: String = result.content.iter()
-                .filter_map(|c| if let yoagent::types::Content::Text { text } = c { Some(text.clone()) } else { None })
-                .collect::<Vec<_>>().join("");
+        E::ToolExecutionEnd {
+            tool_call_id,
+            tool_name: _,
+            result,
+            is_error,
+        } => {
+            let content: String = result
+                .content
+                .iter()
+                .filter_map(|c| {
+                    if let yoagent::types::Content::Text { text } = c {
+                        Some(text.clone())
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("");
             if let Some(weak) = app.pending_tools.get(&tool_call_id)
                 && let Some(comp) = weak.upgrade()
             {
-                comp.borrow_mut().set_result_with_details(&content, is_error, Some(result.details));
+                comp.borrow_mut()
+                    .set_result_with_details(&content, is_error, Some(result.details));
                 if let Some(start) = app.tool_call_start_times.remove(&tool_call_id) {
-                    comp.borrow_mut().set_final_duration(start.elapsed().as_secs_f64());
+                    comp.borrow_mut()
+                        .set_final_duration(start.elapsed().as_secs_f64());
                 }
             }
             let truncated: String = content.chars().take(500).collect();
-            app.messages.push(DisplayMsg::ToolResult { content: truncated, compact: None, is_error });
+            app.messages.push(DisplayMsg::ToolResult {
+                content: truncated,
+                compact: None,
+                is_error,
+            });
         }
         E::ProgressMessage { text, .. } => {
             if let Some(weak) = app.bash_component.as_ref().and_then(|w| w.upgrade()) {
                 weak.borrow_mut().append_output(&text);
             }
-
         }
         E::TurnEnd { .. } => {
             flush_all(app);
             app.streaming_component = None;
         }
-        E::AgentEnd { ref messages } => {
+        E::AgentEnd { .. } => {
             flush_all(app);
             app.is_streaming = false;
             app.working.stop();
@@ -2370,35 +2424,6 @@ fn parse_bang_command(input: &str) -> Option<(String, bool)> {
 
 /// Extract the exit code from a bash error result content.
 /// Looks for patterns like "Command exited with code N".
-fn extract_exit_code(content: &str) -> Option<i32> {
-    if let Some(pos) = content.rfind("exited with code ") {
-        let num_start = pos + "exited with code ".len();
-        let rest = &content[num_start..];
-        let num_str: String = rest
-            .chars()
-            .take_while(|c| c.is_ascii_digit() || *c == '-')
-            .collect();
-        if !num_str.is_empty() {
-            return num_str.parse().ok();
-        }
-    }
-    None
-}
-
-/// Extract the full output path from a bash result content.
-/// Looks for patterns like "Full output: /path/to/file".
-fn extract_full_output_path(content: &str) -> Option<String> {
-    if let Some(pos) = content.rfind("Full output: ") {
-        let path_start = pos + "Full output: ".len();
-        let rest = &content[path_start..];
-        let path: String = rest.chars().take_while(|c| !c.is_whitespace()).collect();
-        if !path.is_empty() {
-            return Some(path);
-        }
-    }
-    None
-}
-
 /// Format a number with locale-style thousands separators (e.g. 1234 -> "1,234").
 fn format_number(n: u64) -> String {
     let s = n.to_string();
@@ -2858,7 +2883,10 @@ mod tests {
 
         // AgentEnd no longer processes follow-up queue - the agent loop handles it.
         // The queue should remain intact.
-        handle_agent_event(&mut app, yoagent::types::AgentEvent::AgentEnd { messages: vec![] });
+        handle_agent_event(
+            &mut app,
+            yoagent::types::AgentEvent::AgentEnd { messages: vec![] },
+        );
 
         assert_eq!(
             app.follow_up_queue.lock().unwrap().len(),
@@ -3109,19 +3137,20 @@ mod tests {
             timestamp: chrono::Utc::now().timestamp_millis(),
         };
 
-        let agent_messages = vec![user_msg.clone(), assistant_msg.clone()];
+        let _agent_messages = vec![user_msg.clone(), assistant_msg.clone()];
 
         // Fire AgentEnd
         handle_agent_event(
             &mut app,
-            yoagent::types::AgentEvent::AgentEnd {
-                messages: vec![],
-            },
+            yoagent::types::AgentEvent::AgentEnd { messages: vec![] },
         );
 
         // With yoagent, conversation is populated from AgentEnd messages.
         // We sent empty messages, so conversation stays empty.
-        assert!(app.conversation.is_empty(), "no messages passed in AgentEnd");
+        assert!(
+            app.conversation.is_empty(),
+            "no messages passed in AgentEnd"
+        );
     }
 
     #[test]
@@ -3158,7 +3187,7 @@ mod tests {
         app.conversation.push(existing);
 
         // AgentEnd fires with the SAME message id - should NOT duplicate
-        let dup_msg = AgentMessage {
+        let _dup_msg = AgentMessage {
             id: existing_id,
             parent_id: None,
             role: crate::agent::types::Role::User,
@@ -3172,9 +3201,7 @@ mod tests {
 
         handle_agent_event(
             &mut app,
-            yoagent::types::AgentEvent::AgentEnd {
-                messages: vec![],
-            },
+            yoagent::types::AgentEvent::AgentEnd { messages: vec![] },
         );
 
         // Should still have exactly 1 message (deduplicated by id)

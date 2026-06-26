@@ -45,7 +45,10 @@ async fn reads_file_content() {
     let tool = &tools[0];
 
     let result = tool
-        .execute(serde_json::json!({"path": path.to_str().unwrap()}), tool_ctx())
+        .execute(
+            serde_json::json!({"path": path.to_str().unwrap()}),
+            tool_ctx(),
+        )
         .await
         .unwrap();
     let txt = text_content(&result);
@@ -73,7 +76,11 @@ async fn read_respects_offset() {
         .unwrap();
     let txt = text_content(&result);
     assert!(txt.contains("line 5"), "should contain line 5: {}", txt);
-    assert!(!txt.lines().any(|l| l == "line 1"), "should not contain line 1: {}", txt);
+    assert!(
+        !txt.lines().any(|l| l == "line 1"),
+        "should not contain line 1: {}",
+        txt
+    );
 }
 
 #[tokio::test]
@@ -108,10 +115,7 @@ async fn read_nonexistent_file_errors() {
     let tool = &tools[0];
 
     let result = tool
-        .execute(
-            serde_json::json!({"path": "nonexistent.txt"}),
-            tool_ctx(),
-        )
+        .execute(serde_json::json!({"path": "nonexistent.txt"}), tool_ctx())
         .await;
     assert!(result.is_err(), "Expected error for nonexistent file");
 }

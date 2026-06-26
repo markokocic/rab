@@ -14,9 +14,18 @@ fn tool_ctx() -> ToolContext {
 }
 
 fn text_content(result: &ToolResult) -> String {
-    result.content.iter()
-        .filter_map(|c| if let Content::Text { text } = c { Some(text.clone()) } else { None })
-        .collect::<Vec<_>>().join("")
+    result
+        .content
+        .iter()
+        .filter_map(|c| {
+            if let Content::Text { text } = c {
+                Some(text.clone())
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("")
 }
 
 fn tmp_dir() -> std::path::PathBuf {
@@ -58,7 +67,8 @@ async fn test_basic_edit() {
     .await;
     assert!(
         result.contains("Applied edit") || result.contains("Successfully replaced"),
-        "Result: {}", result
+        "Result: {}",
+        result
     );
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "goodbye world");
 }

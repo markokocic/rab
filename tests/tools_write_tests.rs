@@ -14,9 +14,18 @@ fn tool_ctx() -> ToolContext {
 }
 
 fn text_content(result: &ToolResult) -> String {
-    result.content.iter()
-        .filter_map(|c| if let Content::Text { text } = c { Some(text.clone()) } else { None })
-        .collect::<Vec<_>>().join("")
+    result
+        .content
+        .iter()
+        .filter_map(|c| {
+            if let Content::Text { text } = c {
+                Some(text.clone())
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("")
 }
 
 fn tmp_dir() -> std::path::PathBuf {
