@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::agent::AgentSession;
-use crate::agent::extension::{AgentTool, CommandResult, Extension};
+use crate::agent::extension::{CommandResult, Extension};
 use crate::agent::session::SessionManager;
 use crate::agent::types::{AgentMessage, PendingMessageQueue, QueueMode, ToolExecutionMode, Usage};
 use crate::agent::ui::chat_editor::{ChatEditor, InputAction};
@@ -19,7 +19,7 @@ use crate::agent::ui::messages::{DisplayMsg, session_messages_to_display};
 use crate::agent::ui::model_selector::ModelSelector;
 use crate::agent::ui::theme::RabTheme;
 use crate::agent::ui::working::WorkingIndicator;
-use crate::agent::{AgentEvent, tool_adapter, yo_bridge};
+use crate::agent::{AgentEvent, yo_bridge};
 use crate::builtin::commands::SessionInfoInternal;
 use crate::tui::Component;
 use crate::tui::TUI;
@@ -41,7 +41,6 @@ const THINKING_LEVELS: &[&str] = &["xhigh", "high", "medium", "low", "off"];
 pub struct AppConfig {
     pub model: String,
     pub system_prompt: String,
-    pub agent_tools: Vec<Box<dyn AgentTool>>,
     pub extensions: Vec<Box<dyn Extension>>,
     pub cwd: PathBuf,
     pub thinking_level: Option<String>,
@@ -176,7 +175,6 @@ pub struct App {
     pending_command_result: Option<CommandResult>,
 
     /// Agent tools (for tool execution).
-    agent_tools: Arc<Vec<Box<dyn AgentTool>>>,
     /// Extensions.
     extensions: Arc<Vec<Box<dyn Extension>>>,
 
@@ -448,7 +446,6 @@ impl App {
             session: Some(agent_session),
             footer,
             working: WorkingIndicator::new(),
-            agent_tools: Arc::new(config.agent_tools),
             extensions: Arc::new(config.extensions),
             steering_queue: Arc::new(std::sync::Mutex::new(PendingMessageQueue::new(
                 QueueMode::OneAtATime,
@@ -1351,7 +1348,7 @@ fn start_agent_loop(app: &mut App, message: String) {
     let system_prompt = app.system_prompt.clone();
     let tx = app.event_tx.clone();
     let api_key = app.api_key.clone();
-    let agent_tools = Arc::clone(&app.agent_tools);
+    let extensions = Arc::clone(&app.extensions);
 
     app.is_streaming = true;
     app.working.start();
@@ -1363,14 +1360,10 @@ fn start_agent_loop(app: &mut App, message: String) {
     app.cancel_tx = Some(cancel_tx);
 
     tokio::spawn(async move {
-        // Build yoagent Agent with wrapped tools
-        let yoagent_tools: Vec<Box<dyn yoagent::types::AgentTool>> = agent_tools
+        // Create yoagent tools from extensions
+        let yoagent_tools: Vec<Box<dyn yoagent::types::AgentTool>> = extensions
             .iter()
-            .map(|t| {
-                Box::new(tool_adapter::RabToYoAgentTool {
-                    inner: t.clone_boxed(),
-                }) as Box<dyn yoagent::types::AgentTool>
-            })
+            .flat_map(|ext| ext.tools())
             .collect();
         let mut agent = yoagent::agent::Agent::new(yoagent::provider::OpenAiCompatProvider)
             .with_model(&model)
@@ -2270,12 +2263,11 @@ fn handle_agent_event(app: &mut App, event: AgentEvent) {
             // Clear streaming component so answer text from the next turn creates a new
             // assistant message component (below the tool execution, matching pi).
             app.streaming_component = None;
-            // Look up tool renderer from agent tools
+            // Look up tool renderer from extensions
             let renderer = app
-                .agent_tools
+                .extensions
                 .iter()
-                .find(|t| t.name() == name)
-                .and_then(|t| t.renderer());
+            .find_map(|ext| ext.tool_renderer(&name));
 
             // Create a combined ToolExecComponent with renderer, handling per-tool setup
             let started_at = std::time::Instant::now();
@@ -2303,10 +2295,9 @@ fn handle_agent_event(app: &mut App, event: AgentEvent) {
                     .unwrap_or("");
                 let mut comp = crate::agent::ui::components::ToolExecComponent::new(
                     &name,
-                    app.agent_tools
+                    app.extensions
                         .iter()
-                        .find(|t| t.name() == name)
-                        .and_then(|t| t.renderer()),
+                        .find_map(|ext| ext.tool_renderer(&name)),
                     args.clone(),
                     app.cwd.to_string_lossy().to_string(),
                 );
@@ -2641,7 +2632,6 @@ mod tests {
         let config = AppConfig {
             model: "deepseek-v4-flash".into(),
             system_prompt: String::new(),
-            agent_tools: vec![],
             extensions: vec![],
             cwd: cwd.clone(),
             thinking_level: None,
@@ -2800,7 +2790,6 @@ mod tests {
         let config = AppConfig {
             model: "deepseek-v4-flash".into(),
             system_prompt: String::new(),
-            agent_tools: vec![],
             extensions: vec![],
             cwd: cwd.clone(),
             thinking_level: None,
@@ -2846,7 +2835,6 @@ mod tests {
         let config = AppConfig {
             model: "deepseek-v4-flash".into(),
             system_prompt: String::new(),
-            agent_tools: vec![],
             extensions: vec![],
             cwd: cwd.clone(),
             thinking_level: None,
@@ -2886,7 +2874,6 @@ mod tests {
         let config = AppConfig {
             model: "deepseek-v4-flash".into(),
             system_prompt: String::new(),
-            agent_tools: vec![],
             extensions: vec![],
             cwd: cwd.clone(),
             thinking_level: None,
@@ -2933,7 +2920,6 @@ mod tests {
         let config = AppConfig {
             model: "deepseek-v4-flash".into(),
             system_prompt: String::new(),
-            agent_tools: vec![],
             extensions: vec![],
             cwd: cwd.clone(),
             thinking_level: None,
@@ -2971,7 +2957,6 @@ mod tests {
         let config = AppConfig {
             model: "deepseek-v4-flash".into(),
             system_prompt: String::new(),
-            agent_tools: vec![],
             extensions: vec![],
             cwd: cwd.clone(),
             thinking_level: None,
@@ -3009,7 +2994,6 @@ mod tests {
         let config = AppConfig {
             model: "deepseek-v4-flash".into(),
             system_prompt: String::new(),
-            agent_tools: vec![],
             extensions: vec![],
             cwd: cwd.clone(),
             thinking_level: None,
@@ -3047,7 +3031,6 @@ mod tests {
         let config = AppConfig {
             model: "deepseek-v4-flash".into(),
             system_prompt: String::new(),
-            agent_tools: vec![],
             extensions: vec![],
             cwd: cwd.clone(),
             thinking_level: None,
@@ -3091,7 +3074,6 @@ mod tests {
         let config = AppConfig {
             model: "deepseek-v4-flash".into(),
             system_prompt: String::new(),
-            agent_tools: vec![],
             extensions: vec![],
             cwd: cwd.clone(),
             thinking_level: None,
@@ -3186,7 +3168,6 @@ mod tests {
         let config = AppConfig {
             model: "deepseek-v4-flash".into(),
             system_prompt: String::new(),
-            agent_tools: vec![],
             extensions: vec![],
             cwd: cwd.clone(),
             thinking_level: None,
@@ -3241,7 +3222,6 @@ mod tests {
         let config = AppConfig {
             model: "deepseek-v4-flash".into(),
             system_prompt: String::new(),
-            agent_tools: vec![],
             extensions: vec![],
             cwd: cwd.clone(),
             thinking_level: None,
@@ -3294,7 +3274,6 @@ mod tests {
         let config = AppConfig {
             model: "deepseek-v4-flash".into(),
             system_prompt: String::new(),
-            agent_tools: vec![],
             extensions: vec![],
             cwd: cwd.clone(),
             thinking_level: None,
@@ -3363,7 +3342,6 @@ mod tests {
         let config = AppConfig {
             model: "deepseek-v4-flash".into(),
             system_prompt: String::new(),
-            agent_tools: vec![],
             extensions: vec![],
             cwd: cwd.clone(),
             thinking_level: None,
@@ -3717,7 +3695,6 @@ mod tests {
         AppConfig {
             model: "test-model".into(),
             system_prompt: String::new(),
-            agent_tools: vec![],
             extensions: vec![],
             cwd,
             thinking_level: None,

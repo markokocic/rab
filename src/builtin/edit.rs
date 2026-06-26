@@ -71,12 +71,24 @@ impl Extension for EditExtension {
         "edit".into()
     }
 
-    fn tools(&self) -> Vec<Box<dyn AgentTool>> {
+    fn tools(&self) -> Vec<Box<dyn yoagent::types::AgentTool>> {
         vec![Box::new(EditTool {
             cwd: self.cwd.clone(),
             renderer: EditRenderer::new(),
             operations: self.operations.clone(),
         })]
+    }
+
+    fn tool_renderer(&self, name: &str) -> Option<Box<dyn ToolRenderer>> {
+        if name == "edit" { Some(Box::new(EditRenderer::new())) } else { None }
+    }
+
+    fn tool_snippets(&self) -> Vec<(String, std::borrow::Cow<'static, str>)> {
+        vec![("edit".into(), "Edit files with targeted search-and-replace".into())]
+    }
+
+    fn tool_guidelines(&self) -> Vec<(String, String)> {
+        vec![("edit".into(), "Use edit for targeted file changes instead of rewriting entire files.".into())]
     }
 }
 
@@ -807,37 +819,6 @@ impl AgentTool for EditTool {
         })
     }
 
-    fn prompt_snippet(&self) -> Option<Cow<'static, str>> {
-        Some("Make precise file edits with exact text replacement, including multiple disjoint edits in one call".into())
-    }
-
-    fn prompt_guidelines(&self) -> Vec<String> {
-        vec![
-            "Use edit for precise changes (edits[].oldText must match exactly)".into(),
-            "When changing multiple separate locations in one file, use one edit call with multiple entries in edits[] instead of multiple edit calls".into(),
-            "Each edits[].oldText is matched against the original file, not after earlier edits are applied. Do not emit overlapping or nested edits. Merge nearby changes into one edit.".into(),
-            "Keep edits[].oldText as small as possible while still being unique in the file. Do not pad with large unchanged regions.".into(),
-        ]
-    }
-
-    fn prepare_arguments(&self, args: serde_json::Value) -> serde_json::Value {
-        let (path_str, edits) = match prepare_edit_arguments(&args) {
-            Ok(result) => result,
-            Err(_) => return args,
-        };
-        serde_json::json!({
-            "path": path_str,
-            "edits": edits.iter().map(|e| serde_json::json!({
-                "oldText": e.old_text,
-                "newText": e.new_text
-            })).collect::<Vec<_>>()
-        })
-    }
-
-    fn renderer(&self) -> Option<Box<dyn ToolRenderer>> {
-        Some(Box::new(self.renderer.clone()))
-    }
-
     async fn execute(
         &self,
         tool_call_id: String,
@@ -934,6 +915,70 @@ impl AgentTool for EditTool {
 
         let (msg, details) = output;
         Ok(ToolOutput::ok_with_details(msg, details))
+    }
+}
+
+impl EditTool {
+    fn prepare_arguments(&self, args: serde_json::Value) -> serde_json::Value {
+        let (path_str, edits) = match prepare_edit_arguments(&args) {
+            Ok(result) => result,
+            Err(_) => return args,
+        };
+        serde_json::json!({
+            "path": path_str,
+            "edits": edits.iter().map(|e| serde_json::json!({
+                "oldText": e.old_text,
+                "newText": e.new_text
+            })).collect::<Vec<_>>()
+        })
+    }
+}
+
+#[async_trait::async_trait]
+impl yoagent::types::AgentTool for EditTool {
+    fn name(&self) -> &str { "edit" }
+    fn label(&self) -> &str { "edit" }
+    fn description(&self) -> &str {
+        "Edit a single file using exact text replacement. Every edits[].oldText must match a \
+         unique, non-overlapping region of the original file. If two changes affect the same \
+         block or nearby lines, merge them into one edit instead of emitting overlapping edits. \
+         Do not include large unchanged regions just to connect distant changes."
+    }
+    fn parameters_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "required": ["path", "edits"],
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Path to the file to edit"
+                },
+                "edits": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "required": ["oldText", "newText"],
+                        "properties": {
+                            "oldText": {
+                                "type": "string",
+                                "description": "Text to search for"
+                            },
+                            "newText": {
+                                "type": "string",
+                                "description": "Text to replace with"
+                            }
+                        }
+                    }
+                }
+            }
+        })
+    }
+    async fn execute(
+        &self,
+        params: serde_json::Value,
+        ctx: yoagent::types::ToolContext,
+    ) -> std::result::Result<yoagent::types::ToolResult, yoagent::types::ToolError> {
+        crate::agent::extension::execute_via_rab_tool(self, params, ctx).await
     }
 }
 

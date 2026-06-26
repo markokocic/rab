@@ -383,19 +383,26 @@ async fn main() -> anyhow::Result<()> {
         .map(|cf| format_context_path(&cf.path, &cwd))
         .collect();
 
-    // Build tool snippets from extensions (uses prompt_snippet() when available)
+    // Build tool snippets from extensions
     let tool_snippets: Vec<rab::agent::ToolSnippet> = extensions
         .iter()
-        .flat_map(|ext| ext.tools())
-        .map(|tool| rab::agent::ToolSnippet::from_tool(tool.as_ref()))
+        .flat_map(|ext| ext.tool_snippets())
+        .map(|(name, snippet)| rab::agent::ToolSnippet {
+            name,
+            description: snippet.to_string(),
+        })
         .collect();
 
-    // Collect prompt guidelines from all tools (pi-style promptGuidelines)
+    // Collect prompt guidelines from all extensions
     let tool_guidelines: Vec<String> = extensions
         .iter()
-        .flat_map(|ext| ext.tools())
-        .flat_map(|tool| tool.prompt_guidelines())
+        .flat_map(|ext| ext.tool_guidelines())
+        .map(|(_name, guideline)| guideline)
         .collect();
+
+    // Collect LLM-callable tools from all extensions
+    let agent_tools: Vec<Box<dyn yoagent::types::AgentTool>> =
+        extensions.iter().flat_map(|ext| ext.tools()).collect();
 
     // Build system prompt using the new builder
     let system_prompt = rab::agent::SystemPromptBuilder::new()
@@ -406,9 +413,6 @@ async fn main() -> anyhow::Result<()> {
         .append_prompt(append_system_md)
         .cwd(&cwd)
         .build();
-
-    let agent_tools: Vec<Box<dyn rab::agent::extension::AgentTool>> =
-        extensions.iter().flat_map(|ext| ext.tools()).collect();
 
     // Load skills for startup display and /skill:name expansion
     let skills = rab::agent::load_skills(rab::agent::LoadSkillsOptions {
@@ -436,7 +440,6 @@ async fn main() -> anyhow::Result<()> {
         let config = ui::AppConfig {
             model,
             system_prompt,
-            agent_tools,
             extensions,
             cwd,
             thinking_level: thinking_level_str.map(|s| s.to_string()),
@@ -489,18 +492,9 @@ async fn run_print_mode(
     model: String,
     api_key: String,
     system_prompt: String,
-    agent_tools: Vec<Box<dyn rab::agent::extension::AgentTool>>,
+    agent_tools: Vec<Box<dyn yoagent::types::AgentTool>>,
     agent_session: &mut rab::agent::AgentSession,
 ) -> anyhow::Result<()> {
-    // Build yoagent Agent
-    let yoagent_tools: Vec<Box<dyn yoagent::types::AgentTool>> = agent_tools
-        .iter()
-        .map(|t| {
-            Box::new(rab::agent::tool_adapter::RabToYoAgentTool {
-                inner: t.clone_boxed(),
-            }) as Box<dyn yoagent::types::AgentTool>
-        })
-        .collect();
     let mut agent = yoagent::agent::Agent::new(yoagent::provider::OpenAiCompatProvider)
         .with_model(&model)
         .with_api_key(&api_key)
@@ -512,7 +506,7 @@ async fn run_print_mode(
         ))
         .with_system_prompt(&system_prompt)
         .with_thinking(yoagent::types::ThinkingLevel::High)
-        .with_tools(yoagent_tools)
+        .with_tools(agent_tools)
         .without_context_management();
 
     let (yo_tx, mut yo_rx) = tokio::sync::mpsc::unbounded_channel();

@@ -25,10 +25,26 @@ impl Extension for ReadExtension {
         "read".into()
     }
 
-    fn tools(&self) -> Vec<Box<dyn AgentTool>> {
+    fn tools(&self) -> Vec<Box<dyn yoagent::types::AgentTool>> {
         vec![Box::new(ReadTool {
             cwd: self.cwd.clone(),
         })]
+    }
+
+    fn tool_renderer(&self, name: &str) -> Option<Box<dyn ToolRenderer>> {
+        if name == "read" {
+            Some(Box::new(ReadRenderer { cwd: self.cwd.clone() }))
+        } else {
+            None
+        }
+    }
+
+    fn tool_snippets(&self) -> Vec<(String, std::borrow::Cow<'static, str>)> {
+        vec![("read".into(), "Read file contents".into())]
+    }
+
+    fn tool_guidelines(&self) -> Vec<(String, String)> {
+        vec![("read".into(), "Use read to examine files instead of cat or sed.".into())]
     }
 }
 
@@ -326,19 +342,8 @@ impl AgentTool for ReadTool {
         })
     }
 
-    fn prompt_snippet(&self) -> Option<Cow<'static, str>> {
-        Some("Read file contents".into())
-    }
 
-    fn prompt_guidelines(&self) -> Vec<String> {
-        vec!["Use read to examine files instead of cat or sed.".into()]
-    }
 
-    fn renderer(&self) -> Option<Box<dyn ToolRenderer>> {
-        Some(Box::new(ReadRenderer {
-            cwd: self.cwd.clone(),
-        }))
-    }
 
     async fn execute(
         &self,
@@ -554,6 +559,44 @@ impl AgentTool for ReadTool {
                 details,
             })
         }
+    }
+}
+
+#[async_trait::async_trait]
+impl yoagent::types::AgentTool for ReadTool {
+    fn name(&self) -> &str { "read" }
+    fn label(&self) -> &str { "read" }
+    fn description(&self) -> &str {
+        "Read the contents of a file. For text files, output is truncated to 2000 lines or \
+         50KB (whichever is hit first). Use offset/limit for large files. When you need the \
+         full file, continue with offset until complete."
+    }
+    fn parameters_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "required": ["path"],
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Path to the file to read (relative or absolute)"
+                },
+                "offset": {
+                    "type": "number",
+                    "description": "Line number to start reading from (1-indexed)"
+                },
+                "limit": {
+                    "type": "number",
+                    "description": "Maximum number of lines to read"
+                }
+            }
+        })
+    }
+    async fn execute(
+        &self,
+        params: serde_json::Value,
+        ctx: yoagent::types::ToolContext,
+    ) -> std::result::Result<yoagent::types::ToolResult, yoagent::types::ToolError> {
+        crate::agent::extension::execute_via_rab_tool(self, params, ctx).await
     }
 }
 

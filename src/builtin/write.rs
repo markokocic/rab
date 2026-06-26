@@ -79,11 +79,23 @@ impl Extension for WriteExtension {
         "write".into()
     }
 
-    fn tools(&self) -> Vec<Box<dyn AgentTool>> {
+    fn tools(&self) -> Vec<Box<dyn yoagent::types::AgentTool>> {
         vec![Box::new(WriteTool {
             cwd: self.cwd.clone(),
             operations: self.operations.clone(),
         })]
+    }
+
+    fn tool_renderer(&self, name: &str) -> Option<Box<dyn ToolRenderer>> {
+        if name == "write" { Some(Box::new(WriteRenderer::new())) } else { None }
+    }
+
+    fn tool_snippets(&self) -> Vec<(String, std::borrow::Cow<'static, str>)> {
+        vec![("write".into(), "Write content to a file".into())]
+    }
+
+    fn tool_guidelines(&self) -> Vec<(String, String)> {
+        vec![("write".into(), "Use write to create or overwrite files.".into())]
     }
 }
 
@@ -129,17 +141,8 @@ impl AgentTool for WriteTool {
         })
     }
 
-    fn prompt_snippet(&self) -> Option<Cow<'static, str>> {
-        Some("Create or overwrite files".into())
-    }
 
-    fn prompt_guidelines(&self) -> Vec<String> {
-        vec!["Use write only for new files or complete rewrites.".into()]
-    }
 
-    fn renderer(&self) -> Option<Box<dyn ToolRenderer>> {
-        Some(Box::new(WriteRenderer::new()))
-    }
 
     async fn execute(
         &self,
@@ -357,6 +360,39 @@ fn trim_trailing_empty_lines(lines: &[String]) -> &[String] {
         end -= 1;
     }
     &lines[..end]
+}
+
+#[async_trait::async_trait]
+impl yoagent::types::AgentTool for WriteTool {
+    fn name(&self) -> &str { "write" }
+    fn label(&self) -> &str { "write" }
+    fn description(&self) -> &str {
+        "Write content to a file. Creates parent directories automatically. \
+         Overwrites existing files. Use for new files or full replacements."
+    }
+    fn parameters_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "required": ["path", "content"],
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Path to the file to write"
+                },
+                "content": {
+                    "type": "string",
+                    "description": "Content to write to the file"
+                }
+            }
+        })
+    }
+    async fn execute(
+        &self,
+        params: serde_json::Value,
+        ctx: yoagent::types::ToolContext,
+    ) -> std::result::Result<yoagent::types::ToolResult, yoagent::types::ToolError> {
+        crate::agent::extension::execute_via_rab_tool(self, params, ctx).await
+    }
 }
 
 // ── Renderer ─────────────────────────────────────────────────────

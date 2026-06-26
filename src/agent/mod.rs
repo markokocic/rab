@@ -11,13 +11,12 @@ pub mod settings;
 pub mod skills;
 pub mod system_prompt;
 pub mod types;
-pub mod tool_adapter;
 pub mod ui;
 pub mod yo_bridge;
 
 pub use agent_session::AgentSession;
 pub use context_files::{ContextFile, load_context_files};
-pub use extension::{AgentTool, CommandHandler, CommandResult, Extension, SlashCommand};
+pub use extension::{CommandHandler, CommandResult, Extension, SlashCommand};
 pub use provider::AgentEvent;
 pub use session::SessionManager;
 pub use session_repo::{DefaultSessionRepo, SessionRepo};

@@ -1,5 +1,7 @@
 /// Extension trait - all capability (built-in or user-provided) comes through this.
-use crate::agent::types::{ToolCall, ToolExecutionMode};
+use crate::agent::types::ToolCall;
+use tokio::sync::mpsc;
+use yoagent::types::{Content, ToolContext, ToolError, ToolResult};
 use crate::tui::Theme;
 use async_trait::async_trait;
 use std::borrow::Cow;
@@ -8,6 +10,49 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 use tokio::sync::mpsc::UnboundedSender;
+
+/// Bridge: execute a rab AgentTool via yoagent ToolContext.
+/// Used internally by builtin tools that implement both traits.
+pub(crate) async fn execute_via_rab_tool(
+    tool: &dyn AgentTool,
+    params: serde_json::Value,
+    ctx: ToolContext,
+) -> std::result::Result<ToolResult, ToolError> {
+    let tool_call_id = ctx.tool_call_id.clone();
+
+    let rab_cancel = Cancel::new();
+    let watch_cancel = rab_cancel.clone();
+    let yo_cancel = ctx.cancel.clone();
+    tokio::spawn(async move {
+        yo_cancel.cancelled().await;
+        watch_cancel.cancel();
+    });
+
+    let (update_tx, mut update_rx) = mpsc::unbounded_channel::<ToolOutput>();
+    if let Some(ref on_update) = ctx.on_update {
+        let on_update = on_update.clone();
+        tokio::spawn(async move {
+            while let Some(output) = update_rx.recv().await {
+                let content = vec![Content::Text { text: output.content }];
+                on_update(ToolResult {
+                    content,
+                    details: output.details.unwrap_or(serde_json::Value::Null),
+                });
+            }
+        });
+    }
+
+    match tool.execute(tool_call_id, params, rab_cancel, Some(update_tx)).await {
+        Ok(output) => {
+            let content = vec![Content::Text { text: output.content }];
+            Ok(ToolResult {
+                content,
+                details: output.details.unwrap_or(serde_json::Value::Null),
+            })
+        }
+        Err(e) => Err(ToolError::Failed(e.to_string())),
+    }
+}
 
 /// Reason a tool call was blocked.
 #[derive(Debug, Clone)]
@@ -307,7 +352,7 @@ pub trait ToolRenderer: Send + Sync {
 
 /// An LLM-callable tool.
 #[async_trait]
-pub trait AgentTool: Send + Sync {
+pub(crate) trait AgentTool: Send + Sync {
     fn name(&self) -> &str;
     fn description(&self) -> &str;
     fn parameters(&self) -> serde_json::Value;
@@ -319,19 +364,9 @@ pub trait AgentTool: Send + Sync {
         panic!("clone_boxed not implemented for {}", self.name())
     }
 
-    /// Execution mode for this tool. When set to `Sequential`, a batch of tool calls
-    /// containing this tool will execute sequentially (one-at-a-time) even when the
-    /// global config is `Parallel`. Defaults to `Parallel`.
-    fn execution_mode(&self) -> ToolExecutionMode {
-        ToolExecutionMode::Parallel
-    }
 
-    /// Optional argument pre-processing (pi-compatible: `prepareArguments`).
-    /// Called before execution, receives the raw LLM arguments and returns
-    /// (possibly modified) arguments. Default is identity (no transformation).
-    fn prepare_arguments(&self, args: serde_json::Value) -> serde_json::Value {
-        args
-    }
+
+
 
     /// One-line snippet shown in the "Available tools" section of the system prompt.
     /// When None, falls back to description().
@@ -369,7 +404,7 @@ pub trait Extension: Send + Sync {
     fn name(&self) -> Cow<'static, str>;
 
     /// Tools this extension provides (LLM-callable).
-    fn tools(&self) -> Vec<Box<dyn AgentTool>> {
+    fn tools(&self) -> Vec<Box<dyn yoagent::types::AgentTool>> {
         vec![]
     }
 
@@ -387,5 +422,20 @@ pub trait Extension: Send + Sync {
     /// Called after a tool executes. Return Some(text) to replace result.
     async fn after_tool_call(&self, _tc: &ToolCall, _result: &str) -> Option<String> {
         None
+    }
+
+    /// Tool-specific renderer for the TUI.
+    fn tool_renderer(&self, _name: &str) -> Option<Box<dyn ToolRenderer>> {
+        None
+    }
+
+    /// Tool prompt snippets for the "Available tools" section.
+    fn tool_snippets(&self) -> Vec<(String, Cow<'static, str>)> {
+        vec![]
+    }
+
+    /// Tool prompt guidelines for the system prompt.
+    fn tool_guidelines(&self) -> Vec<(String, String)> {
+        vec![]
     }
 }

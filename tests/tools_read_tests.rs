@@ -1,10 +1,37 @@
-use rab::agent::extension::{Cancel, Extension};
+use rab::agent::extension::Extension;
 use rab::builtin::read::ReadExtension;
+use tokio_util::sync::CancellationToken;
+use yoagent::types::{Content, ToolContext, ToolResult};
 
 fn tmp_dir() -> std::path::PathBuf {
     let d = std::env::temp_dir().join(format!("rab-test-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&d).unwrap();
     d
+}
+
+fn tool_ctx() -> ToolContext {
+    ToolContext {
+        tool_call_id: "id".into(),
+        tool_name: String::new(),
+        cancel: CancellationToken::new(),
+        on_update: None,
+        on_progress: None,
+    }
+}
+
+fn text_content(result: &ToolResult) -> String {
+    result
+        .content
+        .iter()
+        .filter_map(|c| {
+            if let Content::Text { text } = c {
+                Some(text.clone())
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("")
 }
 
 #[tokio::test]
@@ -18,16 +45,12 @@ async fn reads_file_content() {
     let tool = &tools[0];
 
     let result = tool
-        .execute(
-            "id".into(),
-            serde_json::json!({"path": path.to_str().unwrap()}),
-            Cancel::new(),
-            None,
-        )
+        .execute(serde_json::json!({"path": path.to_str().unwrap()}), tool_ctx())
         .await
         .unwrap();
-    assert!(result.content.contains("hello world"));
-    assert!(result.content.contains("line two"));
+    let txt = text_content(&result);
+    assert!(txt.contains("hello world"));
+    assert!(txt.contains("line two"));
 }
 
 #[tokio::test]
@@ -43,24 +66,14 @@ async fn read_respects_offset() {
 
     let result = tool
         .execute(
-            "id".into(),
             serde_json::json!({"path": path.to_str().unwrap(), "offset": 5}),
-            Cancel::new(),
-            None,
+            tool_ctx(),
         )
         .await
         .unwrap();
-
-    assert!(
-        result.content.contains("line 5"),
-        "should contain line 5: {}",
-        result.content
-    );
-    assert!(
-        !result.content.lines().any(|l| l == "line 1"),
-        "should not contain line 1: {}",
-        result.content
-    );
+    let txt = text_content(&result);
+    assert!(txt.contains("line 5"), "should contain line 5: {}", txt);
+    assert!(!txt.lines().any(|l| l == "line 1"), "should not contain line 1: {}", txt);
 }
 
 #[tokio::test]
@@ -76,17 +89,15 @@ async fn read_respects_limit() {
 
     let result = tool
         .execute(
-            "id".into(),
             serde_json::json!({"path": path.to_str().unwrap(), "offset": 1, "limit": 3}),
-            Cancel::new(),
-            None,
+            tool_ctx(),
         )
         .await
         .unwrap();
-
-    assert!(result.content.contains("line 1"));
-    assert!(result.content.contains("line 3"));
-    assert!(!result.content.contains("line 4"));
+    let txt = text_content(&result);
+    assert!(txt.contains("line 1"));
+    assert!(txt.contains("line 3"));
+    assert!(!txt.contains("line 4"));
 }
 
 #[tokio::test]
@@ -98,11 +109,9 @@ async fn read_nonexistent_file_errors() {
 
     let result = tool
         .execute(
-            "id".into(),
             serde_json::json!({"path": "nonexistent.txt"}),
-            Cancel::new(),
-            None,
+            tool_ctx(),
         )
         .await;
-    assert!(result.is_err());
+    assert!(result.is_err(), "Expected error for nonexistent file");
 }

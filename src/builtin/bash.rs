@@ -75,13 +75,25 @@ impl Extension for BashExtension {
         "bash".into()
     }
 
-    fn tools(&self) -> Vec<Box<dyn AgentTool>> {
+    fn tools(&self) -> Vec<Box<dyn yoagent::types::AgentTool>> {
         vec![Box::new(BashTool {
             cwd: self.cwd.clone(),
             shell_path: self.options.shell_path.clone(),
             command_prefix: self.options.command_prefix.clone(),
             operations: self.options.operations.clone(),
         })]
+    }
+
+    fn tool_renderer(&self, name: &str) -> Option<Box<dyn ToolRenderer>> {
+        if name == "bash" { Some(Box::new(BashRenderer)) } else { None }
+    }
+
+    fn tool_snippets(&self) -> Vec<(String, std::borrow::Cow<'static, str>)> {
+        vec![("bash".into(), "Execute bash commands".into())]
+    }
+
+    fn tool_guidelines(&self) -> Vec<(String, String)> {
+        vec![("bash".into(), "Use bash to execute commands instead of running them manually.".into())]
     }
 }
 
@@ -489,13 +501,7 @@ impl AgentTool for BashTool {
         })
     }
 
-    fn prompt_snippet(&self) -> Option<Cow<'static, str>> {
-        Some("Execute bash commands (ls, grep, find, etc.)".into())
-    }
 
-    fn renderer(&self) -> Option<Box<dyn ToolRenderer>> {
-        Some(Box::new(BashRenderer))
-    }
 
     async fn execute(
         &self,
@@ -849,6 +855,45 @@ fn strip_context_truncation_footer(output: &str) -> String {
         }
     } else {
         output.to_string()
+    }
+}
+
+#[async_trait::async_trait]
+impl yoagent::types::AgentTool for BashTool {
+    fn name(&self) -> &str { "bash" }
+    fn label(&self) -> &str { "bash" }
+    fn description(&self) -> &str {
+        "Execute a bash command in the current working directory. Use with caution. \
+         Streams output in real-time. Cancellable."
+    }
+    fn parameters_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "required": ["command"],
+            "properties": {
+                "command": {
+                    "type": "string",
+                    "description": "The bash command to execute"
+                },
+                "description": {
+                    "type": "string",
+                    "description": "A brief description of what this command does, \
+                                     shown to the user before execution"
+                },
+                "timeout": {
+                    "type": "number",
+                    "description": "Timeout in seconds. Default: 30. If set to 0, uses \
+                                     no timeout (use with caution)."
+                }
+            }
+        })
+    }
+    async fn execute(
+        &self,
+        params: serde_json::Value,
+        ctx: yoagent::types::ToolContext,
+    ) -> std::result::Result<yoagent::types::ToolResult, yoagent::types::ToolError> {
+        crate::agent::extension::execute_via_rab_tool(self, params, ctx).await
     }
 }
 
