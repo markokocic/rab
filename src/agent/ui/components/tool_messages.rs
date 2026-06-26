@@ -845,5 +845,3 @@ impl Component for RcToolExec {
         self.0.borrow_mut().set_cached_render(cache);
     }
 }
-
-

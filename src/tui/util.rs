@@ -359,15 +359,20 @@ fn wrap_single_line(line: &str, width: usize) -> Vec<String> {
 
         let total = current_width + token_width;
         if total > width && current_width > 0 {
-            let mut line_to_wrap = current_line.trim_end().to_string();
+            // Don't trim trailing spaces: they are valid content (user-typed spaces)
+            // and the line is already within width (current_width <= width).
+            let mut line_to_wrap = current_line.clone();
             let line_end = tracker.line_end_reset();
             if !line_end.is_empty() {
                 line_to_wrap.push_str(&line_end);
             }
             wrapped.push(line_to_wrap);
             if is_space {
-                current_line = tracker.active_codes();
-                current_width = 0;
+                // Place the whitespace at the start of the next visual line
+                // so it's not lost (space typed at wrap boundary).
+                let codes = tracker.active_codes();
+                current_line = format!("{}{}", codes, token);
+                current_width = token_width;
             } else {
                 let codes = tracker.active_codes();
                 current_line = format!("{}{}", codes, token);
@@ -382,7 +387,13 @@ fn wrap_single_line(line: &str, width: usize) -> Vec<String> {
     }
 
     if !current_line.is_empty() {
-        wrapped.push(current_line.trim_end().to_string());
+        let trimmed = current_line.trim_end().to_string();
+        if trimmed.is_empty() {
+            // All-whitespace final line: preserve it (user-typed trailing spaces).
+            wrapped.push(current_line);
+        } else {
+            wrapped.push(trimmed);
+        }
     }
 
     if wrapped.is_empty() {

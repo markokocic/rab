@@ -22,5 +22,3 @@ pub fn thinking_level_color(level: &str) -> Option<&'static str> {
         _ => None,
     }
 }
-
-
