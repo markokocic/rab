@@ -2103,7 +2103,8 @@ mod tests {
     #[test]
     fn test_deserialize_pi_format_message() {
         // pi format uses camelCase and "type": "message"
-        let json = r#"{"type":"message","id":"abc12345","parentId":null,"timestamp":"2026-06-19T12:00:00Z","message":{"id":"msg1","parentId":null,"role":"user","content":"hello","toolCalls":[],"isError":false,"timestamp":1718800000000}}"#;
+        // Message uses yoagent format: role-tagged enum with Vec<Content>
+        let json = r#"{"type":"message","id":"abc12345","parentId":null,"timestamp":"2026-06-19T12:00:00Z","message":{"role":"user","content":[{"type":"text","text":"hello"}],"timestamp":1718800000000}}"#;
         let entry: SessionEntry = serde_json::from_str(json).unwrap();
         match entry {
             SessionEntry::Message(e) => {
