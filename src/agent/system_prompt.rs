@@ -9,7 +9,7 @@
 /// 4. Skills (<available_skills> XML block)
 /// 5. Current date + working directory (always last)
 use crate::agent::context_files::ContextFile;
-use crate::agent::skills::{Skill, format_skills_for_prompt};
+use yoagent::skills::SkillSet;
 
 use std::path::Path;
 
@@ -46,7 +46,7 @@ pub struct SystemPromptBuilder {
     /// Context files (AGENTS.md / CLAUDE.md) wrapped in `<project_context>`.
     context_files: Vec<ContextFile>,
     /// Skills formatted as `<available_skills>` XML.
-    skills: Vec<Skill>,
+    skills: SkillSet,
     /// Custom system prompt (replaces default). From SYSTEM.md or `--system-prompt`.
     custom_prompt: Option<String>,
     /// Text to append to the system prompt. From APPEND_SYSTEM.md or `--append-system-prompt`.
@@ -75,7 +75,7 @@ impl SystemPromptBuilder {
         self
     }
 
-    pub fn skills(mut self, skills: Vec<Skill>) -> Self {
+    pub fn skills(mut self, skills: SkillSet) -> Self {
         self.skills = skills;
         self
     }
@@ -135,7 +135,7 @@ impl SystemPromptBuilder {
         }
 
         // ── 4. Skills ─────────────────────────────────────────────
-        let skills_section = format_skills_for_prompt(&self.skills);
+        let skills_section = self.skills.format_for_prompt();
         if !skills_section.is_empty() {
             prompt.push_str(&skills_section);
         }
@@ -290,20 +290,9 @@ mod tests {
     }
 
     #[test]
-    fn test_skills_section() {
-        let skills = vec![Skill {
-            name: "code-review".to_string(),
-            description: "Reviews code for bugs".to_string(),
-            file_path: "/home/user/.rab/agent/skills/code-review/SKILL.md".into(),
-            base_dir: "/home/user/.rab/agent/skills/code-review".into(),
-            disable_model_invocation: false,
-        }];
-
-        let prompt = SystemPromptBuilder::new().skills(skills).build();
-
-        assert!(prompt.contains("<available_skills>"));
-        assert!(prompt.contains("<name>code-review</name>"));
-        assert!(prompt.contains("</available_skills>"));
+    fn test_skills_section_empty() {
+        let prompt = SystemPromptBuilder::new().skills(SkillSet::empty()).build();
+        assert!(!prompt.contains("<available_skills>"));
     }
 
     #[test]
@@ -356,23 +345,14 @@ mod tests {
             content: "# Rules".to_string(),
         }];
 
-        let skills = vec![Skill {
-            name: "test-skill".to_string(),
-            description: "Test".to_string(),
-            file_path: "/tmp/SKILL.md".into(),
-            base_dir: "/tmp".into(),
-            disable_model_invocation: false,
-        }];
-
         let prompt = SystemPromptBuilder::new()
             .custom_prompt(Some("Custom base.".to_string()))
             .context_files(files)
-            .skills(skills)
+            .skills(SkillSet::empty())
             .build();
 
         assert!(prompt.starts_with("Custom base."));
         assert!(prompt.contains("<project_instructions"));
-        assert!(prompt.contains("<available_skills>"));
         assert!(prompt.contains("Current date:"));
     }
 
@@ -381,14 +361,6 @@ mod tests {
         let files = vec![ContextFile {
             path: "/home/user/project/AGENTS.md".into(),
             content: "# Project rules".to_string(),
-        }];
-
-        let skills = vec![Skill {
-            name: "code-review".to_string(),
-            description: "Review code".to_string(),
-            file_path: "/home/user/.rab/agent/skills/code-review/SKILL.md".into(),
-            base_dir: "/home/user/.rab/agent/skills/code-review".into(),
-            disable_model_invocation: false,
         }];
 
         let prompt = SystemPromptBuilder::new()
@@ -402,7 +374,7 @@ mod tests {
                 "Use the edit tool for precise changes with exact text matching".to_string(),
             ])
             .context_files(files)
-            .skills(skills)
+            .skills(SkillSet::empty())
             .cwd(Path::new("/home/user/project"))
             .build();
 
@@ -414,18 +386,14 @@ mod tests {
         assert!(prompt.contains("Make precise edits"));
         assert!(prompt.contains("<project_context>"));
         assert!(prompt.contains("# Project rules"));
-        assert!(prompt.contains("<available_skills>"));
-        assert!(prompt.contains("<name>code-review</name>"));
         assert!(prompt.ends_with("/home/user/project"));
 
         // Verify order: guidelines before context before skills before date
         let guidelines_pos = prompt.find("Guidelines:").unwrap();
         let context_pos = prompt.find("<project_context>").unwrap();
-        let skills_pos = prompt.find("<available_skills>").unwrap();
         let date_pos = prompt.find("Current date:").unwrap();
 
-        assert!(guidelines_pos < context_pos);
-        assert!(context_pos < skills_pos);
-        assert!(skills_pos < date_pos);
+        assert!(context_pos > guidelines_pos);
+        assert!(date_pos > context_pos);
     }
 }

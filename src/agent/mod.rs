@@ -19,6 +19,6 @@ pub use session::SessionManager;
 pub use session_repo::{DefaultSessionRepo, SessionRepo};
 pub use session_storage::{InMemorySessionStorage, JsonlSessionStorage, SessionStorage};
 pub use settings::Settings;
-pub use skills::{LoadSkillsOptions, Skill, format_skills_for_prompt, load_skills};
+pub use skills::{Skill, SkillSet, load_skills};
 pub use system_prompt::{SystemPromptBuilder, ToolSnippet};
 pub use types::{PendingMessageQueue, QueueMode, ToolExecutionMode};

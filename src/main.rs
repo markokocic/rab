@@ -414,12 +414,8 @@ async fn main() -> anyhow::Result<()> {
         .build();
 
     // Load skills for startup display and /skill:name expansion
-    let skills = rab::agent::load_skills(rab::agent::LoadSkillsOptions {
-        cwd: &cwd,
-        agent_dir: &agent_dir,
-        extra_skill_paths: &[],
-        include_defaults: true,
-    });
+    let skill_set = rab::agent::load_skills(&cwd, &agent_dir);
+    let skills: Vec<yoagent::skills::Skill> = skill_set.skills().to_vec();
 
     // Determine initial thinking level: prefer session's recorded level, fall back to settings.
     // Pi-compatible: if the session has thinking level change entries, use the resolved level

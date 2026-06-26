@@ -55,7 +55,7 @@ pub struct AppConfig {
     #[allow(dead_code)]
     pub tool_execution: ToolExecutionMode,
     /// Skills loaded for the session (used for /skill:name expansion).
-    pub skills: Vec<crate::agent::Skill>,
+    pub skills: Vec<yoagent::skills::Skill>,
     /// Whether the current model supports reasoning (for showing thinking level in footer).
     pub model_supports_reasoning: bool,
     /// Session info Arc for /session command (shared with CommandsExtension).
@@ -185,7 +185,7 @@ pub struct App {
     tool_execution: ToolExecutionMode,
 
     /// Skills loaded for the session (/skill:name expansion).
-    skills: Vec<crate::agent::Skill>,
+    skills: Vec<yoagent::skills::Skill>,
     /// API key for yoagent provider.
     api_key: String,
     /// Session info updater for /session command.
