@@ -345,4 +345,10 @@ pub trait Extension: Send + Sync {
     fn tool_guidelines(&self) -> Vec<(String, String)> {
         vec![]
     }
+
+    /// Skills this extension provides (AgentSkills-compatible).
+    /// Merged into the session's skill set for /skill:name expansion and system prompt.
+    fn skills(&self) -> yoagent::skills::SkillSet {
+        yoagent::skills::SkillSet::empty()
+    }
 }

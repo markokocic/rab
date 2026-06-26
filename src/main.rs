@@ -429,7 +429,11 @@ async fn main() -> anyhow::Result<()> {
         };
         current = Some(parent);
     }
-    let skill_set = yoagent::skills::SkillSet::load(&skill_dirs).unwrap_or_default();
+    let mut skill_set = yoagent::skills::SkillSet::load(&skill_dirs).unwrap_or_default();
+    // Merge skills from extensions
+    for ext in &extensions {
+        skill_set.merge(ext.skills());
+    }
     let skills: Vec<yoagent::skills::Skill> = skill_set.skills().to_vec();
 
     // Determine initial thinking level: prefer session's recorded level, fall back to settings.
