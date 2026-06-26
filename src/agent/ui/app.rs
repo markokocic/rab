@@ -1199,10 +1199,7 @@ fn submit_message(app: &mut App, message: String) {
                 &expanded,
             )),
         );
-        // Persist expanded skill invocation to session
-        if let Some(ref mut agent_session) = app.session {
-            agent_session.submit_user_message(&expanded);
-        }
+        // Message will be persisted on message_end (pi-compatible)
         if app.is_streaming {
             app.steering_queue
                 .lock()
@@ -1236,10 +1233,8 @@ fn submit_message(app: &mut App, message: String) {
         )),
     );
 
-    // Persist user message to session (in-memory conversation updated on AgentEnd)
-    if let Some(ref mut agent_session) = app.session {
-        agent_session.submit_user_message(&trimmed);
-    }
+    // In-memory conversation is updated on AgentEnd (pi-compatible: messages
+    // are persisted to the session file on message_end, not here).
 
     if app.is_streaming {
         // Safety check: if is_streaming is true but no events arrived for >5s,
@@ -2396,18 +2391,23 @@ fn handle_agent_event(app: &mut App, event: yoagent::types::AgentEvent) {
             app.is_streaming = false;
             app.working.stop();
             app.footer.borrow_mut().set_streaming(false);
-            // Update in-memory conversation with all messages from this turn
-            // (user messages are included — they were persisted in submit_message
-            //  but NOT added to app.conversation to avoid duplicates with history).
+            // Update in-memory conversation with all messages from this turn.
+            // (Messages are already persisted on message_end — on_agent_end is a
+            //  safety net for any stragglers not covered by message_end.)
             for msg in &messages {
                 app.conversation.push(msg.clone());
             }
-            // Persist remaining messages (assistant + tool results) to session
+            // Safety net: persist any remaining messages not captured on message_end
             if let Some(ref mut s) = app.session {
                 s.on_agent_end(&messages);
             }
         }
         E::MessageEnd { message } => {
+            // Pi-compatible: persist every message (user, assistant, toolResult) immediately
+            // on message_end, not deferred to agent_end.
+            if let Some(ref mut s) = app.session {
+                s.persist_message_end(&message);
+            }
             // Check for error messages from the provider (network errors, etc.)
             if let Some(err) = crate::agent::types::message_error(&message) {
                 let error_text = if err.is_empty() {

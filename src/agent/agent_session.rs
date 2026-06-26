@@ -417,6 +417,24 @@ impl AgentSession {
         self.persist_message(&msg);
     }
 
+    /// Persist a single message on `message_end` (pi-compatible pattern).
+    ///
+    /// Pi persists every message (user, assistant, toolResult) immediately on `message_end`,
+    /// not deferred to `agent_end`. This method handles dedup for tool results (already
+    /// persisted via `persist_tool_result`) and dedup by text for other message types.
+    pub fn persist_message_end(&mut self, msg: &AgentMessage) {
+        // Tool results are already persisted crash-safely via persist_tool_result on
+        // ToolExecutionEnd — skip them here to avoid duplicates.
+        if crate::agent::types::message_is_tool_result(msg)
+            && let Some(tcid) = crate::agent::types::message_tool_call_id(msg)
+            && self.persisted_tool_call_ids.contains(tcid)
+        {
+            return;
+        }
+        // Use persist_message for dedup (checks both tool_call_id and text)
+        self.persist_message(msg);
+    }
+
     // ── Internal helpers ──────────────────────────────────────────
 
     /// Persist a single message, skipping if already persisted (dedup).
