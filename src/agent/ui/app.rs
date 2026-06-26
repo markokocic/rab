@@ -697,7 +697,7 @@ pub async fn run(config: AppConfig, session: SessionManager) -> anyhow::Result<(
         // stuck true after the agent task completes or panics without
         // delivering AgentEnd through the channel.
         if app.is_streaming
-            && app.last_streaming_event.elapsed() > std::time::Duration::from_secs(60)
+            && app.last_streaming_event.elapsed() > std::time::Duration::from_secs(15)
         {
             app.is_streaming = false;
             app.working.stop();
@@ -1373,8 +1373,13 @@ fn start_agent_loop(app: &mut App, message: String) {
 
         let (yo_tx, mut yo_rx) = tokio::sync::mpsc::unbounded_channel();
 
+        // Track whether we've forwarded an AgentEnd event.
+        // If the agent task finishes without sending one (e.g. panic),
+        // we synthesize an error to avoid silently hanging the UI.
+        let mut agent_end_seen = false;
+
         // Spawn agent loop in a separate task (it blocks until done)
-        tokio::spawn(async move {
+        let inner_handle = tokio::spawn(async move {
             agent.prompt_with_sender(message, yo_tx).await;
         });
 
@@ -1382,6 +1387,9 @@ fn start_agent_loop(app: &mut App, message: String) {
         tokio::select! {
             _ = async {
                 while let Some(event) = yo_rx.recv().await {
+                    if matches!(&event, yoagent::types::AgentEvent::AgentEnd { .. }) {
+                        agent_end_seen = true;
+                    }
                     if tx.send(event).is_err() {
                         break;
                     }
@@ -1389,6 +1397,21 @@ fn start_agent_loop(app: &mut App, message: String) {
             } => {}
             _ = cancel_rx.changed() => {}
         }
+
+        // If the agent task finished without sending AgentEnd (panic/crash),
+        // notify the UI so it doesn't stay stuck in streaming state.
+        if !agent_end_seen {
+            let _ = tx.send(yoagent::types::AgentEvent::AgentEnd { messages: vec![] });
+            // Also drop a status message for the user about the crash
+            let _ = tx.send(yoagent::types::AgentEvent::ProgressMessage {
+                tool_call_id: String::new(),
+                tool_name: String::new(),
+                text: "\n⚠ Agent loop ended unexpectedly — it may have crashed or encountered a network error.\n".to_string(),
+            });
+        }
+
+        // Abort the inner task in case it's still running (e.g. cancelled but not stopped)
+        inner_handle.abort();
     });
 }
 
@@ -2339,9 +2362,14 @@ fn handle_agent_event(app: &mut App, event: yoagent::types::AgentEvent) {
                 is_error,
             });
         }
-        E::ProgressMessage { text, .. } => {
+        E::ProgressMessage {
+            text, tool_name, ..
+        } => {
             if let Some(weak) = app.bash_component.as_ref().and_then(|w| w.upgrade()) {
                 weak.borrow_mut().append_output(&text);
+            } else if tool_name.is_empty() {
+                // General progress message (not tool-specific) — show as status
+                app.status_text = Some(text.trim().to_string());
             }
         }
         E::TurnEnd { .. } => {
@@ -2356,6 +2384,29 @@ fn handle_agent_event(app: &mut App, event: yoagent::types::AgentEvent) {
             if let Some(ref mut s) = app.session {
                 s.handle_yo_event(&event);
             }
+        }
+        E::MessageEnd { message } => {
+            // Check for error messages from the provider (network errors, etc.)
+            if let Some(err) = crate::agent::types::message_error(&message) {
+                let error_text = if err.is_empty() {
+                    "Provider error: The agent encountered an issue and stopped.".to_string()
+                } else {
+                    format!("Provider error: {}", err)
+                };
+                chat_add(
+                    app,
+                    std::boxed::Box::new(InfoMessageComponent::new(error_text.clone())),
+                );
+                app.messages.push(DisplayMsg::Info(error_text));
+            }
+        }
+        E::InputRejected { reason } => {
+            let msg = format!("Input rejected: {}", reason);
+            chat_add(
+                app,
+                std::boxed::Box::new(InfoMessageComponent::new(msg.clone())),
+            );
+            app.messages.push(DisplayMsg::Info(msg));
         }
         _ => {}
     }

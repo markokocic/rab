@@ -77,6 +77,17 @@ pub fn message_usage(msg: &AgentMessage) -> Option<yoagent::types::Usage> {
     }
 }
 
+/// Extract the error_message from an Assistant message, if present.
+pub fn message_error(msg: &AgentMessage) -> Option<&str> {
+    match msg {
+        AgentMessage::Llm(Message::Assistant {
+            error_message: Some(e),
+            ..
+        }) => Some(e.as_str()),
+        _ => None,
+    }
+}
+
 /// Check if an AgentMessage is a User message.
 pub fn message_is_user(msg: &AgentMessage) -> bool {
     matches!(msg, AgentMessage::Llm(Message::User { .. }))

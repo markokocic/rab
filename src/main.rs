@@ -608,12 +608,41 @@ async fn run_print_mode(
                     }
                 }
             }
-            yoagent::types::AgentEvent::ProgressMessage { text, .. } => {
-                print!("{}", text);
+            yoagent::types::AgentEvent::ProgressMessage {
+                text, tool_name, ..
+            } => {
+                if tool_name.is_empty() {
+                    // General progress message (not tool-specific) — print to stderr
+                    eprint!("{}", text);
+                } else {
+                    print!("{}", text);
+                }
                 let _ = std::io::stdout().flush();
             }
             yoagent::types::AgentEvent::AgentEnd { .. } => {
                 eprintln!();
+            }
+            yoagent::types::AgentEvent::MessageEnd { message } => {
+                // Check for provider errors (network issues, etc.)
+                if let Some(err) = rab::agent::types::message_error(message) {
+                    let msg = if err.is_empty() {
+                        "Provider error: The agent encountered an issue and stopped."
+                    } else {
+                        err
+                    };
+                    eprintln!(
+                        "{}{}",
+                        colored::Colorize::red("✗ "),
+                        colored::Colorize::red(msg)
+                    );
+                }
+            }
+            yoagent::types::AgentEvent::InputRejected { reason } => {
+                eprintln!(
+                    "{}{}",
+                    colored::Colorize::yellow("! "),
+                    colored::Colorize::yellow(reason.as_str())
+                );
             }
             _ => {}
         }
