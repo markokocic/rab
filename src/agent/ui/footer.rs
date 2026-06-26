@@ -1,7 +1,7 @@
-use crate::agent::types::Usage;
 use crate::agent::ui::theme::RabTheme;
 use crate::agent::ui::theme::ThemeKey;
 use crate::tui::util::{truncate_to_width, visible_width};
+use yoagent::types::Usage;
 
 // ── Helpers matching pi's footer.ts ──────────────────────────────
 
@@ -171,19 +171,15 @@ impl Footer {
     /// Accumulates input, output, cache_read, cache_write, and cost.
     /// Updates latest_cache_hit_rate from this call's cache ratio.
     pub fn accumulate_usage(&mut self, usage: &Usage) {
-        let input = usage.input_tokens.unwrap_or(0) as u64;
-        let output = usage.output_tokens.unwrap_or(0) as u64;
-        let cache_read = usage.cache_tokens.unwrap_or(0) as u64;
-        let cache_write = usage.cache_write_tokens.unwrap_or(0) as u64;
+        let input = usage.input;
+        let output = usage.output;
+        let cache_read = usage.cache_read;
+        let cache_write = usage.cache_write;
 
         self.total_input += input;
         self.total_output += output;
         self.total_cache_read += cache_read;
         self.total_cache_write += cache_write;
-
-        if let Some(cost) = usage.cost_total {
-            self.total_cost += cost;
-        }
 
         // Compute cache hit rate from latest call
         let total_prompt = input + cache_read;
@@ -621,11 +617,11 @@ mod tests {
     fn test_footer_shows_token_usage() {
         let mut footer = make_footer();
         let usage = Usage {
-            input_tokens: Some(1500),
-            output_tokens: Some(500),
-            cache_tokens: None,
-            cache_write_tokens: None,
-            cost_total: None,
+            total_tokens: 0,
+            input: 1500,
+            output: 500,
+            cache_read: 0,
+            cache_write: 0,
         };
         footer.accumulate_usage(&usage);
         let lines = footer.render(80);
@@ -637,19 +633,19 @@ mod tests {
     fn test_footer_usage_multiple_calls() {
         let mut footer = make_footer();
         let u1 = Usage {
-            input_tokens: Some(1000),
-            output_tokens: Some(500),
-            cache_tokens: None,
-            cache_write_tokens: None,
-            cost_total: None,
+            total_tokens: 0,
+            input: 1000,
+            output: 500,
+            cache_read: 0,
+            cache_write: 0,
         };
         footer.accumulate_usage(&u1);
         let u2 = Usage {
-            input_tokens: Some(2000),
-            output_tokens: Some(300),
-            cache_tokens: None,
-            cache_write_tokens: None,
-            cost_total: None,
+            total_tokens: 0,
+            input: 2000,
+            output: 300,
+            cache_read: 0,
+            cache_write: 0,
         };
         footer.accumulate_usage(&u2);
         let lines = footer.render(80);
@@ -661,11 +657,11 @@ mod tests {
     fn test_footer_shows_cache_hit_rate() {
         let mut footer = make_footer();
         let usage = Usage {
-            input_tokens: Some(1000),
-            output_tokens: Some(500),
-            cache_tokens: Some(200),
-            cache_write_tokens: None,
-            cost_total: None,
+            total_tokens: 0,
+            input: 1000,
+            output: 500,
+            cache_read: 200,
+            cache_write: 0,
         };
         footer.accumulate_usage(&usage);
         let lines = footer.render(80);
@@ -822,11 +818,11 @@ mod tests {
         footer.set_model_supports_reasoning(true);
         footer.set_thinking_level(Some("high".into()));
         let usage = Usage {
-            input_tokens: Some(100000),
-            output_tokens: Some(50000),
-            cache_tokens: Some(10000),
-            cache_write_tokens: None,
-            cost_total: None,
+            total_tokens: 0,
+            input: 100000,
+            output: 50000,
+            cache_read: 10000,
+            cache_write: 0,
         };
         footer.accumulate_usage(&usage);
         footer.set_context(Some(45.0), 128000);
@@ -852,11 +848,11 @@ mod tests {
     fn test_footer_stats_not_truncated_when_room() {
         let mut footer = make_footer();
         let usage = Usage {
-            input_tokens: Some(100),
-            output_tokens: Some(50),
-            cache_tokens: None,
-            cache_write_tokens: None,
-            cost_total: None,
+            total_tokens: 0,
+            input: 100,
+            output: 50,
+            cache_read: 0,
+            cache_write: 0,
         };
         footer.accumulate_usage(&usage);
         let lines = footer.render(80);

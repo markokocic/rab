@@ -1,7 +1,7 @@
 use serde::Serialize;
 
 use crate::agent::session::SessionEntry;
-use crate::agent::types::{AgentMessage, Role};
+use yoagent::types::AgentMessage;
 
 // ── CompactionSettings ─────────────────────────────────────────────
 
@@ -83,19 +83,17 @@ pub fn get_model_context_window(model: &str) -> u64 {
 
 /// Estimate token count for a single message (chars/4 heuristic, conservative).
 pub fn estimate_tokens(message: &AgentMessage) -> u64 {
-    let chars: usize = match message.role {
-        Role::User | Role::ToolResult => message.content.len(),
-        Role::Assistant => {
-            let mut total = message.content.len();
-            for tc in &message.tool_calls {
-                total += tc.name.len();
-                total += serde_json::to_string(&tc.arguments)
-                    .unwrap_or_default()
-                    .len();
-            }
-            total
+    let text = crate::agent::types::message_text(message);
+    let mut chars: usize = text.len();
+
+    if let AgentMessage::Llm(yoagent::types::Message::Assistant { content, .. }) = message {
+        let tcs = crate::agent::types::content_tool_calls(content);
+        for (_, name, args) in &tcs {
+            chars += name.len();
+            chars += serde_json::to_string(args).unwrap_or_default().len();
         }
-    };
+    }
+
     (chars as u64).div_ceil(4)
 }
 
@@ -103,31 +101,26 @@ pub fn estimate_tokens(message: &AgentMessage) -> u64 {
 /// Uses recorded usage from the last non-aborted assistant message as the baseline,
 /// then adds estimated tokens for any messages after it.
 pub fn estimate_context_tokens(messages: &[AgentMessage]) -> u64 {
-    // Find last assistant message with usage data
     let mut last_usage_index = None;
     for (i, msg) in messages.iter().enumerate().rev() {
-        if msg.role == Role::Assistant && msg.usage.is_some() {
+        if crate::agent::types::message_usage(msg).is_some() {
             last_usage_index = Some(i);
             break;
         }
     }
 
     if let Some(idx) = last_usage_index {
-        let usage = messages[idx].usage.as_ref().unwrap();
-        let usage_tokens = usage.input_tokens.unwrap_or(0) as u64
-            + usage.output_tokens.unwrap_or(0) as u64
-            + usage.cache_tokens.unwrap_or(0) as u64;
-
-        // Add estimated tokens for messages after the last usage point
-        let mut trailing = 0u64;
-        for msg in &messages[idx + 1..] {
-            trailing += estimate_tokens(msg);
+        if let Some(usage) = crate::agent::types::message_usage(&messages[idx]) {
+            let usage_tokens = usage.input + usage.output + usage.cache_read;
+            let mut trailing = 0u64;
+            for msg in &messages[idx + 1..] {
+                trailing += estimate_tokens(msg);
+            }
+            usage_tokens + trailing
+        } else {
+            messages.iter().map(estimate_tokens).sum()
         }
-        // Add estimated tokens for messages before (in case they weren't included)
-        // This is conservative: use usage total + trailing only
-        usage_tokens + trailing
     } else {
-        // No usage data — estimate all from scratch
         messages.iter().map(estimate_tokens).sum()
     }
 }
@@ -153,10 +146,13 @@ fn find_valid_cut_points(entries: &[SessionEntry], start: usize, end: usize) -> 
     let mut points = Vec::new();
     for (i, entry) in entries.iter().enumerate().take(end).skip(start) {
         match entry {
-            SessionEntry::Message(m) => match m.message.role {
-                Role::User | Role::Assistant => points.push(i),
-                Role::ToolResult => {} // never cut at tool results
-            },
+            SessionEntry::Message(m) => {
+                if crate::agent::types::message_is_user(&m.message)
+                    || crate::agent::types::message_is_assistant(&m.message)
+                {
+                    points.push(i);
+                }
+            }
             SessionEntry::BranchSummary(_)
             | SessionEntry::CustomMessage(_)
             | SessionEntry::ThinkingLevelChange(_)
@@ -180,7 +176,9 @@ fn find_turn_start_index(
 ) -> Option<usize> {
     for i in (start..=entry_index).rev() {
         match &entries[i] {
-            SessionEntry::Message(m) if m.message.role == Role::User => return Some(i),
+            SessionEntry::Message(m) if crate::agent::types::message_is_user(&m.message) => {
+                return Some(i);
+            }
             SessionEntry::BranchSummary(_) | SessionEntry::CustomMessage(_) => return Some(i),
             _ => {}
         }
@@ -244,7 +242,7 @@ fn find_cut_point(
     }
 
     let cut_entry = &entries[cut_index];
-    let is_user_msg = matches!(cut_entry, SessionEntry::Message(m) if m.message.role == Role::User);
+    let is_user_msg = matches!(cut_entry, SessionEntry::Message(m) if crate::agent::types::message_is_user(&m.message));
     let turn_start = if is_user_msg {
         None
     } else {
@@ -304,32 +302,16 @@ pub fn prepare_compaction(
         .iter()
         .filter_map(|e| match e {
             SessionEntry::Message(m) => Some(m.message.clone()),
-            SessionEntry::BranchSummary(s) => Some(AgentMessage {
-                id: String::new(),
-                parent_id: None,
-                role: Role::Assistant,
-                content: format!("[Branch: from {}] {}", s.from_id, s.summary),
-                tool_calls: vec![],
-                tool_call_id: None,
-                usage: None,
-                is_error: false,
-                timestamp: 0,
-            }),
-            SessionEntry::CustomMessage(c) => Some(AgentMessage {
-                id: String::new(),
-                parent_id: None,
-                role: Role::Assistant,
-                content: format!(
+            SessionEntry::BranchSummary(s) => Some(crate::agent::types::assistant_message(
+                format!("[Branch: from {}] {}", s.from_id, s.summary),
+            )),
+            SessionEntry::CustomMessage(c) => {
+                Some(crate::agent::types::assistant_message(format!(
                     "[{}] {}",
                     c.custom_type,
                     serde_json::to_string(&c.content).unwrap_or_default()
-                ),
-                tool_calls: vec![],
-                tool_call_id: None,
-                usage: None,
-                is_error: false,
-                timestamp: 0,
-            }),
+                )))
+            }
             _ => None,
         })
         .collect();
@@ -461,25 +443,27 @@ fn extract_file_ops(messages: &[AgentMessage]) -> Option<serde_json::Value> {
     let mut modified_files: Vec<String> = Vec::new();
 
     for msg in messages {
-        for tc in &msg.tool_calls {
-            let path = tc
-                .arguments
-                .get("file_path")
-                .or_else(|| tc.arguments.get("path"))
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
+        if let AgentMessage::Llm(yoagent::types::Message::Assistant { content, .. }) = msg {
+            let tcs = crate::agent::types::content_tool_calls(content);
+            for (_, name, args) in &tcs {
+                let path = args
+                    .get("file_path")
+                    .or_else(|| args.get("path"))
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
 
-            if let Some(p) = path {
-                match tc.name.as_str() {
-                    "read" => {
-                        if !read_files.contains(&p) {
-                            read_files.push(p);
+                if let Some(p) = path {
+                    match name.as_str() {
+                        "read" => {
+                            if !read_files.contains(&p) {
+                                read_files.push(p);
+                            }
                         }
+                        "write" | "edit" if !modified_files.contains(&p) => {
+                            modified_files.push(p);
+                        }
+                        _ => {}
                     }
-                    "write" | "edit" if !modified_files.contains(&p) => {
-                        modified_files.push(p);
-                    }
-                    _ => {}
                 }
             }
         }
@@ -554,7 +538,7 @@ pub async fn compact(
     }
 
     // Create a summarisation message
-    let summary_msg = AgentMessage::user(&prompt);
+    let summary_msg = crate::agent::types::user_message(&prompt);
 
     // Get summary from provider via yoagent
     let summary_text = summarize_text(api_key, model, system, &[summary_msg]).await?;
@@ -577,23 +561,31 @@ pub async fn compact(
 ///
 /// Format a message for inclusion in the summarisation prompt.
 fn format_message_for_summary(msg: &AgentMessage) -> String {
-    let role_label = match msg.role {
-        Role::User => "User",
-        Role::Assistant => "Assistant",
-        Role::ToolResult => "Tool Result",
+    let role_label = if crate::agent::types::message_is_user(msg) {
+        "User"
+    } else if crate::agent::types::message_is_assistant(msg) {
+        "Assistant"
+    } else {
+        "Tool Result"
     };
+    let content = crate::agent::types::message_text(msg);
     let mut result = format!("<{}>\n", role_label);
-    result.push_str(&msg.content);
+    result.push_str(&content);
 
     // Include tool calls for assistant messages
-    if !msg.tool_calls.is_empty() {
-        result.push_str("\n\nTool calls:\n");
-        for tc in &msg.tool_calls {
-            result.push_str(&format!(
-                "  - {}: {}\n",
-                tc.name,
-                serde_json::to_string(&tc.arguments).unwrap_or_default()
-            ));
+    if crate::agent::types::message_tool_call_count(msg) > 0
+        && let AgentMessage::Llm(yoagent::types::Message::Assistant { content: c, .. }) = msg
+    {
+        let tcs = crate::agent::types::content_tool_calls(c);
+        if !tcs.is_empty() {
+            result.push_str("\n\nTool calls:\n");
+            for (_, name, args) in &tcs {
+                result.push_str(&format!(
+                    "  - {}: {}\n",
+                    name,
+                    serde_json::to_string(args).unwrap_or_default()
+                ));
+            }
         }
     }
     result.push_str(&format!("\n</{}>", role_label));
@@ -932,32 +924,9 @@ pub async fn summarize_text(
 
     let yoagent_messages: Vec<yoagent::types::Message> = messages
         .iter()
-        .map(|m| {
-            let content = vec![yoagent::types::Content::Text {
-                text: m.content.clone(),
-            }];
-            match m.role {
-                crate::agent::types::Role::User => yoagent::types::Message::User {
-                    content,
-                    timestamp: 0,
-                },
-                crate::agent::types::Role::Assistant => yoagent::types::Message::Assistant {
-                    content,
-                    stop_reason: yoagent::types::StopReason::Stop,
-                    model: model.to_string(),
-                    provider: String::new(),
-                    usage: yoagent::types::Usage::default(),
-                    timestamp: 0,
-                    error_message: None,
-                },
-                crate::agent::types::Role::ToolResult => yoagent::types::Message::ToolResult {
-                    tool_call_id: m.tool_call_id.clone().unwrap_or_default(),
-                    tool_name: String::new(),
-                    content,
-                    is_error: m.is_error,
-                    timestamp: 0,
-                },
-            }
+        .filter_map(|m| match m {
+            AgentMessage::Llm(msg) => Some(msg.clone()),
+            AgentMessage::Extension(_) => None,
         })
         .collect();
 

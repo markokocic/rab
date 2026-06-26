@@ -9,7 +9,7 @@ use std::time::Duration;
 use crate::agent::AgentSession;
 use crate::agent::extension::{CommandResult, Extension};
 use crate::agent::session::SessionManager;
-use crate::agent::types::{AgentMessage, PendingMessageQueue, QueueMode, ToolExecutionMode};
+use crate::agent::types::{PendingMessageQueue, QueueMode, ToolExecutionMode};
 use crate::agent::ui::chat_editor::{ChatEditor, InputAction};
 use crate::agent::ui::components::EditorComponent;
 use crate::agent::ui::components::FooterComponent;
@@ -79,7 +79,7 @@ pub struct App {
     available_models: Vec<String>,
 
     /// Conversation history (AgentMessage).
-    conversation: Vec<AgentMessage>,
+    conversation: Vec<yoagent::types::AgentMessage>,
 
     /// Rendered display messages (legacy - being migrated to Components).
     messages: Vec<DisplayMsg>,
@@ -1162,7 +1162,7 @@ fn handle_follow_up(app: &mut App, text: String) {
         app.follow_up_queue
             .lock()
             .unwrap()
-            .enqueue(AgentMessage::user(text));
+            .enqueue(crate::agent::types::user_message(text));
         app.status_text = Some("Message queued - will send when agent finishes".into());
     } else {
         // Not streaming - submit immediately
@@ -1181,7 +1181,7 @@ fn handle_dequeue(app: &mut App) {
 
     let count = queue.len();
     let all = queue.drain_all();
-    let restored: Vec<String> = all.iter().map(|m| m.content.clone()).collect();
+    let restored: Vec<String> = all.iter().map(crate::agent::types::message_text).collect();
     let text = restored.join("\n\n");
     app.editor.borrow_mut().editor.set_text(&text);
     app.editor.borrow_mut().check_autocomplete();
@@ -1227,7 +1227,7 @@ fn interrupt_streaming(app: &mut App) {
     if let Ok(mut follow_up) = app.follow_up_queue.try_lock() {
         if !follow_up.is_empty() {
             let all = follow_up.drain_all();
-            let text: Vec<String> = all.iter().map(|m| m.content.clone()).collect();
+            let text: Vec<String> = all.iter().map(crate::agent::types::message_text).collect();
             app.editor.borrow_mut().editor.set_text(&text.join("\n\n"));
             app.queued_section.borrow_mut().set_lines(vec![]);
         }
@@ -1281,7 +1281,7 @@ fn submit_message(app: &mut App, message: String) {
             app.steering_queue
                 .lock()
                 .unwrap()
-                .enqueue(AgentMessage::user(expanded));
+                .enqueue(crate::agent::types::user_message(expanded));
             return;
         }
         start_agent_loop(app, expanded);
@@ -1328,7 +1328,7 @@ fn submit_message(app: &mut App, message: String) {
             app.steering_queue
                 .lock()
                 .unwrap()
-                .enqueue(AgentMessage::user(trimmed));
+                .enqueue(crate::agent::types::user_message(trimmed));
             return;
         }
     }
@@ -1666,23 +1666,23 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
             let user_messages = app
                 .conversation
                 .iter()
-                .filter(|m| m.role == crate::agent::types::Role::User)
+                .filter(|m| crate::agent::types::message_is_user(m))
                 .count();
             let assistant_messages = app
                 .conversation
                 .iter()
-                .filter(|m| m.role == crate::agent::types::Role::Assistant)
+                .filter(|m| crate::agent::types::message_is_assistant(m))
                 .count();
             let tool_results = app
                 .conversation
                 .iter()
-                .filter(|m| m.role == crate::agent::types::Role::ToolResult)
+                .filter(|m| crate::agent::types::message_is_tool_result(m))
                 .count();
             let tool_calls: usize = app
                 .conversation
                 .iter()
-                .flat_map(|m| m.tool_calls.iter())
-                .count();
+                .map(crate::agent::types::message_tool_call_count)
+                .sum();
             let total_messages = user_messages + assistant_messages + tool_results;
 
             let mut input_tokens: u64 = 0;
@@ -1690,10 +1690,10 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
             let mut cache_read_tokens: u64 = 0;
             let cost: f64 = 0.0;
             for msg in &app.conversation {
-                if let Some(ref usage) = msg.usage {
-                    input_tokens += usage.input_tokens.unwrap_or(0) as u64;
-                    output_tokens += usage.output_tokens.unwrap_or(0) as u64;
-                    cache_read_tokens += usage.cache_tokens.unwrap_or(0) as u64;
+                if let Some(usage) = crate::agent::types::message_usage(msg) {
+                    input_tokens += usage.input;
+                    output_tokens += usage.output;
+                    cache_read_tokens += usage.cache_read;
                 }
             }
             let total_tokens = input_tokens + output_tokens + cache_read_tokens;
@@ -2445,7 +2445,10 @@ fn fmt_time_short(dt: &chrono::DateTime<chrono::Utc>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::types::AgentMessage;
+    use crate::agent::types::{
+        assistant_message, message_is_assistant, message_is_tool_result, message_is_user,
+        message_text, message_usage, user_message,
+    };
     use crate::agent::ui::messages::render_messages;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use tempfile::tempdir;
@@ -2722,11 +2725,11 @@ mod tests {
         app.follow_up_queue
             .lock()
             .unwrap()
-            .enqueue(AgentMessage::user("queued-msg-1"));
+            .enqueue(crate::agent::types::user_message("queued-msg-1"));
         app.follow_up_queue
             .lock()
             .unwrap()
-            .enqueue(AgentMessage::user("queued-msg-2"));
+            .enqueue(crate::agent::types::user_message("queued-msg-2"));
 
         let lines = compose_ui_test(&mut app, 80);
 
@@ -2876,7 +2879,7 @@ mod tests {
         };
 
         let mut app = App::new(config, session);
-        let msg = AgentMessage::user("next-msg");
+        let msg = crate::agent::types::user_message("next-msg");
         app.follow_up_queue.lock().unwrap().enqueue(msg.clone());
         app.is_streaming = true;
         app.working.start();
@@ -2925,11 +2928,11 @@ mod tests {
         app.follow_up_queue
             .lock()
             .unwrap()
-            .enqueue(AgentMessage::user("q1"));
+            .enqueue(crate::agent::types::user_message("q1"));
         app.follow_up_queue
             .lock()
             .unwrap()
-            .enqueue(AgentMessage::user("q2"));
+            .enqueue(crate::agent::types::user_message("q2"));
         app.is_streaming = true;
 
         // Simulate Ctrl+C
@@ -3024,7 +3027,7 @@ mod tests {
         app.follow_up_queue
             .lock()
             .unwrap()
-            .enqueue(AgentMessage::user("msg1"));
+            .enqueue(crate::agent::types::user_message("msg1"));
         let after = compose_ui_test(&mut app, 80);
 
         // Should have more lines with queued messages (count label and hint)
@@ -3124,18 +3127,8 @@ mod tests {
         let mut app = App::new(config, session);
 
         // Simulate the messages that AgentEnd receives from run_agent_loop
-        let user_msg = AgentMessage::user("hello");
-        let assistant_msg = AgentMessage {
-            id: uuid::Uuid::new_v4().to_string(),
-            parent_id: None,
-            role: crate::agent::types::Role::Assistant,
-            content: "Hello back".to_string(),
-            tool_calls: vec![],
-            tool_call_id: None,
-            usage: None,
-            is_error: false,
-            timestamp: chrono::Utc::now().timestamp_millis(),
-        };
+        let user_msg = crate::agent::types::user_message("hello");
+        let assistant_msg = crate::agent::types::assistant_message("Hello back");
 
         let _agent_messages = vec![user_msg.clone(), assistant_msg.clone()];
 
@@ -3182,22 +3175,11 @@ mod tests {
         let mut app = App::new(config, session);
 
         // Simulate a message already in conversation (e.g. from a previous turn)
-        let existing = AgentMessage::user("existing");
-        let existing_id = existing.id.clone();
+        let existing = crate::agent::types::user_message("existing");
         app.conversation.push(existing);
 
         // AgentEnd fires with the SAME message id - should NOT duplicate
-        let _dup_msg = AgentMessage {
-            id: existing_id,
-            parent_id: None,
-            role: crate::agent::types::Role::User,
-            content: "existing".to_string(),
-            tool_calls: vec![],
-            tool_call_id: None,
-            usage: None,
-            is_error: false,
-            timestamp: 0,
-        };
+        let _dup_msg = crate::agent::types::user_message("existing");
 
         handle_agent_event(
             &mut app,
@@ -3225,7 +3207,7 @@ mod tests {
         app.follow_up_queue
             .lock()
             .unwrap()
-            .enqueue(AgentMessage::user("q"));
+            .enqueue(crate::agent::types::user_message("q"));
 
         handle_clear(&mut app);
 
@@ -3394,9 +3376,7 @@ mod tests {
 
         assert_eq!(app.follow_up_queue.lock().unwrap().len(), 1);
         assert_eq!(
-            app.follow_up_queue.lock().unwrap().drain()[0]
-                .content
-                .clone(),
+            crate::agent::types::message_text(&app.follow_up_queue.lock().unwrap().drain()[0]),
             "follow-up text"
         );
     }
@@ -3411,11 +3391,11 @@ mod tests {
         app.follow_up_queue
             .lock()
             .unwrap()
-            .enqueue(AgentMessage::user("msg1"));
+            .enqueue(crate::agent::types::user_message("msg1"));
         app.follow_up_queue
             .lock()
             .unwrap()
-            .enqueue(AgentMessage::user("msg2"));
+            .enqueue(crate::agent::types::user_message("msg2"));
 
         handle_dequeue(&mut app);
 

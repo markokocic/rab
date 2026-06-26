@@ -1,8 +1,12 @@
 use crate::agent::compaction;
 use crate::agent::compaction::{CompactionSettings, estimate_tokens};
 use crate::agent::session::{SessionEntry, SessionManager};
-use crate::agent::types::{AgentMessage, Role};
+use crate::agent::types::{
+    assistant_message, message_is_assistant, message_is_tool_result, message_is_user, message_text,
+    user_message,
+};
 use std::collections::HashSet;
+use yoagent::types::AgentMessage;
 
 /// Collect entries from an abandoned branch path for summarization.
 ///
@@ -72,51 +76,23 @@ pub fn prepare_branch_entries(
         let msg = match entry {
             SessionEntry::Message(m) => {
                 // Skip tool results - context is in the assistant's tool call
-                if m.message.role == Role::ToolResult {
+                if message_is_tool_result(&m.message) {
                     continue;
                 }
                 m.message.clone()
             }
-            SessionEntry::BranchSummary(s) if !s.summary.is_empty() => AgentMessage {
-                id: String::new(),
-                parent_id: None,
-                role: Role::Assistant,
-                content: format!("[Branch: from {}] {}", s.from_id, s.summary),
-                tool_calls: vec![],
-                tool_call_id: None,
-                usage: None,
-                is_error: false,
-                timestamp: 0,
-            },
-            SessionEntry::Compaction(c) => AgentMessage {
-                id: String::new(),
-                parent_id: None,
-                role: Role::Assistant,
-                content: format!(
-                    "[Compaction: {} tokens → summary] {}",
-                    c.tokens_before, c.summary
-                ),
-                tool_calls: vec![],
-                tool_call_id: None,
-                usage: None,
-                is_error: false,
-                timestamp: 0,
-            },
-            SessionEntry::CustomMessage(c) => AgentMessage {
-                id: String::new(),
-                parent_id: None,
-                role: Role::Assistant,
-                content: format!(
-                    "[{}] {}",
-                    c.custom_type,
-                    serde_json::to_string(&c.content).unwrap_or_default()
-                ),
-                tool_calls: vec![],
-                tool_call_id: None,
-                usage: None,
-                is_error: false,
-                timestamp: 0,
-            },
+            SessionEntry::BranchSummary(s) if !s.summary.is_empty() => {
+                assistant_message(format!("[Branch: from {}] {}", s.from_id, s.summary))
+            }
+            SessionEntry::Compaction(c) => assistant_message(format!(
+                "[Compaction: {} tokens → summary] {}",
+                c.tokens_before, c.summary
+            )),
+            SessionEntry::CustomMessage(c) => assistant_message(format!(
+                "[{}] {}",
+                c.custom_type,
+                serde_json::to_string(&c.content).unwrap_or_default()
+            )),
             _ => continue,
         };
 
@@ -167,14 +143,18 @@ pub async fn generate_branch_summary(
     // Serialize messages for the summarization prompt
     let mut conversation_text = String::new();
     for msg in &messages {
-        let role_label = match msg.role {
-            Role::User => "User",
-            Role::Assistant => "Assistant",
-            Role::ToolResult => "Tool Result",
+        let role_label = if message_is_user(msg) {
+            "User"
+        } else if message_is_assistant(msg) {
+            "Assistant"
+        } else {
+            "Tool Result"
         };
         conversation_text.push_str(&format!(
             "<{}>\n{}\n</{}>\n",
-            role_label, msg.content, role_label
+            role_label,
+            message_text(msg),
+            role_label
         ));
     }
 
@@ -208,7 +188,7 @@ Create a structured summary of this branch for context when continuing.
 Keep it concise. Preserve exact file paths, function names, and error messages."#
     );
 
-    let summary_msg = AgentMessage::user(&prompt);
+    let summary_msg = user_message(&prompt);
     let system_prompt = "You are a precise summarizer. Summarize the conversation branch above.";
 
     let summary = compaction::summarize_text(api_key, model, system_prompt, &[summary_msg]).await?;
@@ -242,25 +222,31 @@ fn extract_branch_file_ops(entries: &[SessionEntry]) -> Option<serde_json::Value
             SessionEntry::Message(m) => &m.message,
             _ => continue,
         };
-        for tc in &msg.tool_calls {
-            let path = tc
-                .arguments
-                .get("file_path")
-                .or_else(|| tc.arguments.get("path"))
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
+        if let yoagent::types::AgentMessage::Llm(yoagent::types::Message::Assistant {
+            content: c,
+            ..
+        }) = msg
+        {
+            let tcs = crate::agent::types::content_tool_calls(c);
+            for (_, name, args) in &tcs {
+                let path = args
+                    .get("file_path")
+                    .or_else(|| args.get("path"))
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
 
-            if let Some(p) = path {
-                match tc.name.as_str() {
-                    "read" => {
-                        if !read_files.contains(&p) {
-                            read_files.push(p);
+                if let Some(p) = path {
+                    match name.as_str() {
+                        "read" => {
+                            if !read_files.contains(&p) {
+                                read_files.push(p);
+                            }
                         }
+                        "write" | "edit" if !modified_files.contains(&p) => {
+                            modified_files.push(p);
+                        }
+                        _ => {}
                     }
-                    "write" | "edit" if !modified_files.contains(&p) => {
-                        modified_files.push(p);
-                    }
-                    _ => {}
                 }
             }
         }

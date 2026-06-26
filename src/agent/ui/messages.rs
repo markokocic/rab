@@ -351,9 +351,7 @@ pub fn render_messages(
 }
 
 /// Convert session AgentMessages to display messages for the UI.
-pub fn session_messages_to_display(
-    messages: &[crate::agent::types::AgentMessage],
-) -> Vec<DisplayMsg> {
+pub fn session_messages_to_display(messages: &[yoagent::types::AgentMessage]) -> Vec<DisplayMsg> {
     use std::collections::HashMap;
 
     let mut result = Vec::with_capacity(messages.len());
@@ -361,39 +359,47 @@ pub fn session_messages_to_display(
     // each ToolCall immediately before its matching ToolResult.  This keeps
     // every call+result pair adjacent, which lets the component builder merge
     // them into a single ToolExecComponent.
-    let mut pending_calls: HashMap<String, crate::agent::types::ToolCall> = HashMap::new();
+    let mut pending_calls: HashMap<String, (String, serde_json::Value)> = HashMap::new();
 
     for m in messages {
-        match m.role {
-            crate::agent::types::Role::User => result.push(DisplayMsg::User(m.content.clone())),
-            crate::agent::types::Role::Assistant => {
-                // Save tool calls for later matching, emit text now.
-                for tc in &m.tool_calls {
-                    pending_calls.insert(tc.id.clone(), tc.clone());
-                }
-                if !m.content.is_empty() {
-                    result.push(DisplayMsg::AssistantText(m.content.clone()));
+        if crate::agent::types::message_is_user(m) {
+            result.push(DisplayMsg::User(crate::agent::types::message_text(m)));
+        } else if crate::agent::types::message_is_assistant(m) {
+            // Save tool calls for later matching, emit text now.
+            if let yoagent::types::AgentMessage::Llm(yoagent::types::Message::Assistant {
+                content,
+                ..
+            }) = m
+            {
+                let tcs = crate::agent::types::content_tool_calls(content);
+                for (id, name, args) in &tcs {
+                    pending_calls.insert(id.clone(), (name.clone(), args.clone()));
                 }
             }
-            crate::agent::types::Role::ToolResult => {
-                let prefix = if m.is_error { "✗" } else { "✓" };
-                // Try to match this result with a pending tool call by ID.
-                // Emit the call header immediately before the result so they
-                // stay adjacent and the component builder can merge them.
-                if let Some(ref tc_id) = m.tool_call_id
-                    && let Some(tc) = pending_calls.remove(tc_id)
-                {
-                    result.push(DisplayMsg::ToolCall {
-                        name: tc.name.clone(),
-                        args: serde_json::to_string(&tc.arguments).unwrap_or_default(),
-                    });
-                }
-                result.push(DisplayMsg::ToolResult {
-                    content: format!("{} {}", prefix, m.content),
-                    compact: None,
-                    is_error: m.is_error,
+            let text = crate::agent::types::message_text(m);
+            if !text.is_empty() {
+                result.push(DisplayMsg::AssistantText(text));
+            }
+        } else if crate::agent::types::message_is_tool_result(m) {
+            let is_error = crate::agent::types::message_is_error(m);
+            let prefix = if is_error { "✗" } else { "✓" };
+            let text = crate::agent::types::message_text(m);
+            // Try to match this result with a pending tool call by ID.
+            // Emit the call header immediately before the result so they
+            // stay adjacent and the component builder can merge them.
+            if let Some(tc_id) = crate::agent::types::message_tool_call_id(m)
+                && let Some((name, args)) = pending_calls.remove(tc_id)
+            {
+                result.push(DisplayMsg::ToolCall {
+                    name: name.clone(),
+                    args: serde_json::to_string(&args).unwrap_or_default(),
                 });
             }
+            result.push(DisplayMsg::ToolResult {
+                content: format!("{} {}", prefix, text),
+                compact: None,
+                is_error,
+            });
         }
     }
     result

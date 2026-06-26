@@ -2,87 +2,10 @@ use crate::agent::branch_summary::{collect_entries_for_branch_summary, generate_
 use crate::agent::compaction::{self, CompactionSettings, compact, prepare_compaction};
 use crate::agent::provider::AgentEvent;
 use crate::agent::session::SessionManager;
-use crate::agent::types::{AgentMessage, Role};
+use crate::agent::types::{message_text, tool_result_message, user_message};
 use std::collections::HashSet;
+use yoagent::types::AgentMessage;
 use yoagent::types::Content;
-
-/// Convert a yoagent Message to rab AgentMessage (for session persistence).
-fn yo_msg_to_rab(msg: &yoagent::types::Message) -> AgentMessage {
-    let (role, content, tool_calls, tool_call_id, is_error) = match msg {
-        yoagent::types::Message::User { content, .. } => {
-            let text = yo_msg_text(content);
-            (Role::User, text, vec![], None, false)
-        }
-        yoagent::types::Message::Assistant {
-            content,
-            error_message,
-            ..
-        } => {
-            let text = yo_msg_text(content);
-            let tcs = content
-                .iter()
-                .filter_map(|c| {
-                    if let Content::ToolCall {
-                        id,
-                        name,
-                        arguments,
-                        ..
-                    } = c
-                    {
-                        Some(crate::agent::types::ToolCall {
-                            id: id.clone(),
-                            name: name.clone(),
-                            arguments: arguments.clone(),
-                        })
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-            (Role::Assistant, text, tcs, None, error_message.is_some())
-        }
-        yoagent::types::Message::ToolResult {
-            content,
-            tool_call_id,
-            is_error,
-            ..
-        } => {
-            let text = yo_msg_text(content);
-            (
-                Role::ToolResult,
-                text,
-                vec![],
-                Some(tool_call_id.clone()),
-                *is_error,
-            )
-        }
-    };
-    AgentMessage {
-        id: uuid::Uuid::new_v4().to_string(),
-        parent_id: None,
-        role,
-        content,
-        tool_calls,
-        tool_call_id,
-        usage: None,
-        is_error,
-        timestamp: chrono::Utc::now().timestamp_millis(),
-    }
-}
-
-fn yo_msg_text(content: &[Content]) -> String {
-    content
-        .iter()
-        .filter_map(|c| {
-            if let Content::Text { text } = c {
-                Some(text.as_str())
-            } else {
-                None
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("")
-}
 
 /// Lifecycle layer that bridges the agent loop and session manager.
 ///
@@ -259,9 +182,9 @@ impl AgentSession {
     /// Append a user message to the session and register it as persisted.
     /// Returns the entry id.
     pub fn submit_user_message(&mut self, content: &str) -> String {
-        let msg = AgentMessage::user(content);
+        let msg = user_message(content);
         let id = self.session.append_message(&msg);
-        self.persisted_message_ids.insert(msg.id);
+        self.persisted_message_ids.insert(message_text(&msg));
         id
     }
 
@@ -269,7 +192,7 @@ impl AgentSession {
     /// Returns the entry id.
     pub fn submit_user_message_obj(&mut self, msg: &AgentMessage) -> String {
         let id = self.session.append_message(msg);
-        self.persisted_message_ids.insert(msg.id.clone());
+        self.persisted_message_ids.insert(message_text(msg));
         id
     }
 
@@ -303,18 +226,11 @@ impl AgentSession {
                     })
                     .collect::<Vec<_>>()
                     .join("");
-                let msg = AgentMessage::tool_result(tool_call_id, content, *is_error);
+                let msg = tool_result_message(tool_call_id, content, *is_error);
                 self.persist_message(&msg);
             }
             YoEvent::AgentEnd { messages } => {
-                let rab_msgs: Vec<AgentMessage> = messages
-                    .iter()
-                    .filter_map(|am| match am {
-                        yoagent::types::AgentMessage::Llm(m) => Some(yo_msg_to_rab(m)),
-                        _ => None,
-                    })
-                    .collect();
-                self.on_agent_end(&rab_msgs);
+                self.on_agent_end(messages);
             }
             _ => {}
         }
@@ -330,7 +246,7 @@ impl AgentSession {
                 ..
             } => {
                 // Persist tool result messages immediately (event-driven, crash-safe).
-                let msg = AgentMessage::tool_result(id, content, *is_error);
+                let msg = tool_result_message(id, content, *is_error);
                 self.persist_message(&msg);
             }
             AgentEvent::AgentEnd { messages } => {
@@ -348,19 +264,19 @@ impl AgentSession {
     /// automatically on `AgentEnd`.
     pub fn on_agent_end(&mut self, messages: &[AgentMessage]) {
         for msg in messages {
-            if msg.role == Role::User {
+            if crate::agent::types::message_is_user(msg) {
                 continue;
             }
             // Skip tool results already persisted via event-driven persistence
-            if msg.role == Role::ToolResult
-                && let Some(ref tcid) = msg.tool_call_id
+            if crate::agent::types::message_is_tool_result(msg)
+                && let Some(tcid) = crate::agent::types::message_tool_call_id(msg)
                 && self.persisted_tool_call_ids.contains(tcid)
             {
                 continue;
             }
-            if !self.persisted_message_ids.contains(&msg.id) {
+            if !self.persisted_message_ids.contains(&message_text(msg)) {
                 self.session.append_message(msg);
-                self.persisted_message_ids.insert(msg.id.clone());
+                self.persisted_message_ids.insert(message_text(msg));
             }
         }
     }
@@ -518,26 +434,26 @@ impl AgentSession {
     // ── Internal helpers ──────────────────────────────────────────
 
     /// Persist a single message, skipping if already persisted (dedup).
-    /// Tool results are deduped by tool_call_id; other messages by message id.
+    /// Tool results are deduped by tool_call_id; other messages by text.
     fn persist_message(&mut self, msg: &AgentMessage) {
         // Dedup tool results by tool_call_id
-        if msg.role == Role::ToolResult
-            && let Some(ref tcid) = msg.tool_call_id
+        if crate::agent::types::message_is_tool_result(msg)
+            && let Some(tcid) = crate::agent::types::message_tool_call_id(msg)
         {
             if self.persisted_tool_call_ids.contains(tcid) {
                 return;
             }
             self.session.append_message(msg);
-            self.persisted_tool_call_ids.insert(tcid.clone());
-            self.persisted_message_ids.insert(msg.id.clone());
+            self.persisted_tool_call_ids.insert(tcid.to_string());
+            self.persisted_message_ids.insert(message_text(msg));
             return;
         }
-        // Dedup other messages by message id
-        if self.persisted_message_ids.contains(&msg.id) {
+        // Dedup other messages by text
+        if self.persisted_message_ids.contains(&message_text(msg)) {
             return;
         }
         self.session.append_message(msg);
-        self.persisted_message_ids.insert(msg.id.clone());
+        self.persisted_message_ids.insert(message_text(msg));
     }
 }
 

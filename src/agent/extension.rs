@@ -1,5 +1,4 @@
 /// Extension trait - all capability (built-in or user-provided) comes through this.
-use crate::agent::types::ToolCall;
 use crate::tui::Theme;
 use async_trait::async_trait;
 use std::borrow::Cow;
@@ -319,12 +318,16 @@ pub trait Extension: Send + Sync {
     }
 
     /// Called before any tool executes. Return Some(reason) to block.
-    async fn before_tool_call(&self, _tc: &ToolCall) -> Option<BlockReason> {
+    async fn before_tool_call(&self, _tc: &yoagent::types::Content) -> Option<BlockReason> {
         None
     }
 
     /// Called after a tool executes. Return Some(text) to replace result.
-    async fn after_tool_call(&self, _tc: &ToolCall, _result: &str) -> Option<String> {
+    async fn after_tool_call(
+        &self,
+        _tc: &yoagent::types::Content,
+        _result: &str,
+    ) -> Option<String> {
         None
     }
 

@@ -2,7 +2,10 @@ use crate::agent::extension::{
     AutocompleteItem, CommandHandler, CommandResult, Extension, SlashCommand,
 };
 use crate::agent::session::SessionManager;
-use crate::agent::types::Role;
+use crate::agent::types::{
+    message_is_assistant, message_is_tool_result, message_is_user, message_tool_call_count,
+    message_usage,
+};
 use std::borrow::Cow;
 use std::sync::{Arc, Mutex};
 
@@ -69,22 +72,19 @@ pub fn compute_session_info(session: &SessionManager) -> SessionInfoInternal {
     for entry in entries {
         if let super::super::agent::session::SessionEntry::Message(m) = entry {
             message_count += 1;
-            match m.message.role {
-                Role::User => user_messages += 1,
-                Role::Assistant => {
-                    assistant_messages += 1;
-                    if !m.message.tool_calls.is_empty() {
-                        tool_calls += m.message.tool_calls.len();
-                    }
-                }
-                Role::ToolResult => {
-                    tool_results += 1;
-                }
+            if message_is_user(&m.message) {
+                user_messages += 1;
+            } else if message_is_assistant(&m.message) {
+                assistant_messages += 1;
+                let tc_count = message_tool_call_count(&m.message);
+                tool_calls += tc_count;
+            } else if message_is_tool_result(&m.message) {
+                tool_results += 1;
             }
-            if let Some(ref usage) = m.message.usage {
-                let inp = usage.input_tokens.unwrap_or(0) as u64;
-                let outp = usage.output_tokens.unwrap_or(0) as u64;
-                let cache = usage.cache_tokens.unwrap_or(0) as u64;
+            if let Some(usage) = message_usage(&m.message) {
+                let inp = usage.input;
+                let outp = usage.output;
+                let cache = usage.cache_read;
                 input_tokens += inp;
                 output_tokens += outp;
                 total_tokens += inp + outp;

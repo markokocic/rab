@@ -1,6 +1,6 @@
 // ── AgentEvent (used by TUI and session) ──
 
-use crate::agent::types::AgentMessage;
+use yoagent::types::AgentMessage;
 
 /// Events emitted by the agent loop for UI consumers.
 #[derive(Debug, Clone)]

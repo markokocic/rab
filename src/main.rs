@@ -517,7 +517,7 @@ async fn run_print_mode(
     });
 
     // Persist user prompt via AgentSession
-    let rab_prompt = rab::agent::types::AgentMessage::user(&message);
+    let rab_prompt = rab::agent::types::user_message(&message);
     agent_session.submit_user_message_obj(&rab_prompt);
 
     let mut thinking_prefix_printed = false;

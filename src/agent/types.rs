@@ -1,11 +1,15 @@
-//! Type compatibility layer — wraps yoagent types behind rab's existing API.
+//! Replacement for rab's custom types — now re-exports yoagent types directly.
 //!
-//! Gradually being replaced by direct yoagent types throughout the codebase.
+//! This module was previously a compatibility layer that wrapped yoagent types.
+//! All types are now used directly from `yoagent::types`.
+//!
+//! This module only provides:
+//! 1. `ToolExecutionMode` — rab-specific enum with no yoagent equivalent
+//! 2. Helper functions for common operations on yoagent types
 
-use chrono::Utc;
-use serde::{Deserialize, Serialize};
+pub use yoagent::types::{AgentMessage, Content, Message};
 
-// ── Execution / queue modes (rab-specific, no yoagent equivalent) ──
+// ── Execution mode (rab-specific, no yoagent equivalent) ──
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum ToolExecutionMode {
@@ -14,11 +18,15 @@ pub enum ToolExecutionMode {
     Sequential,
 }
 
+// ── Queue mode (rab-specific, no yoagent equivalent yet) ──
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum QueueMode {
     All,
     OneAtATime,
 }
+
+// ── PendingMessageQueue ────────────────────────────────────────────
 
 #[derive(Debug)]
 pub struct PendingMessageQueue {
@@ -62,165 +70,177 @@ impl PendingMessageQueue {
     }
 }
 
-// ── Role ──
+// ── Helper functions for working with yoagent types ─────────────────
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum Role {
-    User,
-    Assistant,
-    ToolResult,
-}
-
-// ── ToolCall (rab struct, kept for compat) ──
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ToolCall {
-    pub id: String,
-    pub name: String,
-    pub arguments: serde_json::Value,
-}
-
-impl ToolCall {
-    pub fn to_yoagent_content(&self) -> yoagent::types::Content {
-        yoagent::types::Content::ToolCall {
-            id: self.id.clone(),
-            name: self.name.clone(),
-            arguments: self.arguments.clone(),
-            provider_metadata: None,
-        }
-    }
-}
-
-// ── Usage (rab struct, kept for compat) ──
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct Usage {
-    pub input_tokens: Option<i32>,
-    pub output_tokens: Option<i32>,
-    pub cache_tokens: Option<i32>,
-    pub cache_write_tokens: Option<i32>,
-    pub cost_total: Option<f64>,
-}
-
-impl From<yoagent::types::Usage> for Usage {
-    fn from(u: yoagent::types::Usage) -> Self {
-        Self {
-            input_tokens: Some(u.input as i32),
-            output_tokens: Some(u.output as i32),
-            cache_tokens: Some(u.cache_read as i32),
-            cache_write_tokens: Some(u.cache_write as i32),
-            cost_total: None,
-        }
-    }
-}
-
-impl From<Usage> for yoagent::types::Usage {
-    fn from(u: Usage) -> Self {
-        Self {
-            input: u.input_tokens.unwrap_or(0) as u64,
-            output: u.output_tokens.unwrap_or(0) as u64,
-            cache_read: u.cache_tokens.unwrap_or(0) as u64,
-            cache_write: u.cache_write_tokens.unwrap_or(0) as u64,
-            total_tokens: (u.input_tokens.unwrap_or(0) + u.output_tokens.unwrap_or(0)) as u64,
-        }
-    }
-}
-
-// ── AgentMessage — struct with field access, serde, yoagent conversion ──
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AgentMessage {
-    pub id: String,
-    pub parent_id: Option<String>,
-    pub role: Role,
-    pub content: String,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub tool_calls: Vec<ToolCall>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tool_call_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub usage: Option<Usage>,
-    pub is_error: bool,
-    pub timestamp: i64,
-}
-
-impl AgentMessage {
-    pub fn user(content: impl Into<String>) -> Self {
-        Self {
-            id: uuid::Uuid::new_v4().to_string(),
-            parent_id: None,
-            role: Role::User,
-            content: content.into(),
-            tool_calls: vec![],
-            tool_call_id: None,
-            usage: None,
-            is_error: false,
-            timestamp: Utc::now().timestamp_millis(),
-        }
-    }
-
-    pub fn tool_result(
-        tool_call_id: impl Into<String>,
-        content: impl Into<String>,
-        is_error: bool,
-    ) -> Self {
-        Self {
-            id: uuid::Uuid::new_v4().to_string(),
-            parent_id: None,
-            role: Role::ToolResult,
-            content: content.into(),
-            tool_calls: vec![],
-            tool_call_id: Some(tool_call_id.into()),
-            usage: None,
-            is_error,
-            timestamp: Utc::now().timestamp_millis(),
-        }
-    }
-
-    /// Convert to a vec of yoagent Message for API calls.
-    pub fn to_yoagent_vec(msgs: &[Self]) -> Vec<yoagent::types::Message> {
-        msgs.iter().map(|m| m.to_yoagent_msg()).collect()
-    }
-
-    fn to_yoagent_msg(&self) -> yoagent::types::Message {
-        let content = {
-            let mut parts = vec![yoagent::types::Content::Text {
-                text: self.content.clone(),
-            }];
-            for tc in &self.tool_calls {
-                parts.push(tc.to_yoagent_content());
+/// Extract all text content from a `Vec<Content>` as a single string.
+pub fn content_text(content: &[Content]) -> String {
+    content
+        .iter()
+        .filter_map(|c| {
+            if let Content::Text { text } = c {
+                Some(text.as_str())
+            } else {
+                None
             }
-            parts
-        };
-        match self.role {
-            Role::User => yoagent::types::Message::User {
-                content,
-                timestamp: self.timestamp as u64,
-            },
-            Role::Assistant => yoagent::types::Message::Assistant {
-                content,
-                stop_reason: yoagent::types::StopReason::Stop,
-                model: String::new(),
-                provider: String::new(),
-                usage: self.usage.clone().map(|u| u.into()).unwrap_or_default(),
-                timestamp: self.timestamp as u64,
-                error_message: if self.is_error {
-                    Some(self.content.clone())
-                } else {
-                    None
-                },
-            },
-            Role::ToolResult => yoagent::types::Message::ToolResult {
-                tool_call_id: self.tool_call_id.clone().unwrap_or_default(),
-                tool_name: String::new(),
-                content: vec![yoagent::types::Content::Text {
-                    text: self.content.clone(),
-                }],
-                is_error: self.is_error,
-                timestamp: self.timestamp as u64,
-            },
-        }
+        })
+        .collect::<Vec<_>>()
+        .join("")
+}
+
+/// Extract all tool calls from a `Vec<Content>`.
+pub fn content_tool_calls(content: &[Content]) -> Vec<(String, String, serde_json::Value)> {
+    content
+        .iter()
+        .filter_map(|c| {
+            if let Content::ToolCall {
+                id,
+                name,
+                arguments,
+                ..
+            } = c
+            {
+                Some((id.clone(), name.clone(), arguments.clone()))
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+/// Get the text content of an AgentMessage (all text parts joined).
+pub fn message_text(msg: &AgentMessage) -> String {
+    match msg {
+        AgentMessage::Llm(m) => match m {
+            Message::User { content, .. }
+            | Message::Assistant { content, .. }
+            | Message::ToolResult { content, .. } => content_text(content),
+        },
+        AgentMessage::Extension(ext) => ext.data.to_string(),
+    }
+}
+
+/// Get the timestamp from an AgentMessage.
+pub fn message_timestamp(msg: &AgentMessage) -> u64 {
+    match msg {
+        AgentMessage::Llm(m) => match m {
+            Message::User { timestamp, .. }
+            | Message::Assistant { timestamp, .. }
+            | Message::ToolResult { timestamp, .. } => *timestamp,
+        },
+        AgentMessage::Extension(_) => 0,
+    }
+}
+
+/// Check if an AgentMessage is a tool result with an error.
+pub fn message_is_error(msg: &AgentMessage) -> bool {
+    matches!(
+        msg,
+        AgentMessage::Llm(Message::ToolResult { is_error: true, .. })
+    )
+}
+
+/// Get the tool_call_id from a ToolResult message.
+pub fn message_tool_call_id(msg: &AgentMessage) -> Option<&str> {
+    match msg {
+        AgentMessage::Llm(Message::ToolResult { tool_call_id, .. }) => Some(tool_call_id.as_str()),
+        _ => None,
+    }
+}
+
+/// Get the usage from an Assistant message.
+pub fn message_usage(msg: &AgentMessage) -> Option<yoagent::types::Usage> {
+    match msg {
+        AgentMessage::Llm(Message::Assistant { usage, .. }) => Some(usage.clone()),
+        _ => None,
+    }
+}
+
+/// Check if an AgentMessage is a User message.
+pub fn message_is_user(msg: &AgentMessage) -> bool {
+    matches!(msg, AgentMessage::Llm(Message::User { .. }))
+}
+
+/// Check if an AgentMessage is an Assistant message.
+pub fn message_is_assistant(msg: &AgentMessage) -> bool {
+    matches!(msg, AgentMessage::Llm(Message::Assistant { .. }))
+}
+
+/// Check if an AgentMessage is a ToolResult message.
+pub fn message_is_tool_result(msg: &AgentMessage) -> bool {
+    matches!(msg, AgentMessage::Llm(Message::ToolResult { .. }))
+}
+
+/// Get the model from an Assistant message.
+pub fn message_model(msg: &AgentMessage) -> Option<&str> {
+    match msg {
+        AgentMessage::Llm(Message::Assistant { model, .. }) => Some(model.as_str()),
+        _ => None,
+    }
+}
+
+/// Get the provider from an Assistant message.
+pub fn message_provider(msg: &AgentMessage) -> Option<&str> {
+    match msg {
+        AgentMessage::Llm(Message::Assistant { provider, .. }) => Some(provider.as_str()),
+        _ => None,
+    }
+}
+
+/// Get the error_message from an Assistant message.
+pub fn message_error_message(msg: &AgentMessage) -> Option<&str> {
+    match msg {
+        AgentMessage::Llm(Message::Assistant {
+            error_message: Some(err),
+            ..
+        }) => Some(err.as_str()),
+        _ => None,
+    }
+}
+
+/// Create a simple User AgentMessage with text content.
+pub fn user_message(text: impl Into<String>) -> AgentMessage {
+    AgentMessage::Llm(Message::User {
+        content: vec![Content::Text { text: text.into() }],
+        timestamp: yoagent::types::now_ms(),
+    })
+}
+
+/// Create a simple Assistant AgentMessage with text content.
+pub fn assistant_message(text: impl Into<String>) -> AgentMessage {
+    AgentMessage::Llm(Message::Assistant {
+        content: vec![Content::Text { text: text.into() }],
+        stop_reason: yoagent::types::StopReason::Stop,
+        model: String::new(),
+        provider: String::new(),
+        usage: yoagent::types::Usage::default(),
+        timestamp: yoagent::types::now_ms(),
+        error_message: None,
+    })
+}
+
+/// Create a ToolResult AgentMessage.
+pub fn tool_result_message(
+    tool_call_id: impl Into<String>,
+    text: impl Into<String>,
+    is_error: bool,
+) -> AgentMessage {
+    AgentMessage::Llm(Message::ToolResult {
+        tool_call_id: tool_call_id.into(),
+        tool_name: String::new(),
+        content: vec![Content::Text { text: text.into() }],
+        is_error,
+        timestamp: yoagent::types::now_ms(),
+    })
+}
+
+/// Count how many tool calls are in an AgentMessage.
+pub fn message_tool_call_count(msg: &AgentMessage) -> usize {
+    match msg {
+        AgentMessage::Llm(Message::Assistant { content, .. }) => content
+            .iter()
+            .filter(|c| matches!(c, Content::ToolCall { .. }))
+            .count(),
+        AgentMessage::Llm(_) => 0,
+        _ => 0,
     }
 }

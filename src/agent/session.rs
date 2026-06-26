@@ -1,11 +1,11 @@
 use crate::agent::session_storage::{InMemorySessionStorage, JsonlSessionStorage, SessionStorage};
-use crate::agent::types::{AgentMessage, Role};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use yoagent::types::AgentMessage;
 
 // ── Constants ───────────────────────────────────────────────────────
 
@@ -644,7 +644,7 @@ impl SessionManager {
         let has_assistant = self
             .file_entries
             .iter()
-            .any(|e| matches!(e, SessionEntry::Message(m) if m.message.role == Role::Assistant));
+            .any(|e| matches!(e, SessionEntry::Message(m) if crate::agent::types::message_is_assistant(&m.message)));
 
         if !has_assistant && !self.flushed {
             // No file on disk yet and no assistant — defer until first assistant message.
@@ -1077,20 +1077,20 @@ impl SessionManager {
             let mut msgs: Vec<AgentMessage> = Vec::new();
 
             // 1. Compaction summary message
-            msgs.push(AgentMessage {
-                id: String::new(),
-                parent_id: None,
-                role: crate::agent::types::Role::Assistant,
-                content: format!(
-                    "[Compaction: {} tokens → summary] {}",
-                    compaction.tokens_before, compaction.summary
-                ),
-                tool_calls: vec![],
-                tool_call_id: None,
-                usage: None,
-                is_error: false,
-                timestamp: chrono::Utc::now().timestamp_millis(),
-            });
+            msgs.push(AgentMessage::Llm(yoagent::types::Message::Assistant {
+                content: vec![yoagent::types::Content::Text {
+                    text: format!(
+                        "[Compaction: {} tokens → summary] {}",
+                        compaction.tokens_before, compaction.summary
+                    ),
+                }],
+                stop_reason: yoagent::types::StopReason::Stop,
+                model: String::new(),
+                provider: String::new(),
+                usage: yoagent::types::Usage::default(),
+                timestamp: chrono::Utc::now().timestamp_millis() as u64,
+                error_message: None,
+            }));
 
             // 2. Find compaction entry index
             let compaction_idx = path
@@ -1499,34 +1499,34 @@ fn append_entry_to_message_list(entry: &SessionEntry, msgs: &mut Vec<AgentMessag
             msgs.push(e.message.clone());
         }
         SessionEntry::CustomMessage(e) => {
-            msgs.push(AgentMessage {
-                id: String::new(),
-                parent_id: None,
-                role: crate::agent::types::Role::Assistant,
-                content: format!(
-                    "[{}] {}",
-                    e.custom_type,
-                    serde_json::to_string(&e.content).unwrap_or_default()
-                ),
-                tool_calls: vec![],
-                tool_call_id: None,
-                usage: None,
-                is_error: false,
-                timestamp: chrono::Utc::now().timestamp_millis(),
-            });
+            msgs.push(AgentMessage::Llm(yoagent::types::Message::Assistant {
+                content: vec![yoagent::types::Content::Text {
+                    text: format!(
+                        "[{}] {}",
+                        e.custom_type,
+                        serde_json::to_string(&e.content).unwrap_or_default()
+                    ),
+                }],
+                stop_reason: yoagent::types::StopReason::Stop,
+                model: String::new(),
+                provider: String::new(),
+                usage: yoagent::types::Usage::default(),
+                timestamp: chrono::Utc::now().timestamp_millis() as u64,
+                error_message: None,
+            }));
         }
         SessionEntry::BranchSummary(e) if !e.summary.is_empty() => {
-            msgs.push(AgentMessage {
-                id: String::new(),
-                parent_id: None,
-                role: crate::agent::types::Role::Assistant,
-                content: format!("[Branch: from {}] {}", e.from_id, e.summary),
-                tool_calls: vec![],
-                tool_call_id: None,
-                usage: None,
-                is_error: false,
-                timestamp: chrono::Utc::now().timestamp_millis(),
-            });
+            msgs.push(AgentMessage::Llm(yoagent::types::Message::Assistant {
+                content: vec![yoagent::types::Content::Text {
+                    text: format!("[Branch: from {}] {}", e.from_id, e.summary),
+                }],
+                stop_reason: yoagent::types::StopReason::Stop,
+                model: String::new(),
+                provider: String::new(),
+                usage: yoagent::types::Usage::default(),
+                timestamp: chrono::Utc::now().timestamp_millis() as u64,
+                error_message: None,
+            }));
         }
         _ => {}
     }
@@ -1583,7 +1583,7 @@ pub fn load_session_info(path: &Path) -> Option<SessionInfo> {
         .iter()
         .find_map(|e| {
             if let SessionEntry::Message(m) = e {
-                Some(m.message.content.clone())
+                Some(crate::agent::types::message_text(&m.message))
             } else {
                 None
             }
@@ -1593,7 +1593,7 @@ pub fn load_session_info(path: &Path) -> Option<SessionInfo> {
         .iter()
         .filter_map(|e| {
             if let SessionEntry::Message(m) = e {
-                Some(m.message.content.clone())
+                Some(crate::agent::types::message_text(&m.message))
             } else {
                 None
             }
@@ -1653,7 +1653,7 @@ pub fn fork_session(
         let effective_leaf_id = match position.unwrap_or("before") {
             "at" => Some(target.id().to_string()),
             _ => {
-                if !matches!(target, SessionEntry::Message(m) if m.message.role == crate::agent::types::Role::User)
+                if !matches!(target, SessionEntry::Message(m) if crate::agent::types::message_is_user(&m.message))
                 {
                     return Err(std::io::Error::new(
                         std::io::ErrorKind::InvalidInput,
@@ -1704,21 +1704,23 @@ pub fn fork_session(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::types::{AgentMessage, Role, Usage};
+    use crate::agent::types::user_message;
     use tempfile::TempDir;
 
-    fn make_message(role: Role, content: &str) -> AgentMessage {
-        AgentMessage {
-            id: uuid::Uuid::new_v4().to_string(),
-            parent_id: None,
-            role,
-            content: content.to_string(),
-            tool_calls: vec![],
-            tool_call_id: None,
-            usage: None,
-            is_error: false,
-            timestamp: Utc::now().timestamp_millis(),
-        }
+    fn make_message(content: &str) -> AgentMessage {
+        user_message(content)
+    }
+
+    fn make_user_msg(content: &str) -> AgentMessage {
+        user_message(content)
+    }
+
+    fn make_asst_msg(content: &str) -> AgentMessage {
+        crate::agent::types::assistant_message(content)
+    }
+
+    fn make_tool_result(tool_call_id: &str, content: &str, is_error: bool) -> AgentMessage {
+        crate::agent::types::tool_result_message(tool_call_id, content, is_error)
     }
 
     // ── Entry serialization round-trip ──────────────────────────────
@@ -1734,8 +1736,8 @@ mod tests {
         sm.append_thinking_level_change("high");
         sm.append_model_change("opencode_go", "deepseek-v4-pro");
         sm.append_active_tools_change(&["read".to_string(), "write".to_string()]);
-        sm.append_message(&make_agent_message(Role::User, "hello"));
-        sm.append_message(&make_agent_message(Role::Assistant, "hi"));
+        sm.append_message(&make_user_msg("hello"));
+        sm.append_message(&make_asst_msg("hi"));
 
         let context = sm.build_session_context();
         assert_eq!(context.thinking_level, "high");
@@ -1767,7 +1769,7 @@ mod tests {
     fn test_find_entries_by_type() {
         let cwd = Path::new("/tmp/test");
         let mut sm = SessionManager::in_memory(cwd);
-        sm.append_message(&make_agent_message(Role::User, "hello"));
+        sm.append_message(&make_user_msg("hello"));
         sm.append_thinking_level_change("high");
         sm.append_model_change("p", "m");
         sm.append_session_info("test session");
@@ -1802,8 +1804,8 @@ mod tests {
         std::fs::create_dir_all(&cwd).unwrap();
 
         let mut sm = SessionManager::create(&cwd, Some(&sessions_dir));
-        sm.append_message(&make_agent_message(Role::User, "first"));
-        sm.append_message(&make_agent_message(Role::Assistant, "response"));
+        sm.append_message(&make_user_msg("first"));
+        sm.append_message(&make_asst_msg("response"));
         let path = sm.session_file().unwrap().to_path_buf();
         drop(sm);
 
@@ -1821,8 +1823,8 @@ mod tests {
         std::fs::create_dir_all(&cwd).unwrap();
 
         let mut sm = SessionManager::create(&cwd, Some(&sessions_dir));
-        sm.append_message(&make_agent_message(Role::User, "hello"));
-        sm.append_message(&make_agent_message(Role::Assistant, "world"));
+        sm.append_message(&make_user_msg("hello"));
+        sm.append_message(&make_asst_msg("world"));
         let source_path = sm.session_file().unwrap().to_path_buf();
         drop(sm);
 
@@ -1915,23 +1917,27 @@ mod tests {
                 id: "msg1".to_string(),
                 parent_id: None,
                 timestamp: "2026-06-19T12:00:01Z".to_string(),
-                message: make_message(Role::User, "hello"),
+                message: make_user_msg("hello"),
             }),
             SessionEntry::Message(MessageEntry {
                 id: "msg2".to_string(),
                 parent_id: Some("msg1".to_string()),
                 timestamp: "2026-06-19T12:00:02Z".to_string(),
-                message: {
-                    let mut m = make_message(Role::Assistant, "hi there");
-                    m.usage = Some(Usage {
-                        input_tokens: Some(10),
-                        output_tokens: Some(5),
-                        cache_tokens: None,
-                        cache_write_tokens: None,
-                        cost_total: None,
-                    });
-                    m
-                },
+                message: AgentMessage::Llm(yoagent::types::Message::Assistant {
+                    content: vec![yoagent::types::Content::Text {
+                        text: "hi there".to_string(),
+                    }],
+                    stop_reason: yoagent::types::StopReason::Stop,
+                    model: String::new(),
+                    provider: String::new(),
+                    usage: yoagent::types::Usage {
+                        input: 10,
+                        output: 5,
+                        ..Default::default()
+                    },
+                    timestamp: 0,
+                    error_message: None,
+                }),
             }),
         ];
 
@@ -1948,8 +1954,8 @@ mod tests {
         match &read_entries[0] {
             SessionEntry::Message(e) => {
                 assert_eq!(e.id, "msg1");
-                assert_eq!(e.message.role, Role::User);
-                assert_eq!(e.message.content, "hello");
+                assert!(crate::agent::types::message_is_user(&e.message));
+                assert_eq!(crate::agent::types::message_text(&e.message), "hello");
             }
             _ => panic!("Expected Message"),
         }
@@ -1957,9 +1963,9 @@ mod tests {
         match &read_entries[1] {
             SessionEntry::Message(e) => {
                 assert_eq!(e.id, "msg2");
-                assert_eq!(e.message.role, Role::Assistant);
-                assert_eq!(e.message.content, "hi there");
-                assert!(e.message.usage.is_some());
+                assert!(crate::agent::types::message_is_assistant(&e.message));
+                assert_eq!(crate::agent::types::message_text(&e.message), "hi there");
+                assert!(crate::agent::types::message_usage(&e.message).is_some());
             }
             _ => panic!("Expected Message"),
         }
@@ -2038,7 +2044,7 @@ mod tests {
             id: "myid".to_string(),
             parent_id: None,
             timestamp: "2026-06-19T12:00:00Z".to_string(),
-            message: make_message(Role::User, "hello"),
+            message: make_user_msg("hello"),
         });
         assert_eq!(entry.id(), "myid");
     }
@@ -2049,7 +2055,7 @@ mod tests {
             id: "myid".to_string(),
             parent_id: Some("parent".to_string()),
             timestamp: "2026-06-19T12:00:00Z".to_string(),
-            message: make_message(Role::User, "hello"),
+            message: make_user_msg("hello"),
         });
         assert_eq!(entry.parent_id(), Some("parent"));
     }
@@ -2060,7 +2066,7 @@ mod tests {
             id: "myid".to_string(),
             parent_id: None,
             timestamp: "2026-06-19T12:00:00Z".to_string(),
-            message: make_message(Role::User, "hello"),
+            message: make_user_msg("hello"),
         });
         assert_eq!(entry.timestamp(), "2026-06-19T12:00:00Z");
     }
@@ -2102,7 +2108,7 @@ mod tests {
         match entry {
             SessionEntry::Message(e) => {
                 assert_eq!(e.id, "abc12345");
-                assert_eq!(e.message.content, "hello");
+                assert_eq!(crate::agent::types::message_text(&e.message), "hello");
             }
             _ => panic!("Expected Message"),
         }
@@ -2161,20 +2167,6 @@ mod tests {
 
     // ── SessionManager ───────────────────────────────────────────────
 
-    fn make_agent_message(role: Role, content: &str) -> AgentMessage {
-        AgentMessage {
-            id: uuid::Uuid::new_v4().to_string(),
-            parent_id: None,
-            role,
-            content: content.to_string(),
-            tool_calls: vec![],
-            tool_call_id: None,
-            usage: None,
-            is_error: false,
-            timestamp: Utc::now().timestamp_millis(),
-        }
-    }
-
     #[test]
     fn test_session_create_in_memory() {
         let cwd = Path::new("/tmp/test-project");
@@ -2213,14 +2205,14 @@ mod tests {
 
         let mut sm = SessionManager::create(&cwd, Some(&sessions_dir));
 
-        let user_msg = make_agent_message(Role::User, "hello");
+        let user_msg = make_user_msg("hello");
         let user_id = sm.append_message(&user_msg);
         assert!(sm.leaf_id() == Some(&user_id));
 
         // In-memory entries exist even before flush
         assert_eq!(sm.entries().len(), 1);
 
-        let assistant_msg = make_agent_message(Role::Assistant, "hi there");
+        let assistant_msg = make_asst_msg("hi there");
         sm.append_message(&assistant_msg);
         assert_eq!(sm.entries().len(), 2);
 
@@ -2232,8 +2224,14 @@ mod tests {
 
         let context = sm.build_session_context();
         assert_eq!(context.messages.len(), 2);
-        assert_eq!(context.messages[0].content, "hello");
-        assert_eq!(context.messages[1].content, "hi there");
+        assert_eq!(
+            crate::agent::types::message_text(&context.messages[0]),
+            "hello"
+        );
+        assert_eq!(
+            crate::agent::types::message_text(&context.messages[1]),
+            "hi there"
+        );
     }
 
     #[test]
@@ -2245,8 +2243,8 @@ mod tests {
 
         // Create and populate a session
         let mut sm = SessionManager::create(&cwd, Some(&sessions_dir));
-        sm.append_message(&make_agent_message(Role::User, "first"));
-        sm.append_message(&make_agent_message(Role::Assistant, "response"));
+        sm.append_message(&make_user_msg("first"));
+        sm.append_message(&make_asst_msg("response"));
 
         let file_path = sm.session_file().unwrap().to_path_buf();
         let session_id = sm.session_id().to_string();
@@ -2257,8 +2255,14 @@ mod tests {
         assert_eq!(sm2.session_id(), &session_id);
         let context = sm2.build_session_context();
         assert_eq!(context.messages.len(), 2);
-        assert_eq!(context.messages[0].content, "first");
-        assert_eq!(context.messages[1].content, "response");
+        assert_eq!(
+            crate::agent::types::message_text(&context.messages[0]),
+            "first"
+        );
+        assert_eq!(
+            crate::agent::types::message_text(&context.messages[1]),
+            "response"
+        );
     }
 
     #[test]
@@ -2270,8 +2274,8 @@ mod tests {
 
         // First session
         let mut sm1 = SessionManager::create(&cwd, Some(&sessions_dir));
-        sm1.append_message(&make_agent_message(Role::User, "old session"));
-        sm1.append_message(&make_agent_message(Role::Assistant, "old response"));
+        sm1.append_message(&make_user_msg("old session"));
+        sm1.append_message(&make_asst_msg("old response"));
         let _old_id = sm1.session_id().to_string();
         drop(sm1);
 
@@ -2280,8 +2284,8 @@ mod tests {
 
         // Second session (more recent)
         let mut sm2 = SessionManager::create(&cwd, Some(&sessions_dir));
-        sm2.append_message(&make_agent_message(Role::User, "new session"));
-        sm2.append_message(&make_agent_message(Role::Assistant, "new response"));
+        sm2.append_message(&make_user_msg("new session"));
+        sm2.append_message(&make_asst_msg("new response"));
         let new_id = sm2.session_id().to_string();
         drop(sm2);
 
@@ -2289,7 +2293,10 @@ mod tests {
         let sm3 = SessionManager::continue_recent(&cwd, Some(&sessions_dir));
         assert_eq!(sm3.session_id(), &new_id);
         let context = sm3.build_session_context();
-        assert_eq!(context.messages[0].content, "new session");
+        assert_eq!(
+            crate::agent::types::message_text(&context.messages[0]),
+            "new session"
+        );
     }
 
     #[test]
@@ -2317,8 +2324,8 @@ mod tests {
         assert!(sm.session_name().is_none());
 
         sm.append_session_info("My Task");
-        sm.append_message(&make_agent_message(Role::User, "hello"));
-        sm.append_message(&make_agent_message(Role::Assistant, "hi"));
+        sm.append_message(&make_user_msg("hello"));
+        sm.append_message(&make_asst_msg("hi"));
         assert_eq!(sm.session_name(), Some("My Task"));
 
         // Setting empty name clears it
@@ -2393,8 +2400,8 @@ mod tests {
         std::fs::create_dir_all(&cwd).unwrap();
 
         let mut sm = SessionManager::create(&cwd, Some(&sessions_dir));
-        let msg_id = sm.append_message(&make_agent_message(Role::User, "important message"));
-        sm.append_message(&make_agent_message(Role::Assistant, "ok"));
+        let msg_id = sm.append_message(&make_user_msg("important message"));
+        sm.append_message(&make_asst_msg("ok"));
 
         // Set label
         sm.append_label_change(&msg_id, Some("important"));
@@ -2413,10 +2420,10 @@ mod tests {
         std::fs::create_dir_all(&cwd).unwrap();
 
         let mut sm = SessionManager::create(&cwd, Some(&sessions_dir));
-        let m1 = sm.append_message(&make_agent_message(Role::User, "one"));
-        sm.append_message(&make_agent_message(Role::Assistant, "response one"));
-        let _m2 = sm.append_message(&make_agent_message(Role::User, "two"));
-        sm.append_message(&make_agent_message(Role::Assistant, "response two"));
+        let m1 = sm.append_message(&make_user_msg("one"));
+        sm.append_message(&make_asst_msg("response one"));
+        let _m2 = sm.append_message(&make_user_msg("two"));
+        sm.append_message(&make_asst_msg("response two"));
 
         // Current leaf is after last message
         assert_eq!(sm.entries().len(), 4);
@@ -2427,7 +2434,7 @@ mod tests {
         assert_eq!(sm.leaf_id(), Some(m1.as_str()));
 
         // Append a new branch
-        sm.append_message(&make_agent_message(Role::Assistant, "alternate response"));
+        sm.append_message(&make_asst_msg("alternate response"));
         // Now 5 entries (original 4 + 1 new message)
         assert_eq!(sm.entries().len(), 5);
 
@@ -2448,8 +2455,8 @@ mod tests {
         std::fs::create_dir_all(&cwd).unwrap();
 
         let mut sm = SessionManager::create(&cwd, Some(&sessions_dir));
-        sm.append_message(&make_agent_message(Role::User, "one"));
-        sm.append_message(&make_agent_message(Role::Assistant, "response"));
+        sm.append_message(&make_user_msg("one"));
+        sm.append_message(&make_asst_msg("response"));
         assert_eq!(sm.entries().len(), 2);
 
         // Reset leaf (in-memory, no persistent entry)
@@ -2458,7 +2465,7 @@ mod tests {
         assert!(sm.leaf_id().is_none());
 
         // Append from reset state (parentId should be None since leaf is None)
-        sm.append_message(&make_agent_message(Role::User, "fresh start"));
+        sm.append_message(&make_user_msg("fresh start"));
         assert_eq!(sm.entries().len(), 3);
         // Verify fresh start has no parent
         match &sm.entries()[2] {
@@ -2477,8 +2484,8 @@ mod tests {
         std::fs::create_dir_all(&cwd).unwrap();
 
         let mut sm = SessionManager::create(&cwd, Some(&sessions_dir));
-        sm.append_message(&make_agent_message(Role::User, "one"));
-        sm.append_message(&make_agent_message(Role::Assistant, "response"));
+        sm.append_message(&make_user_msg("one"));
+        sm.append_message(&make_asst_msg("response"));
 
         sm.append_branch_summary("root", "Abandoned path summary", None, None);
 
@@ -2499,8 +2506,8 @@ mod tests {
         std::fs::create_dir_all(&cwd).unwrap();
 
         let mut sm = SessionManager::create(&cwd, Some(&sessions_dir));
-        let m1 = sm.append_message(&make_agent_message(Role::User, "one"));
-        sm.append_message(&make_agent_message(Role::Assistant, "response"));
+        let m1 = sm.append_message(&make_user_msg("one"));
+        sm.append_message(&make_asst_msg("response"));
 
         // m1 should have the assistant as child
         let children = sm.children(&m1);
@@ -2515,8 +2522,8 @@ mod tests {
         std::fs::create_dir_all(&cwd).unwrap();
 
         let mut sm = SessionManager::create(&cwd, Some(&sessions_dir));
-        sm.append_message(&make_agent_message(Role::User, "one"));
-        sm.append_message(&make_agent_message(Role::Assistant, "ok"));
+        sm.append_message(&make_user_msg("one"));
+        sm.append_message(&make_asst_msg("ok"));
         sm.append_custom_entry("my_ext", serde_json::json!({"key": "value"}));
 
         match &sm.entries()[2] {
@@ -2538,8 +2545,8 @@ mod tests {
 
         // Create first session
         let mut sm1 = SessionManager::create(&cwd, Some(&sessions_dir));
-        sm1.append_message(&make_agent_message(Role::User, "old"));
-        sm1.append_message(&make_agent_message(Role::Assistant, "old"));
+        sm1.append_message(&make_user_msg("old"));
+        sm1.append_message(&make_asst_msg("old"));
         let _path1 = sm1.session_file().unwrap().to_path_buf();
         drop(sm1);
 
@@ -2547,8 +2554,8 @@ mod tests {
 
         // Create second session (more recent)
         let mut sm2 = SessionManager::create(&cwd, Some(&sessions_dir));
-        sm2.append_message(&make_agent_message(Role::User, "new"));
-        sm2.append_message(&make_agent_message(Role::Assistant, "new"));
+        sm2.append_message(&make_user_msg("new"));
+        sm2.append_message(&make_asst_msg("new"));
         let path2 = sm2.session_file().unwrap().to_path_buf();
         drop(sm2);
 
@@ -2609,8 +2616,8 @@ mod tests {
 
         // Create a session, get its header, then write just the header line
         let mut sm = SessionManager::create(&cwd, Some(&sessions_dir));
-        sm.append_message(&make_agent_message(Role::User, "test"));
-        sm.append_message(&make_agent_message(Role::Assistant, "ok"));
+        sm.append_message(&make_user_msg("test"));
+        sm.append_message(&make_asst_msg("ok"));
         let original_id = sm.session_id().to_string();
         let file_path = sm.session_file().unwrap().to_path_buf();
         drop(sm);
@@ -2636,8 +2643,8 @@ mod tests {
 
         // Create a valid session
         let mut sm = SessionManager::create(&cwd, Some(&sessions_dir));
-        sm.append_message(&make_agent_message(Role::User, "valid message"));
-        sm.append_message(&make_agent_message(Role::Assistant, "valid response"));
+        sm.append_message(&make_user_msg("valid message"));
+        sm.append_message(&make_asst_msg("valid response"));
         let file_path = sm.session_file().unwrap().to_path_buf();
         drop(sm);
 
@@ -2652,8 +2659,14 @@ mod tests {
         let sm = SessionManager::open(&file_path, Some(&sessions_dir), None);
         let ctx = sm.build_session_context();
         assert_eq!(ctx.messages.len(), 2);
-        assert_eq!(ctx.messages[0].content, "valid message");
-        assert_eq!(ctx.messages[1].content, "valid response");
+        assert_eq!(
+            crate::agent::types::message_text(&ctx.messages[0]),
+            "valid message"
+        );
+        assert_eq!(
+            crate::agent::types::message_text(&ctx.messages[1]),
+            "valid response"
+        );
     }
 
     #[test]
@@ -2669,7 +2682,7 @@ mod tests {
             id: "msg1".to_string(),
             parent_id: None,
             timestamp: "2026-01-01T00:00:00Z".to_string(),
-            message: make_agent_message(Role::User, "orphan message"),
+            message: make_user_msg("orphan message"),
         });
         let json = serde_json::to_string(&entry).unwrap();
         let file_path = sessions_dir.join("no_header.jsonl");
@@ -2699,12 +2712,15 @@ mod tests {
         assert!(sm.entries().is_empty());
 
         // Should be able to append normally
-        sm.append_message(&make_agent_message(Role::User, "fresh start"));
-        sm.append_message(&make_agent_message(Role::Assistant, "fresh response"));
+        sm.append_message(&make_user_msg("fresh start"));
+        sm.append_message(&make_asst_msg("fresh response"));
 
         let ctx = sm.build_session_context();
         assert_eq!(ctx.messages.len(), 2);
-        assert_eq!(ctx.messages[0].content, "fresh start");
+        assert_eq!(
+            crate::agent::types::message_text(&ctx.messages[0]),
+            "fresh start"
+        );
 
         // Verify file was rewritten with valid content
         let content = std::fs::read_to_string(&file_path).unwrap();
