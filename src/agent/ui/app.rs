@@ -933,7 +933,7 @@ fn handle_thinking_cycle(app: &mut App) {
             "high" | "xhigh" => yoagent::types::ThinkingLevel::High,
             _ => yoagent::types::ThinkingLevel::High,
         };
-        agent_session.set_agent_thinking(thinking);
+        agent_session.set_thinking_level(thinking);
     }
     app.status_text = Some(format!("Thinking level: {}", next));
 }
@@ -960,7 +960,7 @@ fn handle_model_cycle(app: &mut App, dir: isize) {
     // Record the change in the session and update the persistent agent
     if let Some(ref mut agent_session) = app.session {
         agent_session.on_model_change("opencode-go", &app.model);
-        agent_session.set_agent_model(&app.model);
+        agent_session.set_model(&app.model);
     }
     app.status_text = Some(format!("Model: {}", app.model));
 }
@@ -1327,12 +1327,12 @@ fn start_agent_loop(app: &mut App, message: String) {
         );
     } else {
         // Update model/thinking on the idle agent for runtime changes
-        session.set_agent_model(&app.model);
-        session.set_agent_thinking(thinking);
+        session.set_model(&app.model);
+        session.set_thinking_level(thinking);
     }
 
     // Start the turn (takes agent from slot, spawns task, returns when done)
-    session.start_turn(message);
+    session.prompt(message);
 }
 /// Handle keyboard input for the session picker.
 fn handle_session_picker_input(app: &mut App, key: &crossterm::event::KeyEvent) {

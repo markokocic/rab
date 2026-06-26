@@ -68,7 +68,7 @@ pub struct AgentSession {
     compaction_api_key: Option<String>,
 
     // ── Persistent agent (pi-compatible lifecycle) ──
-    /// The Agent, stored between turns. Taken on start_turn, returned on completion.
+    /// The Agent, stored between turns. Taken on prompt(), returned on completion.
     agent_slot: Arc<Mutex<Option<Agent>>>,
     /// Cancellation token for the current turn's agent loop.
     cancel_token: Arc<Mutex<Option<CancellationToken>>>,
@@ -199,10 +199,10 @@ impl AgentSession {
         self.agent_slot.blocking_lock().is_some()
     }
 
-    /// Start a new turn with the persistent agent.
+    /// Send a prompt to the agent (pi-compatible).
     /// Takes the agent from the slot, spawns a task, returns it when done.
     /// If the agent was lost (abort), recreates it from stored params.
-    pub fn start_turn(&self, message: String) {
+    pub fn prompt(&self, message: String) {
         let slot = self.agent_slot.clone();
         let cancel_token = self.cancel_token.clone();
         let handle_arc = self.current_turn_handle.clone();
@@ -215,7 +215,7 @@ impl AgentSession {
         let handle = tokio::spawn(async move {
             let mut agent = slot.lock().await.take().unwrap_or_else(|| {
                 // Agent lost (aborted) — recreate from stored params
-                let params = build_params.expect("init_agent must be called before start_turn");
+                let params = build_params.expect("init_agent must be called before prompt");
                 let tools: Vec<Box<dyn AgentTool>> = extensions
                     .as_ref()
                     .map(|exts| {
@@ -254,10 +254,19 @@ impl AgentSession {
                 }
             }
 
-            // Get agent back (or recreate if inner task was aborted)
+            // Get agent back (or recreate if inner task was aborted/panicked)
             let agent = match inner_handle.await {
                 Ok(agent) => agent,
                 Err(_) => {
+                    // Send synthetic AgentEnd to unstick the UI
+                    if let Some(ref tx) = event_tx {
+                        tx.send(AgentEvent::AgentEnd { messages: vec![] }).ok();
+                        tx.send(AgentEvent::ProgressMessage {
+                            tool_call_id: String::new(),
+                            tool_name: String::new(),
+                            text: "\n\u{26a0} Agent loop ended unexpectedly — it may have crashed or encountered a network error.\n".to_string(),
+                        }).ok();
+                    }
                     // Task aborted — create a fresh agent
                     let params = build_params2.expect("build_params must be set");
                     let tools: Vec<Box<dyn AgentTool>> = extensions
@@ -290,7 +299,7 @@ impl AgentSession {
     }
 
     /// Push a steering message into the agent's built-in queue.
-    /// Call this before `start_turn` to drain app-level queues into the agent.
+    /// Call this before `prompt` to drain app-level queues into the agent.
     pub fn steer(&self, msg: AgentMessage) {
         let mut slot = self.agent_slot.blocking_lock();
         if let Some(ref mut agent) = *slot {
@@ -314,9 +323,8 @@ impl AgentSession {
         self.cancel_token.blocking_lock().take();
     }
 
-    /// Update the agent's model (Ctrl+P cycling).
-    /// Takes `&mut self` so the caller must not be streaming.
-    pub fn set_agent_model(&mut self, model: &str) {
+    /// Set the model on the idle agent (pi-compatible: setModel).
+    pub fn set_model(&mut self, model: &str) {
         if let Some(ref mut params) = self.build_params {
             params.model = model.to_string();
         }
@@ -326,9 +334,8 @@ impl AgentSession {
         }
     }
 
-    /// Update the agent's thinking level (Shift+Tab cycling).
-    /// Takes `&mut self` so the caller must not be streaming.
-    pub fn set_agent_thinking(&mut self, level: ThinkingLevel) {
+    /// Set the thinking level on the idle agent (pi-compatible: setThinkingLevel).
+    pub fn set_thinking_level(&mut self, level: ThinkingLevel) {
         let mut slot = self.agent_slot.blocking_lock();
         if let Some(ref mut agent) = *slot {
             agent.thinking_level = level;
@@ -421,7 +428,7 @@ impl AgentSession {
 
     /// Append a user message to the session and register it as persisted.
     /// Returns the entry id.
-    pub fn submit_user_message(&mut self, content: &str) -> String {
+    pub fn send_user_message(&mut self, content: &str) -> String {
         let msg = user_message(content);
         let id = self.session.append_message(&msg);
         self.persisted_message_ids.insert(message_text(&msg));
@@ -430,7 +437,7 @@ impl AgentSession {
 
     /// Append a user message (pre-constructed) to the session.
     /// Returns the entry id.
-    pub fn submit_user_message_obj(&mut self, msg: &AgentMessage) -> String {
+    pub fn send_user_message_obj(&mut self, msg: &AgentMessage) -> String {
         let id = self.session.append_message(msg);
         self.persisted_message_ids.insert(message_text(msg));
         id
@@ -608,9 +615,9 @@ impl AgentSession {
         .await
     }
 
-    /// Clean up resources held by the current session (provider connections, etc.).
+    /// Clean up resources held by the current session (pi-compatible: dispose).
     /// Should be called before switching to a different session or disposing.
-    pub fn cleanup_session_resources(&mut self) {
+    pub fn dispose(&mut self) {
         // Reset persisted message tracking (they belong to the old session)
         self.persisted_message_ids.clear();
         self.persisted_tool_call_ids.clear();
