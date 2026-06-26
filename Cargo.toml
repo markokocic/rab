@@ -44,6 +44,8 @@ regex = "1.12.4"
 base64 = "0.22"
 tokio-util = "0.7"
 yoagent = "0.8.4"
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls", "socks"] }
+openssl-sys = { version = "0.9", features = ["vendored"] }
 
 [features]
 default = ["syntect"]

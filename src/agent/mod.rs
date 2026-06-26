@@ -11,6 +11,7 @@ pub mod settings;
 pub mod skills;
 pub mod system_prompt;
 pub mod types;
+pub mod tool_adapter;
 pub mod ui;
 pub mod yo_bridge;
 

@@ -20,7 +20,7 @@ use crate::agent::ui::messages::{DisplayMsg, session_messages_to_display};
 use crate::agent::ui::model_selector::ModelSelector;
 use crate::agent::ui::theme::RabTheme;
 use crate::agent::ui::working::WorkingIndicator;
-use crate::agent::{AgentEvent, yo_bridge};
+use crate::agent::{AgentEvent, tool_adapter, yo_bridge};
 use crate::builtin::commands::SessionInfoInternal;
 use crate::tui::Component;
 use crate::tui::TUI;
@@ -1365,7 +1365,14 @@ fn start_agent_loop(app: &mut App, message: String) {
 
     tokio::spawn(async move {
         // Build yoagent Agent with wrapped tools
-        let yoagent_tools = yo_bridge::RabToolAdapter::wrap_all(&agent_tools);
+        let yoagent_tools: Vec<Box<dyn yoagent::types::AgentTool>> = agent_tools
+            .iter()
+            .map(|t| {
+                Box::new(tool_adapter::RabToYoAgentTool {
+                    inner: t.clone_boxed(),
+                }) as Box<dyn yoagent::types::AgentTool>
+            })
+            .collect();
         let mut agent = yoagent::agent::Agent::new(yoagent::provider::OpenAiCompatProvider)
             .with_model(&model)
             .with_api_key(&api_key)

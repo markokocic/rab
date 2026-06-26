@@ -1,8 +1,8 @@
 use serde::Serialize;
 
-use crate::agent::yo_bridge;
 use crate::agent::session::SessionEntry;
 use crate::agent::types::{AgentMessage, Role};
+use crate::agent::yo_bridge;
 
 // ── CompactionSettings ─────────────────────────────────────────────
 
@@ -575,8 +575,7 @@ pub async fn compact(
 }
 
 /// Call the provider for a simple text completion (no tools, no streaming).
-
-
+///
 /// Format a message for inclusion in the summarisation prompt.
 fn format_message_for_summary(msg: &AgentMessage) -> String {
     let role_label = match msg.role {

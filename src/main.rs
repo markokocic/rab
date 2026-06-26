@@ -1,8 +1,8 @@
+use rab::agent::AgentEvent;
 use rab::agent::extension::Extension;
 use rab::agent::session::SessionManager;
 use rab::agent::settings::Settings;
 use rab::agent::ui;
-use rab::agent::AgentEvent;
 use rab::builtin::{
     bash::BashExtension, commands::CommandsExtension, edit::EditExtension, read::ReadExtension,
     write::WriteExtension,
@@ -493,7 +493,14 @@ async fn run_print_mode(
     agent_session: &mut rab::agent::AgentSession,
 ) -> anyhow::Result<()> {
     // Build yoagent Agent
-    let yoagent_tools = rab::agent::yo_bridge::RabToolAdapter::wrap_all(&agent_tools);
+    let yoagent_tools: Vec<Box<dyn yoagent::types::AgentTool>> = agent_tools
+        .iter()
+        .map(|t| {
+            Box::new(rab::agent::tool_adapter::RabToYoAgentTool {
+                inner: t.clone_boxed(),
+            }) as Box<dyn yoagent::types::AgentTool>
+        })
+        .collect();
     let mut agent = yoagent::agent::Agent::new(yoagent::provider::OpenAiCompatProvider)
         .with_model(&model)
         .with_api_key(&api_key)
@@ -549,9 +556,7 @@ async fn run_print_mode(
                     thinking_prefix_printed = false;
                 }
                 AgentEvent::ToolResult {
-                    content,
-                    is_error,
-                    ..
+                    content, is_error, ..
                 } => {
                     if *is_error {
                         eprintln!(

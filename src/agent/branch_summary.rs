@@ -1,7 +1,7 @@
 use crate::agent::compaction::{CompactionSettings, estimate_tokens};
-use crate::agent::yo_bridge;
 use crate::agent::session::{SessionEntry, SessionManager};
 use crate::agent::types::{AgentMessage, Role};
+use crate::agent::yo_bridge;
 use std::collections::HashSet;
 
 /// Collect entries from an abandoned branch path for summarization.

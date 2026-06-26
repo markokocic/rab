@@ -3,106 +3,24 @@
 //! Migration path: this file shrinks as rab types are replaced by yoagent types
 //! throughout the codebase. Goal: delete entirely.
 
-use crate::agent::extension::{AgentTool as RabAgentTool, Cancel, ToolOutput};
-use crate::agent::types::AgentMessage;
-use async_trait::async_trait;
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+use crate::agent::extension::AgentTool as RabAgentTool;
 use crate::agent::provider::ToolDef;
+use crate::agent::types::AgentMessage;
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use yoagent::provider::model::{ModelConfig, OpenAiCompat};
-use yoagent::types::{AgentEvent, Content, Message, ToolContext, ToolError, ToolResult};
+use yoagent::types::{AgentEvent, Content, Message};
 
 // ──────────────────────────────────────────────
 // 1. Tool adapter: rab AgentTool → yoagent AgentTool
-// ──────────────────────────────────────────────
 
-/// Wraps a rab `AgentTool` so it can be used by yoagent's loop.
-pub struct RabToolAdapter {
-    inner: Box<dyn RabAgentTool>,
-}
-
-impl RabToolAdapter {
-    pub fn new(inner: Box<dyn RabAgentTool>) -> Self {
-        Self { inner }
-    }
-
-    /// Wrap a slice of rab tools.
-    pub fn wrap_all(tools: &[Box<dyn RabAgentTool>]) -> Vec<Box<dyn yoagent::types::AgentTool>> {
-        tools
-            .iter()
-            .map(|t| {
-                let inner = t.clone_boxed();
-                Box::new(RabToolAdapter { inner }) as Box<dyn yoagent::types::AgentTool>
-            })
-            .collect()
-    }
-}
-
-#[async_trait]
-impl yoagent::types::AgentTool for RabToolAdapter {
-    fn name(&self) -> &str {
-        self.inner.name()
-    }
-
-    fn label(&self) -> &str {
-        self.inner.name()
-    }
-
-    fn description(&self) -> &str {
-        self.inner.description()
-    }
-
-    fn parameters_schema(&self) -> serde_json::Value {
-        self.inner.parameters()
-    }
-
-    async fn execute(
-        &self,
-        params: serde_json::Value,
-        ctx: ToolContext,
-    ) -> std::result::Result<ToolResult, ToolError> {
-        let tool_call_id = ctx.tool_call_id.clone();
-        let cancel = Cancel::new();
-        let (update_tx, mut update_rx) = tokio::sync::mpsc::unbounded_channel::<ToolOutput>();
-
-        // Forward updates from the tool to yoagent's progress callback
-        if let Some(on_progress) = &ctx.on_progress {
-            let on_progress = on_progress.clone();
-            tokio::spawn(async move {
-                while let Some(output) = update_rx.recv().await {
-                    let _ = on_progress(output.content);
-                }
-            });
-        }
-
-        match self
-            .inner
-            .execute(tool_call_id, params, cancel, Some(update_tx))
-            .await
-        {
-            Ok(output) => {
-                let content = vec![Content::Text {
-                    text: output.content,
-                }];
-                Ok(ToolResult {
-                    content,
-                    details: serde_json::Value::Null,
-                })
-            }
-            Err(e) => Err(ToolError::Failed(e.to_string())),
-        }
-    }
-}
-
-/// Call yoagent's provider for a simple text completion (no tools, no streaming).
-/// Used by compaction and branch summary.
 pub async fn summarize_text(
     api_key: &str,
     model: &str,
     system_prompt: &str,
     messages: &[crate::agent::types::AgentMessage],
 ) -> Result<String, String> {
-    use yoagent::provider::traits::StreamConfig;
     use yoagent::provider::StreamProvider;
+    use yoagent::provider::traits::StreamConfig;
 
     let yoagent_messages: Vec<yoagent::types::Message> = messages
         .iter()
@@ -111,32 +29,26 @@ pub async fn summarize_text(
                 text: m.content.clone(),
             }];
             match m.role {
-                crate::agent::types::Role::User => {
-                    yoagent::types::Message::User {
-                        content,
-                        timestamp: 0,
-                    }
-                }
-                crate::agent::types::Role::Assistant => {
-                    yoagent::types::Message::Assistant {
-                        content,
-                        stop_reason: yoagent::types::StopReason::Stop,
-                        model: model.to_string(),
-                        provider: String::new(),
-                        usage: yoagent::types::Usage::default(),
-                        timestamp: 0,
-                        error_message: None,
-                    }
-                }
-                crate::agent::types::Role::ToolResult => {
-                    yoagent::types::Message::ToolResult {
-                        tool_call_id: m.tool_call_id.clone().unwrap_or_default(),
-                        tool_name: String::new(),
-                        content,
-                        is_error: m.is_error,
-                        timestamp: 0,
-                    }
-                }
+                crate::agent::types::Role::User => yoagent::types::Message::User {
+                    content,
+                    timestamp: 0,
+                },
+                crate::agent::types::Role::Assistant => yoagent::types::Message::Assistant {
+                    content,
+                    stop_reason: yoagent::types::StopReason::Stop,
+                    model: model.to_string(),
+                    provider: String::new(),
+                    usage: yoagent::types::Usage::default(),
+                    timestamp: 0,
+                    error_message: None,
+                },
+                crate::agent::types::Role::ToolResult => yoagent::types::Message::ToolResult {
+                    tool_call_id: m.tool_call_id.clone().unwrap_or_default(),
+                    tool_name: String::new(),
+                    content,
+                    is_error: m.is_error,
+                    timestamp: 0,
+                },
             }
         })
         .collect();
@@ -175,10 +87,10 @@ pub async fn summarize_text(
                 // Extract final text from the message
                 if let yoagent::types::Message::Assistant { content, .. } = &message {
                     for c in content {
-                        if let yoagent::types::Content::Text { text: t } = c {
-                            if text.is_empty() {
-                                text = t.clone();
-                            }
+                        if let yoagent::types::Content::Text { text: t } = c
+                            && text.is_empty()
+                        {
+                            text = t.clone();
                         }
                     }
                 }
@@ -389,16 +301,12 @@ pub fn convert_to_rab_event(event: &AgentEvent) -> Option<RabEvent> {
         AgentEvent::TurnStart => RabEvent::TurnStart,
         AgentEvent::TurnEnd { .. } => RabEvent::TurnEnd,
         AgentEvent::MessageUpdate { delta, .. } => match delta {
-            yoagent::types::StreamDelta::Text { delta } => {
-                RabEvent::TextDelta {
-                    delta: delta.clone(),
-                }
-            }
-            yoagent::types::StreamDelta::Thinking { delta } => {
-                RabEvent::ThinkingDelta {
-                    delta: delta.clone(),
-                }
-            }
+            yoagent::types::StreamDelta::Text { delta } => RabEvent::TextDelta {
+                delta: delta.clone(),
+            },
+            yoagent::types::StreamDelta::Thinking { delta } => RabEvent::ThinkingDelta {
+                delta: delta.clone(),
+            },
             yoagent::types::StreamDelta::ToolCallDelta { .. } => return None,
         },
         AgentEvent::ToolExecutionStart {

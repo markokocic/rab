@@ -54,7 +54,11 @@ async fn run_mock_agent(
     }
 
     let (tx, mut rx) = mpsc::unbounded_channel();
-    let prompt_text = prompts.into_iter().map(|p| p.content).collect::<Vec<_>>().join(" ");
+    let prompt_text = prompts
+        .into_iter()
+        .map(|p| p.content)
+        .collect::<Vec<_>>()
+        .join(" ");
 
     // Spawn agent and collect events
     tokio::spawn(async move {
@@ -87,9 +91,13 @@ async fn run_mock_agent(
 
 #[tokio::test]
 async fn test_agent_loop_with_history() {
-    let history = vec![AgentMessage::user("previous question"), assistant_msg("previous answer")];
+    let history = vec![
+        AgentMessage::user("previous question"),
+        assistant_msg("previous answer"),
+    ];
 
-    let (new_messages, events) = run_mock_agent(vec![AgentMessage::user("new question")], history).await;
+    let (new_messages, events) =
+        run_mock_agent(vec![AgentMessage::user("new question")], history).await;
 
     assert!(!new_messages.is_empty(), "Expected at least one message");
 
@@ -210,7 +218,8 @@ async fn test_agent_loop_persists_with_history() {
     let history = session.build_session_context().messages;
     assert_eq!(history.len(), 2, "History should have 2 messages");
 
-    let (new_msgs, _events) = run_mock_agent(vec![AgentMessage::user("new question")], history).await;
+    let (new_msgs, _events) =
+        run_mock_agent(vec![AgentMessage::user("new question")], history).await;
 
     // Persist — simulating TUI AgentEnd
     for msg in &new_msgs {
