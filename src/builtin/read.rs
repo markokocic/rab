@@ -1,4 +1,4 @@
-use crate::agent::extension::Extension;
+use crate::agent::extension::{Extension, ToolWithMeta};
 use crate::agent::extension::{ToolRenderContext, ToolRenderer};
 use crate::tui::Theme;
 use crate::tui::ThemeKey;
@@ -23,10 +23,14 @@ impl Extension for ReadExtension {
         "read".into()
     }
 
-    fn tools(&self) -> Vec<Box<dyn yoagent::types::AgentTool>> {
-        vec![Box::new(ReadTool {
-            cwd: self.cwd.clone(),
-        })]
+    fn tools(&self) -> Vec<ToolWithMeta> {
+        vec![ToolWithMeta {
+            tool: Box::new(ReadTool {
+                cwd: self.cwd.clone(),
+            }),
+            snippet: "Read file contents",
+            guidelines: &["Use read to examine files instead of cat or sed."],
+        }]
     }
 
     fn tool_renderer(&self, name: &str) -> Option<Box<dyn ToolRenderer>> {

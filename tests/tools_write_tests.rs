@@ -40,7 +40,7 @@ async fn writes_file() {
     let path = tmp.join("test.txt");
 
     let ext = WriteExtension::new(tmp.clone());
-    let tools = ext.tools();
+    let tools: Vec<Box<dyn yoagent::types::AgentTool>> = ext.tools().into_iter().map(|twm| twm.tool).collect();
     let tool = &tools[0];
 
     let result = tool
@@ -61,7 +61,7 @@ async fn overwrites_existing_file() {
     std::fs::write(&path, "old content").unwrap();
 
     let ext = WriteExtension::new(tmp.clone());
-    let tools = ext.tools();
+    let tools: Vec<Box<dyn yoagent::types::AgentTool>> = ext.tools().into_iter().map(|twm| twm.tool).collect();
     let tool = &tools[0];
 
     tool.execute(
@@ -80,7 +80,7 @@ async fn creates_parent_directories() {
     let path = tmp.join("subdir").join("nested.txt");
 
     let ext = WriteExtension::new(tmp.clone());
-    let tools = ext.tools();
+    let tools: Vec<Box<dyn yoagent::types::AgentTool>> = ext.tools().into_iter().map(|twm| twm.tool).collect();
     let tool = &tools[0];
 
     tool.execute(

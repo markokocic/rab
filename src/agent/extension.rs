@@ -6,6 +6,18 @@ use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
 };
+
+/// A tool bundled with its prompt metadata.
+///
+/// Mirrors pi's `ToolDefinition` which carries `promptSnippet` and
+/// `promptGuidelines` directly on the tool definition.
+pub struct ToolWithMeta {
+    pub tool: Box<dyn yoagent::types::AgentTool>,
+    /// One-line snippet for the "Available tools" section of the system prompt.
+    pub snippet: &'static str,
+    /// Guideline bullets for the "Guidelines" section of the system prompt.
+    pub guidelines: &'static [&'static str],
+}
 /// Reason a tool call was blocked.
 #[derive(Debug, Clone)]
 pub enum BlockReason {
@@ -306,8 +318,8 @@ pub trait ToolRenderer: Send + Sync {
 pub trait Extension: Send + Sync {
     fn name(&self) -> Cow<'static, str>;
 
-    /// Tools this extension provides (LLM-callable).
-    fn tools(&self) -> Vec<Box<dyn yoagent::types::AgentTool>> {
+    /// Tools this extension provides (LLM-callable), each with its own prompt metadata.
+    fn tools(&self) -> Vec<ToolWithMeta> {
         vec![]
     }
 

@@ -39,7 +39,7 @@ fn setup() -> (tempfile::TempDir, std::path::PathBuf) {
 async fn execute_basic_command() {
     let (_tmp, dir) = setup();
     let ext = BashExtension::new(dir.clone());
-    let tools = ext.tools();
+    let tools: Vec<Box<dyn yoagent::types::AgentTool>> = ext.tools().into_iter().map(|twm| twm.tool).collect();
     let tool = &tools[0];
     let result = tool
         .execute(serde_json::json!({"command": "echo hello"}), tool_ctx())
@@ -52,7 +52,7 @@ async fn execute_basic_command() {
 async fn execute_with_cwd() {
     let (_tmp, dir) = setup();
     let ext = BashExtension::new(dir.clone());
-    let tools = ext.tools();
+    let tools: Vec<Box<dyn yoagent::types::AgentTool>> = ext.tools().into_iter().map(|twm| twm.tool).collect();
     let tool = &tools[0];
     let result = tool
         .execute(serde_json::json!({"command": "pwd"}), tool_ctx())
@@ -70,7 +70,7 @@ async fn execute_with_cwd() {
 async fn execute_with_timeout() {
     let (_tmp, dir) = setup();
     let ext = BashExtension::new(dir.clone());
-    let tools = ext.tools();
+    let tools: Vec<Box<dyn yoagent::types::AgentTool>> = ext.tools().into_iter().map(|twm| twm.tool).collect();
     let tool = &tools[0];
     let result = tool
         .execute(
@@ -86,7 +86,7 @@ async fn execute_with_timeout() {
 async fn execute_failing_command() {
     let (_tmp, dir) = setup();
     let ext = BashExtension::new(dir.clone());
-    let tools = ext.tools();
+    let tools: Vec<Box<dyn yoagent::types::AgentTool>> = ext.tools().into_iter().map(|twm| twm.tool).collect();
     let tool = &tools[0];
     let result = tool
         .execute(serde_json::json!({"command": "exit 1"}), tool_ctx())
@@ -102,7 +102,7 @@ async fn execute_failing_command() {
 async fn execute_with_timeout_truncation() {
     let (_tmp, dir) = setup();
     let ext = BashExtension::new(dir.clone());
-    let tools = ext.tools();
+    let tools: Vec<Box<dyn yoagent::types::AgentTool>> = ext.tools().into_iter().map(|twm| twm.tool).collect();
     let tool = &tools[0];
     let result = tool
         .execute(
@@ -120,7 +120,7 @@ async fn execute_with_timeout_truncation() {
 async fn timeout_works() {
     let (_tmp, dir) = setup();
     let ext = BashExtension::new(dir.clone());
-    let tools = ext.tools();
+    let tools: Vec<Box<dyn yoagent::types::AgentTool>> = ext.tools().into_iter().map(|twm| twm.tool).collect();
     let tool = &tools[0];
     // Use a very short timeout on a sleep command
     let result = tool

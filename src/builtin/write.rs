@@ -1,4 +1,4 @@
-use crate::agent::extension::Extension;
+use crate::agent::extension::{Extension, ToolWithMeta};
 use crate::agent::extension::{ToolRenderContext, ToolRenderer};
 use crate::builtin;
 use crate::tui::Theme;
@@ -77,11 +77,15 @@ impl Extension for WriteExtension {
         "write".into()
     }
 
-    fn tools(&self) -> Vec<Box<dyn yoagent::types::AgentTool>> {
-        vec![Box::new(WriteTool {
-            cwd: self.cwd.clone(),
-            operations: self.operations.clone(),
-        })]
+    fn tools(&self) -> Vec<ToolWithMeta> {
+        vec![ToolWithMeta {
+            tool: Box::new(WriteTool {
+                cwd: self.cwd.clone(),
+                operations: self.operations.clone(),
+            }),
+            snippet: "Create or overwrite files",
+            guidelines: &["Use write only for new files or complete rewrites."],
+        }]
     }
 
     fn tool_renderer(&self, name: &str) -> Option<Box<dyn ToolRenderer>> {

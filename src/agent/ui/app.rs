@@ -1351,9 +1351,12 @@ fn start_agent_loop(app: &mut App, message: String) {
     app.cancel_tx = Some(cancel_tx);
 
     tokio::spawn(async move {
-        // Create yoagent tools from extensions
-        let yoagent_tools: Vec<Box<dyn yoagent::types::AgentTool>> =
-            extensions.iter().flat_map(|ext| ext.tools()).collect();
+        // Create yoagent tools from extensions (unwrap ToolWithMeta)
+        let yoagent_tools: Vec<Box<dyn yoagent::types::AgentTool>> = extensions
+            .iter()
+            .flat_map(|ext| ext.tools())
+            .map(|twm| twm.tool)
+            .collect();
         let mut agent = yoagent::agent::Agent::new(yoagent::provider::OpenAiCompatProvider)
             .with_model(&model)
             .with_api_key(&api_key)

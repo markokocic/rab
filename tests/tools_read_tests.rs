@@ -41,7 +41,7 @@ async fn reads_file_content() {
     std::fs::write(&path, "hello world\nline two\n").unwrap();
 
     let ext = ReadExtension::new(tmp.clone());
-    let tools = ext.tools();
+    let tools: Vec<Box<dyn yoagent::types::AgentTool>> = ext.tools().into_iter().map(|twm| twm.tool).collect();
     let tool = &tools[0];
 
     let result = tool
@@ -64,7 +64,7 @@ async fn read_respects_offset() {
     std::fs::write(&path, lines.join("\n")).unwrap();
 
     let ext = ReadExtension::new(tmp.clone());
-    let tools = ext.tools();
+    let tools: Vec<Box<dyn yoagent::types::AgentTool>> = ext.tools().into_iter().map(|twm| twm.tool).collect();
     let tool = &tools[0];
 
     let result = tool
@@ -91,7 +91,7 @@ async fn read_respects_limit() {
     std::fs::write(&path, lines.join("\n")).unwrap();
 
     let ext = ReadExtension::new(tmp.clone());
-    let tools = ext.tools();
+    let tools: Vec<Box<dyn yoagent::types::AgentTool>> = ext.tools().into_iter().map(|twm| twm.tool).collect();
     let tool = &tools[0];
 
     let result = tool
@@ -111,7 +111,7 @@ async fn read_respects_limit() {
 async fn read_nonexistent_file_errors() {
     let tmp = tmp_dir();
     let ext = ReadExtension::new(tmp.clone());
-    let tools = ext.tools();
+    let tools: Vec<Box<dyn yoagent::types::AgentTool>> = ext.tools().into_iter().map(|twm| twm.tool).collect();
     let tool = &tools[0];
 
     let result = tool

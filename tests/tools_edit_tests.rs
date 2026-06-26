@@ -54,7 +54,7 @@ async fn test_basic_edit() {
     std::fs::write(&path, "hello world").unwrap();
 
     let ext = EditExtension::new(tmp.clone());
-    let tools = ext.tools();
+    let tools: Vec<Box<dyn yoagent::types::AgentTool>> = ext.tools().into_iter().map(|twm| twm.tool).collect();
     let tool = &tools[0];
 
     let result = exec_ok(
@@ -80,7 +80,7 @@ async fn test_multiple_edits() {
     std::fs::write(&path, "line one\nline two\nline three\n").unwrap();
 
     let ext = EditExtension::new(tmp.clone());
-    let tools = ext.tools();
+    let tools: Vec<Box<dyn yoagent::types::AgentTool>> = ext.tools().into_iter().map(|twm| twm.tool).collect();
     let tool = &tools[0];
 
     exec_ok(
@@ -107,7 +107,7 @@ async fn test_edit_nonexistent_file() {
     let path = tmp.join("nonexistent.txt");
 
     let ext = EditExtension::new(tmp.clone());
-    let tools = ext.tools();
+    let tools: Vec<Box<dyn yoagent::types::AgentTool>> = ext.tools().into_iter().map(|twm| twm.tool).collect();
     let tool = &tools[0];
 
     let result = exec_err(

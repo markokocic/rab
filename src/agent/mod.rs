@@ -13,7 +13,7 @@ pub mod ui;
 
 pub use agent_session::AgentSession;
 pub use context_files::{ContextFile, load_context_files};
-pub use extension::{CommandHandler, CommandResult, Extension, SlashCommand};
+pub use extension::{CommandHandler, CommandResult, Extension, SlashCommand, ToolWithMeta};
 pub use session::SessionManager;
 pub use session_repo::{DefaultSessionRepo, SessionRepo};
 pub use session_storage::{InMemorySessionStorage, JsonlSessionStorage, SessionStorage};

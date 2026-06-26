@@ -1,4 +1,4 @@
-use crate::agent::extension::{Cancel, Extension};
+use crate::agent::extension::{Cancel, Extension, ToolWithMeta};
 use crate::agent::extension::{ToolRenderContext, ToolRenderer};
 use crate::tui::Theme;
 use crate::tui::ThemeKey;
@@ -75,13 +75,17 @@ impl Extension for BashExtension {
         "bash".into()
     }
 
-    fn tools(&self) -> Vec<Box<dyn yoagent::types::AgentTool>> {
-        vec![Box::new(BashTool {
-            cwd: self.cwd.clone(),
-            shell_path: self.options.shell_path.clone(),
-            command_prefix: self.options.command_prefix.clone(),
-            operations: self.options.operations.clone(),
-        })]
+    fn tools(&self) -> Vec<ToolWithMeta> {
+        vec![ToolWithMeta {
+            tool: Box::new(BashTool {
+                cwd: self.cwd.clone(),
+                shell_path: self.options.shell_path.clone(),
+                command_prefix: self.options.command_prefix.clone(),
+                operations: self.options.operations.clone(),
+            }),
+            snippet: "Execute bash commands (ls, grep, find, etc.)",
+            guidelines: &[],
+        }]
     }
 
     fn tool_renderer(&self, name: &str) -> Option<Box<dyn ToolRenderer>> {

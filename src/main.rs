@@ -382,35 +382,28 @@ async fn main() -> anyhow::Result<()> {
         .map(|cf| format_context_path(&cf.path, &cwd))
         .collect();
 
-    // Collect LLM-callable tools from all extensions
-    let agent_tools: Vec<Box<dyn yoagent::types::AgentTool>> =
+    // Collect tools + metadata from all extensions
+    let all_tools: Vec<rab::agent::extension::ToolWithMeta> =
         extensions.iter().flat_map(|ext| ext.tools()).collect();
 
-    // Build tool snippets from tools (using name + label from yoagent's AgentTool)
-    let tool_snippets: Vec<rab::agent::ToolSnippet> = agent_tools
+    // Build tool snippets and guidelines from ToolWithMeta metadata
+    let tool_snippets: Vec<rab::agent::ToolSnippet> = all_tools
         .iter()
-        .map(|t| rab::agent::ToolSnippet {
-            name: t.name().to_string(),
-            description: t.label().to_string(),
+        .map(|twm| rab::agent::ToolSnippet {
+            name: twm.tool.name().to_string(),
+            description: twm.snippet.to_string(),
         })
         .collect();
 
-    // Build tool guidelines from tools (static per tool name)
-    fn tool_guideline(name: &str) -> Option<String> {
-        match name {
-            "bash" => Some("Use bash to execute commands instead of running them manually.".into()),
-            "edit" => {
-                Some("Use edit for targeted file changes instead of rewriting entire files.".into())
-            }
-            "read" => Some("Use read to examine files instead of cat or sed.".into()),
-            "write" => Some("Use write to create or overwrite files.".into()),
-            _ => None,
-        }
-    }
-    let tool_guidelines: Vec<String> = agent_tools
+    let tool_guidelines: Vec<String> = all_tools
         .iter()
-        .filter_map(|t| tool_guideline(t.name()))
+        .flat_map(|twm| twm.guidelines.iter().copied())
+        .map(|s| s.to_string())
         .collect();
+
+    // Extract bare tools for yoagent Agent
+    let agent_tools: Vec<Box<dyn yoagent::types::AgentTool>> =
+        all_tools.into_iter().map(|twm| twm.tool).collect();
 
     // Build system prompt using the new builder
     let system_prompt = rab::agent::SystemPromptBuilder::new()
