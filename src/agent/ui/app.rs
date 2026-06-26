@@ -2392,12 +2392,8 @@ fn handle_agent_event(app: &mut App, event: yoagent::types::AgentEvent) {
             }
         }
         E::MessageEnd { message } => {
-            // Pi-compatible: persist every message (user, assistant, toolResult) immediately
-            // on message_end, not deferred to agent_end.
-            if let Some(ref mut s) = app.session {
-                s.persist_message_end(&message);
-            }
             // Check for error messages from the provider (network errors, etc.)
+            // Show in UI but do NOT persist to session.
             if let Some(err) = crate::agent::types::message_error(&message) {
                 let error_text = if err.is_empty() {
                     "Provider error: The agent encountered an issue and stopped.".to_string()
@@ -2408,6 +2404,12 @@ fn handle_agent_event(app: &mut App, event: yoagent::types::AgentEvent) {
                     app,
                     std::boxed::Box::new(InfoMessageComponent::new(error_text.clone())),
                 );
+            } else {
+                // Pi-compatible: persist every message (user, assistant, toolResult) immediately
+                // on message_end, not deferred to agent_end. Error messages are shown but not persisted.
+                if let Some(ref mut s) = app.session {
+                    s.persist_message_end(&message);
+                }
             }
         }
         E::InputRejected { reason } => {
