@@ -1,79 +1,13 @@
-//! Replacement for rab's custom types — now re-exports yoagent types directly.
+//! Helper functions for common operations on yoagent types.
 //!
-//! This module was previously a compatibility layer that wrapped yoagent types.
-//! All types are now used directly from `yoagent::types`.
-//!
-//! This module only provides:
-//! 1. `ToolExecutionMode` — rab-specific enum with no yoagent equivalent
-//! 2. Helper functions for common operations on yoagent types
+//! All message types are used directly from `yoagent::types`.
 
 pub use yoagent::types::{AgentMessage, Content, Message};
-
-// ── Execution mode (rab-specific, no yoagent equivalent) ──
-
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
-pub enum ToolExecutionMode {
-    #[default]
-    Parallel,
-    Sequential,
-}
-
-// ── Queue mode (rab-specific, no yoagent equivalent yet) ──
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum QueueMode {
-    All,
-    OneAtATime,
-}
-
-// ── PendingMessageQueue ────────────────────────────────────────────
-
-#[derive(Debug)]
-pub struct PendingMessageQueue {
-    messages: Vec<AgentMessage>,
-    mode: QueueMode,
-}
-
-impl PendingMessageQueue {
-    pub fn new(mode: QueueMode) -> Self {
-        Self {
-            messages: Vec::new(),
-            mode,
-        }
-    }
-    pub fn enqueue(&mut self, msg: AgentMessage) {
-        self.messages.push(msg);
-    }
-    pub fn drain(&mut self) -> Vec<AgentMessage> {
-        match self.mode {
-            QueueMode::All => self.messages.drain(..).collect(),
-            QueueMode::OneAtATime => {
-                if self.messages.is_empty() {
-                    vec![]
-                } else {
-                    vec![self.messages.remove(0)]
-                }
-            }
-        }
-    }
-    pub fn drain_all(&mut self) -> Vec<AgentMessage> {
-        self.messages.drain(..).collect()
-    }
-    pub fn is_empty(&self) -> bool {
-        self.messages.is_empty()
-    }
-    pub fn len(&self) -> usize {
-        self.messages.len()
-    }
-    pub fn clear(&mut self) {
-        self.messages.clear();
-    }
-}
 
 // ── Helper functions for working with yoagent types ─────────────────
 
 /// Extract all text content from a `Vec<Content>` as a single string.
-pub fn content_text(content: &[Content]) -> String {
+fn content_text(content: &[Content]) -> String {
     content
         .iter()
         .filter_map(|c| {
@@ -119,18 +53,6 @@ pub fn message_text(msg: &AgentMessage) -> String {
     }
 }
 
-/// Get the timestamp from an AgentMessage.
-pub fn message_timestamp(msg: &AgentMessage) -> u64 {
-    match msg {
-        AgentMessage::Llm(m) => match m {
-            Message::User { timestamp, .. }
-            | Message::Assistant { timestamp, .. }
-            | Message::ToolResult { timestamp, .. } => *timestamp,
-        },
-        AgentMessage::Extension(_) => 0,
-    }
-}
-
 /// Check if an AgentMessage is a tool result with an error.
 pub fn message_is_error(msg: &AgentMessage) -> bool {
     matches!(
@@ -168,33 +90,6 @@ pub fn message_is_assistant(msg: &AgentMessage) -> bool {
 /// Check if an AgentMessage is a ToolResult message.
 pub fn message_is_tool_result(msg: &AgentMessage) -> bool {
     matches!(msg, AgentMessage::Llm(Message::ToolResult { .. }))
-}
-
-/// Get the model from an Assistant message.
-pub fn message_model(msg: &AgentMessage) -> Option<&str> {
-    match msg {
-        AgentMessage::Llm(Message::Assistant { model, .. }) => Some(model.as_str()),
-        _ => None,
-    }
-}
-
-/// Get the provider from an Assistant message.
-pub fn message_provider(msg: &AgentMessage) -> Option<&str> {
-    match msg {
-        AgentMessage::Llm(Message::Assistant { provider, .. }) => Some(provider.as_str()),
-        _ => None,
-    }
-}
-
-/// Get the error_message from an Assistant message.
-pub fn message_error_message(msg: &AgentMessage) -> Option<&str> {
-    match msg {
-        AgentMessage::Llm(Message::Assistant {
-            error_message: Some(err),
-            ..
-        }) => Some(err.as_str()),
-        _ => None,
-    }
 }
 
 /// Create a simple User AgentMessage with text content.

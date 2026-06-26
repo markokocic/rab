@@ -9,7 +9,7 @@ use std::time::Duration;
 use crate::agent::AgentSession;
 use crate::agent::extension::{CommandResult, Extension};
 use crate::agent::session::SessionManager;
-use crate::agent::types::{PendingMessageQueue, QueueMode, ToolExecutionMode};
+
 use crate::agent::ui::chat_editor::{ChatEditor, InputAction};
 use crate::agent::ui::components::EditorComponent;
 use crate::agent::ui::components::FooterComponent;
@@ -51,9 +51,9 @@ pub struct AppConfig {
     pub settings: crate::agent::settings::Settings,
     /// Context files (AGENTS.md / CLAUDE.md) loaded for the session.
     pub context_files: Vec<String>,
-    /// Tool execution mode (parallel by default).
+    /// Tool execution strategy (parallel by default).
     #[allow(dead_code)]
-    pub tool_execution: ToolExecutionMode,
+    pub tool_execution: yoagent::types::ToolExecutionStrategy,
     /// Skills loaded for the session (used for /skill:name expansion).
     pub skills: Vec<yoagent::skills::Skill>,
     /// Whether the current model supports reasoning (for showing thinking level in footer).
@@ -176,13 +176,13 @@ pub struct App {
 
     /// Steering queue: messages delivered after current turn's tool calls finish,
     /// before the next LLM call. Shared with the agent loop.
-    steering_queue: Arc<std::sync::Mutex<PendingMessageQueue>>,
+    steering_queue: Arc<std::sync::Mutex<Vec<yoagent::types::AgentMessage>>>,
     /// Follow-up queue: messages delivered only after the agent has no more
     /// tool calls (fully idle). Shared with the agent loop.
-    follow_up_queue: Arc<std::sync::Mutex<PendingMessageQueue>>,
+    follow_up_queue: Arc<std::sync::Mutex<Vec<yoagent::types::AgentMessage>>>,
     /// Tool execution mode (parallel by default).
     #[allow(dead_code)]
-    tool_execution: ToolExecutionMode,
+    tool_execution: yoagent::types::ToolExecutionStrategy,
 
     /// Skills loaded for the session (/skill:name expansion).
     skills: Vec<yoagent::skills::Skill>,
@@ -442,12 +442,8 @@ impl App {
             footer,
             working: WorkingIndicator::new(),
             extensions: Arc::new(config.extensions),
-            steering_queue: Arc::new(std::sync::Mutex::new(PendingMessageQueue::new(
-                QueueMode::OneAtATime,
-            ))),
-            follow_up_queue: Arc::new(std::sync::Mutex::new(PendingMessageQueue::new(
-                QueueMode::OneAtATime,
-            ))),
+            steering_queue: Arc::new(std::sync::Mutex::new(Vec::new())),
+            follow_up_queue: Arc::new(std::sync::Mutex::new(Vec::new())),
             tool_execution: config.tool_execution,
             skills: config.skills,
             session_info: config.session_info,
@@ -1162,7 +1158,7 @@ fn handle_follow_up(app: &mut App, text: String) {
         app.follow_up_queue
             .lock()
             .unwrap()
-            .enqueue(crate::agent::types::user_message(text));
+            .push(crate::agent::types::user_message(text));
         app.status_text = Some("Message queued - will send when agent finishes".into());
     } else {
         // Not streaming - submit immediately
@@ -1180,7 +1176,7 @@ fn handle_dequeue(app: &mut App) {
     }
 
     let count = queue.len();
-    let all = queue.drain_all();
+    let all: Vec<yoagent::types::AgentMessage> = queue.drain(..).collect();
     let restored: Vec<String> = all.iter().map(crate::agent::types::message_text).collect();
     let text = restored.join("\n\n");
     app.editor.borrow_mut().editor.set_text(&text);
@@ -1226,7 +1222,7 @@ fn interrupt_streaming(app: &mut App) {
     // Use try_lock to avoid deadlock if the agent loop holds the mutex when abort is called.
     if let Ok(mut follow_up) = app.follow_up_queue.try_lock() {
         if !follow_up.is_empty() {
-            let all = follow_up.drain_all();
+            let all: Vec<yoagent::types::AgentMessage> = follow_up.drain(..).collect();
             let text: Vec<String> = all.iter().map(crate::agent::types::message_text).collect();
             app.editor.borrow_mut().editor.set_text(&text.join("\n\n"));
             app.queued_section.borrow_mut().set_lines(vec![]);
@@ -1281,7 +1277,7 @@ fn submit_message(app: &mut App, message: String) {
             app.steering_queue
                 .lock()
                 .unwrap()
-                .enqueue(crate::agent::types::user_message(expanded));
+                .push(crate::agent::types::user_message(expanded));
             return;
         }
         start_agent_loop(app, expanded);
@@ -1328,7 +1324,7 @@ fn submit_message(app: &mut App, message: String) {
             app.steering_queue
                 .lock()
                 .unwrap()
-                .enqueue(crate::agent::types::user_message(trimmed));
+                .push(crate::agent::types::user_message(trimmed));
             return;
         }
     }

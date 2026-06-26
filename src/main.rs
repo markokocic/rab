@@ -462,7 +462,7 @@ async fn main() -> anyhow::Result<()> {
             context_files: context_file_names,
             skills,
             model_supports_reasoning: true,
-            tool_execution: rab::agent::ToolExecutionMode::Parallel,
+            tool_execution: yoagent::types::ToolExecutionStrategy::Parallel,
             session_info: Some(session_info),
             api_key: auth.api_key("opencode-go").unwrap_or_default(),
         };

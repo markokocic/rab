@@ -1707,20 +1707,12 @@ mod tests {
     use crate::agent::types::user_message;
     use tempfile::TempDir;
 
-    fn make_message(content: &str) -> AgentMessage {
-        user_message(content)
-    }
-
     fn make_user_msg(content: &str) -> AgentMessage {
         user_message(content)
     }
 
     fn make_asst_msg(content: &str) -> AgentMessage {
         crate::agent::types::assistant_message(content)
-    }
-
-    fn make_tool_result(tool_call_id: &str, content: &str, is_error: bool) -> AgentMessage {
-        crate::agent::types::tool_result_message(tool_call_id, content, is_error)
     }
 
     // ── Entry serialization round-trip ──────────────────────────────
