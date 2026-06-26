@@ -387,13 +387,9 @@ fn wrap_single_line(line: &str, width: usize) -> Vec<String> {
     }
 
     if !current_line.is_empty() {
-        let trimmed = current_line.trim_end().to_string();
-        if trimmed.is_empty() {
-            // All-whitespace final line: preserve it (user-typed trailing spaces).
-            wrapped.push(current_line);
-        } else {
-            wrapped.push(trimmed);
-        }
+        // No trim: trailing spaces are valid user-typed content and invisible
+        // in the editor's padding anyway.
+        wrapped.push(current_line);
     }
 
     if wrapped.is_empty() {
