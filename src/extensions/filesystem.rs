@@ -52,9 +52,9 @@ impl Extension for FilesystemExtension {
 
     fn tool_renderer(&self, name: &str) -> Option<Box<dyn ToolRenderer>> {
         match name {
-            "grep" => Some(Box::new(GrepRenderer {})),
-            "find" => Some(Box::new(FindRenderer {})),
-            "ls" => Some(Box::new(LsRenderer {})),
+            "grep" => Some(Box::new(ListRenderer::grep())),
+            "find" => Some(Box::new(ListRenderer::find())),
+            "ls" => Some(Box::new(ListRenderer::ls())),
             _ => None,
         }
     }
@@ -710,12 +710,51 @@ fn shorten_path_str(path: &str) -> String {
 }
 
 // =====================================================================
-// Renderers
+// Shared list renderer (used by grep, find, ls)
 // =====================================================================
 
-struct GrepRenderer {}
+struct ListRenderer {
+    tool_name: &'static str,
+    /// Format: "{pattern}" or "/{pattern}/" or empty for no pattern.
+    pattern_format: &'static str,
+    no_results_text: &'static str,
+    collapsed_lines: usize,
+    show_glob: bool,
+}
 
-impl ToolRenderer for GrepRenderer {
+impl ListRenderer {
+    fn grep() -> Self {
+        Self {
+            tool_name: "grep",
+            pattern_format: "/{}/ ",
+            no_results_text: "No matches found",
+            collapsed_lines: 15,
+            show_glob: true,
+        }
+    }
+
+    fn find() -> Self {
+        Self {
+            tool_name: "find",
+            pattern_format: "{} in ",
+            no_results_text: "No files found matching pattern",
+            collapsed_lines: 20,
+            show_glob: false,
+        }
+    }
+
+    fn ls() -> Self {
+        Self {
+            tool_name: "ls",
+            pattern_format: "",
+            no_results_text: "(empty directory)",
+            collapsed_lines: 20,
+            show_glob: false,
+        }
+    }
+}
+
+impl ToolRenderer for ListRenderer {
     fn render_call(
         &self,
         args: &serde_json::Value,
@@ -723,21 +762,25 @@ impl ToolRenderer for GrepRenderer {
         theme: &dyn Theme,
         _ctx: &ToolRenderContext,
     ) -> Vec<String> {
-        let pattern = args.get("pattern").and_then(|v| v.as_str()).unwrap_or("");
         let search_path = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
-        let glob = args.get("glob").and_then(|v| v.as_str());
         let limit = args.get("limit").and_then(|v| v.as_u64());
-
         let path_display = shorten_path_str(search_path);
 
         let mut text = format!(
-            "{} /{}/ in {}",
-            theme.fg_key(ThemeKey::ToolTitle, &theme.bold("grep")),
-            theme.fg_key(ThemeKey::Accent, pattern),
+            "{} {}{}",
+            theme.fg_key(ThemeKey::ToolTitle, &theme.bold(self.tool_name)),
+            if self.pattern_format.is_empty() {
+                String::new()
+            } else {
+                let p = args.get("pattern").and_then(|v| v.as_str()).unwrap_or("");
+                theme.fg_key(ThemeKey::Accent, &self.pattern_format.replace("{}", p))
+            },
             theme.fg_key(ThemeKey::ToolOutput, &path_display),
         );
 
-        if let Some(g) = glob {
+        if self.show_glob
+            && let Some(g) = args.get("glob").and_then(|v| v.as_str())
+        {
             text.push_str(&theme.fg_key(ThemeKey::ToolOutput, &format!(" ({})", g)));
         }
         if let Some(l) = limit {
@@ -762,150 +805,16 @@ impl ToolRenderer for GrepRenderer {
         }
 
         let output = content.trim();
-        if output.is_empty() || output == "No matches found" {
+        if output.is_empty() || output == self.no_results_text {
             return vec![theme.fg_key(ThemeKey::ToolOutput, output)];
         }
 
         let lines: Vec<&str> = output.lines().collect();
-        let max_lines = if ctx.expanded { usize::MAX } else { 15 };
-        let display: Vec<&str> = lines.iter().copied().take(max_lines).collect();
-        let remaining = lines.len().saturating_sub(display.len());
-
-        let mut result = vec![String::new()];
-        for line in &display {
-            result.push(theme.fg_key(ThemeKey::ToolOutput, line));
-        }
-        if remaining > 0 {
-            let hint = if !ctx.expand_key.is_empty() {
-                format!(
-                    "... ({} more lines, {} to expand)",
-                    remaining, ctx.expand_key
-                )
-            } else {
-                format!("... ({} more lines)", remaining)
-            };
-            result.push(theme.fg_key(ThemeKey::Muted, &hint));
-        }
-        result
-    }
-}
-
-struct FindRenderer {}
-
-impl ToolRenderer for FindRenderer {
-    fn render_call(
-        &self,
-        args: &serde_json::Value,
-        _width: usize,
-        theme: &dyn Theme,
-        _ctx: &ToolRenderContext,
-    ) -> Vec<String> {
-        let pattern = args.get("pattern").and_then(|v| v.as_str()).unwrap_or("");
-        let search_path = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
-        let limit = args.get("limit").and_then(|v| v.as_u64());
-
-        let path_display = shorten_path_str(search_path);
-        let mut text = format!(
-            "{} {} in {}",
-            theme.fg_key(ThemeKey::ToolTitle, &theme.bold("find")),
-            theme.fg_key(ThemeKey::Accent, pattern),
-            theme.fg_key(ThemeKey::ToolOutput, &path_display),
-        );
-        if let Some(l) = limit {
-            text.push_str(&theme.fg_key(ThemeKey::ToolOutput, &format!(" (limit {})", l)));
-        }
-        vec![text]
-    }
-
-    fn render_result(
-        &self,
-        content: &str,
-        _width: usize,
-        theme: &dyn Theme,
-        ctx: &ToolRenderContext,
-    ) -> Vec<String> {
-        if content.is_empty() {
-            return vec![];
-        }
-        if !ctx.expanded && !ctx.is_error {
-            return vec![];
-        }
-
-        let output = content.trim();
-        if output.is_empty() || output == "No files found matching pattern" {
-            return vec![theme.fg_key(ThemeKey::ToolOutput, output)];
-        }
-
-        let lines: Vec<&str> = output.lines().collect();
-        let max_lines = if ctx.expanded { usize::MAX } else { 20 };
-        let display: Vec<&str> = lines.iter().copied().take(max_lines).collect();
-        let remaining = lines.len().saturating_sub(display.len());
-
-        let mut result = vec![String::new()];
-        for line in &display {
-            result.push(theme.fg_key(ThemeKey::ToolOutput, line));
-        }
-        if remaining > 0 {
-            let hint = if !ctx.expand_key.is_empty() {
-                format!(
-                    "... ({} more lines, {} to expand)",
-                    remaining, ctx.expand_key
-                )
-            } else {
-                format!("... ({} more lines)", remaining)
-            };
-            result.push(theme.fg_key(ThemeKey::Muted, &hint));
-        }
-        result
-    }
-}
-
-struct LsRenderer {}
-
-impl ToolRenderer for LsRenderer {
-    fn render_call(
-        &self,
-        args: &serde_json::Value,
-        _width: usize,
-        theme: &dyn Theme,
-        _ctx: &ToolRenderContext,
-    ) -> Vec<String> {
-        let search_path = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
-        let limit = args.get("limit").and_then(|v| v.as_u64());
-
-        let path_display = shorten_path_str(search_path);
-        let mut text = format!(
-            "{} {}",
-            theme.fg_key(ThemeKey::ToolTitle, &theme.bold("ls")),
-            theme.fg_key(ThemeKey::Accent, &path_display),
-        );
-        if let Some(l) = limit {
-            text.push_str(&theme.fg_key(ThemeKey::ToolOutput, &format!(" (limit {})", l)));
-        }
-        vec![text]
-    }
-
-    fn render_result(
-        &self,
-        content: &str,
-        _width: usize,
-        theme: &dyn Theme,
-        ctx: &ToolRenderContext,
-    ) -> Vec<String> {
-        if content.is_empty() {
-            return vec![];
-        }
-        if !ctx.expanded && !ctx.is_error {
-            return vec![];
-        }
-
-        let output = content.trim();
-        if output.is_empty() || output == "(empty directory)" {
-            return vec![theme.fg_key(ThemeKey::ToolOutput, output)];
-        }
-
-        let lines: Vec<&str> = output.lines().collect();
-        let max_lines = if ctx.expanded { usize::MAX } else { 20 };
+        let max_lines = if ctx.expanded {
+            usize::MAX
+        } else {
+            self.collapsed_lines
+        };
         let display: Vec<&str> = lines.iter().copied().take(max_lines).collect();
         let remaining = lines.len().saturating_sub(display.len());
 
