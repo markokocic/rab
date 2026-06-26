@@ -15,7 +15,6 @@ use crate::agent::ui::components::EditorComponent;
 use crate::agent::ui::components::FooterComponent;
 use crate::agent::ui::components::InfoMessageComponent;
 use crate::agent::ui::footer::Footer;
-use crate::agent::ui::messages::{DisplayMsg, session_messages_to_display};
 use crate::agent::ui::model_selector::ModelSelector;
 use crate::agent::ui::theme::RabTheme;
 use crate::agent::ui::working::WorkingIndicator;
@@ -80,9 +79,6 @@ pub struct App {
 
     /// Conversation history (AgentMessage).
     conversation: Vec<yoagent::types::AgentMessage>,
-
-    /// Rendered display messages (legacy - being migrated to Components).
-    messages: Vec<DisplayMsg>,
 
     /// Component-based chat area - mirrors pi's `this.chatContainer`.
     /// Components are added here in handle_agent_event instead of pushing to messages.
@@ -277,120 +273,43 @@ impl App {
         // Load session messages
         let context = agent_session.session().build_session_context();
         let history_messages = context.messages.clone();
-        let history_display = session_messages_to_display(&history_messages);
 
         // Startup info: context files, skills, tools (pi-style loaded resources listing)
-        let mut startup_info: Vec<DisplayMsg> = Vec::new();
-
         let mut resource_parts: Vec<String> = Vec::new();
-
         if !config.context_files.is_empty() {
             let ctx = config.context_files.join(", ");
             resource_parts.push(format!("Context: {}", ctx));
         }
-
         if !config.skills.is_empty() {
             let skill_names: Vec<&str> = config.skills.iter().map(|s| s.name.as_str()).collect();
             resource_parts.push(format!("Skills: {}", skill_names.join(", ")));
         }
 
-        if !resource_parts.is_empty() {
-            startup_info.push(DisplayMsg::Info(resource_parts.join("  ·  ")));
-        }
-
-        // Combine startup info with history (legacy - for session saving / tests)
-        let messages = if startup_info.is_empty() {
-            history_display
-        } else {
-            let mut combined = startup_info;
-            combined.push(DisplayMsg::Separator);
-            combined.extend(history_display);
-            combined
-        };
-
-        // Populate chat_container with initial messages (startup info + history).
-        // Add spacers between messages matching pi's addMessageToChat behavior.
-        // Adjacent ToolCall + ToolResult pairs are merged into a single
+        // Build chat_container from AgentMessages directly (matching pi's renderSessionContext).
+        // Adjacent toolCall content + toolResult messages are paired into single
         // ToolExecComponent so reloaded sessions look identical to live execution.
-        let cwd_string_for_pairs = config.cwd.to_string_lossy().to_string();
+        let cwd_string = config.cwd.to_string_lossy().to_string();
         let chat_container =
             std::rc::Rc::new(std::cell::RefCell::new(crate::tui::Container::new()));
         {
-            fn pair_to_tool_component(
-                name: &str,
-                args_str: &str,
-                output: &str,
-                is_error: bool,
-                cwd: &str,
-            ) -> Option<std::boxed::Box<dyn Component>> {
-                let args: serde_json::Value = serde_json::from_str(args_str).ok()?;
-                let mut comp = crate::agent::ui::components::ToolExecComponent::new(
-                    name,
-                    None, // no renderer needed — render_generic handles bash
-                    args,
-                    cwd.to_string(),
-                );
-                comp.set_bash(name == "bash");
-                let clean = output
-                    .strip_prefix("✓ ")
-                    .or_else(|| output.strip_prefix("✗ "))
-                    .unwrap_or(output);
-                comp.set_result_with_details(clean, is_error, None);
-                Some(std::boxed::Box::new(comp))
+            let mut chat = chat_container.borrow_mut();
+
+            // Startup info component
+            if !resource_parts.is_empty() {
+                chat.add_child(std::boxed::Box::new(
+                    crate::agent::ui::components::InfoMessageComponent::new(
+                        resource_parts.join("  ·  "),
+                    ),
+                ));
             }
 
-            let mut chat = chat_container.borrow_mut();
-            let mut i = 0;
-            while i < messages.len() {
-                // Adjacent ToolCall + ToolResult → single combined component
-                if i + 1 < messages.len() {
-                    let paired = match (&messages[i], &messages[i + 1]) {
-                        (
-                            DisplayMsg::ToolCall { name, args },
-                            DisplayMsg::ToolResult {
-                                content, is_error, ..
-                            },
-                        ) => pair_to_tool_component(
-                            name,
-                            args,
-                            content,
-                            *is_error,
-                            &cwd_string_for_pairs,
-                        ),
-                        _ => None,
-                    };
-                    if let Some(component) = paired {
-                        if !chat.children().is_empty() {
-                            chat.add_child(std::boxed::Box::new(
-                                crate::tui::components::Spacer::new(1),
-                            ));
-                        }
-                        chat.add_child(component);
-                        i += 2;
-                        continue;
-                    }
-                }
-                // Single message component
-                if let Some(component) =
-                    crate::agent::ui::components::display_msg_to_component(&messages[i])
-                {
-                    if !chat.children().is_empty() {
-                        chat.add_child(std::boxed::Box::new(crate::tui::components::Spacer::new(
-                            1,
-                        )));
-                    }
-                    chat.add_child(component);
-                }
-                i += 1;
-            }
-        }
-
-        // Apply hide_thinking setting to all initial chat components (pi-compatible)
-        if config.hide_thinking {
-            let mut chat = chat_container.borrow_mut();
-            for child in chat.children_mut().iter_mut() {
-                child.set_hide_thinking(true);
-            }
+            rebuild_chat_from_messages(
+                &mut chat,
+                &history_messages,
+                &cwd_string,
+                config.hide_thinking,
+                config.collapse_tool_output,
+            );
         }
 
         let result = Self {
@@ -402,7 +321,6 @@ impl App {
             commands,
             available_models: config.available_models,
             conversation: history_messages,
-            messages,
             chat_container,
             pending_tools: HashMap::new(),
             tool_call_start_times: HashMap::new(),
@@ -626,19 +544,28 @@ pub async fn run(config: AppConfig, session: SessionManager) -> anyhow::Result<(
                     app.status_text = None;
                 }
                 CommandResult::OpenSettings => {
-                    app.messages.push(DisplayMsg::Info(
-                        "Settings menu - not yet implemented.".to_string(),
-                    ));
+                    chat_add(
+                        &mut app,
+                        std::boxed::Box::new(InfoMessageComponent::new(
+                            "Settings menu - not yet implemented.",
+                        )),
+                    );
                 }
                 CommandResult::ScopedModels => {
-                    app.messages.push(DisplayMsg::Info(
-                        "Scoped models - not yet implemented.".to_string(),
-                    ));
+                    chat_add(
+                        &mut app,
+                        std::boxed::Box::new(InfoMessageComponent::new(
+                            "Scoped models - not yet implemented.",
+                        )),
+                    );
                 }
                 CommandResult::Login { .. } => {
-                    app.messages.push(DisplayMsg::Info(
-                        "Login dialog - not yet implemented.".to_string(),
-                    ));
+                    chat_add(
+                        &mut app,
+                        std::boxed::Box::new(InfoMessageComponent::new(
+                            "Login dialog - not yet implemented.",
+                        )),
+                    );
                 }
                 _ => {}
             }
@@ -755,7 +682,7 @@ fn compose_ui(app: &mut App, width: usize) {
                 let wrapped = crate::tui::util::wrap_text_with_ansi(line, inner);
                 for w in wrapped {
                     let line = format!(" {}", w);
-                    pending_lines.push(crate::agent::ui::messages::pad_to_width(&line, width));
+                    pending_lines.push(crate::agent::ui::render_utils::pad_to_width(&line, width));
                 }
             }
         }
@@ -769,17 +696,17 @@ fn compose_ui(app: &mut App, width: usize) {
                 app.theme
                     .italic(&app.theme.fg("thinking_text", "Thinking..."))
             );
-            let padded = crate::agent::ui::messages::pad_to_width(&content, width);
+            let padded = crate::agent::ui::render_utils::pad_to_width(&content, width);
             pending_lines.push(app.theme.bg("thinking_bg", &padded));
         } else {
             let level_color = app
                 .thinking_level
                 .as_deref()
-                .and_then(crate::agent::ui::messages::thinking_level_color)
+                .and_then(crate::agent::ui::render_utils::thinking_level_color)
                 .unwrap_or("thinking_text");
             for line in text.lines() {
                 let content = format!(" {}", app.theme.italic(&app.theme.fg(level_color, line)));
-                let padded = crate::agent::ui::messages::pad_to_width(&content, width);
+                let padded = crate::agent::ui::render_utils::pad_to_width(&content, width);
                 pending_lines.push(app.theme.bg("thinking_bg", &padded));
             }
         }
@@ -790,7 +717,7 @@ fn compose_ui(app: &mut App, width: usize) {
     let mut status_lines = Vec::new();
     if let Some(ref status) = app.status_text {
         let line = app.theme.fg_key(ThemeKey::Dim, &format!(" {}", status));
-        status_lines.push(crate::agent::ui::messages::pad_to_width(&line, width));
+        status_lines.push(crate::agent::ui::render_utils::pad_to_width(&line, width));
     }
     app.status_section.borrow_mut().set_lines(status_lines);
 
@@ -814,7 +741,7 @@ fn compose_ui(app: &mut App, width: usize) {
                 if steer_count == 1 { "" } else { "s" }
             ),
         );
-        queued_lines.push(crate::agent::ui::messages::pad_to_width(&line, width));
+        queued_lines.push(crate::agent::ui::render_utils::pad_to_width(&line, width));
     }
     if follow_count > 0 {
         let line = app.theme.fg(
@@ -825,14 +752,14 @@ fn compose_ui(app: &mut App, width: usize) {
                 if follow_count == 1 { "" } else { "s" }
             ),
         );
-        queued_lines.push(crate::agent::ui::messages::pad_to_width(&line, width));
+        queued_lines.push(crate::agent::ui::render_utils::pad_to_width(&line, width));
     }
     if steer_count > 0 || follow_count > 0 {
         let hint = app.theme.fg_key(
             ThemeKey::Dim,
             " ↳ Esc to abort, Alt+↑ to restore follow-ups",
         );
-        queued_lines.push(crate::agent::ui::messages::pad_to_width(&hint, width));
+        queued_lines.push(crate::agent::ui::render_utils::pad_to_width(&hint, width));
     }
     app.queued_section.borrow_mut().set_lines(queued_lines);
 
@@ -1272,7 +1199,6 @@ fn submit_message(app: &mut App, message: String) {
                 &expanded,
             )),
         );
-        app.messages.push(DisplayMsg::User(expanded.clone()));
         if app.is_streaming {
             app.steering_queue
                 .lock()
@@ -1305,7 +1231,6 @@ fn submit_message(app: &mut App, message: String) {
             &trimmed,
         )),
     );
-    app.messages.push(DisplayMsg::User(trimmed.clone()));
 
     if app.is_streaming {
         // Safety check: if is_streaming is true but no events arrived for >5s,
@@ -1437,18 +1362,19 @@ fn handle_session_picker_input(app: &mut App, key: &crossterm::event::KeyEvent) 
                 let new_session = AgentSession::new(new_sm);
                 let ctx = new_session.session().build_session_context();
                 app.conversation = ctx.messages;
-                app.messages.clear();
                 app.chat_container.borrow_mut().clear();
                 app.streaming_component = None;
                 app.pending_text = None;
                 app.pending_thinking = None;
                 app.pending_tools.clear();
                 app.tool_call_start_times.clear();
-                let display =
-                    crate::agent::ui::messages::session_messages_to_display(&app.conversation);
-                for msg in display {
-                    app.messages.push(msg);
-                }
+                rebuild_chat_from_messages(
+                    &mut app.chat_container.borrow_mut(),
+                    &app.conversation,
+                    &app.cwd.to_string_lossy(),
+                    app.hide_thinking,
+                    app.collapse_tool_output,
+                );
                 app.session = Some(new_session);
                 app.update_session_info();
                 app.status_text = Some(format!("Switched to session: {}", path.display()));
@@ -1503,10 +1429,13 @@ fn handle_slash_command(app: &mut App, input: &str) {
                     }
                     Err(e) => {
                         drop((ext, cmd));
-                        app.messages.push(DisplayMsg::Info(format!(
-                            "Error executing /{}: {}",
-                            cmd_name, e
-                        )));
+                        chat_add(
+                            app,
+                            std::boxed::Box::new(InfoMessageComponent::new(format!(
+                                "Error executing /{}: {}",
+                                cmd_name, e
+                            ))),
+                        );
                         return;
                     }
                 }
@@ -1533,7 +1462,6 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
                 app,
                 std::boxed::Box::new(InfoMessageComponent::new(msg.clone())),
             );
-            app.messages.push(DisplayMsg::Info(msg));
         }
         CommandResult::Quit => {
             app.should_quit = true;
@@ -1582,9 +1510,6 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
                         "Settings, extensions, and keybindings reloaded.".to_string(),
                     )),
                 );
-                app.messages.push(DisplayMsg::Info(
-                    "Settings, extensions, and keybindings reloaded.".to_string(),
-                ));
             }
         }
         CommandResult::NewSession => {
@@ -1608,7 +1533,6 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
 
             // Clear everything (matching pi's renderCurrentSessionState)
             app.conversation.clear();
-            app.messages.clear();
             app.chat_container.borrow_mut().clear();
             app.streaming_component = None;
             app.pending_text = None;
@@ -1629,7 +1553,6 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
             // Load conversation from new session
             let ctx = new_session.session().build_session_context();
             app.conversation = ctx.messages;
-            app.messages.clear();
             app.chat_container.borrow_mut().clear();
             app.streaming_component = None;
             app.pending_text = None;
@@ -1637,11 +1560,13 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
             app.pending_tools.clear();
             app.tool_call_start_times.clear();
 
-            let display =
-                crate::agent::ui::messages::session_messages_to_display(&app.conversation);
-            for msg in display {
-                app.messages.push(msg);
-            }
+            rebuild_chat_from_messages(
+                &mut app.chat_container.borrow_mut(),
+                &app.conversation,
+                &app.cwd.to_string_lossy(),
+                app.hide_thinking,
+                app.collapse_tool_output,
+            );
 
             app.session = Some(new_session);
             app.update_session_info();
@@ -1761,7 +1686,6 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
                 app,
                 std::boxed::Box::new(InfoMessageComponent::new(info.clone())),
             );
-            app.messages.push(DisplayMsg::Info(info));
         }
         CommandResult::OpenSessionSelector => {
             // Load and display available sessions
@@ -1775,7 +1699,6 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
                     app,
                     std::boxed::Box::new(InfoMessageComponent::new(msg.clone())),
                 );
-                app.messages.push(DisplayMsg::Info(msg));
             } else {
                 let mut info = format!("Available Sessions ({} total)\n\n", sessions.len());
                 for (i, s) in sessions.iter().take(20).enumerate() {
@@ -1799,7 +1722,6 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
                     app,
                     std::boxed::Box::new(InfoMessageComponent::new(info.clone())),
                 );
-                app.messages.push(DisplayMsg::Info(info));
             }
         }
         CommandResult::SessionNamed { name } => {
@@ -1826,7 +1748,6 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
                 app,
                 std::boxed::Box::new(InfoMessageComponent::new(msg.clone())),
             );
-            app.messages.push(DisplayMsg::Info(msg));
         }
         CommandResult::ImportSession { path } => {
             let msg = format!("Import session from {} - not yet implemented.", path);
@@ -1834,7 +1755,6 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
                 app,
                 std::boxed::Box::new(InfoMessageComponent::new(msg.clone())),
             );
-            app.messages.push(DisplayMsg::Info(msg));
         }
         CommandResult::ShareSession => {
             let msg = "Share session - not yet implemented.".to_string();
@@ -1842,7 +1762,6 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
                 app,
                 std::boxed::Box::new(InfoMessageComponent::new(msg.clone())),
             );
-            app.messages.push(DisplayMsg::Info(msg));
         }
         CommandResult::CopyLastMessage => {
             let msg = "Copy last agent message to clipboard - not yet implemented.".to_string();
@@ -1850,7 +1769,6 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
                 app,
                 std::boxed::Box::new(InfoMessageComponent::new(msg.clone())),
             );
-            app.messages.push(DisplayMsg::Info(msg));
         }
         CommandResult::ShowChangelog => {
             let msg = "Changelog - not yet implemented.".to_string();
@@ -1858,7 +1776,6 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
                 app,
                 std::boxed::Box::new(InfoMessageComponent::new(msg.clone())),
             );
-            app.messages.push(DisplayMsg::Info(msg));
         }
         CommandResult::ForkSession { message_id } => {
             // Clone the session info before modifying app.session
@@ -1906,7 +1823,6 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
                                     // Reload conversation
                                     let ctx = new_session.session().build_session_context();
                                     app.conversation = ctx.messages;
-                                    app.messages.clear();
                                     app.chat_container.borrow_mut().clear();
                                     app.streaming_component = None;
                                     app.pending_text = None;
@@ -1914,13 +1830,13 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
                                     app.pending_tools.clear();
                                     app.tool_call_start_times.clear();
 
-                                    let display =
-                                        crate::agent::ui::messages::session_messages_to_display(
-                                            &app.conversation,
-                                        );
-                                    for msg in display {
-                                        app.messages.push(msg);
-                                    }
+                                    rebuild_chat_from_messages(
+                                        &mut app.chat_container.borrow_mut(),
+                                        &app.conversation,
+                                        &app.cwd.to_string_lossy(),
+                                        app.hide_thinking,
+                                        app.collapse_tool_output,
+                                    );
 
                                     app.session = Some(new_session);
 
@@ -1949,7 +1865,6 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
                                 app,
                                 std::boxed::Box::new(InfoMessageComponent::new(msg.clone())),
                             );
-                            app.messages.push(DisplayMsg::Info(msg));
                         }
                     }
                 }
@@ -1959,7 +1874,6 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
                         app,
                         std::boxed::Box::new(InfoMessageComponent::new(msg.clone())),
                     );
-                    app.messages.push(DisplayMsg::Info(msg));
                 }
             }
         }
@@ -1969,7 +1883,6 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
                 app,
                 std::boxed::Box::new(InfoMessageComponent::new(msg.clone())),
             );
-            app.messages.push(DisplayMsg::Info(msg));
         }
         CommandResult::SessionTree => {
             let msg = "Session tree - not yet implemented.".to_string();
@@ -1977,7 +1890,6 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
                 app,
                 std::boxed::Box::new(InfoMessageComponent::new(msg.clone())),
             );
-            app.messages.push(DisplayMsg::Info(msg));
         }
         CommandResult::TrustDecision { decision } => {
             let msg = format!("Trust decision '{}' saved.", decision);
@@ -1985,7 +1897,6 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
                 app,
                 std::boxed::Box::new(InfoMessageComponent::new(msg.clone())),
             );
-            app.messages.push(DisplayMsg::Info(msg));
         }
         CommandResult::Login { provider: _ } => {
             // Needs TUI overlay - defer
@@ -1998,7 +1909,6 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
                 app,
                 std::boxed::Box::new(InfoMessageComponent::new(msg.clone())),
             );
-            app.messages.push(DisplayMsg::Info(msg));
         }
         CommandResult::CompactSession => {
             // Run manual compaction via AgentSession
@@ -2013,14 +1923,12 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
                     app,
                     std::boxed::Box::new(InfoMessageComponent::new(msg.clone())),
                 );
-                app.messages.push(DisplayMsg::Info(msg));
             } else {
                 let msg = "No active session to compact".to_string();
                 chat_add(
                     app,
                     std::boxed::Box::new(InfoMessageComponent::new(msg.clone())),
                 );
-                app.messages.push(DisplayMsg::Info(msg));
             }
         }
     }
@@ -2047,9 +1955,6 @@ fn handle_bang_command(app: &mut App, command: String) {
         app,
         std::boxed::Box::new(crate::tui::components::RcRefCellComponent(bash_comp)),
     );
-    app.messages
-        .push(DisplayMsg::User(format!("! {}", command)));
-
     app.is_streaming = true;
     app.working.start();
     app.footer.borrow_mut().set_streaming(true);
@@ -2189,6 +2094,101 @@ fn handle_bang_command(app: &mut App, command: String) {
     app.bash_abort_handle = Some(handle.abort_handle());
 }
 
+/// Rebuild the chat container from a slice of AgentMessages (pi's renderSessionContext).
+/// Clears the container and re-adds all message components with spacers between them.
+/// Adjacent tool calls and tool results are paired into single ToolExecComponent.
+pub fn rebuild_chat_from_messages(
+    chat: &mut crate::tui::Container,
+    messages: &[yoagent::types::AgentMessage],
+    cwd: &str,
+    hide_thinking: bool,
+    _collapse_tool_output: bool,
+) {
+    chat.clear();
+    use std::collections::HashMap;
+    let mut pending_tool_components: HashMap<
+        String,
+        Rc<RefCell<crate::agent::ui::components::ToolExecComponent>>,
+    > = HashMap::new();
+
+    for msg in messages {
+        if crate::agent::types::message_is_user(msg) {
+            let text = crate::agent::types::message_text(msg);
+            if text.is_empty() {
+                continue;
+            }
+            if !chat.children().is_empty() {
+                chat.add_child(std::boxed::Box::new(Spacer::new(1)));
+            }
+            chat.add_child(std::boxed::Box::new(
+                crate::agent::ui::components::UserMessageComponent::new(text),
+            ));
+        } else if crate::agent::types::message_is_assistant(msg) {
+            let text = crate::agent::types::message_text(msg);
+            if let yoagent::types::AgentMessage::Llm(yoagent::types::Message::Assistant {
+                content,
+                ..
+            }) = msg
+            {
+                let tcs = crate::agent::types::content_tool_calls(content);
+                if !tcs.is_empty() {
+                    // Assistant with tool calls — render text first
+                    if !text.trim().is_empty() {
+                        if !chat.children().is_empty() {
+                            chat.add_child(std::boxed::Box::new(Spacer::new(1)));
+                        }
+                        let mut asst =
+                            crate::agent::ui::components::AssistantMessageComponent::new(&text);
+                        if hide_thinking {
+                            asst.set_hide_thinking(true);
+                        }
+                        chat.add_child(std::boxed::Box::new(asst));
+                    }
+                    // Create ToolExecComponent for each tool call
+                    for (id, name, args) in &tcs {
+                        let mut tool = crate::agent::ui::components::ToolExecComponent::new(
+                            name,
+                            None,
+                            args.clone(),
+                            cwd.to_string(),
+                        );
+                        tool.set_bash(name == "bash");
+                        let tool = Rc::new(RefCell::new(tool));
+                        chat.add_child(std::boxed::Box::new(
+                            crate::agent::ui::components::RcToolExec(tool.clone()),
+                        ));
+                        pending_tool_components.insert(id.clone(), tool);
+                    }
+                } else if !text.trim().is_empty() {
+                    // Plain text assistant
+                    if !chat.children().is_empty() {
+                        chat.add_child(std::boxed::Box::new(Spacer::new(1)));
+                    }
+                    let mut asst =
+                        crate::agent::ui::components::AssistantMessageComponent::new(&text);
+                    if hide_thinking {
+                        asst.set_hide_thinking(true);
+                    }
+                    chat.add_child(std::boxed::Box::new(asst));
+                }
+            }
+        } else if crate::agent::types::message_is_tool_result(msg) {
+            let is_error = crate::agent::types::message_is_error(msg);
+            let text = crate::agent::types::message_text(msg);
+            if let Some(tc_id) = crate::agent::types::message_tool_call_id(msg)
+                && let Some(tool) = pending_tool_components.remove(tc_id)
+            {
+                let clean = text
+                    .strip_prefix("✓ ")
+                    .or_else(|| text.strip_prefix("✗ "))
+                    .unwrap_or(&text);
+                let mut tool = tool.borrow_mut();
+                tool.set_result_with_details(clean, is_error, None);
+            }
+        }
+    }
+}
+
 /// Add a Component to chat_container with a spacer before it if chat_container is not empty.
 /// Mirrors pi's `addMessageToChat()` which adds `new Spacer(1)` before each message
 /// when `this.chatContainer.children.length > 0`.
@@ -2321,11 +2321,6 @@ fn handle_agent_event(app: &mut App, event: yoagent::types::AgentEvent) {
                 app,
                 std::boxed::Box::new(crate::agent::ui::components::RcToolExec(comp)),
             );
-            let args_str = serde_json::to_string(&args).unwrap_or_default();
-            app.messages.push(DisplayMsg::ToolCall {
-                name,
-                args: args_str,
-            });
         }
         E::ToolExecutionEnd {
             tool_call_id,
@@ -2355,12 +2350,6 @@ fn handle_agent_event(app: &mut App, event: yoagent::types::AgentEvent) {
                         .set_final_duration(start.elapsed().as_secs_f64());
                 }
             }
-            let truncated: String = content.chars().take(500).collect();
-            app.messages.push(DisplayMsg::ToolResult {
-                content: truncated,
-                compact: None,
-                is_error,
-            });
         }
         E::ProgressMessage {
             text, tool_name, ..
@@ -2397,7 +2386,6 @@ fn handle_agent_event(app: &mut App, event: yoagent::types::AgentEvent) {
                     app,
                     std::boxed::Box::new(InfoMessageComponent::new(error_text.clone())),
                 );
-                app.messages.push(DisplayMsg::Info(error_text));
             }
         }
         E::InputRejected { reason } => {
@@ -2406,7 +2394,6 @@ fn handle_agent_event(app: &mut App, event: yoagent::types::AgentEvent) {
                 app,
                 std::boxed::Box::new(InfoMessageComponent::new(msg.clone())),
             );
-            app.messages.push(DisplayMsg::Info(msg));
         }
         _ => {}
     }
@@ -2422,8 +2409,6 @@ fn flush_text(app: &mut App) {
             comp.set_hide_thinking(true);
         }
         chat_add(app, std::boxed::Box::new(comp));
-        // Legacy path
-        app.messages.push(DisplayMsg::AssistantText(text));
     }
 }
 
@@ -2438,11 +2423,6 @@ fn flush_thinking(app: &mut App) {
             thinking.set_hide_thinking(true);
         }
         chat_add(app, std::boxed::Box::new(thinking));
-        // Legacy path
-        app.messages.push(DisplayMsg::Thinking {
-            text,
-            level: app.thinking_level.clone(),
-        });
     }
 }
 
