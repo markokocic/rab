@@ -355,13 +355,53 @@ async fn main() -> anyhow::Result<()> {
     let commands_ext = CommandsExtension::new(available_models.clone());
     let session_info = commands_ext.session_info.clone();
 
-    let extensions: Vec<Box<dyn Extension>> = vec![
-        Box::new(commands_ext),
-        Box::new(ReadExtension::new(cwd.clone())),
-        Box::new(WriteExtension::new(cwd.clone())),
-        Box::new(EditExtension::new(cwd.clone())),
-        Box::new(BashExtension::new(cwd.clone())),
-    ];
+    // Conditionally build extensions based on settings.
+    // New tools (grep, find, ls) are disabled by default.
+    // Enable them by adding to settings.tools, e.g.:
+    //   "tools": ["grep", "find", "ls"]
+    // Or use settings.exclude_tools to disable specific core tools.
+    fn is_extension_active(name: &str, settings: &Settings) -> bool {
+        // exclude_tools always wins
+        if settings.exclude_tools.iter().any(|t| t == name) {
+            return false;
+        }
+
+        let core_extensions: &[&str] = &["commands", "read", "write", "edit", "bash"];
+
+        // If tools whitelist is set, only those are active
+        if !settings.tools.is_empty() {
+            return settings.tools.iter().any(|t| t == name);
+        }
+
+        // Core extensions are always active when no whitelist
+        core_extensions.contains(&name)
+    }
+
+    let mut extensions: Vec<Box<dyn Extension>> = Vec::new();
+
+    if is_extension_active("commands", &settings) {
+        extensions.push(Box::new(commands_ext));
+    }
+    if is_extension_active("read", &settings) {
+        extensions.push(Box::new(ReadExtension::new(cwd.clone())));
+    }
+    if is_extension_active("write", &settings) {
+        extensions.push(Box::new(WriteExtension::new(cwd.clone())));
+    }
+    if is_extension_active("edit", &settings) {
+        extensions.push(Box::new(EditExtension::new(cwd.clone())));
+    }
+    if is_extension_active("bash", &settings) {
+        extensions.push(Box::new(BashExtension::new(cwd.clone())));
+    }
+    if is_extension_active("grep", &settings)
+        || is_extension_active("find", &settings)
+        || is_extension_active("ls", &settings)
+    {
+        extensions.push(Box::new(
+            rab::extensions::filesystem::FilesystemExtension::new(cwd.clone()),
+        ));
+    }
 
     let agent_dir = get_agent_dir();
 
