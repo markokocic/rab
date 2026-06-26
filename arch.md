@@ -44,13 +44,10 @@ providing the session layer, TUI, built-in tools, slash commands, and lifecycle 
 │  │              agent/extension.rs (Extension trait)            │   │
 │  │  pub trait Extension: Send + Sync {                          │   │
 │  │    fn name(&self) -> Cow<'static, str>;                      │   │
-│  │    fn tools(&self) -> Vec<Box<dyn AgentTool>>;               │   │
+│  │    fn tools(&self) -> Vec<ToolWithMeta>;                     │   │
 │  │    fn commands(&self) -> Vec<SlashCommand>;                  │   │
-│  │    async fn before_tool_call(&self, tc) -> Option<BlockReason>;│  │
-│  │    async fn after_tool_call(&self, tc, result) -> Option<String>;│ │
 │  │    fn tool_renderer(&self, name) -> Option<Box<dyn ToolRenderer>>;│ │
-│  │    fn tool_snippets(&self) -> Vec<(String, Cow<str>)>;       │   │
-│  │    fn tool_guidelines(&self) -> Vec<(String, String)>;       │   │
+│  │    fn skills(&self) -> SkillSet;                             │   │
 │  │  }                                                           │   │
 │  │  Builtin + user extensions share this trait                  │   │
 │  └──────────────────────────────────────────────────────────────┘   │
@@ -88,7 +85,7 @@ providing the session layer, TUI, built-in tools, slash commands, and lifecycle 
 │  └──────────────────────────────────────────────────────────────┘   │
 │                                                                      │
 │  ┌──────────────────────────────────────────────────────────────┐   │
-│  │  TUI (src/tui/ + src/agent/ui/) — 72 modules, ~669 tests    │   │
+│  │  TUI (src/tui/ + src/agent/ui/) — 48 modules, ~508 tests    │   │
 │  │  Direct Rust port on crossterm 0.29                          │   │
 │  └──────────────────────────────────────────────────────────────┘   │
 └──────────────────────────────────────────────────────────────────────┘
@@ -102,7 +99,7 @@ providing the session layer, TUI, built-in tools, slash commands, and lifecycle 
 
 - **One extension mechanism** — built-in tools and user extensions use the same
   `Extension` trait. No separate tool registration path. All tools, commands,
-  renderers, and hooks go through `Extension`.
+  renderers, and skills go through `Extension`.
 
 - **Provider layer lives in yoagent** — rab has no `adapter.rs` or `provider.rs`.
   yoagent's `Provider` trait and `OpenAiCompatProvider` handle all LLM
@@ -115,19 +112,19 @@ providing the session layer, TUI, built-in tools, slash commands, and lifecycle 
 
 - **Types from yoagent** — `AgentMessage`, `Message`, `Content`, `AgentTool`
   are all re-exported from `yoagent::types`. rab's `types.rs` is a thin shim
-  with helper functions and rab-specific enums (`ToolExecutionMode`, `QueueMode`).
+  with helper functions only (no rab-specific enums).
 
 ## Pi component mapping
 
 | pi component | rab equivalent | Status |
 |---|---|---|
-| `pi-tui` (terminal UI, components, editor) | `src/tui/` + `src/agent/ui/` | ✅ Complete — 72 modules, ~669 tests. Direct Rust port on crossterm 0.29. |
-| `pi-agent-core` (agent loop, session, compaction, skills) | Delegated to **yoagent** (agent loop, types, provider) + rab's `AgentSession` (session lifecycle, compaction, branching) | ✅ Agent loop in yoagent (`yoagent::agent::Agent`). ✅ Session in `session.rs` (2757 lines). ✅ Compaction in `compaction.rs` (679 lines) — fully implemented. ✅ Branch summarization in `branch_summary.rs` (270 lines). ✅ Skills in `skills.rs` (342 lines). |
-| `coding-agent` (CLI, extensions, tools, settings, commands) | `main.rs`, `builtin/`, `settings.rs`, `auth.rs`, `commands.rs` | ✅ Tools (read/write/edit/bash), settings, auth, CLI done. ✅ 22 slash commands implemented. ✅ Hook pipeline (before/after tool call) wired in `Extension` trait. |
+| `pi-tui` (terminal UI, components, editor) | `src/tui/` + `src/agent/ui/` | ✅ Complete — 48 modules, ~508 tests. Direct Rust port on crossterm 0.29. |
+| `pi-agent-core` (agent loop, session, compaction, skills) | Delegated to **yoagent** (agent loop, types, provider, skills) + rab's `AgentSession` (session lifecycle, compaction, branching) | ✅ Agent loop in yoagent (`yoagent::agent::Agent`). ✅ Session in `session.rs` (2749 lines). ✅ Compaction in `compaction.rs` (679 lines) — fully implemented. ✅ Branch summarization in `branch_summary.rs` (270 lines). ✅ Skills loaded via `yoagent::skills::SkillSet`. |
+| `coding-agent` (CLI, extensions, tools, settings, commands) | `main.rs`, `builtin/`, `settings.rs`, `auth.rs`, `commands.rs` | ✅ Tools (read/write/edit/bash), settings, auth, CLI done. ✅ 22 slash commands implemented. ✅ Extension trait with tools, commands, renderers, skills. |
 | provider | `yoagent::provider::OpenAiCompatProvider` | ✅ OpenCode Go default. Auto-detection by model prefix (claude → Anthropic, gpt → OpenAI, ollama → Ollama). |
-| Theme system | `src/agent/ui/theme.rs` | ✅ JSON theme system with resolution, fallback, detection (698 lines) |
+| Theme system | `src/agent/ui/theme.rs` | ✅ JSON theme system with resolution, fallback, detection (715 lines) |
 | Resource loading (AGENTS.md/CLAUDE.md) | `src/agent/context_files.rs` | ✅ AGENTS.md/CLAUDE.md discovery, `<project_context>` wrapping |
-| Skills | `src/agent/skills.rs` (+ `yoagent::skills`) | ✅ Skill loading, frontmatter, prompt formatting |
+| Skills | `yoagent::skills::SkillSet` | ✅ Skill loading, frontmatter, prompt formatting, /skill:name expansion |
 | Image support (Kitty protocol) | `src/tui/components/markdown.rs` (hyperlinks) + base64 data URLs | ✅ Image display via Kitty protocol. Input (clipboard paste) TBD. |
 | Config files | `~/.rab/` | ✅ Same schema as pi. Auth at `~/.rab/agent/auth.json`. |
 | MCP extensions | Not started | ⬜ Phase 2 |
@@ -155,25 +152,6 @@ pub use yoagent::types::{AgentMessage, Content, Message};
 // Content::Thinking { text, signature }
 ```
 
-### rab-specific enums
-
-```rust
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
-pub enum ToolExecutionMode {
-    #[default]
-    Parallel,
-    Sequential,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum QueueMode { All, OneAtATime }
-
-pub struct PendingMessageQueue {
-    messages: Vec<AgentMessage>,
-    mode: QueueMode,
-}
-```
-
 ### Helper functions
 
 ```rust
@@ -186,8 +164,8 @@ pub fn message_is_tool_result(msg: &AgentMessage) -> bool;
 pub fn message_is_error(msg: &AgentMessage) -> bool;
 pub fn message_tool_call_id(msg: &AgentMessage) -> Option<&str>;
 pub fn message_usage(msg: &AgentMessage) -> Option<Usage>;
-pub fn message_model(msg: &AgentMessage) -> Option<&str>;
-pub fn message_provider(msg: &AgentMessage) -> Option<&str>;
+pub fn message_error(msg: &AgentMessage) -> Option<&str>;
+pub fn message_tool_call_count(msg: &AgentMessage) -> usize;
 pub fn user_message(text: &str) -> AgentMessage;
 pub fn assistant_message(text: &str) -> AgentMessage;
 pub fn tool_result_message(tool_call_id: &str, text: String, is_error: bool) -> AgentMessage;
@@ -270,7 +248,7 @@ agent_session.check_auto_compact().await;
 
 ---
 
-## Session layer (`src/agent/session.rs`) — 2757 lines
+## Session layer (`src/agent/session.rs`) — 2749 lines
 
 ### Format
 
@@ -454,33 +432,30 @@ All capability — built-in or user-provided — comes through the same trait.
 pub trait Extension: Send + Sync {
     fn name(&self) -> Cow<'static, str>;
 
-    /// Tools this extension provides (LLM-callable).
-    fn tools(&self) -> Vec<Box<dyn yoagent::types::AgentTool>> { vec![] }
+    /// Tools this extension provides (LLM-callable), each with prompt metadata.
+    fn tools(&self) -> Vec<ToolWithMeta> { vec![] }
 
     /// Slash commands (e.g. `/quit`, `/model`).
     fn commands(&self) -> Vec<SlashCommand> { vec![] }
 
-    /// Called before any tool executes. Return Some(reason) to block.
-    async fn before_tool_call(&self, _tc: &yoagent::types::Content) -> Option<BlockReason> { None }
-
-    /// Called after a tool executes. Return Some(text) to replace result.
-    async fn after_tool_call(&self, _tc: &yoagent::types::Content, _result: &str) -> Option<String> { None }
-
     /// Tool-specific renderer for the TUI.
     fn tool_renderer(&self, _name: &str) -> Option<Box<dyn ToolRenderer>> { None }
 
-    /// Tool prompt snippets for the system prompt.
-    fn tool_snippets(&self) -> Vec<(String, Cow<'static, str>)> { vec![] }
-
-    /// Tool prompt guidelines for the system prompt.
-    fn tool_guidelines(&self) -> Vec<(String, String)> { vec![] }
+    /// Skills this extension provides.
+    fn skills(&self) -> yoagent::skills::SkillSet { yoagent::skills::SkillSet::empty() }
 }
 ```
 
 ### Supporting types
 
 ```rust
-pub enum BlockReason { Security(String), Policy(String), Other(String) }
+/// A tool bundled with its prompt metadata (replaces old snippet/guideline hooks).
+pub struct ToolWithMeta {
+    pub tool: Box<dyn yoagent::types::AgentTool>,
+    pub snippet: &'static str,
+    pub guidelines: &'static [&'static str],
+    pub prepare_arguments: Option<fn(serde_json::Value) -> Result<serde_json::Value, String>>,
+}
 
 pub struct AutocompleteItem { pub value: String, pub label: String, pub description: Option<String> }
 
@@ -492,9 +467,6 @@ pub trait CommandHandler: Send + Sync {
 pub enum CommandResult { Info(String), Quit, ModelChanged(String), ... }
 
 pub struct SlashCommand { pub name: String, pub description: String, pub handler: Box<dyn CommandHandler> }
-
-pub struct ToolOutput { pub content: String, pub compact: Option<String>,
-    pub is_error: bool, pub terminate: bool, pub details: Option<Value> }
 
 pub trait ToolRenderer: Send + Sync {
     fn render_call(&self, args: &Value, width: usize, theme: &dyn Theme, ctx: &ToolRenderContext) -> Vec<String>;
@@ -516,8 +488,11 @@ let extensions: Vec<Box<dyn Extension>> = vec![
 ];
 ```
 
-Tools, commands, snippets, renderers, and hooks are all derived by
-flattening all extensions — no separate registration path.
+Tools, commands, renderers, and hooks are all derived by
+flattening all extensions — no separate registration path. `ToolWithMeta`
+wraps each inner `AgentTool` with prompt snippets and guidelines, and
+`impl AgentTool for ToolWithMeta` handles argument normalization (shape guard,
+null stripping, per-tool `prepare_arguments`).
 
 ---
 
@@ -609,7 +584,7 @@ Same file names and format as pi, under `~/.rab/agent/`.
     "excludeTools": [],
     "theme": "dark",
     "verbose": false,
-    "hideThinking": true,
+    "hideThinkingBlock": true,
     "collapseToolOutput": true
 }
 ```
@@ -694,7 +669,7 @@ stdout. Uses `yoagent::agent::Agent::prompt_with_sender()` with event channnels.
 
 ---
 
-## TUI (`src/tui/` + `src/agent/ui/`) — 72 modules, ~669 tests
+## TUI (`src/tui/` + `src/agent/ui/`) — 48 modules, ~508 tests
 
 The TUI library is a 1/1 port of pi's `@earendil-works/pi-tui`.
 
@@ -713,6 +688,7 @@ The TUI library is a 1/1 port of pi's `@earendil-works/pi-tui`.
 | `keybindings.rs` | JSON keybinding loading from `~/.rab/keybindings.json`, merge, resolution |
 | `theme.rs` | Theme trait + default JSON theme loader |
 | `fuzzy.rs` | Fuzzy matching for autocomplete |
+| `autocomplete.rs` | Editor autocomplete popup — completions, rendering, keyboard navigation |
 | `kill_ring.rs` | Kill ring for editor cut/copy/paste |
 | `undo_stack.rs` | Undo/redo for editor |
 | `word_nav.rs` | Word-boundary navigation utilities |
@@ -724,7 +700,7 @@ The TUI library is a 1/1 port of pi's `@earendil-works/pi-tui`.
 | Module | Description |
 |--------|-------------|
 | `editor.rs` | Multi-line editor — word-wrap, undo stack, kill ring, paste markers, bracketed paste, history recall, character jump, sticky column, border_color, autocomplete |
-| `markdown.rs` | pulldown-cmark renderer with syntax highlighting, tables, code blocks, Kitty hyperlinks |
+| `markdown.rs` | comrak-based renderer with syntax highlighting, tables, code blocks, Kitty hyperlinks |
 | `diff.rs` | Unified diff with colored +/lines and intra-line character-level inverse |
 | `box.rs` | `Box` component with render cache, borders, backgrounds |
 | `text.rs` | `Text` / `TruncatedText` with RefCell cache |
@@ -740,12 +716,12 @@ The TUI library is a 1/1 port of pi's `@earendil-works/pi-tui`.
 |--------|-------------|
 | `app.rs` | Main `App` struct — event handler, agent loop management, message queuing, compose_ui |
 | `chat_editor.rs` | `ChatEditor` wrapper — input processing, slash command dispatch, /skill:name expansion |
-| `messages.rs` | `DisplayMsg` — user/assistant/tool/info message types and layout |
 | `theme.rs` | `RabTheme` — JSON theme resolution, fallback, color detection, 130+ theme keys |
 | `working.rs` | `WorkingIndicator` — timer-based working animation |
 | `model_selector.rs` | `ModelSelector` — Ctrl+P model cycling with scoped-models support |
 | `footer.rs` | `Footer` — cwd, git branch, token usage, model, auto-compact indicator |
 | `help.rs` | Help overlay with keybinding display |
+| `render_utils.rs` | Shared rendering utilities |
 | `components/header.rs` | Header — "rab" logo, keybinding hints |
 | `components/footer_component.rs` | Footer component |
 | `components/editor_component.rs` | Editor component with border_color |
@@ -754,7 +730,6 @@ The TUI library is a 1/1 port of pi's `@earendil-works/pi-tui`.
 | `components/tool_messages.rs` | Tool execution components (read, write, edit, bash) |
 | `components/bash_execution.rs` | Bash execution component with streaming, duration, borders |
 | `components/info_message.rs` | Info message component (dim text) |
-| `components/message_components.rs` | Shared message rendering utilities |
 | `components/session_picker.rs` | Session selector overlay |
 | `components/mod.rs` | Component re-exports |
 
@@ -840,7 +815,6 @@ rab (EPL-2.0)
 ├── futures 0.3           (MIT)        - StreamExt
 ├── async-trait 0.1       (MIT)        - trait async fn
 ├── colored 3             (MPL-2.0)    - terminal colors
-├── tracing 0.1           (MIT)        - structured logging
 ├── crossterm 0.29        (MIT)        - terminal I/O
 ├── unicode-segmentation 1 (MIT)       - grapheme-aware cursor movement
 ├── unicode-width 0.2     (MIT)        - character display width
@@ -850,8 +824,7 @@ rab (EPL-2.0)
 ├── base64 0.22           (MIT)        - image data URL encoding
 ├── async-stream 0.3      (MIT)        - async stream generation
 ├── regex 1.12            (MIT)        - regex
-├── reqwest 0.12          (MIT)        - HTTP client
-├── rustls 0.23           (MIT)        - TLS
+├── reqwest 0.12          (MIT/Apache 2.0) - HTTP client (rustls-tls, socks)
 ├── openssl-sys 0.9       (MIT)        - vendored OpenSSL
 ├── libc 0.2              (MIT)        - system calls
 # wasmtime 26+ (Phase 2, Apache 2.0)
