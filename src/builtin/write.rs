@@ -1,14 +1,12 @@
-use crate::agent::extension::{AgentTool, Cancel, Extension, ToolOutput};
+use crate::agent::extension::Extension;
 use crate::agent::extension::{ToolRenderContext, ToolRenderer};
 use crate::builtin;
 use crate::tui::Theme;
 use crate::tui::ThemeKey;
-use anyhow::Context;
-use async_trait::async_trait;
+
 use std::borrow::Cow;
 use std::path::Path;
 use std::sync::Arc;
-use tokio::sync::mpsc::UnboundedSender;
 
 /// Number of preview lines when collapsed (matching pi's PREVIEW_LINES).
 const PREVIEW_LINES: usize = 10;
@@ -111,64 +109,6 @@ impl Extension for WriteExtension {
 struct WriteTool {
     cwd: std::path::PathBuf,
     operations: Arc<dyn WriteOperations>,
-}
-
-#[async_trait]
-impl AgentTool for WriteTool {
-    async fn execute(
-        &self,
-        tool_call_id: String,
-        args: serde_json::Value,
-        cancel: Cancel,
-        _on_update: Option<UnboundedSender<ToolOutput>>,
-    ) -> anyhow::Result<ToolOutput> {
-        let _ = tool_call_id;
-        let path = args["path"]
-            .as_str()
-            .ok_or_else(|| anyhow::anyhow!("Missing 'path' argument"))?;
-        let content = args["content"]
-            .as_str()
-            .ok_or_else(|| anyhow::anyhow!("Missing 'content' argument"))?;
-
-        cancel.check()?;
-
-        let cwd = self.cwd.clone();
-        let path_for_queue = path.to_owned();
-        let cwd_for_closure = cwd.clone();
-        let path_for_closure = path.to_owned();
-        let content_owned = content.to_owned();
-        let ops = self.operations.clone();
-
-        let result = crate::builtin::file_mutation_queue::with_file_mutation_queue(
-            &path_for_queue,
-            &cwd,
-            || async move {
-                let abs_path = builtin::resolve_path(&path_for_closure, &cwd_for_closure);
-
-                // Create parent directories
-                if let Some(parent) = abs_path.parent() {
-                    ops.mkdir(parent).with_context(|| {
-                        format!("Failed to create directory {}", parent.display())
-                    })?;
-                }
-
-                cancel.check()?;
-
-                // Write file using pluggable operations
-                ops.write_file(&abs_path, &content_owned)
-                    .with_context(|| format!("Failed to write {}", abs_path.display()))?;
-
-                Ok::<_, anyhow::Error>(format!(
-                    "Successfully wrote {} bytes to {}",
-                    content_owned.len(),
-                    path_for_closure
-                ))
-            },
-        )
-        .await?;
-
-        Ok(ToolOutput::ok(result))
-    }
 }
 
 // ── Incremental highlight cache ──────────────────────────────────
@@ -366,7 +306,67 @@ impl yoagent::types::AgentTool for WriteTool {
         params: serde_json::Value,
         ctx: yoagent::types::ToolContext,
     ) -> std::result::Result<yoagent::types::ToolResult, yoagent::types::ToolError> {
-        crate::agent::extension::execute_via_rab_tool(self, params, ctx).await
+        let path = params["path"]
+            .as_str()
+            .ok_or_else(|| {
+                yoagent::types::ToolError::InvalidArgs("Missing 'path' argument".into())
+            })?
+            .to_string();
+        let content = params["content"]
+            .as_str()
+            .ok_or_else(|| {
+                yoagent::types::ToolError::InvalidArgs("Missing 'content' argument".into())
+            })?
+            .to_string();
+
+        if ctx.cancel.is_cancelled() {
+            return Err(yoagent::types::ToolError::Cancelled);
+        }
+
+        let cwd = self.cwd.clone();
+        let cancel = ctx.cancel.clone();
+        let ops = self.operations.clone();
+        let path_for_queue = path.clone();
+        let cwd_for_closure = cwd.clone();
+        let content_for_closure = content.clone();
+
+        let result = crate::builtin::file_mutation_queue::with_file_mutation_queue(
+            &path_for_queue,
+            &cwd,
+            || async move {
+                let abs_path = builtin::resolve_path(&path, &cwd_for_closure);
+
+                // Create parent directories
+                if let Some(parent) = abs_path.parent() {
+                    ops.mkdir(parent).map_err(|e| {
+                        anyhow::anyhow!("Failed to create dir {}: {}", parent.display(), e)
+                    })?;
+                }
+
+                if cancel.is_cancelled() {
+                    anyhow::bail!("Operation cancelled");
+                }
+
+                // Write file using pluggable operations
+                ops.write_file(&abs_path, &content_for_closure)
+                    .map_err(|e| {
+                        anyhow::anyhow!("Failed to write {}: {}", abs_path.display(), e)
+                    })?;
+
+                Ok::<_, anyhow::Error>(format!(
+                    "Successfully wrote {} bytes to {}",
+                    content_for_closure.len(),
+                    path
+                ))
+            },
+        )
+        .await
+        .map_err(|e| yoagent::types::ToolError::Failed(e.to_string()))?;
+
+        Ok(yoagent::types::ToolResult {
+            content: vec![yoagent::types::Content::Text { text: result }],
+            details: serde_json::Value::Null,
+        })
     }
 }
 
@@ -542,7 +542,18 @@ impl ToolRenderer for WriteRenderer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::extension::Cancel;
+    use yoagent::AgentTool;
+    use yoagent::types::ToolContext;
+
+    fn tool_ctx() -> ToolContext {
+        ToolContext {
+            tool_call_id: "id".into(),
+            tool_name: "write".into(),
+            cancel: tokio_util::sync::CancellationToken::new(),
+            on_update: None,
+            on_progress: None,
+        }
+    }
 
     fn tmp_dir() -> std::path::PathBuf {
         let d = std::env::temp_dir().join(format!("rab-write-test-{}", uuid::Uuid::new_v4()));
@@ -560,10 +571,22 @@ mod tests {
     }
 
     async fn exec_ok(tool: &WriteTool, args: serde_json::Value) -> String {
-        tool.execute("id".into(), args, Cancel::new(), None)
-            .await
-            .unwrap()
-            .content
+        let result = tool.execute(args, tool_ctx()).await.unwrap();
+        yo_msg_text(&result.content)
+    }
+
+    fn yo_msg_text(content: &[yoagent::types::Content]) -> String {
+        content
+            .iter()
+            .filter_map(|c| {
+                if let yoagent::types::Content::Text { text } = c {
+                    Some(text.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("")
     }
 
     // ── Tests ────────────────────────────────────────────────
@@ -602,12 +625,7 @@ mod tests {
     async fn missing_path_errors() {
         let (tool, _tmp) = make_tool();
         let result = tool
-            .execute(
-                "id".into(),
-                serde_json::json!({"content": "hello"}),
-                Cancel::new(),
-                None,
-            )
+            .execute(serde_json::json!({"content": "hello"}), tool_ctx())
             .await;
         assert!(result.is_err());
     }
@@ -617,10 +635,8 @@ mod tests {
         let (tool, tmp) = make_tool();
         let result = tool
             .execute(
-                "id".into(),
                 serde_json::json!({"path": tmp.join("test.txt").to_str().unwrap()}),
-                Cancel::new(),
-                None,
+                tool_ctx(),
             )
             .await;
         assert!(result.is_err());
@@ -644,15 +660,19 @@ mod tests {
     async fn cancel_aborts_write() {
         let (tool, tmp) = make_tool();
         let path = tmp.join("cancelled.txt");
-        let cancel = Cancel::new();
+        let cancel = tokio_util::sync::CancellationToken::new();
         cancel.cancel();
 
         let result = tool
             .execute(
-                "id".into(),
                 serde_json::json!({"path": path.to_str().unwrap(), "content": "hello"}),
-                cancel,
-                None,
+                ToolContext {
+                    tool_call_id: "id".into(),
+                    tool_name: "write".into(),
+                    cancel,
+                    on_update: None,
+                    on_progress: None,
+                },
             )
             .await;
         assert!(result.is_err());

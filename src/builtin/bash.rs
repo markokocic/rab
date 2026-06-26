@@ -1,10 +1,10 @@
-use crate::agent::extension::{AgentTool, Cancel, Extension, ToolOutput};
+use crate::agent::extension::{Cancel, Extension};
 use crate::agent::extension::{ToolRenderContext, ToolRenderer};
 use crate::tui::Theme;
 use crate::tui::ThemeKey;
 use crate::tui::visual_truncate::truncate_to_visual_lines;
-use anyhow::Context;
 use async_trait::async_trait;
+
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -355,8 +355,8 @@ fn finish_bash_execution(
     exit_code: i32,
     cancelled: bool,
     timed_out: Option<u64>,
-    on_update: Option<UnboundedSender<ToolOutput>>,
-) -> Result<ToolOutput, anyhow::Error> {
+    ctx: &yoagent::types::ToolContext,
+) -> std::result::Result<yoagent::types::ToolResult, yoagent::types::ToolError> {
     let trunc = truncate_tail(combined, DEFAULT_MAX_LINES, DEFAULT_MAX_BYTES);
 
     let mut result_text = if trunc.content.is_empty() {
@@ -446,256 +446,33 @@ fn finish_bash_execution(
             format!("{}\n\nCommand exited with code {}", result_text, exit_code)
         }
     } else {
-        if let Some(ref tx) = on_update {
-            let _ = tx.send(ToolOutput::ok_with_details(
-                result_text.clone(),
-                details.clone().unwrap_or_default(),
-            ));
+        if let Some(ref on_update) = ctx.on_update {
+            on_update(yoagent::types::ToolResult {
+                content: vec![yoagent::types::Content::Text {
+                    text: result_text.clone(),
+                }],
+                details: details.clone().unwrap_or(serde_json::Value::Null),
+            });
         }
-        return Ok(ToolOutput::ok_with_details(
-            result_text,
-            details.unwrap_or_default(),
-        ));
+        return Ok(yoagent::types::ToolResult {
+            content: vec![yoagent::types::Content::Text { text: result_text }],
+            details: details.unwrap_or(serde_json::Value::Null),
+        });
     };
 
-    if let Some(ref tx) = on_update {
-        let _ = tx.send(ToolOutput::ok_with_details(
-            final_output.clone(),
-            details.clone().unwrap_or_default(),
-        ));
+    if let Some(ref on_update) = ctx.on_update {
+        on_update(yoagent::types::ToolResult {
+            content: vec![yoagent::types::Content::Text {
+                text: final_output.clone(),
+            }],
+            details: details.clone().unwrap_or(serde_json::Value::Null),
+        });
     }
 
-    Err(anyhow::anyhow!("{}", final_output))
+    Err(yoagent::types::ToolError::Failed(final_output))
 }
 
-// ── AgentTool implementation ─────────────────────────────────────
-
-#[async_trait]
-impl AgentTool for BashTool {
-    async fn execute(
-        &self,
-        tool_call_id: String,
-        args: serde_json::Value,
-        cancel: Cancel,
-        on_update: Option<UnboundedSender<ToolOutput>>,
-    ) -> anyhow::Result<ToolOutput> {
-        let _ = tool_call_id;
-        let command = args["command"]
-            .as_str()
-            .ok_or_else(|| anyhow::anyhow!("Missing 'command' argument"))?;
-        let timeout = args["timeout"].as_u64();
-        let started_at = Instant::now();
-
-        cancel.check()?;
-
-        // Apply command prefix if set
-        let effective_command = if let Some(ref prefix) = self.command_prefix {
-            format!("{}\n{}", prefix, command)
-        } else {
-            command.to_string()
-        };
-
-        // Check that the working directory exists (matching pi's fsAccess check)
-        if !self.cwd.exists() {
-            anyhow::bail!(
-                "Working directory does not exist: {}\nCannot execute bash commands.",
-                self.cwd.display()
-            );
-        }
-
-        // If custom operations are provided, delegate entirely
-        if let Some(ref ops) = self.operations {
-            let (output_tx, mut output_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
-            let ops_cancel = cancel.clone();
-
-            // Spawn the operations exec in background
-            let ops_command = effective_command.clone();
-            let ops_cwd = self.cwd.clone();
-            let ops = ops.clone();
-            let ops_handle = tokio::spawn(async move {
-                ops.exec(
-                    &ops_command,
-                    &ops_cwd,
-                    output_tx,
-                    Some(&ops_cancel),
-                    timeout,
-                    None,
-                )
-                .await
-            });
-
-            // Collect output from the channel
-            let mut combined = String::new();
-            while let Some(chunk) = output_rx.recv().await {
-                combined.push_str(&chunk);
-                // Stream partial output to on_update
-                if let Some(ref tx) = on_update {
-                    let _ = tx.send(ToolOutput::ok(combined.clone()));
-                }
-            }
-
-            let exit_code = ops_handle.await.unwrap_or(Ok(None)).unwrap_or(None);
-            let code = exit_code.unwrap_or(-1);
-
-            return finish_bash_execution(&combined, code, cancel.is_cancelled(), None, on_update);
-        }
-
-        let mut child =
-            spawn_bash_command(&effective_command, &self.cwd, self.shell_path.as_deref())
-                .with_context(|| format!("Failed to spawn command: {}", effective_command))?;
-
-        let pid = child.id().unwrap_or(0);
-
-        // Shared output buffer for streaming reads
-        let combined = Arc::new(TokioMutex::new(String::new()));
-        let combined_clone = combined.clone();
-
-        let stdout_pipe = child
-            .stdout
-            .take()
-            .ok_or_else(|| anyhow::anyhow!("Failed to capture stdout"))?;
-        let stderr_pipe = child
-            .stderr
-            .take()
-            .ok_or_else(|| anyhow::anyhow!("Failed to capture stderr"))?;
-
-        use tokio::io::AsyncReadExt;
-        let read_task = tokio::spawn(async move {
-            let mut stdout_buf = vec![0u8; 65536];
-            let mut stderr_buf = vec![0u8; 65536];
-            let mut stdout_reader = stdout_pipe;
-            let mut stderr_reader = stderr_pipe;
-            let mut stdout_done = false;
-            let mut stderr_done = false;
-            loop {
-                tokio::select! {
-                    result = stdout_reader.read(&mut stdout_buf), if !stdout_done => {
-                        match result {
-                            Ok(0) => stdout_done = true,
-                            Ok(n) => {
-                                let text = String::from_utf8_lossy(&stdout_buf[..n]);
-                                let sanitized = sanitize_output(&text);
-                                let mut out = combined_clone.lock().await;
-                                out.push_str(&sanitized);
-                            }
-                            Err(_) => stdout_done = true,
-                        }
-                    }
-                    result = stderr_reader.read(&mut stderr_buf), if !stderr_done => {
-                        match result {
-                            Ok(0) => stderr_done = true,
-                            Ok(n) => {
-                                let text = String::from_utf8_lossy(&stderr_buf[..n]);
-                                let sanitized = sanitize_output(&text);
-                                let mut out = combined_clone.lock().await;
-                                out.push_str(&sanitized);
-                            }
-                            Err(_) => stderr_done = true,
-                        }
-                    }
-                }
-                if stdout_done && stderr_done {
-                    break;
-                }
-            }
-        });
-
-        // ── PID tracking for cleanup on shutdown signals ──
-        // Register this PID so it gets killed if the parent exits unexpectedly
-        let _pid_guard = ProcessGuard::new(pid);
-
-        // Set up cancellation monitor: kill the process group if cancelled
-        let cancelled = Arc::new(AtomicBool::new(false));
-        let cancel_flag = cancelled.clone();
-        let cancel_inner = cancel.clone();
-        let _cancel_monitor: tokio::task::JoinHandle<()> = tokio::spawn(async move {
-            while !cancel_inner.is_cancelled() {
-                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-            }
-            cancel_flag.store(true, Ordering::SeqCst);
-            kill_process_group(pid);
-        });
-
-        // Send initial empty update (matching pi's onUpdate({ content: [], details: undefined }))
-        if let Some(ref tx) = on_update {
-            let _ = tx.send(ToolOutput::ok(String::new()));
-        }
-
-        // Wait for the process to exit, with optional timeout and streaming updates
-        let timeout_dur = timeout.map(std::time::Duration::from_secs);
-        let throttle_ms = 100u64;
-        let mut last_update_at = Instant::now();
-
-        let exit_code: i32;
-
-        loop {
-            if cancelled.load(Ordering::SeqCst) {
-                kill_process_group(pid);
-                read_task.abort();
-                let combined_str = combined.lock().await.clone();
-                return finish_bash_execution(&combined_str, -1, true, None, on_update);
-            }
-
-            if let Some(dur) = timeout_dur
-                && started_at.elapsed() > dur
-            {
-                kill_process_group(pid);
-                read_task.abort();
-                let combined_str = combined.lock().await.clone();
-                return finish_bash_execution(&combined_str, -1, false, timeout, on_update);
-            }
-
-            if let Some(ref tx) = on_update
-                && last_update_at.elapsed().as_millis() as u64 >= throttle_ms
-            {
-                let out = combined.lock().await.clone();
-                if !out.is_empty() {
-                    last_update_at = Instant::now();
-                    let _ = tx.send(ToolOutput::ok(out));
-                }
-            }
-
-            match child.try_wait() {
-                Ok(Some(status)) => {
-                    exit_code = status.code().unwrap_or(-1);
-                    // ── Idle grace period (matching pi's waitForChildProcess) ──
-                    // After child exit, wait for pipes to go idle (late data from
-                    // detached descendants). Poll every 100ms; if no new data
-                    // within the grace window, the output is stable.
-                    let mut last_len = combined.lock().await.len();
-                    loop {
-                        tokio::time::sleep(std::time::Duration::from_millis(EXIT_STDIO_GRACE_MS))
-                            .await;
-                        let new_len = combined.lock().await.len();
-                        if new_len == last_len {
-                            break;
-                        }
-                        last_len = new_len;
-                    }
-                    read_task.abort();
-                    break;
-                }
-                Ok(None) => {
-                    tokio::time::sleep(std::time::Duration::from_millis(throttle_ms)).await;
-                }
-                Err(_) => {
-                    read_task.await.ok();
-                    exit_code = -1;
-                    break;
-                }
-            }
-        }
-
-        let combined_str = combined.lock().await.clone();
-        if let Some(ref tx) = on_update
-            && !combined_str.is_empty()
-        {
-            let _ = tx.send(ToolOutput::ok(combined_str.clone()));
-        }
-
-        finish_bash_execution(&combined_str, exit_code, false, None, on_update)
-    }
-}
+// ── Bash execution helpers (was AgentTool impl, now in yoagent) ──
 
 // ── Bash tool renderer ───────────────────────────────────────────
 
@@ -866,7 +643,239 @@ impl yoagent::types::AgentTool for BashTool {
         params: serde_json::Value,
         ctx: yoagent::types::ToolContext,
     ) -> std::result::Result<yoagent::types::ToolResult, yoagent::types::ToolError> {
-        crate::agent::extension::execute_via_rab_tool(self, params, ctx).await
+        let command = params["command"].as_str().ok_or_else(|| {
+            yoagent::types::ToolError::InvalidArgs("Missing 'command' argument".into())
+        })?;
+        let timeout = params["timeout"].as_u64();
+        let started_at = Instant::now();
+
+        if ctx.cancel.is_cancelled() {
+            return Err(yoagent::types::ToolError::Cancelled);
+        }
+
+        // Apply command prefix if set
+        let effective_command = if let Some(ref prefix) = self.command_prefix {
+            format!("{}\n{}", prefix, command)
+        } else {
+            command.to_string()
+        };
+
+        // Check that the working directory exists
+        if !self.cwd.exists() {
+            return Err(yoagent::types::ToolError::Failed(format!(
+                "Working directory does not exist: {}\nCannot execute bash commands.",
+                self.cwd.display()
+            )));
+        }
+
+        // If custom operations are provided, delegate entirely
+        if let Some(ref ops) = self.operations {
+            let (output_tx, mut output_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+            let ops_cancel = Cancel::new();
+
+            // Link yoagent cancellation to rab Cancel
+            let yo_cancel = ctx.cancel.clone();
+            let watch_cancel = ops_cancel.clone();
+            tokio::spawn(async move {
+                yo_cancel.cancelled().await;
+                watch_cancel.cancel();
+            });
+
+            let ops_command = effective_command.clone();
+            let ops_cwd = self.cwd.clone();
+            let ops = ops.clone();
+            let ops_handle = tokio::spawn(async move {
+                ops.exec(
+                    &ops_command,
+                    &ops_cwd,
+                    output_tx,
+                    Some(&ops_cancel),
+                    timeout,
+                    None,
+                )
+                .await
+            });
+
+            // Collect output from the channel
+            let mut combined = String::new();
+            while let Some(chunk) = output_rx.recv().await {
+                combined.push_str(&chunk);
+                if let Some(ref on_update) = ctx.on_update {
+                    on_update(yoagent::types::ToolResult {
+                        content: vec![yoagent::types::Content::Text {
+                            text: combined.clone(),
+                        }],
+                        details: serde_json::Value::Null,
+                    });
+                }
+            }
+
+            let exit_code = ops_handle.await.unwrap_or(Ok(None)).unwrap_or(None);
+            let code = exit_code.unwrap_or(-1);
+
+            return finish_bash_execution(&combined, code, ctx.cancel.is_cancelled(), None, &ctx);
+        }
+
+        let mut child =
+            spawn_bash_command(&effective_command, &self.cwd, self.shell_path.as_deref()).map_err(
+                |e| yoagent::types::ToolError::Failed(format!("Failed to spawn command: {}", e)),
+            )?;
+
+        let pid = child.id().unwrap_or(0);
+
+        // Shared output buffer for streaming reads
+        let combined = Arc::new(TokioMutex::new(String::new()));
+        let combined_clone = combined.clone();
+
+        let stdout_pipe = child
+            .stdout
+            .take()
+            .ok_or_else(|| yoagent::types::ToolError::Failed("Failed to capture stdout".into()))?;
+        let stderr_pipe = child
+            .stderr
+            .take()
+            .ok_or_else(|| yoagent::types::ToolError::Failed("Failed to capture stderr".into()))?;
+
+        use tokio::io::AsyncReadExt;
+        let read_task = tokio::spawn(async move {
+            let mut stdout_buf = vec![0u8; 65536];
+            let mut stderr_buf = vec![0u8; 65536];
+            let mut stdout_reader = stdout_pipe;
+            let mut stderr_reader = stderr_pipe;
+            let mut stdout_done = false;
+            let mut stderr_done = false;
+            loop {
+                tokio::select! {
+                    result = stdout_reader.read(&mut stdout_buf), if !stdout_done => {
+                        match result {
+                            Ok(0) => stdout_done = true,
+                            Ok(n) => {
+                                let text = String::from_utf8_lossy(&stdout_buf[..n]);
+                                let sanitized = sanitize_output(&text);
+                                let mut out = combined_clone.lock().await;
+                                out.push_str(&sanitized);
+                            }
+                            Err(_) => stdout_done = true,
+                        }
+                    }
+                    result = stderr_reader.read(&mut stderr_buf), if !stderr_done => {
+                        match result {
+                            Ok(0) => stderr_done = true,
+                            Ok(n) => {
+                                let text = String::from_utf8_lossy(&stderr_buf[..n]);
+                                let sanitized = sanitize_output(&text);
+                                let mut out = combined_clone.lock().await;
+                                out.push_str(&sanitized);
+                            }
+                            Err(_) => stderr_done = true,
+                        }
+                    }
+                }
+                if stdout_done && stderr_done {
+                    break;
+                }
+            }
+        });
+
+        // ── PID tracking for cleanup on shutdown signals ──
+        let _pid_guard = ProcessGuard::new(pid);
+
+        // Set up cancellation monitor: kill the process group if cancelled
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let cancel_flag = cancelled.clone();
+        let yo_cancel = ctx.cancel.clone();
+        let _cancel_monitor: tokio::task::JoinHandle<()> = tokio::spawn(async move {
+            yo_cancel.cancelled().await;
+            cancel_flag.store(true, Ordering::SeqCst);
+            kill_process_group(pid);
+        });
+
+        // Send initial empty update
+        if let Some(ref on_update) = ctx.on_update {
+            on_update(yoagent::types::ToolResult {
+                content: vec![],
+                details: serde_json::Value::Null,
+            });
+        }
+
+        // Wait for the process to exit, with optional timeout and streaming updates
+        let timeout_dur = timeout.map(std::time::Duration::from_secs);
+        let throttle_ms = 100u64;
+        let mut last_update_at = Instant::now();
+
+        let exit_code: i32;
+
+        loop {
+            if cancelled.load(Ordering::SeqCst) {
+                kill_process_group(pid);
+                read_task.abort();
+                let combined_str = combined.lock().await.clone();
+                return finish_bash_execution(&combined_str, -1, true, None, &ctx);
+            }
+
+            if let Some(dur) = timeout_dur
+                && started_at.elapsed() > dur
+            {
+                kill_process_group(pid);
+                read_task.abort();
+                let combined_str = combined.lock().await.clone();
+                return finish_bash_execution(&combined_str, -1, false, timeout, &ctx);
+            }
+
+            if let Some(ref on_update) = ctx.on_update
+                && last_update_at.elapsed().as_millis() as u64 >= throttle_ms
+            {
+                let out = combined.lock().await.clone();
+                if !out.is_empty() {
+                    last_update_at = Instant::now();
+                    on_update(yoagent::types::ToolResult {
+                        content: vec![yoagent::types::Content::Text { text: out }],
+                        details: serde_json::Value::Null,
+                    });
+                }
+            }
+
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    exit_code = status.code().unwrap_or(-1);
+                    // Idle grace period — after child exit, wait for pipes to go idle
+                    let mut last_len = combined.lock().await.len();
+                    loop {
+                        tokio::time::sleep(std::time::Duration::from_millis(EXIT_STDIO_GRACE_MS))
+                            .await;
+                        let new_len = combined.lock().await.len();
+                        if new_len == last_len {
+                            break;
+                        }
+                        last_len = new_len;
+                    }
+                    read_task.abort();
+                    break;
+                }
+                Ok(None) => {
+                    tokio::time::sleep(std::time::Duration::from_millis(throttle_ms)).await;
+                }
+                Err(_) => {
+                    read_task.await.ok();
+                    exit_code = -1;
+                    break;
+                }
+            }
+        }
+
+        let combined_str = combined.lock().await.clone();
+        if let Some(ref on_update) = ctx.on_update
+            && !combined_str.is_empty()
+        {
+            on_update(yoagent::types::ToolResult {
+                content: vec![yoagent::types::Content::Text {
+                    text: combined_str.clone(),
+                }],
+                details: serde_json::Value::Null,
+            });
+        }
+
+        finish_bash_execution(&combined_str, exit_code, false, None, &ctx)
     }
 }
 
@@ -922,6 +931,31 @@ impl Drop for ProcessGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use yoagent::AgentTool;
+
+    fn tool_ctx() -> yoagent::types::ToolContext {
+        yoagent::types::ToolContext {
+            tool_call_id: "id".into(),
+            tool_name: "bash".into(),
+            cancel: tokio_util::sync::CancellationToken::new(),
+            on_update: None,
+            on_progress: None,
+        }
+    }
+
+    fn yo_msg_text(content: &[yoagent::types::Content]) -> String {
+        content
+            .iter()
+            .filter_map(|c| {
+                if let yoagent::types::Content::Text { text } = c {
+                    Some(text.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("")
+    }
 
     fn make_tool() -> BashTool {
         BashTool {
@@ -936,49 +970,43 @@ mod tests {
     async fn runs_simple_command() {
         let tool = make_tool();
         let output = tool
-            .execute(
-                "id".into(),
-                serde_json::json!({"command": "echo hello"}),
-                Cancel::new(),
-                None,
-            )
+            .execute(serde_json::json!({"command": "echo hello"}), tool_ctx())
             .await
             .unwrap();
-        assert!(output.content.contains("hello"));
+        assert!(yo_msg_text(&output.content).contains("hello"));
     }
 
     #[tokio::test]
     async fn captures_stderr() {
         let tool = make_tool();
         let output = tool
-            .execute(
-                "id".into(),
-                serde_json::json!({"command": "echo err >&2"}),
-                Cancel::new(),
-                None,
-            )
+            .execute(serde_json::json!({"command": "echo err >&2"}), tool_ctx())
             .await
             .unwrap();
-        assert!(output.content.contains("err"));
+        assert!(yo_msg_text(&output.content).contains("err"));
     }
 
     #[tokio::test]
     async fn cancel_aborts() {
         let tool = make_tool();
-        let cancel = Cancel::new();
+        let cancel = tokio_util::sync::CancellationToken::new();
         cancel.cancel();
         let result = tool
             .execute(
-                "id".into(),
                 serde_json::json!({"command": "sleep 10"}),
-                cancel,
-                None,
+                yoagent::types::ToolContext {
+                    tool_call_id: "id".into(),
+                    tool_name: "bash".into(),
+                    cancel,
+                    on_update: None,
+                    on_progress: None,
+                },
             )
             .await;
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(
-            err.contains("cancelled") || err.contains("aborted"),
+            err.contains("Cancelled") || err.contains("aborted"),
             "expected cancellation error, got: {}",
             err
         );
@@ -989,10 +1017,8 @@ mod tests {
         let tool = make_tool();
         let result = tool
             .execute(
-                "id".into(),
                 serde_json::json!({"command": "sleep 10", "timeout": 1}),
-                Cancel::new(),
-                None,
+                tool_ctx(),
             )
             .await;
         assert!(result.is_err());
@@ -1047,12 +1073,7 @@ mod tests {
     async fn exit_code_nonzero() {
         let tool = make_tool();
         let result = tool
-            .execute(
-                "id".into(),
-                serde_json::json!({"command": "exit 42"}),
-                Cancel::new(),
-                None,
-            )
+            .execute(serde_json::json!({"command": "exit 42"}), tool_ctx())
             .await;
         assert!(result.is_err(), "non-zero exit should return error");
         let err = result.unwrap_err().to_string();
@@ -1064,10 +1085,8 @@ mod tests {
         let tool = make_tool();
         let result = tool
             .execute(
-                "id".into(),
                 serde_json::json!({"command": "echo before && exit 1"}),
-                Cancel::new(),
-                None,
+                tool_ctx(),
             )
             .await;
         assert!(result.is_err(), "non-zero exit should return error");
@@ -1080,18 +1099,13 @@ mod tests {
     async fn no_output() {
         let tool = make_tool();
         let output = tool
-            .execute(
-                "id".into(),
-                serde_json::json!({"command": "true"}),
-                Cancel::new(),
-                None,
-            )
+            .execute(serde_json::json!({"command": "true"}), tool_ctx())
             .await
             .unwrap();
         assert!(
-            output.content.contains("(no output)"),
+            yo_msg_text(&output.content).contains("(no output)"),
             "got: {}",
-            output.content
+            yo_msg_text(&output.content)
         );
     }
 
@@ -1100,15 +1114,21 @@ mod tests {
         let tool = make_tool();
         let output = tool
             .execute(
-                "id".into(),
                 serde_json::json!({"command": "echo out; echo err >&2"}),
-                Cancel::new(),
-                None,
+                tool_ctx(),
             )
             .await
             .unwrap();
-        assert!(output.content.contains("out"), "got: {}", output.content);
-        assert!(output.content.contains("err"), "got: {}", output.content);
+        assert!(
+            yo_msg_text(&output.content).contains("out"),
+            "got: {}",
+            yo_msg_text(&output.content)
+        );
+        assert!(
+            yo_msg_text(&output.content).contains("err"),
+            "got: {}",
+            yo_msg_text(&output.content)
+        );
     }
 
     #[tokio::test]
@@ -1124,23 +1144,20 @@ mod tests {
             operations: None,
         };
         let output = tool
-            .execute(
-                "id".into(),
-                serde_json::json!({"command": "cat marker.txt"}),
-                Cancel::new(),
-                None,
-            )
+            .execute(serde_json::json!({"command": "cat marker.txt"}), tool_ctx())
             .await
             .unwrap();
-        assert!(output.content.contains("hello"), "got: {}", output.content);
+        assert!(
+            yo_msg_text(&output.content).contains("hello"),
+            "got: {}",
+            yo_msg_text(&output.content)
+        );
     }
 
     #[tokio::test]
     async fn missing_command_errors() {
         let tool = make_tool();
-        let result = tool
-            .execute("id".into(), serde_json::json!({}), Cancel::new(), None)
-            .await;
+        let result = tool.execute(serde_json::json!({}), tool_ctx()).await;
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("command"), "got: {}", err);
@@ -1151,10 +1168,8 @@ mod tests {
         let tool = make_tool();
         let result = tool
             .execute(
-                "id".into(),
                 serde_json::json!({"command": "echo start && sleep 10 && echo end", "timeout": 1}),
-                Cancel::new(),
-                None,
+                tool_ctx(),
             )
             .await;
         assert!(result.is_err());
@@ -1165,15 +1180,19 @@ mod tests {
     #[tokio::test]
     async fn cancel_during_long_command() {
         let tool = make_tool();
-        let cancel = Cancel::new();
-        let cancel_clone = cancel.clone();
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let cancel_ctx = cancel.clone();
 
         let handle = tokio::spawn(async move {
             tool.execute(
-                "id".into(),
                 serde_json::json!({"command": "sleep 30"}),
-                cancel_clone,
-                None,
+                yoagent::types::ToolContext {
+                    tool_call_id: "id".into(),
+                    tool_name: "bash".into(),
+                    cancel: cancel_ctx,
+                    on_update: None,
+                    on_progress: None,
+                },
             )
             .await
         });
@@ -1185,7 +1204,7 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(
-            err.contains("aborted") || err.contains("cancelled"),
+            err.contains("aborted") || err.contains("Cancelled"),
             "expected cancellation error, got: {}",
             err
         );
@@ -1269,23 +1288,18 @@ mod tests {
         let tool = make_tool();
         let cmd = "for i in $(seq 1 3000); do echo \"line $i\"; done";
         let output = tool
-            .execute(
-                "id".into(),
-                serde_json::json!({"command": cmd}),
-                Cancel::new(),
-                None,
-            )
+            .execute(serde_json::json!({"command": cmd}), tool_ctx())
             .await
             .unwrap();
         assert!(
-            output.content.contains("Showing lines"),
+            yo_msg_text(&output.content).contains("Showing lines"),
             "got: {}",
-            output.content
+            yo_msg_text(&output.content)
         );
         assert!(
-            output.content.contains("Full output:"),
+            yo_msg_text(&output.content).contains("Full output:"),
             "got: {}",
-            output.content
+            yo_msg_text(&output.content)
         );
     }
 
@@ -1293,16 +1307,11 @@ mod tests {
     async fn small_output_no_footer() {
         let tool = make_tool();
         let output = tool
-            .execute(
-                "id".into(),
-                serde_json::json!({"command": "echo hello"}),
-                Cancel::new(),
-                None,
-            )
+            .execute(serde_json::json!({"command": "echo hello"}), tool_ctx())
             .await
             .unwrap();
-        assert!(!output.content.contains("Output truncated"));
-        assert!(!output.content.contains("Full output:"));
+        assert!(!yo_msg_text(&output.content).contains("Output truncated"));
+        assert!(!yo_msg_text(&output.content).contains("Full output:"));
     }
 
     #[tokio::test]
@@ -1310,18 +1319,13 @@ mod tests {
         let tool = make_tool();
         let cmd = "for i in $(seq 1 3000); do echo \"line $i\"; done";
         let output = tool
-            .execute(
-                "id".into(),
-                serde_json::json!({"command": cmd}),
-                Cancel::new(),
-                None,
-            )
+            .execute(serde_json::json!({"command": cmd}), tool_ctx())
             .await
             .unwrap();
         assert!(
-            output.content.contains("/pi-bash/"),
+            yo_msg_text(&output.content).contains("/pi-bash/"),
             "expected temp file path with /pi-bash/, got: {}",
-            output.content
+            yo_msg_text(&output.content)
         );
     }
 

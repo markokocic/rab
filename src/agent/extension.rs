@@ -7,60 +7,6 @@ use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
 };
-use tokio::sync::mpsc;
-use tokio::sync::mpsc::UnboundedSender;
-use yoagent::types::{Content, ToolContext, ToolError, ToolResult};
-
-/// Bridge: execute a rab AgentTool via yoagent ToolContext.
-/// Used internally by builtin tools that implement both traits.
-pub(crate) async fn execute_via_rab_tool(
-    tool: &dyn AgentTool,
-    params: serde_json::Value,
-    ctx: ToolContext,
-) -> std::result::Result<ToolResult, ToolError> {
-    let tool_call_id = ctx.tool_call_id.clone();
-
-    let rab_cancel = Cancel::new();
-    let watch_cancel = rab_cancel.clone();
-    let yo_cancel = ctx.cancel.clone();
-    tokio::spawn(async move {
-        yo_cancel.cancelled().await;
-        watch_cancel.cancel();
-    });
-
-    let (update_tx, mut update_rx) = mpsc::unbounded_channel::<ToolOutput>();
-    if let Some(ref on_update) = ctx.on_update {
-        let on_update = on_update.clone();
-        tokio::spawn(async move {
-            while let Some(output) = update_rx.recv().await {
-                let content = vec![Content::Text {
-                    text: output.content,
-                }];
-                on_update(ToolResult {
-                    content,
-                    details: output.details.unwrap_or(serde_json::Value::Null),
-                });
-            }
-        });
-    }
-
-    match tool
-        .execute(tool_call_id, params, rab_cancel, Some(update_tx))
-        .await
-    {
-        Ok(output) => {
-            let content = vec![Content::Text {
-                text: output.content,
-            }];
-            Ok(ToolResult {
-                content,
-                details: output.details.unwrap_or(serde_json::Value::Null),
-            })
-        }
-        Err(e) => Err(ToolError::Failed(e.to_string())),
-    }
-}
-
 /// Reason a tool call was blocked.
 #[derive(Debug, Clone)]
 pub enum BlockReason {
@@ -355,28 +301,6 @@ pub trait ToolRenderer: Send + Sync {
     fn render_bg_key(&self) -> Option<&'static str> {
         None
     }
-}
-
-/// An LLM-callable tool.
-#[async_trait]
-/// An LLM-callable tool — executed via the yoagent bridge.
-///
-/// Only `execute()` is used; all other metadata comes from the
-/// `yoagent::types::AgentTool` implementation instead.
-#[async_trait]
-pub(crate) trait AgentTool: Send + Sync {
-    /// Execute the tool. Returns output carrying both the full content (sent to LLM)
-    /// and an optional compact label for collapsed UI display.
-    ///
-    /// If `on_update` is provided, the tool may send intermediate `ToolOutput` updates
-    /// during long-running operations (e.g. bash streaming).
-    async fn execute(
-        &self,
-        tool_call_id: String,
-        args: serde_json::Value,
-        cancel: Cancel,
-        on_update: Option<UnboundedSender<ToolOutput>>,
-    ) -> anyhow::Result<ToolOutput>;
 }
 
 #[async_trait]

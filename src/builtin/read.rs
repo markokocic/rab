@@ -1,13 +1,11 @@
-use crate::agent::extension::{AgentTool, Cancel, Extension, ToolOutput};
+use crate::agent::extension::Extension;
 use crate::agent::extension::{ToolRenderContext, ToolRenderer};
 use crate::tui::Theme;
 use crate::tui::ThemeKey;
-use anyhow::Context;
-use async_trait::async_trait;
+
 use base64::Engine as _;
 use std::borrow::Cow;
 use std::path::Path;
-use tokio::sync::mpsc::UnboundedSender;
 use unicode_normalization::UnicodeNormalization;
 
 pub struct ReadExtension {
@@ -306,31 +304,58 @@ fn truncate_head(content: &str, max_lines: usize, max_bytes: usize) -> Truncatio
     }
 }
 
-// ── AgentTool implementation ─────────────────────────────────────
-
-#[async_trait]
-impl AgentTool for ReadTool {
+#[async_trait::async_trait]
+impl yoagent::types::AgentTool for ReadTool {
+    fn name(&self) -> &str {
+        "read"
+    }
+    fn label(&self) -> &str {
+        "read"
+    }
+    fn description(&self) -> &str {
+        "Read the contents of a file. For text files, output is truncated to 2000 lines or \
+         50KB (whichever is hit first). Use offset/limit for large files. When you need the \
+         full file, continue with offset until complete."
+    }
+    fn parameters_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "required": ["path"],
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Path to the file to read (relative or absolute)"
+                },
+                "offset": {
+                    "type": "number",
+                    "description": "Line number to start reading from (1-indexed)"
+                },
+                "limit": {
+                    "type": "number",
+                    "description": "Maximum number of lines to read"
+                }
+            }
+        })
+    }
     async fn execute(
         &self,
-        tool_call_id: String,
-        args: serde_json::Value,
-        cancel: Cancel,
-        _on_update: Option<UnboundedSender<ToolOutput>>,
-    ) -> anyhow::Result<ToolOutput> {
-        let _ = tool_call_id;
-        let path = args["path"]
-            .as_str()
-            .ok_or_else(|| anyhow::anyhow!("Missing 'path' argument"))?;
-        let offset = args["offset"].as_u64().map(|o| o as usize).unwrap_or(0);
-        let limit = args["limit"].as_u64().map(|l| l as usize);
+        params: serde_json::Value,
+        ctx: yoagent::types::ToolContext,
+    ) -> std::result::Result<yoagent::types::ToolResult, yoagent::types::ToolError> {
+        let path = params["path"].as_str().ok_or_else(|| {
+            yoagent::types::ToolError::InvalidArgs("Missing 'path' argument".into())
+        })?;
+        let offset = params["offset"].as_u64().map(|o| o as usize).unwrap_or(0);
+        let limit = params["limit"].as_u64().map(|l| l as usize);
 
         let abs_path = resolve_read_path(path, &self.cwd);
 
-        cancel.check()?;
+        if ctx.cancel.is_cancelled() {
+            return Err(yoagent::types::ToolError::Cancelled);
+        }
 
         // Check if the file is an image (magic byte detection, matching pi)
         if let Ok(Some(mime)) = detect_image_mime(&abs_path) {
-            // Image file detected — read binary data and include as base64 data URL
             let file_name = abs_path
                 .file_name()
                 .map(|n| n.to_string_lossy())
@@ -340,33 +365,41 @@ impl AgentTool for ReadTool {
                 .ok()
                 .map(|m| m.len() as usize)
                 .unwrap_or(0);
-            let binary = std::fs::read(&abs_path)
-                .with_context(|| format!("Failed to read image {}", abs_path.display()))?;
+            let binary = std::fs::read(&abs_path).map_err(|e| {
+                yoagent::types::ToolError::Failed(format!(
+                    "Failed to read image {}: {}",
+                    abs_path.display(),
+                    e
+                ))
+            })?;
             let b64 = base64::engine::general_purpose::STANDARD.encode(&binary);
-            let data_url = format!("data:{};base64,{}", mime, b64);
             let msg = format!(
-                "Read image file [{}] - {} ({})\n{}",
+                "Read image file [{}] - {} ({})\n{}:{};base64,{}",
                 mime,
                 file_name,
                 format_size(file_len),
-                data_url,
+                mime,
+                file_name,
+                b64,
             );
-            return Ok(ToolOutput {
-                content: msg,
-                compact: None,
-                is_error: false,
-                terminate: false,
-                details: Some(serde_json::json!({
+            return Ok(yoagent::types::ToolResult {
+                content: vec![yoagent::types::Content::Text { text: msg }],
+                details: serde_json::json!({
                     "mimeType": mime,
                     "fileName": file_name,
                     "fileSize": file_len,
                     "imageData": b64,
-                })),
+                }),
             });
         }
 
-        let content = std::fs::read_to_string(&abs_path)
-            .with_context(|| format!("Failed to read {}", abs_path.display()))?;
+        let content = std::fs::read_to_string(&abs_path).map_err(|e| {
+            yoagent::types::ToolError::Failed(format!(
+                "Failed to read {}: {}",
+                abs_path.display(),
+                e
+            ))
+        })?;
 
         let all_lines: Vec<&str> = content.split('\n').collect();
         let total_file_lines = if content.ends_with('\n') {
@@ -375,19 +408,18 @@ impl AgentTool for ReadTool {
             all_lines.len()
         };
 
-        // Apply offset (1-indexed → 0-indexed)
         let start_line = if offset > 0 { offset - 1 } else { 0 };
         if start_line >= total_file_lines {
-            return Err(anyhow::anyhow!(
+            return Err(yoagent::types::ToolError::Failed(format!(
                 "Offset {} is beyond end of file ({} lines total)",
-                offset,
-                total_file_lines
-            ));
+                offset, total_file_lines
+            )));
         }
 
-        cancel.check()?;
+        if ctx.cancel.is_cancelled() {
+            return Err(yoagent::types::ToolError::Cancelled);
+        }
 
-        // Build the selected content based on offset/limit
         let selected_content: String;
         let user_limited_lines: Option<usize>;
 
@@ -402,14 +434,6 @@ impl AgentTool for ReadTool {
             user_limited_lines = None;
         }
 
-        // Compute compact classification label for the legacy DisplayMsg path
-        let compact =
-            get_compact_read_classification(path, &self.cwd).map(|(kind, label)| match kind {
-                CompactReadKind::Resource => format!("read resource {}", label),
-                CompactReadKind::Skill => format!("read skill {}", label),
-            });
-
-        // Apply truncation
         let trunc = truncate_head(&selected_content, DEFAULT_MAX_LINES, DEFAULT_MAX_BYTES);
 
         if trunc.first_line_exceeds_limit {
@@ -423,34 +447,20 @@ impl AgentTool for ReadTool {
                 path,
                 DEFAULT_MAX_BYTES,
             );
-            let details = Some(serde_json::json!({
-                "truncation": {
-                    "truncated": true,
-                    "truncatedBy": "bytes",
-                    "totalLines": trunc.total_lines,
-                    "outputLines": 0,
-                    "firstLineExceedsLimit": true,
-                    "maxLines": DEFAULT_MAX_LINES,
-                    "maxBytes": DEFAULT_MAX_BYTES,
-                }
-            }));
-            if let Some(label) = compact {
-                return Ok(ToolOutput {
-                    content: msg,
-                    compact: Some(label),
-                    is_error: false,
-                    terminate: false,
-                    details,
-                });
-            } else {
-                return Ok(ToolOutput {
-                    content: msg,
-                    compact: None,
-                    is_error: false,
-                    terminate: false,
-                    details,
-                });
-            }
+            return Ok(yoagent::types::ToolResult {
+                content: vec![yoagent::types::Content::Text { text: msg }],
+                details: serde_json::json!({
+                    "truncation": {
+                        "truncated": true,
+                        "truncatedBy": "bytes",
+                        "totalLines": trunc.total_lines,
+                        "outputLines": 0,
+                        "firstLineExceedsLimit": true,
+                        "maxLines": DEFAULT_MAX_LINES,
+                        "maxBytes": DEFAULT_MAX_BYTES,
+                    }
+                }),
+            });
         }
 
         let output: String;
@@ -507,65 +517,10 @@ impl AgentTool for ReadTool {
             output = trimmed.join("\n");
         }
 
-        if let Some(label) = compact {
-            Ok(ToolOutput {
-                content: output,
-                compact: Some(label),
-                is_error: false,
-                terminate: false,
-                details,
-            })
-        } else {
-            Ok(ToolOutput {
-                content: output,
-                compact: None,
-                is_error: false,
-                terminate: false,
-                details,
-            })
-        }
-    }
-}
-
-#[async_trait::async_trait]
-impl yoagent::types::AgentTool for ReadTool {
-    fn name(&self) -> &str {
-        "read"
-    }
-    fn label(&self) -> &str {
-        "read"
-    }
-    fn description(&self) -> &str {
-        "Read the contents of a file. For text files, output is truncated to 2000 lines or \
-         50KB (whichever is hit first). Use offset/limit for large files. When you need the \
-         full file, continue with offset until complete."
-    }
-    fn parameters_schema(&self) -> serde_json::Value {
-        serde_json::json!({
-            "type": "object",
-            "required": ["path"],
-            "properties": {
-                "path": {
-                    "type": "string",
-                    "description": "Path to the file to read (relative or absolute)"
-                },
-                "offset": {
-                    "type": "number",
-                    "description": "Line number to start reading from (1-indexed)"
-                },
-                "limit": {
-                    "type": "number",
-                    "description": "Maximum number of lines to read"
-                }
-            }
+        Ok(yoagent::types::ToolResult {
+            content: vec![yoagent::types::Content::Text { text: output }],
+            details: details.unwrap_or(serde_json::Value::Null),
         })
-    }
-    async fn execute(
-        &self,
-        params: serde_json::Value,
-        ctx: yoagent::types::ToolContext,
-    ) -> std::result::Result<yoagent::types::ToolResult, yoagent::types::ToolError> {
-        crate::agent::extension::execute_via_rab_tool(self, params, ctx).await
     }
 }
 
@@ -846,6 +801,7 @@ impl ToolRenderer for ReadRenderer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use yoagent::AgentTool;
 
     fn tmp_dir() -> std::path::PathBuf {
         let d = std::env::temp_dir().join(format!("rab-read-test-{}", uuid::Uuid::new_v4()));
@@ -858,17 +814,37 @@ mod tests {
         (ReadTool { cwd: tmp.clone() }, tmp)
     }
 
-    async fn exec_ok(tool: &ReadTool, args: serde_json::Value) -> String {
-        tool.execute("id".into(), args, Cancel::new(), None)
-            .await
-            .unwrap()
-            .content
+    fn tool_ctx() -> yoagent::types::ToolContext {
+        yoagent::types::ToolContext {
+            tool_call_id: "id".into(),
+            tool_name: "read".into(),
+            cancel: tokio_util::sync::CancellationToken::new(),
+            on_update: None,
+            on_progress: None,
+        }
     }
 
-    async fn exec_full(tool: &ReadTool, args: serde_json::Value) -> ToolOutput {
-        tool.execute("id".into(), args, Cancel::new(), None)
-            .await
-            .unwrap()
+    fn yo_msg_text(content: &[yoagent::types::Content]) -> String {
+        content
+            .iter()
+            .filter_map(|c| {
+                if let yoagent::types::Content::Text { text } = c {
+                    Some(text.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("")
+    }
+
+    async fn exec_ok(tool: &ReadTool, args: serde_json::Value) -> String {
+        let result = tool.execute(args, tool_ctx()).await.unwrap();
+        yo_msg_text(&result.content)
+    }
+
+    async fn exec_full(tool: &ReadTool, args: serde_json::Value) -> yoagent::types::ToolResult {
+        tool.execute(args, tool_ctx()).await.unwrap()
     }
 
     // ── Truncation unit tests ─────────────────────────────────
@@ -1052,12 +1028,7 @@ mod tests {
         let (tool, _tmp) = make_tool();
 
         let result = tool
-            .execute(
-                "id".into(),
-                serde_json::json!({"path": "nonexistent.txt"}),
-                Cancel::new(),
-                None,
-            )
+            .execute(serde_json::json!({"path": "nonexistent.txt"}), tool_ctx())
             .await;
         assert!(result.is_err());
     }
@@ -1070,10 +1041,8 @@ mod tests {
 
         let result = tool
             .execute(
-                "id".into(),
                 serde_json::json!({"path": path.to_str().unwrap(), "offset": 100}),
-                Cancel::new(),
-                None,
+                tool_ctx(),
             )
             .await;
         assert!(result.is_err());
@@ -1187,17 +1156,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn compact_label_for_agents_md() {
+    async fn reads_agents_md() {
         let (tool, tmp) = make_tool();
         let path = tmp.join("AGENTS.md");
         std::fs::write(&path, "some instructions\n").unwrap();
 
         let output = exec_full(&tool, serde_json::json!({"path": path.to_str().unwrap()})).await;
 
-        assert!(output.compact.is_some());
-        let label = output.compact.unwrap();
-        assert!(label.contains("read resource"));
-        assert!(label.contains("AGENTS.md"));
+        let text = yo_msg_text(&output.content);
+        assert!(text.contains("some instructions"));
     }
 
     #[tokio::test]
@@ -1208,7 +1175,8 @@ mod tests {
 
         let output = exec_full(&tool, serde_json::json!({"path": path.to_str().unwrap()})).await;
 
-        assert!(output.compact.is_none());
+        let text = yo_msg_text(&output.content);
+        assert!(text.contains("fn main() {}"));
     }
 
     #[tokio::test]
@@ -1217,19 +1185,21 @@ mod tests {
         let path = tmp.join("cancel_test.txt");
         std::fs::write(&path, "hello\n").unwrap();
 
-        let cancel = Cancel::new();
+        let cancel = tokio_util::sync::CancellationToken::new();
         cancel.cancel();
 
         let result = tool
             .execute(
-                "id".into(),
                 serde_json::json!({"path": path.to_str().unwrap()}),
-                cancel,
-                None,
+                yoagent::types::ToolContext {
+                    tool_call_id: "id".into(),
+                    tool_name: "read".into(),
+                    cancel,
+                    on_update: None,
+                    on_progress: None,
+                },
             )
             .await;
         assert!(result.is_err());
-        let err = result.unwrap_err().to_string();
-        assert!(err.contains("cancell") || err.contains("Cancel"));
     }
 }

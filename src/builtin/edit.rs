@@ -1,4 +1,4 @@
-use crate::agent::extension::{AgentTool, Cancel, Extension, ToolOutput};
+use crate::agent::extension::Extension;
 use crate::agent::extension::{ToolRenderContext, ToolRenderer};
 use crate::tui::Theme;
 use crate::tui::ThemeKey;
@@ -6,7 +6,6 @@ use async_trait::async_trait;
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use tokio::sync::mpsc::UnboundedSender;
 use unicode_normalization::UnicodeNormalization;
 
 // ── EditOperations (pluggable) ─────────────────────────────────────
@@ -788,109 +787,6 @@ fn compute_edits_diff(
     Ok(diff)
 }
 
-// ── AgentTool implementation ─────────────────────────────────────
-
-#[async_trait]
-impl AgentTool for EditTool {
-    async fn execute(
-        &self,
-        tool_call_id: String,
-        args: serde_json::Value,
-        cancel: Cancel,
-        _on_update: Option<UnboundedSender<ToolOutput>>,
-    ) -> anyhow::Result<ToolOutput> {
-        let _ = tool_call_id;
-        let path_str = args["path"]
-            .as_str()
-            .ok_or_else(|| anyhow::anyhow!("Missing 'path' argument"))?
-            .to_string();
-        let edits: Vec<Edit> = serde_json::from_value(args["edits"].clone())
-            .map_err(|e| anyhow::anyhow!("Invalid edits: {}", e))?;
-
-        cancel.check()?;
-
-        let cwd = self.cwd.clone();
-        let path_for_queue = path_str.clone();
-        let cwd_for_closure = cwd.clone();
-        let edits_for_closure = edits.clone();
-        let ops = self.operations.clone();
-
-        // Wrap the entire read-edit-write in a per-file mutation queue so
-        // concurrent edits to the same file are serialized (pi-style).
-        let output = crate::builtin::file_mutation_queue::with_file_mutation_queue(
-            &path_for_queue,
-            &cwd,
-            || async move {
-                let abs_path = {
-                    let p = std::path::Path::new(&path_str);
-                    if p.is_absolute() {
-                        p.to_path_buf()
-                    } else {
-                        cwd_for_closure.join(p)
-                    }
-                };
-
-                cancel.check()?;
-
-                // Check file accessibility using operations
-                ops.access(&abs_path).await?;
-
-                cancel.check()?;
-
-                // Read file using operations
-                let raw_content = ops.read_file(&abs_path).await?;
-
-                cancel.check()?;
-
-                // ── 1. BOM handling ──
-                let (bom, content) = strip_bom(&raw_content);
-
-                // ── 2. Line ending handling ──
-                let original_ending = detect_line_ending(content);
-                let normalized = normalize_to_lf(content);
-
-                // ── 3-8. Apply edits and compute diff ──
-                let (_base_content, new_content, diff) =
-                    apply_edits_and_compute_diff(&normalized, &edits_for_closure, &path_str)
-                        .map_err(|e| anyhow::anyhow!("{}", e))?;
-
-                cancel.check()?;
-
-                // ── 9. Write back with original line endings and BOM ──
-                let final_content =
-                    bom.to_string() + &restore_line_endings(&new_content, original_ending);
-                ops.write_file(&abs_path, &final_content).await?;
-
-                cancel.check()?;
-
-                // ── 10. Compute firstChangedLine and patch ──
-                let first_changed_line = extract_first_changed_line(&diff);
-                let patch = generate_unified_patch(&path_str, &_base_content, &new_content);
-
-                // ── 11. Return result ──
-                let noun = if edits.len() == 1 { "block" } else { "blocks" };
-                let msg = format!(
-                    "Successfully replaced {} {} in {}.",
-                    edits.len(),
-                    noun,
-                    path_str
-                );
-                let details = serde_json::json!({
-                    "diff": diff.trim_end(),
-                    "path": path_str,
-                    "patch": patch,
-                    "firstChangedLine": first_changed_line,
-                });
-                Ok::<_, anyhow::Error>((msg, details))
-            },
-        )
-        .await?;
-
-        let (msg, details) = output;
-        Ok(ToolOutput::ok_with_details(msg, details))
-    }
-}
-
 #[async_trait::async_trait]
 impl yoagent::types::AgentTool for EditTool {
     fn name(&self) -> &str {
@@ -939,7 +835,113 @@ impl yoagent::types::AgentTool for EditTool {
         params: serde_json::Value,
         ctx: yoagent::types::ToolContext,
     ) -> std::result::Result<yoagent::types::ToolResult, yoagent::types::ToolError> {
-        crate::agent::extension::execute_via_rab_tool(self, params, ctx).await
+        let path_str = params["path"]
+            .as_str()
+            .ok_or_else(|| {
+                yoagent::types::ToolError::InvalidArgs("Missing 'path' argument".into())
+            })?
+            .to_string();
+        let edits: Vec<Edit> = serde_json::from_value(params["edits"].clone())
+            .map_err(|e| yoagent::types::ToolError::InvalidArgs(format!("Invalid edits: {}", e)))?;
+
+        if ctx.cancel.is_cancelled() {
+            return Err(yoagent::types::ToolError::Cancelled);
+        }
+
+        let cwd = self.cwd.clone();
+        let cancel = ctx.cancel.clone();
+        let ops = self.operations.clone();
+        let path_for_queue = path_str.clone();
+        let cwd_for_closure = cwd.clone();
+        let edits_for_closure = edits.clone();
+
+        // Wrap the entire read-edit-write in a per-file mutation queue so
+        // concurrent edits to the same file are serialized (pi-style).
+        let output = crate::builtin::file_mutation_queue::with_file_mutation_queue(
+            &path_for_queue,
+            &cwd,
+            || async move {
+                let abs_path = {
+                    let p = std::path::Path::new(&path_str);
+                    if p.is_absolute() {
+                        p.to_path_buf()
+                    } else {
+                        cwd_for_closure.join(p)
+                    }
+                };
+
+                if cancel.is_cancelled() {
+                    anyhow::bail!("Operation cancelled");
+                }
+
+                // Check file accessibility using operations
+                ops.access(&abs_path).await?;
+
+                if cancel.is_cancelled() {
+                    anyhow::bail!("Operation cancelled");
+                }
+
+                // Read file using operations
+                let raw_content = ops.read_file(&abs_path).await?;
+
+                if cancel.is_cancelled() {
+                    anyhow::bail!("Operation cancelled");
+                }
+
+                // ── 1. BOM handling ──
+                let (bom, content) = strip_bom(&raw_content);
+
+                // ── 2. Line ending handling ──
+                let original_ending = detect_line_ending(content);
+                let normalized = normalize_to_lf(content);
+
+                // ── 3-8. Apply edits and compute diff ──
+                let (_base_content, new_content, diff) =
+                    apply_edits_and_compute_diff(&normalized, &edits_for_closure, &path_str)
+                        .map_err(|e| anyhow::anyhow!("{}", e))?;
+
+                if cancel.is_cancelled() {
+                    anyhow::bail!("Operation cancelled");
+                }
+
+                // ── 9. Write back with original line endings and BOM ──
+                let final_content =
+                    bom.to_string() + &restore_line_endings(&new_content, original_ending);
+                ops.write_file(&abs_path, &final_content).await?;
+
+                if cancel.is_cancelled() {
+                    anyhow::bail!("Operation cancelled");
+                }
+
+                // ── 10. Compute firstChangedLine and patch ──
+                let first_changed_line = extract_first_changed_line(&diff);
+                let patch = generate_unified_patch(&path_str, &_base_content, &new_content);
+
+                // ── 11. Return result ──
+                let noun = if edits.len() == 1 { "block" } else { "blocks" };
+                let msg = format!(
+                    "Successfully replaced {} {} in {}.",
+                    edits.len(),
+                    noun,
+                    path_str
+                );
+                let details = serde_json::json!({
+                    "diff": diff.trim_end(),
+                    "path": path_str,
+                    "patch": patch,
+                    "firstChangedLine": first_changed_line,
+                });
+                Ok::<_, anyhow::Error>((msg, details))
+            },
+        )
+        .await
+        .map_err(|e| yoagent::types::ToolError::Failed(e.to_string()))?;
+
+        let (msg, details) = output;
+        Ok(yoagent::types::ToolResult {
+            content: vec![yoagent::types::Content::Text { text: msg }],
+            details,
+        })
     }
 }
 
@@ -1311,7 +1313,7 @@ fn generate_unified_patch(path: &str, original: &str, modified: &str) -> String 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::extension::Cancel;
+    use yoagent::AgentTool;
 
     fn tmp_dir() -> std::path::PathBuf {
         let d = std::env::temp_dir().join(format!("rab-edit-test-{}", uuid::Uuid::new_v4()));
@@ -1328,12 +1330,34 @@ mod tests {
         (tool, tmp)
     }
 
+    fn tool_ctx() -> yoagent::types::ToolContext {
+        yoagent::types::ToolContext {
+            tool_call_id: "id".into(),
+            tool_name: "edit".into(),
+            cancel: tokio_util::sync::CancellationToken::new(),
+            on_update: None,
+            on_progress: None,
+        }
+    }
+
+    fn yo_msg_text(content: &[yoagent::types::Content]) -> String {
+        content
+            .iter()
+            .filter_map(|c| {
+                if let yoagent::types::Content::Text { text } = c {
+                    Some(text.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("")
+    }
+
     async fn exec_ok(tool: &EditTool, args: serde_json::Value) -> String {
         let args = prepare_edit_tool_args(args);
-        tool.execute("id".into(), args, Cancel::new(), None)
-            .await
-            .unwrap()
-            .content
+        let result = tool.execute(args, tool_ctx()).await.unwrap();
+        yo_msg_text(&result.content)
     }
 
     async fn exec_ok_details(
@@ -1341,16 +1365,14 @@ mod tests {
         args: serde_json::Value,
     ) -> (String, Option<serde_json::Value>) {
         let args = prepare_edit_tool_args(args);
-        let result = tool
-            .execute("id".into(), args, Cancel::new(), None)
-            .await
-            .unwrap();
-        (result.content, result.details)
+        let result = tool.execute(args, tool_ctx()).await.unwrap();
+        let text = yo_msg_text(&result.content);
+        (text, Some(result.details))
     }
 
     async fn exec_err(tool: &EditTool, args: serde_json::Value) -> String {
         let args = prepare_edit_tool_args(args);
-        tool.execute("id".into(), args, Cancel::new(), None)
+        tool.execute(args, tool_ctx())
             .await
             .unwrap_err()
             .to_string()
@@ -1358,9 +1380,7 @@ mod tests {
 
     async fn is_err(tool: &EditTool, args: serde_json::Value) -> bool {
         let args = prepare_edit_tool_args(args);
-        tool.execute("id".into(), args, Cancel::new(), None)
-            .await
-            .is_err()
+        tool.execute(args, tool_ctx()).await.is_err()
     }
 
     #[tokio::test]
