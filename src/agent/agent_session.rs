@@ -1,9 +1,82 @@
 use crate::agent::branch_summary::{collect_entries_for_branch_summary, generate_branch_summary};
 use crate::agent::compaction::{self, CompactionSettings, compact, prepare_compaction};
 use crate::agent::provider::AgentEvent;
+use yoagent::types::Content;
 use crate::agent::session::SessionManager;
 use crate::agent::types::{AgentMessage, Role};
 use std::collections::HashSet;
+
+/// Convert a yoagent Message to rab AgentMessage (for session persistence).
+fn yo_msg_to_rab(msg: &yoagent::types::Message) -> AgentMessage {
+    let (role, content, tool_calls, tool_call_id, is_error) = match msg {
+        yoagent::types::Message::User { content, .. } => {
+            let text = yo_msg_text(content);
+            (Role::User, text, vec![], None, false)
+        }
+        yoagent::types::Message::Assistant {
+            content,
+            error_message,
+            ..
+        } => {
+            let text = yo_msg_text(content);
+            let tcs = content
+                .iter()
+                .filter_map(|c| {
+                    if let Content::ToolCall { id, name, arguments, .. } = c {
+                        Some(crate::agent::types::ToolCall {
+                            id: id.clone(),
+                            name: name.clone(),
+                            arguments: arguments.clone(),
+                        })
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            (Role::Assistant, text, tcs, None, error_message.is_some())
+        }
+        yoagent::types::Message::ToolResult {
+            content,
+            tool_call_id,
+            is_error,
+            ..
+        } => {
+            let text = yo_msg_text(content);
+            (
+                Role::ToolResult,
+                text,
+                vec![],
+                Some(tool_call_id.clone()),
+                *is_error,
+            )
+        }
+    };
+    AgentMessage {
+        id: uuid::Uuid::new_v4().to_string(),
+        parent_id: None,
+        role,
+        content,
+        tool_calls,
+        tool_call_id,
+        usage: None,
+        is_error,
+        timestamp: chrono::Utc::now().timestamp_millis(),
+    }
+}
+
+fn yo_msg_text(content: &[Content]) -> String {
+    content
+        .iter()
+        .filter_map(|c| {
+            if let Content::Text { text } = c {
+                Some(text.as_str())
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("")
+}
 
 /// Lifecycle layer that bridges the agent loop and session manager.
 ///
@@ -202,6 +275,46 @@ impl AgentSession {
     /// - `AgentEnd` persists any remaining assistant messages not yet captured.
     ///
     /// Call this from your agent event handler alongside any UI updates.
+    /// Handle a yoagent AgentEvent for session persistence.
+    pub fn handle_yo_event(&mut self, event: &yoagent::types::AgentEvent) {
+        use yoagent::types::AgentEvent as YoEvent;
+        match event {
+            YoEvent::ToolExecutionEnd {
+                tool_call_id,
+                result,
+                is_error,
+                ..
+            } => {
+                let content = result
+                    .content
+                    .iter()
+                    .filter_map(|c| {
+                        if let Content::Text { text } = c {
+                            Some(text.clone())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join("");
+                let msg = AgentMessage::tool_result(tool_call_id, content, *is_error);
+                self.persist_message(&msg);
+            }
+            YoEvent::AgentEnd { messages } => {
+                let rab_msgs: Vec<AgentMessage> = messages
+                    .iter()
+                    .filter_map(|am| match am {
+                        yoagent::types::AgentMessage::Llm(m) => Some(yo_msg_to_rab(m)),
+                        _ => None,
+                    })
+                    .collect();
+                self.on_agent_end(&rab_msgs);
+            }
+            _ => {}
+        }
+    }
+
+    /// Handle a rab AgentEvent (kept for tests).
     pub fn handle_event(&mut self, event: &AgentEvent) {
         match event {
             AgentEvent::ToolResult {

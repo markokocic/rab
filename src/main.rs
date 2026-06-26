@@ -1,4 +1,3 @@
-use rab::agent::AgentEvent;
 use rab::agent::extension::Extension;
 use rab::agent::session::SessionManager;
 use rab::agent::settings::Settings;
@@ -7,6 +6,7 @@ use rab::builtin::{
     bash::BashExtension, commands::CommandsExtension, edit::EditExtension, read::ReadExtension,
     write::WriteExtension,
 };
+use colored::Colorize;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -521,94 +521,74 @@ async fn run_print_mode(
     let rab_prompt = rab::agent::types::AgentMessage::user(&message);
     agent_session.submit_user_message_obj(&rab_prompt);
 
-    let mut new_messages: Vec<rab::agent::types::AgentMessage> = Vec::new();
     let mut thinking_prefix_printed = false;
 
     // Process events from yoagent
     while let Some(event) = yo_rx.recv().await {
-        use rab::agent::yo_bridge::convert_to_rab_event;
-        if let Some(rab_event) = convert_to_rab_event(&event) {
-            agent_session.handle_event(&rab_event);
+        agent_session.handle_yo_event(&event);
 
-            match &rab_event {
-                AgentEvent::TextDelta { delta } => {
-                    print!("{}", delta);
-                    let _ = std::io::stdout().flush();
-                }
-                AgentEvent::ThinkingDelta { delta } => {
-                    if !thinking_prefix_printed {
-                        eprint!("{}", colored::Colorize::dimmed("… "));
-                        thinking_prefix_printed = true;
+        match &event {
+            yoagent::types::AgentEvent::MessageUpdate { delta, .. } => {
+                use yoagent::types::StreamDelta;
+                match delta {
+                    StreamDelta::Text { delta } => {
+                        print!("{}", delta);
+                        let _ = std::io::stdout().flush();
                     }
-                    eprint!("{}", colored::Colorize::dimmed(delta.as_str()));
-                    let _ = std::io::stderr().flush();
-                }
-                AgentEvent::ToolCall { name, args, .. } => {
-                    eprintln!(
-                        "\n{} {} {}",
-                        colored::Colorize::dimmed("⚙"),
-                        colored::Colorize::bold(name.as_str()),
-                        colored::Colorize::dimmed(
-                            serde_json::to_string(args).unwrap_or_default().as_str()
-                        )
-                    );
-                    thinking_prefix_printed = false;
-                }
-                AgentEvent::ToolResult {
-                    content, is_error, ..
-                } => {
-                    if *is_error {
-                        eprintln!(
-                            "{} {}",
-                            colored::Colorize::red("✗"),
-                            colored::Colorize::red(content.as_str())
-                        );
-                    } else {
-                        let truncated: String = content.chars().take(500).collect();
-                        eprintln!(
-                            "{} {}",
-                            colored::Colorize::dimmed("✓"),
-                            colored::Colorize::dimmed(truncated.as_str())
-                        );
-                        if content.len() > 500 {
-                            eprintln!("{}", colored::Colorize::dimmed("... (truncated)"));
+                    StreamDelta::Thinking { delta } => {
+                        if !thinking_prefix_printed {
+                            eprint!("{}", colored::Colorize::dimmed("… "));
+                            thinking_prefix_printed = true;
                         }
+                        eprint!("{}", colored::Colorize::dimmed(delta.as_str()));
+                        let _ = std::io::stderr().flush();
+                    }
+                    _ => {}
+                }
+            }
+            yoagent::types::AgentEvent::ToolExecutionStart { tool_name, args, .. } => {
+                eprintln!(
+                    "\n{} {} {}",
+                    colored::Colorize::dimmed("⚙"),
+                    colored::Colorize::bold(tool_name.as_str()),
+                    colored::Colorize::dimmed(
+                        serde_json::to_string(args).unwrap_or_default().as_str()
+                    )
+                );
+                thinking_prefix_printed = false;
+            }
+            yoagent::types::AgentEvent::ToolExecutionEnd {
+                result, is_error, ..
+            } => {
+                let content: String = result.content.iter()
+                    .filter_map(|c| if let yoagent::types::Content::Text { text } = c { Some(text.clone()) } else { None })
+                    .collect::<Vec<_>>().join("");
+                if *is_error {
+                    eprintln!(
+                        "{} {}",
+                        colored::Colorize::red("✗"),
+                        colored::Colorize::red(content.as_str())
+                    );
+                } else {
+                    let truncated: String = content.chars().take(500).collect();
+                    eprintln!(
+                        "{} {}",
+                        colored::Colorize::dimmed("✓"),
+                        colored::Colorize::dimmed(truncated.as_str())
+                    );
+                    if content.len() > 500 {
+                        eprintln!("{}", colored::Colorize::dimmed("... (truncated)"));
                     }
                 }
-                AgentEvent::ToolProgress { content, .. } => {
-                    print!("{}", content);
-                    let _ = std::io::stdout().flush();
-                }
-                AgentEvent::AgentEnd { messages } => {
-                    eprintln!();
-                    new_messages = messages.clone();
-                }
-                _ => {}
             }
-        }
-    }
-
-    // AgentSession.on_agent_end is already called by handle_event on AgentEnd.
-    // Remaining non-user messages (if any) are persisted there.
-
-    // Pi-style: explicitly check the last assistant message after the loop completes.
-    // This handles errors that may not have been fully visible during streaming,
-    // and ensures proper exit code on failure.
-    if let Some(last_assistant) = new_messages
-        .iter()
-        .rev()
-        .find(|m| m.role == rab::agent::types::Role::Assistant)
-    {
-        if last_assistant.is_error {
-            eprintln!(
-                "{} {}",
-                colored::Colorize::red("✗"),
-                colored::Colorize::red(last_assistant.content.as_str())
-            );
-            // Still return Ok - the error message is in the session.
-            // Caller can check last message is_error if needed.
-        } else if !last_assistant.content.is_empty() && !last_assistant.content.ends_with('\n') {
-            println!();
+            yoagent::types::AgentEvent::ProgressMessage { text, .. } => {
+                print!("{}", text);
+                let _ = std::io::stdout().flush();
+            }
+            yoagent::types::AgentEvent::AgentEnd { .. } => {
+                eprintln!();
+            }
+            _ => {}
         }
     }
 

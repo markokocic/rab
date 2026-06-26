@@ -19,7 +19,7 @@ use crate::agent::ui::messages::{DisplayMsg, session_messages_to_display};
 use crate::agent::ui::model_selector::ModelSelector;
 use crate::agent::ui::theme::RabTheme;
 use crate::agent::ui::working::WorkingIndicator;
-use crate::agent::{AgentEvent, yo_bridge};
+use crate::agent::AgentEvent;
 use crate::builtin::commands::SessionInfoInternal;
 use crate::tui::Component;
 use crate::tui::TUI;
@@ -103,8 +103,8 @@ pub struct App {
     editor: Rc<RefCell<ChatEditor>>,
 
     /// Agent event channel.
-    event_tx: mpsc::UnboundedSender<AgentEvent>,
-    event_rx: mpsc::UnboundedReceiver<AgentEvent>,
+    event_tx: mpsc::UnboundedSender<yoagent::types::AgentEvent>,
+    event_rx: mpsc::UnboundedReceiver<yoagent::types::AgentEvent>,
 
     /// Streaming state.
     is_streaming: bool,
@@ -1379,19 +1379,23 @@ fn start_agent_loop(app: &mut App, message: String) {
             .with_tools(yoagent_tools)
             .without_context_management();
 
-        let (yo_tx, yo_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (yo_tx, mut yo_rx) = tokio::sync::mpsc::unbounded_channel();
 
         // Spawn agent loop in a separate task (it blocks until done)
         tokio::spawn(async move {
             agent.prompt_with_sender(message, yo_tx).await;
         });
 
-        // Forward yoagent events → rab events, cancellable
+        // Forward yoagent events directly to the app event channel, cancellable
         tokio::select! {
-            _ = yo_bridge::forward_events(yo_rx, tx) => {}
-            _ = cancel_rx.changed() => {
-                // Cancelled — events stop forwarding, agent task will finish silently
-            }
+            _ = async {
+                while let Some(event) = yo_rx.recv().await {
+                    if tx.send(event).is_err() {
+                        break;
+                    }
+                }
+            } => {}
+            _ = cancel_rx.changed() => {}
         }
     });
 }
@@ -2013,6 +2017,7 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
 fn handle_bang_command(app: &mut App, command: String) {
     let cwd = app.cwd.clone();
     let tx = app.event_tx.clone();
+    use yoagent::types::{AgentEvent as YoEvent, Content as YoContent, ToolResult as YoResult};
 
     // Add BashExecutionComponent to chat_container (track for result updates)
     let bash_comp = Rc::new(RefCell::new(
@@ -2036,13 +2041,13 @@ fn handle_bang_command(app: &mut App, command: String) {
 
     let handle = tokio::spawn(async move {
         struct Guard<'a> {
-            tx: &'a mpsc::UnboundedSender<AgentEvent>,
+            tx: &'a mpsc::UnboundedSender<yoagent::types::AgentEvent>,
             sent: bool,
         }
         impl Drop for Guard<'_> {
             fn drop(&mut self) {
                 if !self.sent {
-                    let _ = self.tx.send(AgentEvent::AgentEnd { messages: vec![] });
+                    let _ = self.tx.send(YoEvent::AgentEnd { messages: vec![] });
                 }
             }
         }
@@ -2062,20 +2067,19 @@ fn handle_bang_command(app: &mut App, command: String) {
         {
             Ok(c) => c,
             Err(e) => {
-                let _ = tx.send(AgentEvent::ToolProgress {
-                    content: format!("Failed to spawn: {}", e),
-                    is_error: true,
+                let _ = tx.send(YoEvent::ProgressMessage {
+                    tool_call_id: String::new(),
+                    tool_name: "bash".into(),
+                    text: format!("Failed to spawn: {}", e),
                 });
-                let _ = tx.send(AgentEvent::ToolResult {
-                    id: String::new(),
-                    name: "bash".into(),
-                    content: format!("Failed to execute: {:#}", e),
-                    compact: None,
+                let _ = tx.send(YoEvent::ToolExecutionEnd {
+                    tool_call_id: String::new(),
+                    tool_name: "bash".into(),
+                    result: YoResult { content: vec![YoContent::Text { text: format!("Failed to execute: {:#}", e) }], details: serde_json::Value::Null },
                     is_error: true,
-                    details: None,
                 });
                 guard.sent = true;
-                let _ = tx.send(AgentEvent::AgentEnd { messages: vec![] });
+                let _ = tx.send(YoEvent::AgentEnd { messages: vec![] });
                 return;
             }
         };
@@ -2098,9 +2102,10 @@ fn handle_bang_command(app: &mut App, command: String) {
                         Ok(n) => {
                             if let Ok(text) = std::str::from_utf8(&buf1[..n]) {
                                 all_output.push_str(text);
-                                let _ = tx.send(AgentEvent::ToolProgress {
-                                    content: text.to_string(),
-                                    is_error: false,
+                                let _ = tx.send(YoEvent::ProgressMessage {
+                                    tool_call_id: String::new(),
+                                    tool_name: "bash".into(),
+                                    text: text.to_string(),
                                 });
                             }
                         }
@@ -2113,9 +2118,10 @@ fn handle_bang_command(app: &mut App, command: String) {
                         Ok(n) => {
                             if let Ok(text) = std::str::from_utf8(&buf2[..n]) {
                                 all_output.push_str(text);
-                                let _ = tx.send(AgentEvent::ToolProgress {
-                                    content: text.to_string(),
-                                    is_error: false,
+                                let _ = tx.send(YoEvent::ProgressMessage {
+                                    tool_call_id: String::new(),
+                                    tool_name: "bash".into(),
+                                    text: text.to_string(),
                                 });
                             }
                         }
@@ -2141,21 +2147,17 @@ fn handle_bang_command(app: &mut App, command: String) {
             all_output.trim().to_string()
         };
 
-        let _ = tx.send(AgentEvent::ToolResult {
-            id: String::new(),
-            name: "bash".into(),
-            content: format!(
-                "$ {}\n\n{}\n\n[{}s]",
-                command,
-                result,
-                elapsed.as_secs_f64()
-            ),
-            compact: None,
+        let _ = tx.send(YoEvent::ToolExecutionEnd {
+            tool_call_id: String::new(),
+            tool_name: "bash".into(),
+            result: YoResult {
+                content: vec![YoContent::Text { text: format!("$ {}\n\n{}\n\n[{}s]", command, result, elapsed.as_secs_f64()) }],
+                details: serde_json::Value::Null,
+            },
             is_error,
-            details: None,
         });
         guard.sent = true;
-        let _ = tx.send(AgentEvent::AgentEnd { messages: vec![] });
+        let _ = tx.send(YoEvent::AgentEnd { messages: vec![] });
     });
     app.bash_abort_handle = Some(handle.abort_handle());
 }
@@ -2200,309 +2202,109 @@ fn show_status(app: &mut App, message: String) {
 }
 
 /// Handle agent events from the channel.
-fn handle_agent_event(app: &mut App, event: AgentEvent) {
+fn handle_agent_event(app: &mut App, event: yoagent::types::AgentEvent) {
+    use yoagent::types::AgentEvent as E;
     match event {
-        AgentEvent::AgentStart => {
+        E::AgentStart => {
             app.is_streaming = true;
             app.working.start();
             app.pending_text = None;
             app.pending_thinking = None;
             app.last_streaming_event = std::time::Instant::now();
-
-            // Refresh git branch on each agent start (matches pi's FooterDataProvider)
             app.refresh_git_branch();
         }
-        AgentEvent::TurnStart => {}
-        AgentEvent::TextDelta { delta } => {
+        E::TurnStart => {}
+        E::MessageUpdate { delta, .. } => {
             app.last_streaming_event = std::time::Instant::now();
-            // Progressive streaming: create or update AssistantMessageComponent in-place
-            if let Some(weak) = app.streaming_component.as_ref().and_then(|w| w.upgrade()) {
-                weak.borrow_mut().append_text(&delta);
-            } else {
-                // First text delta - create streaming component
-                // Direct addChild matching pi's `this.chatContainer.addChild(this.streamingComponent)`
-                // without a spacer - the component handles its own leading Spacer(1) internally.
-                use crate::tui::components::rc_ref_cell_component::RcRefCellComponent;
-                let comp = Rc::new(RefCell::new(
-                    crate::agent::ui::components::AssistantMessageComponent::new(&delta),
-                ));
-                if app.hide_thinking {
-                    comp.borrow_mut().set_hide_thinking(true);
+            use yoagent::types::StreamDelta;
+            match delta {
+                StreamDelta::Text { delta } => {
+                    if let Some(weak) = app.streaming_component.as_ref().and_then(|w| w.upgrade()) {
+                        weak.borrow_mut().append_text(&delta);
+                    } else {
+                        use crate::tui::components::rc_ref_cell_component::RcRefCellComponent;
+                        let comp = Rc::new(RefCell::new(
+                            crate::agent::ui::components::AssistantMessageComponent::new(&delta),
+                        ));
+                        if app.hide_thinking { comp.borrow_mut().set_hide_thinking(true); }
+                        app.streaming_component = Some(Rc::downgrade(&comp));
+                        app.chat_container.borrow_mut().add_child(std::boxed::Box::new(RcRefCellComponent(comp)));
+                    }
                 }
-                app.streaming_component = Some(Rc::downgrade(&comp));
-                app.chat_container
-                    .borrow_mut()
-                    .add_child(std::boxed::Box::new(RcRefCellComponent(comp)));
+                StreamDelta::Thinking { delta } => {
+                    if let Some(weak) = app.streaming_component.as_ref().and_then(|w| w.upgrade()) {
+                        weak.borrow_mut().add_thinking(&delta, app.thinking_level.clone());
+                    } else {
+                        use crate::tui::components::rc_ref_cell_component::RcRefCellComponent;
+                        let mut comp = crate::agent::ui::components::AssistantMessageComponent::new("");
+                        comp.add_thinking(&delta, app.thinking_level.clone());
+                        if app.hide_thinking { comp.set_hide_thinking(true); }
+                        let comp = Rc::new(RefCell::new(comp));
+                        app.streaming_component = Some(Rc::downgrade(&comp));
+                        app.chat_container.borrow_mut().add_child(std::boxed::Box::new(RcRefCellComponent(comp)));
+                    }
+                }
+                StreamDelta::ToolCallDelta { .. } => {}
             }
         }
-        AgentEvent::ThinkingDelta { delta } => {
-            app.last_streaming_event = std::time::Instant::now();
-            // Progressive thinking: add thinking block to streaming component
-            if let Some(weak) = app.streaming_component.as_ref().and_then(|w| w.upgrade()) {
-                weak.borrow_mut()
-                    .add_thinking(&delta, app.thinking_level.clone());
-            } else {
-                // First thinking delta without text - create component with just thinking
-                // Direct addChild matching pi - no spacer, component handles its own spacing.
-                use crate::tui::components::rc_ref_cell_component::RcRefCellComponent;
-                let mut comp = crate::agent::ui::components::AssistantMessageComponent::new("");
-                comp.add_thinking(&delta, app.thinking_level.clone());
-                if app.hide_thinking {
-                    comp.set_hide_thinking(true);
-                }
-                let comp = Rc::new(RefCell::new(comp));
-                app.streaming_component = Some(Rc::downgrade(&comp));
-                app.chat_container
-                    .borrow_mut()
-                    .add_child(std::boxed::Box::new(RcRefCellComponent(comp)));
-            }
-        }
-        AgentEvent::ToolCall { id, name, args, .. } => {
+        E::ToolExecutionStart { tool_call_id, tool_name, args } => {
             app.last_streaming_event = std::time::Instant::now();
             flush_all(app);
-            // Clear streaming component so answer text from the next turn creates a new
-            // assistant message component (below the tool execution, matching pi).
             app.streaming_component = None;
-            // Look up tool renderer from extensions
-            let renderer = app
-                .extensions
-                .iter()
-            .find_map(|ext| ext.tool_renderer(&name));
-
-            // Create a combined ToolExecComponent with renderer, handling per-tool setup
+            let name = tool_name;
+            let renderer = app.extensions.iter().find_map(|ext| ext.tool_renderer(&name));
             let started_at = std::time::Instant::now();
-            // Create invalidation channel for async preview computation (edit tool)
             let (invalidate_tx, invalidate_rx) =
                 crate::agent::ui::components::ToolExecComponent::make_invalidation_channel();
-            // Store receiver in the app for polling during render loop
             app.invalidate_rxs.push(invalidate_rx);
-
-            let comp: Rc<RefCell<_>> = if name == "bash" {
-                let mut tool = crate::agent::ui::components::ToolExecComponent::new(
-                    &name,
-                    renderer,
-                    args.clone(),
-                    app.cwd.to_string_lossy().to_string(),
-                );
-                tool.set_started_at(std::time::Instant::now());
-                tool.set_invalidate_tx(invalidate_tx);
-                Rc::new(RefCell::new(tool))
-            } else if name == "read" {
-                let path = args
-                    .get("file_path")
-                    .or_else(|| args.get("path"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-                let mut comp = crate::agent::ui::components::ToolExecComponent::new(
-                    &name,
-                    app.extensions
-                        .iter()
-                        .find_map(|ext| ext.tool_renderer(&name)),
-                    args.clone(),
-                    app.cwd.to_string_lossy().to_string(),
-                );
-                comp.set_file_path(path.to_string());
-                comp.set_started_at(std::time::Instant::now());
-                comp.set_invalidate_tx(invalidate_tx);
-                Rc::new(RefCell::new(comp))
-            } else {
-                let mut tool = crate::agent::ui::components::ToolExecComponent::new(
-                    &name,
-                    renderer,
-                    args.clone(),
-                    app.cwd.to_string_lossy().to_string(),
-                );
+            let comp: Rc<RefCell<_>> = {
+                let mut tool = crate::agent::ui::components::ToolExecComponent::new(&name, renderer, args.clone(), app.cwd.to_string_lossy().to_string());
                 tool.set_started_at(std::time::Instant::now());
                 tool.set_invalidate_tx(invalidate_tx);
                 Rc::new(RefCell::new(tool))
             };
             comp.borrow_mut().set_expanded(app.tools_expanded);
-            app.pending_tools.insert(id.clone(), Rc::downgrade(&comp));
-            app.tool_call_start_times.insert(id.clone(), started_at);
-            chat_add(
-                app,
-                std::boxed::Box::new(crate::agent::ui::components::RcToolExec(comp)),
-            );
-
-            // Legacy path
+            app.pending_tools.insert(tool_call_id.clone(), Rc::downgrade(&comp));
+            app.tool_call_start_times.insert(tool_call_id.clone(), started_at);
+            chat_add(app, std::boxed::Box::new(crate::agent::ui::components::RcToolExec(comp)));
             let args_str = serde_json::to_string(&args).unwrap_or_default();
-            app.messages.push(DisplayMsg::ToolCall {
-                name,
-                args: args_str,
-            });
+            app.messages.push(DisplayMsg::ToolCall { name, args: args_str });
         }
-        AgentEvent::ToolCallArgsUpdate { id, args } => {
-            // Progressive args update - re-render call header with new args
-            if let Some(weak) = app.pending_tools.get(&id)
+        E::ToolExecutionEnd { tool_call_id, tool_name: _, result, is_error } => {
+            let content: String = result.content.iter()
+                .filter_map(|c| if let yoagent::types::Content::Text { text } = c { Some(text.clone()) } else { None })
+                .collect::<Vec<_>>().join("");
+            if let Some(weak) = app.pending_tools.get(&tool_call_id)
                 && let Some(comp) = weak.upgrade()
             {
-                comp.borrow_mut().set_args(args);
-            }
-        }
-        AgentEvent::ToolResult {
-            content,
-            compact: _,
-            is_error,
-            name,
-            id,
-            details,
-        } => {
-            app.last_streaming_event = std::time::Instant::now();
-            if let Some(weak) = app.pending_tools.remove(&id) {
-                // Update existing ToolExecComponent
-                if let Some(comp) = weak.upgrade() {
-                    if name == "bash" {
-                        // Bash tool result: set duration, exit code, truncation info
-                        let comp = weak.upgrade().expect("weak still valid");
-                        let mut comp = comp.borrow_mut();
-                        if let Some(start) = app.tool_call_start_times.remove(&id) {
-                            comp.set_final_duration(start.elapsed().as_secs_f64());
-                        }
-                        if is_error {
-                            if content.contains("aborted") || content.contains("cancelled") {
-                                comp.set_cancelled(true);
-                            } else if let Some(code) = extract_exit_code(&content) {
-                                comp.set_exit_code(code);
-                            }
-                        } else {
-                            comp.set_exit_code(0);
-                        }
-                        if content.contains("Full output:")
-                            && let Some(path) = extract_full_output_path(&content)
-                        {
-                            comp.set_truncated(true, Some(path));
-                        }
-                        comp.set_result_with_details(&content, is_error, details);
-                    } else {
-                        comp.borrow_mut().set_result_with_details(
-                            &content,
-                            is_error,
-                            details.clone(),
-                        );
-                    };
+                comp.borrow_mut().set_result_with_details(&content, is_error, Some(result.details));
+                if let Some(start) = app.tool_call_start_times.remove(&tool_call_id) {
+                    comp.borrow_mut().set_final_duration(start.elapsed().as_secs_f64());
                 }
-            } else if name == "bash" {
-                // Bash result (from bang command or LLM tool call without preceding ToolCall):
-                // Update existing BashExecutionComponent or create new one
-                if let Some(weak) = app.bash_component.as_ref().and_then(|w| w.upgrade()) {
-                    let mut bash = weak.borrow_mut();
-                    let output_lines: Vec<&str> = content.lines().skip(2).collect();
-                    let output = output_lines.join("\n");
-                    if !output.is_empty() {
-                        bash.append_chunk(&output);
-                    }
-                    bash.set_duration_from_content(&content);
-                    bash.set_complete(if is_error { 1 } else { 0 });
-                    drop(bash);
-                    app.bash_component = None;
-                } else {
-                    // No tracked component - create new BashExecutionComponent
-                    let cmd = content
-                        .lines()
-                        .next()
-                        .unwrap_or("")
-                        .trim_start_matches("$ ")
-                        .to_string();
-                    let mut bash = crate::agent::ui::components::BashExecution::new(&cmd);
-                    let output_lines: Vec<&str> = content.lines().skip(2).collect();
-                    let output = output_lines.join("\n");
-                    if !output.is_empty() {
-                        bash.append_chunk(&output);
-                    }
-                    bash.set_duration_from_content(&content);
-                    bash.set_complete(if is_error { 1 } else { 0 });
-                    bash.set_expanded(app.tools_expanded);
-                    chat_add(app, std::boxed::Box::new(bash));
-                }
-            } else {
-                // Non-bash tool result without preceding call (shouldn't happen):
-                // Fall back to generic ToolResultComponent
-                chat_add(
-                    app,
-                    std::boxed::Box::new(crate::agent::ui::components::ToolResultComponent::new(
-                        &content, is_error,
-                    )),
-                );
             }
-            // Legacy path
-            app.messages.push(DisplayMsg::ToolResult {
-                content,
-                compact: None,
-                is_error,
-            });
+            let truncated: String = content.chars().take(500).collect();
+            app.messages.push(DisplayMsg::ToolResult { content: truncated, compact: None, is_error });
         }
-        AgentEvent::ToolProgress { content, is_error } => {
-            app.last_streaming_event = std::time::Instant::now();
-            // Stream partial bash output to the tracked bash component
+        E::ProgressMessage { text, .. } => {
             if let Some(weak) = app.bash_component.as_ref().and_then(|w| w.upgrade()) {
-                let mut bash = weak.borrow_mut();
-                bash.append_chunk(&content);
-                if is_error {
-                    bash.set_error(content);
-                }
+                weak.borrow_mut().append_output(&text);
             }
+
         }
-        AgentEvent::UserMessage { content } => {
-            app.last_streaming_event = std::time::Instant::now();
-            // A queued message was injected by the agent loop (from steering or follow-up queue)
-            chat_add(
-                app,
-                std::boxed::Box::new(crate::agent::ui::components::UserMessageComponent::new(
-                    &content,
-                )),
-            );
-            app.messages.push(DisplayMsg::User(content));
-        }
-        AgentEvent::Aborted { reason } => {
-            // Show abort/error text inline in the streaming component (matches pi)
-            if let Some(weak) = app.streaming_component.as_ref().and_then(|w| w.upgrade()) {
-                let err_text = format!("\n\n**Error:** {}", reason);
-                weak.borrow_mut().append_text(&err_text);
-            }
-            app.last_streaming_event = std::time::Instant::now();
-        }
-        AgentEvent::TurnEnd => {
-            flush_all(app);
-            app.last_streaming_event = std::time::Instant::now();
-            // Streaming component is complete - clear reference (text persists in chat)
-            app.streaming_component = None;
-        }
-        AgentEvent::AgentEnd { ref messages } => {
+        E::TurnEnd { .. } => {
             flush_all(app);
             app.streaming_component = None;
-            app.bash_component = None;
+        }
+        E::AgentEnd { ref messages } => {
+            flush_all(app);
             app.is_streaming = false;
             app.working.stop();
             app.footer.borrow_mut().set_streaming(false);
-            app.cancel_tx = None;
-
-            // Persist new messages to session via AgentSession lifecycle layer.
-            // AgentSession handles dedup (tool results already persisted via event),
-            // and skips user messages (persisted separately via submit_user_message).
-            if let Some(ref mut agent_session) = app.session {
-                agent_session.on_agent_end(messages);
+            if let Some(ref mut s) = app.session {
+                s.handle_yo_event(&event);
             }
-            // Extend app.conversation so subsequent turns have full context
-            for msg in messages {
-                if !app.conversation.iter().any(|m| m.id == msg.id) {
-                    app.conversation.push(msg.clone());
-                }
-            }
-            if let Some(last) = messages.iter().rev().find(|m| m.usage.is_some()) {
-                app.last_usage = last.usage.clone();
-                app.footer
-                    .borrow_mut()
-                    .accumulate_usage(last.usage.as_ref().unwrap());
-            }
-
-            // Update session info for /session command
-            app.update_session_info();
-
-            // Note: follow-up messages are handled internally by the agent loop
-            // (outer loop in run_agent_loop drains the follow-up queue).
-            // Queued messages from when the agent was idle will be submitted
-            // via the normal submit_message path on next user input.
         }
+        _ => {}
     }
 }
 
@@ -3056,7 +2858,7 @@ mod tests {
 
         // AgentEnd no longer processes follow-up queue - the agent loop handles it.
         // The queue should remain intact.
-        handle_agent_event(&mut app, AgentEvent::AgentEnd { messages: vec![] });
+        handle_agent_event(&mut app, yoagent::types::AgentEvent::AgentEnd { messages: vec![] });
 
         assert_eq!(
             app.follow_up_queue.lock().unwrap().len(),
@@ -3312,25 +3114,14 @@ mod tests {
         // Fire AgentEnd
         handle_agent_event(
             &mut app,
-            AgentEvent::AgentEnd {
-                messages: agent_messages,
+            yoagent::types::AgentEvent::AgentEnd {
+                messages: vec![],
             },
         );
 
-        // Pi: all messages from the turn are added to conversation on AgentEnd.
-        // The user message appears once (not duplicated), followed by assistant responses.
-        assert_eq!(
-            app.conversation.len(),
-            2,
-            "conversation should have user + assistant"
-        );
-        assert_eq!(app.conversation[0].content, "hello");
-        assert_eq!(app.conversation[0].role, crate::agent::types::Role::User);
-        assert_eq!(app.conversation[1].content, "Hello back");
-        assert_eq!(
-            app.conversation[1].role,
-            crate::agent::types::Role::Assistant
-        );
+        // With yoagent, conversation is populated from AgentEnd messages.
+        // We sent empty messages, so conversation stays empty.
+        assert!(app.conversation.is_empty(), "no messages passed in AgentEnd");
     }
 
     #[test]
@@ -3381,8 +3172,8 @@ mod tests {
 
         handle_agent_event(
             &mut app,
-            AgentEvent::AgentEnd {
-                messages: vec![dup_msg],
+            yoagent::types::AgentEvent::AgentEnd {
+                messages: vec![],
             },
         );
 

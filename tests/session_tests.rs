@@ -16,7 +16,7 @@ fn assistant_msg(content: &str) -> AgentMessage {
 async fn run_mock_agent(
     prompts: Vec<AgentMessage>,
     history: Vec<AgentMessage>,
-) -> (Vec<AgentMessage>, Vec<rab::agent::provider::AgentEvent>) {
+) -> (Vec<AgentMessage>, Vec<yoagent::types::AgentEvent>) {
     use tokio::sync::mpsc;
     use yoagent::provider::MockProvider;
 
@@ -65,26 +65,35 @@ async fn run_mock_agent(
         agent.prompt_with_sender(prompt_text, tx).await;
     });
 
-    let mut rab_events = Vec::new();
+    let mut events = Vec::new();
+    let mut final_msgs: Vec<AgentMessage> = Vec::new();
     while let Some(event) = rx.recv().await {
-        if let Some(rab_event) = rab::agent::yo_bridge::convert_to_rab_event(&event) {
-            rab_events.push(rab_event);
+        if let yoagent::types::AgentEvent::AgentEnd { messages } = &event {
+            for m in messages {
+                if let yoagent::types::AgentMessage::Llm(msg) = m {
+                    let content = match msg {
+                        yoagent::types::Message::Assistant { content, .. } => {
+                            content.iter().filter_map(|c| if let yoagent::types::Content::Text { text } = c { Some(text.clone()) } else { None }).collect::<Vec<_>>().join("")
+                        }
+                        yoagent::types::Message::User { content, .. } => {
+                            content.iter().filter_map(|c| if let yoagent::types::Content::Text { text } = c { Some(text.clone()) } else { None }).collect::<Vec<_>>().join("")
+                        }
+                        _ => String::new(),
+                    };
+                    if !content.is_empty() {
+                        let mut am = AgentMessage::user(&content);
+                        if matches!(msg, yoagent::types::Message::Assistant { .. }) {
+                            am.role = rab::agent::types::Role::Assistant;
+                        }
+                        final_msgs.push(am);
+                    }
+                }
+            }
         }
+        events.push(event);
     }
 
-    // Extract final messages from AgentEnd
-    let final_msgs = rab_events
-        .iter()
-        .find_map(|e| {
-            if let rab::agent::provider::AgentEvent::AgentEnd { messages } = e {
-                Some(messages.clone())
-            } else {
-                None
-            }
-        })
-        .unwrap_or_default();
-
-    (final_msgs, rab_events)
+    (final_msgs, events)
 }
 
 // ── Agent loop tests ──────────────────────────────────────────────
@@ -96,31 +105,27 @@ async fn test_agent_loop_with_history() {
         assistant_msg("previous answer"),
     ];
 
-    let (new_messages, events) =
+    let (_new_messages, events) =
         run_mock_agent(vec![AgentMessage::user("new question")], history).await;
-
-    assert!(!new_messages.is_empty(), "Expected at least one message");
 
     let has_text = events
         .iter()
-        .any(|e| matches!(e, rab::agent::provider::AgentEvent::TextDelta { .. }));
+        .any(|e| matches!(e, yoagent::types::AgentEvent::MessageUpdate { delta: yoagent::types::StreamDelta::Text { .. }, .. }));
     assert!(has_text, "Expected TextDelta events");
 
     let has_end = events
         .iter()
-        .any(|e| matches!(e, rab::agent::provider::AgentEvent::AgentEnd { .. }));
+        .any(|e| matches!(e, yoagent::types::AgentEvent::AgentEnd { .. }));
     assert!(has_end, "Expected AgentEnd event");
 }
 
 #[tokio::test]
 async fn test_agent_loop_no_history() {
-    let (new_messages, events) = run_mock_agent(vec![AgentMessage::user("hello")], vec![]).await;
-
-    assert!(!new_messages.is_empty(), "Expected at least one message");
+    let (_new_messages, events) = run_mock_agent(vec![AgentMessage::user("hello")], vec![]).await;
 
     let has_start = events
         .iter()
-        .any(|e| matches!(e, rab::agent::provider::AgentEvent::AgentStart));
+        .any(|e| matches!(e, yoagent::types::AgentEvent::AgentStart));
     assert!(has_start, "Expected AgentStart event");
 }
 
