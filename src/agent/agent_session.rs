@@ -5,7 +5,7 @@ use crate::agent::session::SessionManager;
 use crate::agent::types::{message_text, tool_result_message, user_message};
 use std::collections::HashSet;
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use std::sync::Mutex as StdMutex;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use yoagent::agent::Agent;
@@ -69,11 +69,11 @@ pub struct AgentSession {
 
     // ── Persistent agent (pi-compatible lifecycle) ──
     /// The Agent, stored between turns. Taken on prompt(), returned on completion.
-    agent_slot: Arc<Mutex<Option<Agent>>>,
+    agent_slot: Arc<StdMutex<Option<Agent>>>,
     /// Cancellation token for the current turn's agent loop.
-    cancel_token: Arc<Mutex<Option<CancellationToken>>>,
+    cancel_token: Arc<StdMutex<Option<CancellationToken>>>,
     /// JoinHandle of the current turn's spawned task (for abort).
-    current_turn_handle: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
+    current_turn_handle: Arc<StdMutex<Option<tokio::task::JoinHandle<()>>>>,
     /// Persistent event sender (cloned to spawned tasks).
     event_tx: Option<tokio::sync::mpsc::UnboundedSender<AgentEvent>>,
     /// Extensions (used to rebuild tools if agent is recreated after abort).
@@ -113,9 +113,9 @@ impl AgentSession {
             context_window: 200_000,
             model_name: String::new(),
             compaction_api_key: None,
-            agent_slot: Arc::new(Mutex::new(None)),
-            cancel_token: Arc::new(Mutex::new(None)),
-            current_turn_handle: Arc::new(Mutex::new(None)),
+            agent_slot: Arc::new(StdMutex::new(None)),
+            cancel_token: Arc::new(StdMutex::new(None)),
+            current_turn_handle: Arc::new(StdMutex::new(None)),
             event_tx: None,
             extensions: None,
             build_params: None,
@@ -191,12 +191,12 @@ impl AgentSession {
             tools,
             initial_messages,
         );
-        self.agent_slot.blocking_lock().replace(agent);
+        self.agent_slot.lock().unwrap().replace(agent);
     }
 
     /// Check whether the persistent agent has been initialized.
     pub fn is_agent_initialized(&self) -> bool {
-        self.agent_slot.blocking_lock().is_some()
+        self.agent_slot.lock().unwrap().is_some()
     }
 
     /// Send a prompt to the agent (pi-compatible).
@@ -213,7 +213,7 @@ impl AgentSession {
         let handle_arc2 = handle_arc.clone();
         let build_params2 = build_params.clone();
         let handle = tokio::spawn(async move {
-            let mut agent = slot.lock().await.take().unwrap_or_else(|| {
+            let mut agent = slot.lock().unwrap().take().unwrap_or_else(|| {
                 // Agent lost (aborted) — recreate from stored params
                 let params = build_params.expect("init_agent must be called before prompt");
                 let tools: Vec<Box<dyn AgentTool>> = extensions
@@ -290,18 +290,18 @@ impl AgentSession {
                 }
             };
 
-            slot.lock().await.replace(agent);
-            cancel_token.lock().await.take();
-            handle_arc2.lock().await.take();
+            slot.lock().unwrap().replace(agent);
+            cancel_token.lock().unwrap().take();
+            handle_arc2.lock().unwrap().take();
         });
 
-        *handle_arc.blocking_lock() = Some(handle);
+        *handle_arc.lock().unwrap() = Some(handle);
     }
 
     /// Push a steering message into the agent's built-in queue.
     /// Call this before `prompt` to drain app-level queues into the agent.
     pub fn steer(&self, msg: AgentMessage) {
-        let mut slot = self.agent_slot.blocking_lock();
+        let mut slot = self.agent_slot.lock().unwrap();
         if let Some(ref mut agent) = *slot {
             agent.steer(msg);
         }
@@ -309,7 +309,7 @@ impl AgentSession {
 
     /// Push a follow-up message into the agent's built-in queue.
     pub fn follow_up(&self, msg: AgentMessage) {
-        let mut slot = self.agent_slot.blocking_lock();
+        let mut slot = self.agent_slot.lock().unwrap();
         if let Some(ref mut agent) = *slot {
             agent.follow_up(msg);
         }
@@ -317,10 +317,10 @@ impl AgentSession {
 
     /// Abort the current turn. The agent is lost and will be recreated on the next turn.
     pub fn abort(&self) {
-        if let Some(handle) = self.current_turn_handle.blocking_lock().take() {
+        if let Some(handle) = self.current_turn_handle.lock().unwrap().take() {
             handle.abort();
         }
-        self.cancel_token.blocking_lock().take();
+        self.cancel_token.lock().unwrap().take();
     }
 
     /// Set the model on the idle agent (pi-compatible: setModel).
@@ -328,7 +328,7 @@ impl AgentSession {
         if let Some(ref mut params) = self.build_params {
             params.model = model.to_string();
         }
-        let mut slot = self.agent_slot.blocking_lock();
+        let mut slot = self.agent_slot.lock().unwrap();
         if let Some(ref mut agent) = *slot {
             agent.model = model.to_string();
         }
@@ -336,7 +336,7 @@ impl AgentSession {
 
     /// Set the thinking level on the idle agent (pi-compatible: setThinkingLevel).
     pub fn set_thinking_level(&mut self, level: ThinkingLevel) {
-        let mut slot = self.agent_slot.blocking_lock();
+        let mut slot = self.agent_slot.lock().unwrap();
         if let Some(ref mut agent) = *slot {
             agent.thinking_level = level;
         }
