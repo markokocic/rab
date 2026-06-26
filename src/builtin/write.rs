@@ -271,8 +271,8 @@ impl yoagent::types::AgentTool for WriteTool {
         "write"
     }
     fn description(&self) -> &str {
-        "Write content to a file. Creates parent directories automatically. \
-         Overwrites existing files. Use for new files or full replacements."
+        "Write content to a file. Creates the file if it doesn't exist, overwrites if it does. \
+         Automatically creates parent directories."
     }
     fn parameters_schema(&self) -> serde_json::Value {
         serde_json::json!({

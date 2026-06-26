@@ -602,8 +602,9 @@ impl yoagent::types::AgentTool for BashTool {
         "bash"
     }
     fn description(&self) -> &str {
-        "Execute a bash command in the current working directory. Use with caution. \
-         Streams output in real-time. Cancellable."
+        "Execute a bash command in the current working directory. Returns stdout and stderr. \
+         Output is truncated to last 2000 lines or 50KB (whichever is hit first). If \
+         truncated, full output is saved to a temp file. Optionally provide a timeout in seconds."
     }
     fn parameters_schema(&self) -> serde_json::Value {
         serde_json::json!({
@@ -612,17 +613,11 @@ impl yoagent::types::AgentTool for BashTool {
             "properties": {
                 "command": {
                     "type": "string",
-                    "description": "The bash command to execute"
-                },
-                "description": {
-                    "type": "string",
-                    "description": "A brief description of what this command does, \
-                                     shown to the user before execution"
+                    "description": "Bash command to execute"
                 },
                 "timeout": {
                     "type": "number",
-                    "description": "Timeout in seconds. Default: 30. If set to 0, uses \
-                                     no timeout (use with caution)."
+                    "description": "Timeout in seconds (optional, no default timeout)"
                 }
             }
         })
