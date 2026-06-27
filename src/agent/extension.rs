@@ -47,6 +47,9 @@ pub struct ToolWithMeta {
     /// Called after tool execution, before the result is returned (matching pi's `afterToolCall`).
     pub after_tool_call:
         Option<fn(&yoagent::types::ToolResult, bool) -> Option<AfterToolCallResult>>,
+    /// Tool-specific renderer for the TUI, bundled with the tool definition
+    /// (pi's renderCall/renderResult live on ToolDefinition).
+    pub renderer: Option<Arc<dyn ToolRenderer>>,
 }
 
 // ── Generic argument type coercion & validation ─────────────────
@@ -721,11 +724,6 @@ pub trait Extension: Send + Sync {
     /// Built-in commands and extension commands use the same interface.
     fn commands(&self) -> Vec<SlashCommand> {
         vec![]
-    }
-
-    /// Tool-specific renderer for the TUI.
-    fn tool_renderer(&self, _name: &str) -> Option<Box<dyn ToolRenderer>> {
-        None
     }
 
     /// Skills this extension provides (AgentSkills-compatible).

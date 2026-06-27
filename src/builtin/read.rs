@@ -77,17 +77,10 @@ impl Extension for ReadExtension {
             prepare_arguments: None,
             before_tool_call: None,
             after_tool_call: None,
-        }]
-    }
-
-    fn tool_renderer(&self, name: &str) -> Option<Box<dyn ToolRenderer>> {
-        if name == "read" {
-            Some(Box::new(ReadRenderer {
+            renderer: Some(std::sync::Arc::new(ReadRenderer {
                 cwd: self.cwd.clone(),
-            }))
-        } else {
-            None
-        }
+            })),
+        }]
     }
 }
 

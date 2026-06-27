@@ -166,6 +166,7 @@ impl Extension for FilesystemExtension {
                 prepare_arguments: None,
                 before_tool_call: None,
                 after_tool_call: None,
+                renderer: Some(std::sync::Arc::new(ListRenderer::grep())),
             },
             ToolWithMeta {
                 tool: Box::new(FindTool {
@@ -177,6 +178,7 @@ impl Extension for FilesystemExtension {
                 prepare_arguments: None,
                 before_tool_call: None,
                 after_tool_call: None,
+                renderer: Some(std::sync::Arc::new(ListRenderer::find())),
             },
             ToolWithMeta {
                 tool: Box::new(LsTool {
@@ -188,17 +190,9 @@ impl Extension for FilesystemExtension {
                 prepare_arguments: None,
                 before_tool_call: None,
                 after_tool_call: None,
+                renderer: Some(std::sync::Arc::new(ListRenderer::ls())),
             },
         ]
-    }
-
-    fn tool_renderer(&self, name: &str) -> Option<Box<dyn ToolRenderer>> {
-        match name {
-            "grep" => Some(Box::new(ListRenderer::grep())),
-            "find" => Some(Box::new(ListRenderer::find())),
-            "ls" => Some(Box::new(ListRenderer::ls())),
-            _ => None,
-        }
     }
 }
 

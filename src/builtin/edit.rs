@@ -86,15 +86,8 @@ impl Extension for EditExtension {
             prepare_arguments: Some(prepare_edit_args),
             before_tool_call: None,
             after_tool_call: None,
+            renderer: Some(std::sync::Arc::new(EditRenderer::new())),
         }]
-    }
-
-    fn tool_renderer(&self, name: &str) -> Option<Box<dyn ToolRenderer>> {
-        if name == "edit" {
-            Some(Box::new(EditRenderer::new()))
-        } else {
-            None
-        }
     }
 }
 

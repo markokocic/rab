@@ -1,5 +1,6 @@
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::Instant;
 
 use crate::agent::extension::{ToolRenderContext, ToolRenderer};
@@ -22,7 +23,7 @@ const PREVIEW_LINES: usize = 10;
 /// - Error (call + result, is_error) → `toolErrorBg`
 pub struct ToolExecComponent {
     name: String,
-    renderer: Option<Box<dyn ToolRenderer>>,
+    renderer: Option<Arc<dyn ToolRenderer>>,
     args: serde_json::Value,
     output: Option<String>,
     is_error: bool,
@@ -54,7 +55,7 @@ pub struct ToolExecComponent {
 impl ToolExecComponent {
     pub fn new(
         name: impl Into<String>,
-        renderer: Option<Box<dyn ToolRenderer>>,
+        renderer: Option<Arc<dyn ToolRenderer>>,
         args: serde_json::Value,
         cwd: String,
         tool_call_id: String,

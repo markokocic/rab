@@ -122,15 +122,8 @@ impl Extension for WriteExtension {
             prepare_arguments: Some(prepare_write_args),
             before_tool_call: None,
             after_tool_call: None,
+            renderer: Some(std::sync::Arc::new(WriteRenderer::new())),
         }]
-    }
-
-    fn tool_renderer(&self, name: &str) -> Option<Box<dyn ToolRenderer>> {
-        if name == "write" {
-            Some(Box::new(WriteRenderer::new()))
-        } else {
-            None
-        }
     }
 }
 

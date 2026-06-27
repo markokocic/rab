@@ -88,15 +88,8 @@ impl Extension for BashExtension {
             prepare_arguments: None,
             before_tool_call: None,
             after_tool_call: None,
+            renderer: Some(std::sync::Arc::new(BashRenderer)),
         }]
-    }
-
-    fn tool_renderer(&self, name: &str) -> Option<Box<dyn ToolRenderer>> {
-        if name == "bash" {
-            Some(Box::new(BashRenderer))
-        } else {
-            None
-        }
     }
 }
 

@@ -13,7 +13,7 @@ mod renderer;
 pub mod server;
 pub mod types;
 
-use crate::agent::extension::{Extension, ToolRenderer, ToolWithMeta};
+use crate::agent::extension::{Extension, ToolWithMeta};
 use cache::{has_valid_cache, load_cache, update_cache_entry};
 use renderer::{McpProxyToolRenderer, McpToolRenderer};
 use server::ServerManager;
@@ -176,6 +176,7 @@ impl Extension for McpExtension {
             prepare_arguments: None,
             before_tool_call: None,
             after_tool_call: None,
+            renderer: Some(std::sync::Arc::new(McpProxyToolRenderer)),
         });
 
         // Add direct tools for servers with directTools enabled.
@@ -283,40 +284,12 @@ impl Extension for McpExtension {
                     prepare_arguments: None,
                     before_tool_call: None,
                     after_tool_call: None,
+                    renderer: Some(std::sync::Arc::new(McpToolRenderer::new(&prefixed))),
                 });
             }
         }
 
         tools
-    }
-
-    fn tool_renderer(&self, name: &str) -> Option<Box<dyn ToolRenderer>> {
-        if name == "mcp" {
-            return Some(Box::new(McpProxyToolRenderer));
-        }
-
-        // Check if any direct tool matches
-        if let Some(ref settings) = self.config.settings {
-            let prefix_mode = &settings.tool_prefix;
-            for server_name in self.config.mcp_servers.keys() {
-                // Check by prefixed name
-                if let Some(tools) = self
-                    .tool_cache
-                    .try_lock()
-                    .ok()
-                    .and_then(|cache| cache.get(server_name).cloned())
-                {
-                    for tool in &tools {
-                        let prefixed = format_tool_name(&tool.name, server_name, prefix_mode);
-                        if prefixed == name {
-                            return Some(Box::new(McpToolRenderer::new(&prefixed)));
-                        }
-                    }
-                }
-            }
-        }
-
-        None
     }
 }
 

@@ -6,6 +6,8 @@ use std::rc::{Rc, Weak};
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::agent::extension::ToolRenderer;
+
 use crate::agent::AgentSession;
 use crate::agent::extension::{CommandResult, Extension};
 use crate::agent::footer_data_provider::FooterDataProvider;
@@ -61,6 +63,8 @@ pub struct AppConfig {
     pub session_info: Option<std::sync::Arc<std::sync::Mutex<Option<SessionInfoInternal>>>>,
     /// API key for yoagent provider.
     pub api_key: String,
+    /// Tool renderer lookup (bundled from ToolWithMeta.renderer).
+    pub tool_renderers: HashMap<String, Arc<dyn ToolRenderer>>,
 }
 
 /// Main application state.
@@ -173,6 +177,8 @@ pub struct App {
     /// Agent tools (for tool execution).
     /// Extensions.
     extensions: Arc<Vec<Box<dyn Extension>>>,
+    /// Tool renderer lookup (bundled from ToolWithMeta.renderer).
+    tool_renderers: HashMap<String, Arc<dyn ToolRenderer>>,
 
     /// Steering queue: messages delivered after current turn's tool calls finish,
     /// before the next LLM call. Shared with the agent loop.
@@ -322,7 +328,7 @@ impl App {
                 &cwd_string,
                 config.hide_thinking,
                 config.collapse_tool_output,
-                &config.extensions,
+                &config.tool_renderers,
             );
         }
 
@@ -373,6 +379,7 @@ impl App {
             footer_provider,
             working: WorkingIndicator::new(),
             extensions: Arc::new(config.extensions),
+            tool_renderers: config.tool_renderers,
             tool_execution: config.tool_execution,
             skills: config.skills,
             session_info: config.session_info,
@@ -1145,7 +1152,7 @@ fn interrupt_streaming(app: &mut App) {
             &app.cwd.to_string_lossy(),
             app.hide_thinking,
             app.collapse_tool_output,
-            &app.extensions,
+            &app.tool_renderers,
         );
     }
 
@@ -1390,7 +1397,7 @@ fn handle_session_picker_input(app: &mut App, key: &crossterm::event::KeyEvent) 
                     &app.cwd.to_string_lossy(),
                     app.hide_thinking,
                     app.collapse_tool_output,
-                    &app.extensions,
+                    &app.tool_renderers,
                 );
                 app.session = Some(new_session);
                 app.agent = None; // Force recreation from new session on next prompt
@@ -1579,7 +1586,7 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
                 &app.cwd.to_string_lossy(),
                 app.hide_thinking,
                 app.collapse_tool_output,
-                &app.extensions,
+                &app.tool_renderers,
             );
             app.session = Some(new_session);
             app.agent = None;
@@ -1849,7 +1856,7 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
                                         &app.cwd.to_string_lossy(),
                                         app.hide_thinking,
                                         app.collapse_tool_output,
-                                        &app.extensions,
+                                        &app.tool_renderers,
                                     );
                                     app.session = Some(new_session);
                                     app.agent = None;
@@ -1956,10 +1963,7 @@ fn handle_bang_command(app: &mut App, command: String) {
     let tx = app.event_tx.clone();
     use yoagent::types::{AgentEvent as YoEvent, Content as YoContent, ToolResult as YoResult};
 
-    let renderer = app
-        .extensions
-        .iter()
-        .find_map(|ext| ext.tool_renderer("bash"));
+    let renderer = app.tool_renderers.get("bash").cloned();
     let mut tool = crate::agent::ui::components::ToolExecComponent::new(
         "bash",
         renderer,
@@ -2116,7 +2120,7 @@ pub fn rebuild_chat_from_messages(
     cwd: &str,
     hide_thinking: bool,
     _collapse_tool_output: bool,
-    extensions: &[Box<dyn crate::agent::extension::Extension>],
+    tool_renderers: &HashMap<String, Arc<dyn ToolRenderer>>,
 ) {
     chat.clear();
     use std::collections::HashMap;
@@ -2160,7 +2164,7 @@ pub fn rebuild_chat_from_messages(
                     }
                     // Create ToolExecComponent for each tool call
                     for (id, name, args) in &tcs {
-                        let renderer = extensions.iter().find_map(|ext| ext.tool_renderer(name));
+                        let renderer = tool_renderers.get(name.as_str()).cloned();
                         let tool = crate::agent::ui::components::ToolExecComponent::new(
                             name,
                             renderer,
@@ -2314,10 +2318,7 @@ fn handle_agent_event(app: &mut App, event: yoagent::types::AgentEvent) {
             flush_all(app);
             app.streaming_component = None;
             let name = tool_name;
-            let renderer = app
-                .extensions
-                .iter()
-                .find_map(|ext| ext.tool_renderer(&name));
+            let renderer = app.tool_renderers.get(&name).cloned();
             let started_at = std::time::Instant::now();
             let (invalidate_tx, invalidate_rx) =
                 crate::agent::ui::components::ToolExecComponent::make_invalidation_channel();
