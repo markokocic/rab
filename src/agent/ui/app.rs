@@ -1965,6 +1965,7 @@ fn handle_bang_command(app: &mut App, command: String) {
         renderer,
         serde_json::json!({"command": command}),
         app.cwd.to_string_lossy().to_string(),
+        "__bang__".to_string(),
     );
     tool.set_started_at(std::time::Instant::now());
     let (invalidate_tx, invalidate_rx) =
@@ -2165,6 +2166,7 @@ pub fn rebuild_chat_from_messages(
                             renderer,
                             args.clone(),
                             cwd.to_string(),
+                            id.clone(),
                         );
                         let tool = Rc::new(RefCell::new(tool));
                         chat.add_child(std::boxed::Box::new(
@@ -2326,6 +2328,7 @@ fn handle_agent_event(app: &mut App, event: yoagent::types::AgentEvent) {
                     renderer,
                     args.clone(),
                     app.cwd.to_string_lossy().to_string(),
+                    tool_call_id.clone(),
                 );
                 tool.set_started_at(std::time::Instant::now());
                 tool.set_invalidate_tx(invalidate_tx);

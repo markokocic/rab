@@ -35,8 +35,12 @@ pub struct ToolExecComponent {
     final_duration: Option<f64>,
     /// Tracks when to next invalidate for re-render (1s tick).
     last_timer_tick: Option<Instant>,
+    /// Tool call ID for this execution (pi's toolCallId).
+    tool_call_id: String,
     /// Structured details for UI renderer (not sent to LLM).
     details: Option<serde_json::Value>,
+    /// Shared mutable state per tool execution (pi's context.state).
+    state: Rc<RefCell<serde_json::Value>>,
     /// Working directory for path resolution in renderers.
     cwd: String,
     /// Invalidation sender (for async preview computation).
@@ -53,6 +57,7 @@ impl ToolExecComponent {
         renderer: Option<Box<dyn ToolRenderer>>,
         args: serde_json::Value,
         cwd: String,
+        tool_call_id: String,
     ) -> Self {
         Self {
             name: name.into(),
@@ -65,7 +70,9 @@ impl ToolExecComponent {
             started_at: None,
             final_duration: None,
             last_timer_tick: None,
+            tool_call_id,
             details: None,
+            state: Rc::new(RefCell::new(serde_json::Value::Object(Default::default()))),
             cwd,
             invalidate_tx: None,
             dirty: true,
@@ -230,6 +237,8 @@ impl ToolExecComponent {
             args_complete: self.is_complete,
             is_partial,
             is_error: self.is_error,
+            tool_call_id: self.tool_call_id.clone(),
+            execution_started: self.started_at.is_some(),
             cwd: self.cwd.clone(),
             duration_secs: self.live_duration(),
             exit_code: None,
@@ -239,6 +248,7 @@ impl ToolExecComponent {
             file_path: None,
             expand_key,
             details: self.details.clone(),
+            state: self.state.clone(),
             invalidate: self.invalidate_tx.clone(),
         };
 

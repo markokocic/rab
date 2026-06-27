@@ -536,6 +536,10 @@ pub struct ToolRenderContext {
     pub args_complete: bool,
     pub is_partial: bool,
     pub is_error: bool,
+    /// Unique id for this tool execution (pi's toolCallId).
+    pub tool_call_id: String,
+    /// Whether the tool execution has started (pi's executionStarted).
+    pub execution_started: bool,
     /// Working directory for path resolution.
     pub cwd: String,
     /// Duration in seconds (bash).
@@ -555,6 +559,10 @@ pub struct ToolRenderContext {
     /// Structured rendering details from the tool execution (pi-compatible).
     /// Set by tool renderers for preview/actual diff data. Not sent to the LLM.
     pub details: Option<serde_json::Value>,
+    /// Shared mutable state per tool execution (pi's context.state).
+    /// Initialized as an empty JSON object `{}`. Renderers can mutate it
+    /// across renderCall/renderResult invocations for the same tool call.
+    pub state: std::rc::Rc<std::cell::RefCell<serde_json::Value>>,
     /// Callback for renderers to request re-render (e.g. after async preview computation).
     /// Pi-compatible: `context.invalidate()` in renderCall/renderResult.
     /// Cloned from the original at context construction time.
