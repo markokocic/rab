@@ -2404,6 +2404,25 @@ fn handle_agent_event(app: &mut App, event: yoagent::types::AgentEvent) {
             if let Some(ref s) = app.session {
                 app.footer.borrow_mut().refresh_from_session(s.session());
             }
+            // Workaround: yoagent's openai_compat provider never sends
+            // StreamEvent::Error through the channel, so the forwarder in
+            // stream_assistant_response exits without dispatching MessageEnd
+            // with the error. Check the final assistant message for errors
+            // here on AgentEnd and display them if found.
+            for msg in &messages {
+                if let Some(err) = crate::agent::types::message_error(msg) {
+                    let error_text = if err.is_empty() {
+                        "Provider error: The agent encountered an issue and stopped.".to_string()
+                    } else {
+                        format!("Provider error: {}", err)
+                    };
+                    chat_add(
+                        app,
+                        std::boxed::Box::new(InfoMessageComponent::new(error_text)),
+                    );
+                    break;
+                }
+            }
         }
         E::MessageEnd { message } => {
             // Check for error messages from the provider (network errors, etc.)
