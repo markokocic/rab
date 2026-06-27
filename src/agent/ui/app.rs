@@ -1309,6 +1309,7 @@ fn start_agent_loop(app: &mut App, message: String) {
     app.footer.borrow_mut().set_streaming(true);
     app.pending_text = None;
     app.pending_thinking = None;
+    app.last_streaming_event = std::time::Instant::now();
 
     let session = app.session.as_mut().unwrap();
 
@@ -1984,6 +1985,7 @@ fn handle_bang_command(app: &mut App, command: String) {
     app.is_streaming = true;
     app.working.start();
     app.footer.borrow_mut().set_streaming(true);
+    app.last_streaming_event = std::time::Instant::now();
 
     let handle = tokio::spawn(async move {
         struct Guard<'a> {
