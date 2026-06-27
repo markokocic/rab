@@ -22,14 +22,14 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use types::{McpConfig, format_tool_name};
+use types::format_tool_name;
 use yoagent::mcp::types::{McpContent, McpToolInfo};
 use yoagent::types::{AgentTool, Content, ToolContext, ToolError, ToolResult};
 
 // ── Re-exports for external use ────────────────────────────────────
 pub use cache::{load_cache as load_metadata_cache, save_cache as save_metadata_cache};
 pub use config::load_mcp_config;
-pub use types::{CachedTool, McpSettings, MetadataCache, ServerCacheEntry, ServerEntry};
+pub use types::{CachedTool, McpConfig, McpSettings, MetadataCache, ServerCacheEntry, ServerEntry};
 
 /// Maximum number of results returned by `mcp search`.
 const MAX_SEARCH_RESULTS: usize = 30;

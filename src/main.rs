@@ -403,7 +403,9 @@ async fn main() -> anyhow::Result<()> {
         ));
     }
     if is_extension_active("mcp", &settings) {
-        extensions.push(Box::new(rab::extensions::mcp::McpExtension::from_cwd(&cwd)));
+        let mcp_ext = rab::extensions::mcp::McpExtension::from_cwd(&cwd);
+        mcp_ext.restore_cache().await;
+        extensions.push(Box::new(mcp_ext));
     }
 
     let agent_dir = get_agent_dir();
