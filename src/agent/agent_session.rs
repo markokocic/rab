@@ -395,6 +395,17 @@ impl AgentSession {
         }
     }
 
+    /// Check whether the current turn's spawned task is still running.
+    /// Returns false when no turn is active or the task has completed/aborted.
+    /// Used by the UI to decide whether to queue a message or start a fresh loop.
+    pub fn is_turn_running(&self) -> bool {
+        let guard = self.current_turn_handle.lock().unwrap();
+        match guard.as_ref() {
+            Some(handle) => !handle.is_finished(),
+            None => false,
+        }
+    }
+
     /// Set the model on the idle agent (pi-compatible: setModel).
     pub fn set_model(&mut self, model: &str) {
         if let Some(ref mut params) = self.build_params {

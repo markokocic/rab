@@ -1180,18 +1180,19 @@ fn interrupt_streaming(app: &mut App) {
     }
 
     // Restore follow-up queue messages to editor (steering are mid-stream, not restorable).
-    // Use try_lock to avoid deadlock if the agent loop holds the mutex when abort is called.
-    if let Ok(mut follow_up) = app.follow_up_queue.try_lock() {
+    // The queues are only accessed from the main thread, so lock() is safe.
+    {
+        let mut follow_up = app.follow_up_queue.lock().unwrap();
         if !follow_up.is_empty() {
             let all: Vec<yoagent::types::AgentMessage> = follow_up.drain(..).collect();
             let text: Vec<String> = all.iter().map(crate::agent::types::message_text).collect();
             app.editor.borrow_mut().editor.set_text(&text.join("\n\n"));
             app.queued_section.borrow_mut().set_lines(vec![]);
         }
-        drop(follow_up);
     }
 
-    if let Ok(mut steering) = app.steering_queue.try_lock() {
+    {
+        let mut steering = app.steering_queue.lock().unwrap();
         steering.clear();
     }
 
@@ -1271,17 +1272,13 @@ fn submit_message(app: &mut App, message: String) {
     // are persisted to the session file on message_end, not here).
 
     if app.is_streaming {
-        // Safety check: if is_streaming is true but no events arrived for >5s,
-        // the spawned task may have crashed without sending AgentEnd (e.g. panic
-        // in provider.stream() before the Drop guard was added). Force-reset so
-        // the new message actually starts a fresh agent loop instead of silently
-        // queueing to the steering queue.
-        if app.last_streaming_event.elapsed() > std::time::Duration::from_secs(5) {
-            app.is_streaming = false;
-            app.working.stop();
-            app.footer.borrow_mut().set_streaming(false);
-            app.status_text = Some("Previous agent loop appears stuck — restarting".into());
-        } else {
+        // Check whether the agent's spawned task is still genuinely running.
+        // This is more reliable than a time-based heuristic: a slow provider
+        // that's still sending events will have `is_turn_running() == true`,
+        // while a crashed/aborted task will have `is_turn_running() == false`.
+        let agent_alive = app.session.as_ref().is_some_and(|s| s.is_turn_running());
+
+        if agent_alive {
             // Steering: delivered after current turn's tool calls finish, before next LLM call
             app.steering_queue
                 .lock()
@@ -1289,6 +1286,12 @@ fn submit_message(app: &mut App, message: String) {
                 .push(crate::agent::types::user_message(trimmed));
             return;
         }
+
+        // Agent task has completed/aborted but is_streaming wasn't reset.
+        // Reset state so we start a fresh loop.
+        app.is_streaming = false;
+        app.working.stop();
+        app.footer.borrow_mut().set_streaming(false);
     }
 
     start_agent_loop(app, trimmed);

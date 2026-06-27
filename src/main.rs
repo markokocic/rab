@@ -572,8 +572,9 @@ async fn run_print_mode(
     let (yo_tx, mut yo_rx) = tokio::sync::mpsc::unbounded_channel();
     let msg_for_agent = message.clone();
 
-    // Spawn agent loop (it blocks until done, sending events to yo_tx)
-    tokio::spawn(async move {
+    // Spawn agent loop (it blocks until done, sending events to yo_tx).
+    // Keep the abort handle so we can cancel on timeout.
+    let agent_handle = tokio::spawn(async move {
         agent.prompt_with_sender(msg_for_agent, yo_tx).await;
     });
 
@@ -582,9 +583,30 @@ async fn run_print_mode(
     agent_session.send_user_message_obj(&rab_prompt);
 
     let mut thinking_prefix_printed = false;
+    const PRINT_MODE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 
-    // Process events from yoagent
-    while let Some(event) = yo_rx.recv().await {
+    // Process events from yoagent with a timeout to prevent hanging forever
+    // if the provider stops responding (network issue, provider crash, etc.).
+    loop {
+        let event = tokio::time::timeout(PRINT_MODE_TIMEOUT, yo_rx.recv()).await;
+
+        let event = match event {
+            Ok(Some(event)) => event,
+            Ok(None) => break, // Channel closed normally — agent finished
+            Err(_) => {
+                // Timeout: abort the agent task and exit
+                agent_handle.abort();
+                eprintln!(
+                    "{}{}",
+                    colored::Colorize::red("✗ "),
+                    colored::Colorize::red(
+                        "Print mode timed out after 120s — the provider may have hung."
+                    )
+                );
+                break;
+            }
+        };
+
         agent_session.handle_yo_event(&event);
 
         match &event {

@@ -655,8 +655,10 @@ impl SessionManager {
 
         if !self.flushed {
             // First write with assistant: write header + all entries atomically.
-            if let Some(parent) = self.storage.path().and_then(|p| p.parent()) {
-                let _ = std::fs::create_dir_all(parent);
+            if let Some(parent) = self.storage.path().and_then(|p| p.parent())
+                && let Err(e) = std::fs::create_dir_all(parent)
+            {
+                eprintln!("Warning: failed to create session directory: {}", e);
             }
             let default_header = SessionHeader {
                 type_: "session".to_string(),
@@ -667,11 +669,19 @@ impl SessionManager {
                 parent_session: None,
             };
             let header = self.session_header.as_ref().unwrap_or(&default_header);
-            let _ = self.storage.write_full(header, &self.file_entries);
+            if let Err(e) = self.storage.write_full(header, &self.file_entries) {
+                eprintln!("Warning: failed to write session file: {}", e);
+            }
             self.flushed = true;
         } else if let Some(entry) = self.file_entries.last() {
             // Append mode: file already exists.
-            let _ = self.storage.append(entry);
+            if let Err(e) = self.storage.append(entry) {
+                eprintln!(
+                    "Warning: failed to append session entry {}: {}",
+                    entry.id(),
+                    e
+                );
+            }
         }
     }
 
