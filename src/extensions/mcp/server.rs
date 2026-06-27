@@ -5,6 +5,7 @@ use crate::extensions::mcp::types::ServerEntry;
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::Mutex as StdMutex;
 use std::time::Instant;
 use tokio::sync::Mutex;
 use yoagent::mcp::McpClient;
@@ -30,6 +31,8 @@ struct SseHttpTransport {
     client: reqwest::Client,
     base_url: String,
     headers: Vec<(String, String)>,
+    /// Session ID returned by the server (Streamable HTTP).
+    session_id: StdMutex<Option<String>>,
 }
 
 impl SseHttpTransport {
@@ -38,6 +41,7 @@ impl SseHttpTransport {
             client: reqwest::Client::new(),
             base_url: url.trim_end_matches('/').to_string(),
             headers: Vec::new(),
+            session_id: StdMutex::new(None),
         }
     }
 
@@ -89,10 +93,24 @@ impl SseHttpTransport {
 #[async_trait]
 impl McpTransport for SseHttpTransport {
     async fn send(&self, request: JsonRpcRequest) -> Result<JsonRpcResponse, McpError> {
-        let mut req = self.client.post(&self.base_url).json(&request);
+        let mut req = self
+            .client
+            .post(&self.base_url)
+            // Streamable HTTP requires the client to accept both formats
+            .header("Accept", "application/json, text/event-stream")
+            .json(&request);
+
         for (k, v) in &self.headers {
             req = req.header(k.as_str(), v.as_str());
         }
+
+        // Include session ID if we have one (Streamable HTTP)
+        if let Ok(guard) = self.session_id.lock()
+            && let Some(ref sid) = *guard
+        {
+            req = req.header("Mcp-Session-Id", sid.as_str());
+        }
+
         let resp = req
             .send()
             .await
@@ -100,8 +118,19 @@ impl McpTransport for SseHttpTransport {
 
         let status = resp.status();
 
-        // 202 Accepted — the server will stream the result via SSE.
-        // Read the body which should contain SSE events.
+        // Capture session ID from response headers (Streamable HTTP)
+        // reqwest normalizes header names to lowercase
+        if let Some(sid) = resp
+            .headers()
+            .get("mcp-session-id")
+            .and_then(|v| v.to_str().ok())
+            .filter(|s| !s.is_empty())
+            && let Ok(mut guard) = self.session_id.lock()
+            && guard.is_none()
+        {
+            *guard = Some(sid.to_string());
+        }
+
         let body = resp
             .text()
             .await
