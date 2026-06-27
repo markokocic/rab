@@ -267,4 +267,156 @@ fn extract_branch_file_ops(entries: &[SessionEntry]) -> Option<serde_json::Value
 }
 
 #[cfg(test)]
-mod tests {}
+mod tests {
+    use super::*;
+    use crate::agent::session::{BranchSummaryEntry, MessageEntry, SessionEntry};
+    use crate::agent::types::{assistant_message, user_message};
+    use std::path::Path;
+
+    /// Push an entry into the SessionManager, populating by_id and setting leaf_id.
+    fn push_entry(sm: &mut SessionManager, entry: SessionEntry) -> String {
+        let id = entry.id().to_string();
+        sm.by_id.insert(id.clone(), entry.clone());
+        sm.file_entries.push(entry);
+        sm.leaf_id = Some(id.clone());
+        id
+    }
+
+    /// Build a minimal message entry (user message).
+    fn msg_entry(parent_id: Option<&str>) -> SessionEntry {
+        SessionEntry::Message(MessageEntry {
+            id: uuid::Uuid::new_v4().to_string(),
+            parent_id: parent_id.map(|s| s.to_string()),
+            timestamp: String::new(),
+            message: user_message("test"),
+        })
+    }
+
+    fn asst_entry(parent_id: Option<&str>) -> SessionEntry {
+        SessionEntry::Message(MessageEntry {
+            id: uuid::Uuid::new_v4().to_string(),
+            parent_id: parent_id.map(|s| s.to_string()),
+            timestamp: String::new(),
+            message: assistant_message("response"),
+        })
+    }
+
+    fn branch_summary_entry(parent_id: Option<&str>, from_id: &str) -> SessionEntry {
+        SessionEntry::BranchSummary(BranchSummaryEntry {
+            id: uuid::Uuid::new_v4().to_string(),
+            parent_id: parent_id.map(|s| s.to_string()),
+            timestamp: String::new(),
+            from_id: from_id.to_string(),
+            summary: "branch summary".into(),
+            details: None,
+            from_hook: None,
+        })
+    }
+
+    /// Build a SessionManager with a simple linear chain of entries.
+    fn linear_chain(n: usize) -> (SessionManager, Vec<String>) {
+        let mut sm = SessionManager::in_memory(Path::new("/tmp/test"));
+        let mut ids = Vec::new();
+        for i in 0..n {
+            let entry = msg_entry(ids.last().map(|s: &String| s.as_str()));
+            let id = push_entry(&mut sm, entry);
+            ids.push(id);
+            if i % 2 == 1 && i + 1 < n {
+                let asst = asst_entry(ids.last().map(|s: &String| s.as_str()));
+                let asst_id = push_entry(&mut sm, asst);
+                ids.push(asst_id);
+            }
+        }
+        (sm, ids)
+    }
+
+    #[test]
+    fn test_collect_entries_no_old_leaf() {
+        let (sm, _ids) = linear_chain(3);
+        let target_id = sm.entries().last().unwrap().id().to_string();
+        let (entries, ancestor) = collect_entries_for_branch_summary(&sm, None, &target_id);
+        assert!(entries.is_empty());
+        assert!(ancestor.is_none());
+    }
+
+    #[test]
+    fn test_collect_entries_same_branch() {
+        let (sm, ids) = linear_chain(5);
+        let old_leaf = ids.last().unwrap();
+        let target_id = ids.last().unwrap();
+        let (entries, ancestor) =
+            collect_entries_for_branch_summary(&sm, Some(old_leaf), target_id);
+        assert!(entries.is_empty());
+        assert!(ancestor.is_some());
+    }
+
+    #[test]
+    fn test_collect_entries_different_branches() {
+        let mut sm = SessionManager::in_memory(Path::new("/tmp/test"));
+
+        // Root: entry A
+        let entry_a = msg_entry(None);
+        let id_a = push_entry(&mut sm, entry_a);
+
+        // Branch 1: A -> B -> C
+        let entry_b = msg_entry(Some(&id_a));
+        let id_b = push_entry(&mut sm, entry_b);
+        let entry_c = msg_entry(Some(&id_b));
+        let id_c = push_entry(&mut sm, entry_c);
+
+        // Branch 2: A -> D -> E
+        let entry_d = msg_entry(Some(&id_a));
+        let id_d = push_entry(&mut sm, entry_d);
+        let entry_e = msg_entry(Some(&id_d));
+        let id_e = push_entry(&mut sm, entry_e);
+
+        let (entries, ancestor) = collect_entries_for_branch_summary(&sm, Some(&id_e), &id_c);
+
+        assert_eq!(ancestor.as_deref(), Some(id_a.as_str()));
+        assert_eq!(entries.len(), 2, "should collect E and D");
+        assert_eq!(entries[0].id(), id_d.as_str());
+        assert_eq!(entries[1].id(), id_e.as_str());
+    }
+
+    #[test]
+    fn test_collect_entries_uses_branch_summary_as_ancestor() {
+        let mut sm = SessionManager::in_memory(Path::new("/tmp/test"));
+
+        // Root: A
+        let entry_a = msg_entry(None);
+        let id_a = push_entry(&mut sm, entry_a);
+
+        // Branch summary from A
+        let bs = branch_summary_entry(Some(&id_a), &id_a);
+        let id_bs = push_entry(&mut sm, bs);
+
+        // Branch 1: bs -> B
+        let entry_b = msg_entry(Some(&id_bs));
+        let id_b = push_entry(&mut sm, entry_b);
+
+        // Branch 2: bs -> C
+        let entry_c = msg_entry(Some(&id_bs));
+        let id_c = push_entry(&mut sm, entry_c);
+
+        let (entries, ancestor) = collect_entries_for_branch_summary(&sm, Some(&id_c), &id_b);
+
+        assert_eq!(ancestor.as_deref(), Some(id_bs.as_str()));
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].id(), id_c.as_str());
+    }
+
+    #[test]
+    fn test_prepare_branch_entries_empty_collected() {
+        let result = prepare_branch_entries(&[], 1000);
+        assert!(result.0.is_empty());
+    }
+
+    #[test]
+    fn test_prepare_branch_entries_with_entries() {
+        let (sm, _ids) = linear_chain(3);
+        let entries: Vec<SessionEntry> = sm.entries().to_vec();
+        let result = prepare_branch_entries(&entries, 1000);
+        assert!(!result.0.is_empty());
+        assert!(result.1 > 0);
+    }
+}

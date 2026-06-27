@@ -726,3 +726,318 @@ pub trait Extension: Send + Sync {
         yoagent::skills::SkillSet::empty()
     }
 }
+
+// ── Tests ──────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── coerce_primitive_by_type ────────────────────────────────────
+
+    #[test]
+    fn test_coerce_string_from_number() {
+        let mut v = serde_json::json!(42);
+        coerce_primitive_by_type("string", &mut v);
+        assert_eq!(v, serde_json::json!("42"));
+    }
+
+    #[test]
+    fn test_coerce_string_from_boolean() {
+        let mut v = serde_json::json!(true);
+        coerce_primitive_by_type("string", &mut v);
+        assert_eq!(v, serde_json::json!("true"));
+    }
+
+    #[test]
+    fn test_coerce_string_from_null() {
+        let mut v = serde_json::json!(null);
+        coerce_primitive_by_type("string", &mut v);
+        assert_eq!(v, serde_json::json!(""));
+    }
+
+    #[test]
+    fn test_coerce_string_unchanged() {
+        let mut v = serde_json::json!("hello");
+        coerce_primitive_by_type("string", &mut v);
+        assert_eq!(v, serde_json::json!("hello"));
+    }
+
+    #[test]
+    fn test_coerce_number_from_string() {
+        let mut v = serde_json::json!("3.14");
+        coerce_primitive_by_type("number", &mut v);
+        assert_eq!(v, serde_json::json!(3.14));
+    }
+
+    #[test]
+    fn test_coerce_number_from_boolean() {
+        let mut v = serde_json::json!(true);
+        coerce_primitive_by_type("number", &mut v);
+        assert_eq!(v, serde_json::json!(1.0));
+    }
+
+    #[test]
+    fn test_coerce_number_from_null() {
+        let mut v = serde_json::json!(null);
+        coerce_primitive_by_type("number", &mut v);
+        assert_eq!(v, serde_json::json!(0.0));
+    }
+
+    #[test]
+    fn test_coerce_integer_from_string() {
+        let mut v = serde_json::json!("7");
+        coerce_primitive_by_type("integer", &mut v);
+        assert_eq!(v, serde_json::json!(7i64));
+    }
+
+    #[test]
+    fn test_coerce_integer_from_float() {
+        let mut v = serde_json::json!(3.9);
+        coerce_primitive_by_type("integer", &mut v);
+        assert_eq!(v, serde_json::json!(3i64));
+    }
+
+    #[test]
+    fn test_coerce_integer_from_boolean() {
+        let mut v = serde_json::json!(false);
+        coerce_primitive_by_type("integer", &mut v);
+        assert_eq!(v, serde_json::json!(0i64));
+    }
+
+    #[test]
+    fn test_coerce_boolean_from_string_true() {
+        let mut v = serde_json::json!("true");
+        coerce_primitive_by_type("boolean", &mut v);
+        assert_eq!(v, serde_json::json!(true));
+    }
+
+    #[test]
+    fn test_coerce_boolean_from_string_yes() {
+        let mut v = serde_json::json!("yes");
+        coerce_primitive_by_type("boolean", &mut v);
+        assert_eq!(v, serde_json::json!(true));
+    }
+
+    #[test]
+    fn test_coerce_boolean_from_number() {
+        let mut v = serde_json::json!(1);
+        coerce_primitive_by_type("boolean", &mut v);
+        assert_eq!(v, serde_json::json!(true));
+    }
+
+    #[test]
+    fn test_coerce_boolean_from_null() {
+        let mut v = serde_json::json!(null);
+        coerce_primitive_by_type("boolean", &mut v);
+        assert_eq!(v, serde_json::json!(false));
+    }
+
+    #[test]
+    fn test_coerce_array_from_scalar() {
+        let mut v = serde_json::json!("single");
+        coerce_primitive_by_type("array", &mut v);
+        assert_eq!(v, serde_json::json!(["single"]));
+    }
+
+    #[test]
+    fn test_coerce_array_from_null() {
+        let mut v = serde_json::json!(null);
+        coerce_primitive_by_type("array", &mut v);
+        assert_eq!(v, serde_json::json!([]));
+    }
+
+    #[test]
+    fn test_coerce_array_unchanged() {
+        let mut v = serde_json::json!([1, 2, 3]);
+        coerce_primitive_by_type("array", &mut v);
+        assert_eq!(v, serde_json::json!([1, 2, 3]));
+    }
+
+    #[test]
+    fn test_coerce_unknown_type_does_nothing() {
+        let mut v = serde_json::json!(42);
+        coerce_primitive_by_type("widget", &mut v);
+        assert_eq!(v, serde_json::json!(42));
+    }
+
+    // ── coerce_with_json_schema ─────────────────────────────────────
+
+    #[test]
+    fn test_coerce_schema_string_from_number() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"}
+            }
+        });
+        let mut args = serde_json::json!({"name": 42});
+        coerce_with_json_schema(&schema, &mut args);
+        assert_eq!(args, serde_json::json!({"name": "42"}));
+    }
+
+    #[test]
+    fn test_coerce_schema_nested_object() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "metadata": {
+                    "type": "object",
+                    "properties": {
+                        "count": {"type": "integer"}
+                    }
+                }
+            }
+        });
+        let mut args = serde_json::json!({"metadata": {"count": "5"}});
+        coerce_with_json_schema(&schema, &mut args);
+        assert_eq!(args, serde_json::json!({"metadata": {"count": 5i64}}));
+    }
+
+    #[test]
+    fn test_coerce_schema_array_items() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "items": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "id": {"type": "integer"}
+                        }
+                    }
+                }
+            }
+        });
+        let mut args = serde_json::json!({"items": [{"id": "3"}, {"id": "7"}]});
+        coerce_with_json_schema(&schema, &mut args);
+        assert_eq!(
+            args,
+            serde_json::json!({"items": [{"id": 3i64}, {"id": 7i64}]})
+        );
+    }
+
+    #[test]
+    fn test_coerce_schema_non_object_skipped() {
+        let schema = serde_json::json!({"type": "string"});
+        let mut args = serde_json::json!("hello");
+        coerce_with_json_schema(&schema, &mut args);
+        assert_eq!(args, serde_json::json!("hello"));
+    }
+
+    // ── validate_tool_arguments ─────────────────────────────────────
+
+    #[test]
+    fn test_validate_valid_args() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"}
+            },
+            "required": ["path"]
+        });
+        let args = serde_json::json!({"path": "/tmp/foo.txt"});
+        assert!(validate_tool_arguments("test", &schema, &args).is_ok());
+    }
+
+    #[test]
+    fn test_validate_missing_required() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"}
+            },
+            "required": ["path"]
+        });
+        let args = serde_json::json!({});
+        let err = validate_tool_arguments("test", &schema, &args).unwrap_err();
+        assert!(err.contains("Required"));
+        assert!(err.contains("test"));
+    }
+
+    #[test]
+    fn test_validate_wrong_type() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "count": {"type": "integer"}
+            }
+        });
+        let args = serde_json::json!({"count": "not-a-number"});
+        let err = validate_tool_arguments("test", &schema, &args).unwrap_err();
+        assert!(err.contains("Expected integer"));
+    }
+
+    #[test]
+    fn test_validate_additional_properties() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"}
+            },
+            "additionalProperties": false
+        });
+        let args = serde_json::json!({"name": "alice", "extra": "bad"});
+        let err = validate_tool_arguments("test", &schema, &args).unwrap_err();
+        assert!(err.contains("must NOT have additional properties"));
+    }
+
+    #[test]
+    fn test_validate_not_an_object() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {}
+        });
+        let args = serde_json::json!("a string, not an object");
+        let err = validate_tool_arguments("test", &schema, &args).unwrap_err();
+        assert!(err.contains("Expected object"));
+    }
+
+    #[test]
+    fn test_validate_array_item_types() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "tags": {
+                    "type": "array",
+                    "items": {"type": "string"}
+                }
+            }
+        });
+        let args = serde_json::json!({"tags": [1, 2, 3]});
+        let err = validate_tool_arguments("test", &schema, &args).unwrap_err();
+        assert!(err.contains("Expected string"));
+    }
+
+    // ── Cancel ──────────────────────────────────────────────────────
+
+    #[test]
+    fn test_cancel_new_not_cancelled() {
+        let cancel = Cancel::new();
+        assert!(!cancel.is_cancelled());
+        cancel.check().unwrap();
+    }
+
+    #[test]
+    fn test_cancel_after_cancel() {
+        let cancel = Cancel::new();
+        cancel.cancel();
+        assert!(cancel.is_cancelled());
+        assert!(cancel.check().is_err());
+    }
+
+    #[test]
+    fn test_cancel_default_not_cancelled() {
+        let cancel = Cancel::default();
+        assert!(!cancel.is_cancelled());
+    }
+
+    #[test]
+    fn test_cancel_is_send_sync() {
+        fn assert_send<T: Send>() {}
+        fn assert_sync<T: Sync>() {}
+        assert_send::<Cancel>();
+        assert_sync::<Cancel>();
+    }
+}

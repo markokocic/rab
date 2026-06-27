@@ -86,7 +86,163 @@ impl FooterDataProvider {
     }
 }
 
-// ── Git branch resolution ──────────────────────────────────────────
+// ── Tests ──────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_new_provider_refreshes_git_branch() {
+        let provider = FooterDataProvider::new(PathBuf::from("/tmp"));
+        // In a temp dir without git, git_branch should be None
+        assert!(provider.get_git_branch().is_none());
+    }
+
+    #[test]
+    fn test_set_test_git_branch() {
+        let mut provider = FooterDataProvider::new(PathBuf::from("/tmp"));
+        provider.set_test_git_branch(Some("main"));
+        assert_eq!(provider.get_git_branch(), Some("main"));
+    }
+
+    #[test]
+    fn test_set_test_git_branch_none() {
+        let mut provider = FooterDataProvider::new(PathBuf::from("/tmp"));
+        provider.set_test_git_branch(Some("feature"));
+        provider.set_test_git_branch(None);
+        assert!(provider.get_git_branch().is_none());
+    }
+
+    #[test]
+    fn test_extension_statuses() {
+        let mut provider = FooterDataProvider::new(PathBuf::from("/tmp"));
+        assert!(provider.get_extension_statuses().is_empty());
+
+        provider.set_extension_status("bash", Some("ready"));
+        assert_eq!(
+            provider.get_extension_statuses().get("bash"),
+            Some(&"ready".to_string())
+        );
+
+        provider.set_extension_status("bash", None);
+        assert!(provider.get_extension_statuses().is_empty());
+    }
+
+    #[test]
+    fn test_extension_statuses_sorted() {
+        let mut provider = FooterDataProvider::new(PathBuf::from("/tmp"));
+        provider.set_extension_status("zzz", Some("last"));
+        provider.set_extension_status("aaa", Some("first"));
+        provider.set_extension_status("mmm", Some("middle"));
+
+        let keys: Vec<&String> = provider.get_extension_statuses().keys().collect();
+        assert_eq!(keys, vec!["aaa", "mmm", "zzz"]);
+    }
+
+    #[test]
+    fn test_clear_extension_statuses() {
+        let mut provider = FooterDataProvider::new(PathBuf::from("/tmp"));
+        provider.set_extension_status("bash", Some("ready"));
+        provider.clear_extension_statuses();
+        assert!(provider.get_extension_statuses().is_empty());
+    }
+
+    #[test]
+    fn test_provider_count() {
+        let mut provider = FooterDataProvider::new(PathBuf::from("/tmp"));
+        assert_eq!(provider.get_available_provider_count(), 1);
+        provider.set_available_provider_count(3);
+        assert_eq!(provider.get_available_provider_count(), 3);
+    }
+
+    #[test]
+    fn test_set_cwd_refreshes_git_branch() {
+        let mut provider = FooterDataProvider::new(PathBuf::from("/tmp"));
+        provider.set_test_git_branch(Some("old-branch"));
+        // Changing cwd to a non-git dir should clear the branch
+        provider.set_cwd(PathBuf::from("/nonexistent"));
+        assert!(provider.get_git_branch().is_none());
+    }
+
+    // ── Git resolution helpers ──────────────────────────────────────
+
+    #[test]
+    fn test_find_git_paths_no_git() {
+        let tmp = std::env::temp_dir().join(format!("rab-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let result = find_git_paths(&tmp);
+        assert!(result.is_none());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_find_git_paths_regular_repo() {
+        let tmp = std::env::temp_dir().join(format!("rab-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&tmp.join(".git")).unwrap();
+        std::fs::write(&tmp.join(".git").join("HEAD"), "ref: refs/heads/main\n").unwrap();
+
+        let result = find_git_paths(&tmp);
+        assert!(result.is_some());
+        let paths = result.unwrap();
+        assert_eq!(paths.head_path, tmp.join(".git").join("HEAD"));
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_find_git_paths_walk_up() {
+        let tmp = std::env::temp_dir().join(format!("rab-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&tmp.join("sub").join("deep")).unwrap();
+        std::fs::create_dir_all(&tmp.join(".git")).unwrap();
+        std::fs::write(&tmp.join(".git").join("HEAD"), "ref: refs/heads/main\n").unwrap();
+
+        // Should find .git by walking up from sub/deep
+        let result = find_git_paths(&tmp.join("sub").join("deep"));
+        assert!(result.is_some());
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_resolve_git_branch_from_head() {
+        let tmp = std::env::temp_dir().join(format!("rab-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&tmp.join(".git")).unwrap();
+        std::fs::write(
+            &tmp.join(".git").join("HEAD"),
+            "ref: refs/heads/feature-branch\n",
+        )
+        .unwrap();
+
+        let result = resolve_git_branch(&tmp);
+        assert_eq!(result.as_deref(), Some("feature-branch"));
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_resolve_git_branch_detached() {
+        let tmp = std::env::temp_dir().join(format!("rab-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&tmp.join(".git")).unwrap();
+        std::fs::write(&tmp.join(".git").join("HEAD"), "abc123def456\n").unwrap();
+
+        let result = resolve_git_branch(&tmp);
+        assert_eq!(result.as_deref(), Some("detached"));
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_resolve_git_branch_no_git() {
+        let tmp = std::env::temp_dir().join(format!("rab-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        let result = resolve_git_branch(&tmp);
+        assert!(result.is_none());
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+}
 
 struct GitPaths {
     _repo_dir: PathBuf,

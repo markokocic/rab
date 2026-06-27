@@ -103,9 +103,12 @@ pub fn estimate_tokens(message: &AgentMessage) -> u64 {
 pub fn estimate_context_tokens(messages: &[AgentMessage]) -> u64 {
     let mut last_usage_index = None;
     for (i, msg) in messages.iter().enumerate().rev() {
-        if crate::agent::types::message_usage(msg).is_some() {
-            last_usage_index = Some(i);
-            break;
+        if let Some(usage) = crate::agent::types::message_usage(msg) {
+            // Skip usage records that are all zeros (e.g. from test helpers)
+            if usage.input > 0 || usage.output > 0 || usage.cache_read > 0 {
+                last_usage_index = Some(i);
+                break;
+            }
         }
     }
 
@@ -595,7 +598,360 @@ fn format_message_for_summary(msg: &AgentMessage) -> String {
 // ── Tests ──────────────────────────────────────────────────────────
 
 #[cfg(test)]
-mod tests {}
+mod tests {
+    use super::*;
+    use crate::agent::session::{CompactionEntry, MessageEntry};
+    use crate::agent::types::{assistant_message, tool_result_message, user_message};
+    use yoagent::types::{AgentMessage, Content, Message};
+
+    // ── get_model_context_window tests ──────────────────────────────
+
+    #[test]
+    fn test_context_window_known_model() {
+        assert_eq!(get_model_context_window("deepseek-v4-flash"), 1_000_000);
+        assert_eq!(get_model_context_window("claude-sonnet-4"), 200_000);
+        assert_eq!(get_model_context_window("gpt-4o"), 128_000);
+        assert_eq!(get_model_context_window("gemini-2.0-flash"), 1_048_576);
+    }
+
+    #[test]
+    fn test_context_window_unknown_model_falls_back() {
+        assert_eq!(get_model_context_window("unknown-model-42"), 200_000);
+    }
+
+    #[test]
+    fn test_context_window_case_insensitive() {
+        assert_eq!(get_model_context_window("DeepSeek-V4"), 1_000_000);
+        assert_eq!(get_model_context_window("CLAUDE-OPUS"), 200_000);
+    }
+
+    // ── estimate_tokens tests ───────────────────────────────────────
+
+    #[test]
+    fn test_estimate_tokens_empty_message() {
+        let msg = user_message("");
+        assert_eq!(estimate_tokens(&msg), 0);
+    }
+
+    #[test]
+    fn test_estimate_tokens_short_message() {
+        let msg = user_message("hello");
+        // 5 chars / 4 = 2 (div_ceil)
+        assert_eq!(estimate_tokens(&msg), 2);
+    }
+
+    #[test]
+    fn test_estimate_tokens_long_message() {
+        let text = "a".repeat(100);
+        let msg = user_message(&text);
+        // 100 / 4 = 25
+        assert_eq!(estimate_tokens(&msg), 25);
+    }
+
+    #[test]
+    fn test_estimate_tokens_tool_call_includes_arguments() {
+        let content = vec![
+            Content::Text {
+                text: "checking".into(),
+            },
+            Content::ToolCall {
+                id: "call1".into(),
+                name: "read".into(),
+                arguments: serde_json::json!({"path": "/tmp/file.txt"}),
+                provider_metadata: None,
+            },
+        ];
+        let msg = AgentMessage::Llm(Message::Assistant {
+            content,
+            stop_reason: yoagent::types::StopReason::Stop,
+            model: String::new(),
+            provider: String::new(),
+            usage: yoagent::types::Usage::default(),
+            timestamp: 0,
+            error_message: None,
+        });
+        let tokens = estimate_tokens(&msg);
+        // text "checking" (8) + name "read" (4) + args json length >= 17
+        assert!(tokens >= 8, "tokens={}", tokens);
+    }
+
+    // ── estimate_context_tokens tests ───────────────────────────────
+
+    #[test]
+    fn test_estimate_context_tokens_empty() {
+        assert_eq!(estimate_context_tokens(&[]), 0);
+    }
+
+    #[test]
+    fn test_estimate_context_tokens_no_usage_uses_heuristic() {
+        let msgs = vec![user_message("hello"), assistant_message("world")];
+        let tokens = estimate_context_tokens(&msgs);
+        // 5/4 + 5/4 = 2 + 2 = 4
+        assert_eq!(tokens, 4);
+    }
+
+    #[test]
+    fn test_estimate_context_tokens_with_usage_baseline() {
+        let msg_with_usage = AgentMessage::Llm(Message::Assistant {
+            content: vec![Content::Text {
+                text: "response".into(),
+            }],
+            stop_reason: yoagent::types::StopReason::Stop,
+            model: String::new(),
+            provider: String::new(),
+            usage: yoagent::types::Usage {
+                input: 100,
+                output: 50,
+                cache_read: 20,
+                cache_write: 0,
+                total_tokens: 0,
+            },
+            timestamp: 0,
+            error_message: None,
+        });
+        let msgs = vec![
+            user_message("hello"),
+            msg_with_usage,
+            user_message("follow-up"),
+        ];
+        let tokens = estimate_context_tokens(&msgs);
+        // usage: 100 + 50 + 20 = 170 + trailing "follow-up" (9/4=3) = 173
+        assert_eq!(tokens, 173);
+    }
+
+    // ── should_compact tests ────────────────────────────────────────
+
+    #[test]
+    fn test_should_compact_disabled() {
+        let settings = CompactionSettings {
+            enabled: false,
+            reserve_tokens: 16_384,
+            keep_recent_tokens: 20_000,
+        };
+        assert!(!should_compact(999_999, 1_000_000, &settings));
+    }
+
+    #[test]
+    fn test_should_compact_under_threshold() {
+        let settings = CompactionSettings::default();
+        assert!(!should_compact(100_000, 200_000, &settings));
+    }
+
+    #[test]
+    fn test_should_compact_at_threshold() {
+        let settings = CompactionSettings {
+            reserve_tokens: 10_000,
+            keep_recent_tokens: 20_000,
+            ..Default::default()
+        };
+        // context_tokens > context_window - reserve = 190_000
+        assert!(should_compact(190_001, 200_000, &settings));
+        assert!(!should_compact(190_000, 200_000, &settings));
+    }
+
+    #[test]
+    fn test_should_compact_exact_boundary() {
+        let settings = CompactionSettings {
+            enabled: true,
+            reserve_tokens: 0,
+            keep_recent_tokens: 0,
+        };
+        assert!(!should_compact(200_000, 200_000, &settings));
+        assert!(should_compact(200_001, 200_000, &settings));
+    }
+
+    // ── find_valid_cut_points (via prepare_compaction) ──────────────
+
+    /// Build a minimal session entry list for compaction testing.
+    fn make_msg_entry(content: &str) -> SessionEntry {
+        SessionEntry::Message(MessageEntry {
+            id: uuid::Uuid::new_v4().to_string(),
+            parent_id: None,
+            timestamp: String::new(),
+            message: user_message(content),
+        })
+    }
+
+    fn make_asst_entry(content: &str) -> SessionEntry {
+        SessionEntry::Message(MessageEntry {
+            id: uuid::Uuid::new_v4().to_string(),
+            parent_id: None,
+            timestamp: String::new(),
+            message: assistant_message(content),
+        })
+    }
+
+    fn make_compaction_entry(first_kept_id: &str) -> SessionEntry {
+        SessionEntry::Compaction(CompactionEntry {
+            id: uuid::Uuid::new_v4().to_string(),
+            parent_id: None,
+            timestamp: String::new(),
+            summary: "previous summary".into(),
+            first_kept_entry_id: first_kept_id.to_string(),
+            tokens_before: 1000,
+            details: None,
+            from_hook: None,
+        })
+    }
+
+    #[test]
+    fn test_prepare_compaction_empty_entries() {
+        let settings = CompactionSettings::default();
+        assert!(prepare_compaction(&[], &settings).is_none());
+    }
+
+    #[test]
+    fn test_prepare_compaction_last_entry_is_compaction() {
+        let entries = vec![make_msg_entry("hello"), make_compaction_entry("some-id")];
+        let settings = CompactionSettings::default();
+        assert!(prepare_compaction(&entries, &settings).is_none());
+    }
+
+    #[test]
+    fn test_prepare_compaction_returns_preparation() {
+        // Create enough entries that keep_recent_tokens forces a cut
+        let mut entries: Vec<SessionEntry> = (0..10)
+            .map(|i| {
+                make_msg_entry(&format!(
+                    "message {} with enough text to accumulate tokens",
+                    i
+                ))
+            })
+            .collect();
+        // Add some assistant messages too
+        for i in 0..5 {
+            entries.push(make_asst_entry(&format!("response {} with enough text", i)));
+        }
+
+        let settings = CompactionSettings {
+            enabled: true,
+            reserve_tokens: 100_000,
+            keep_recent_tokens: 2, // very small, will cut early
+        };
+        let result = prepare_compaction(&entries, &settings);
+        assert!(result.is_some(), "should return preparation");
+        let prep = result.unwrap();
+        assert!(!prep.messages_to_summarize.is_empty());
+        assert!(!prep.first_kept_entry_id.is_empty());
+        assert!(prep.tokens_before > 0);
+    }
+
+    #[test]
+    fn test_prepare_compaction_with_previous_compaction() {
+        let mut entries: Vec<SessionEntry> = vec![make_msg_entry("old message")];
+
+        // First compaction entry
+        let first_id = entries[0].id().to_string();
+        entries.push(make_compaction_entry(&first_id));
+
+        // New messages after compaction
+        entries.push(make_msg_entry("new message"));
+        entries.push(make_asst_entry("new response"));
+
+        let settings = CompactionSettings {
+            enabled: true,
+            reserve_tokens: 100_000,
+            keep_recent_tokens: 1,
+        };
+        let result = prepare_compaction(&entries, &settings);
+        assert!(result.is_some(), "should compact new messages");
+        let prep = result.unwrap();
+        assert!(prep.previous_summary.is_some());
+        assert_eq!(prep.previous_summary.as_deref(), Some("previous summary"));
+    }
+
+    // ── extract_file_ops tests ──────────────────────────────────────
+
+    fn make_asst_with_tool_call(name: &str, path: &str) -> AgentMessage {
+        AgentMessage::Llm(Message::Assistant {
+            content: vec![
+                Content::Text {
+                    text: "using tool".into(),
+                },
+                Content::ToolCall {
+                    id: "call-1".into(),
+                    name: name.into(),
+                    arguments: serde_json::json!({"path": path}),
+                    provider_metadata: None,
+                },
+            ],
+            stop_reason: yoagent::types::StopReason::ToolUse,
+            model: String::new(),
+            provider: String::new(),
+            usage: yoagent::types::Usage::default(),
+            timestamp: 0,
+            error_message: None,
+        })
+    }
+
+    #[test]
+    fn test_extract_file_ops_empty() {
+        assert!(extract_file_ops(&[]).is_none());
+    }
+
+    #[test]
+    fn test_extract_file_ops_no_tools() {
+        let msgs = vec![user_message("hello"), assistant_message("hi")];
+        assert!(extract_file_ops(&msgs).is_none());
+    }
+
+    #[test]
+    fn test_extract_file_ops_read_and_write() {
+        let msgs = vec![
+            make_asst_with_tool_call("read", "/tmp/a.txt"),
+            make_asst_with_tool_call("read", "/tmp/b.txt"),
+            make_asst_with_tool_call("write", "/tmp/a.txt"),
+        ];
+        let result = extract_file_ops(&msgs).unwrap();
+        let obj = result.as_object().unwrap();
+        let read: Vec<String> = serde_json::from_value(obj["readFiles"].clone()).unwrap();
+        let modified: Vec<String> = serde_json::from_value(obj["modifiedFiles"].clone()).unwrap();
+        // a.txt is both read and modified -> goes only in modified
+        assert_eq!(read, vec!["/tmp/b.txt".to_string()]);
+        assert_eq!(modified, vec!["/tmp/a.txt".to_string()]);
+    }
+
+    #[test]
+    fn test_extract_file_ops_deduplicates() {
+        let msgs = vec![
+            make_asst_with_tool_call("read", "/tmp/x.txt"),
+            make_asst_with_tool_call("read", "/tmp/x.txt"),
+        ];
+        let result = extract_file_ops(&msgs).unwrap();
+        let obj = result.as_object().unwrap();
+        let read: Vec<String> = serde_json::from_value(obj["readFiles"].clone()).unwrap();
+        assert_eq!(read.len(), 1);
+    }
+
+    // ── format_message_for_summary tests ────────────────────────────
+
+    #[test]
+    fn test_format_user_message() {
+        let msg = user_message("hello world");
+        let formatted = format_message_for_summary(&msg);
+        assert!(formatted.contains("<User>"));
+        assert!(formatted.contains("hello world"));
+        assert!(formatted.contains("</User>"));
+    }
+
+    #[test]
+    fn test_format_assistant_message_with_tool_calls() {
+        let msg = make_asst_with_tool_call("edit", "/tmp/f.py");
+        let formatted = format_message_for_summary(&msg);
+        assert!(formatted.contains("<Assistant>"));
+        assert!(formatted.contains("using tool"));
+        assert!(formatted.contains("Tool calls"));
+        assert!(formatted.contains("edit"));
+    }
+
+    #[test]
+    fn test_format_tool_result_message() {
+        let msg = tool_result_message("call-1", "command output", false);
+        let formatted = format_message_for_summary(&msg);
+        assert!(formatted.contains("Tool Result"));
+        assert!(formatted.contains("command output"));
+    }
+}
 
 // ── Summarization helper (shared with branch_summary) ──
 

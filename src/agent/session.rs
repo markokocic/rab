@@ -455,11 +455,11 @@ pub struct SessionManager {
     persist: bool,
     flushed: bool,
     session_header: Option<SessionHeader>,
-    file_entries: Vec<SessionEntry>,
-    by_id: HashMap<String, SessionEntry>,
+    pub(crate) file_entries: Vec<SessionEntry>,
+    pub(crate) by_id: HashMap<String, SessionEntry>,
     labels_by_id: HashMap<String, String>,
     label_timestamps_by_id: HashMap<String, String>,
-    leaf_id: Option<String>,
+    pub(crate) leaf_id: Option<String>,
 }
 
 impl SessionManager {
