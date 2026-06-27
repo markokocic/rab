@@ -2,7 +2,8 @@
 
 A lightweight, extensible Rust coding agent inspired by [pi-coding-agent](https://pi.dev).
 rab delegates the core agent loop, types, and provider layer to the **yoagent** crate,
-providing the session layer, TUI, built-in tools, slash commands, and lifecycle management.
+providing the session layer, TUI, built-in tools, slash commands, filesystem tools (grep/find/ls),
+file mutation queue, and lifecycle management.
 
 ---
 
@@ -15,7 +16,8 @@ providing the session layer, TUI, built-in tools, slash commands, and lifecycle 
 │  ┌──────────────────────────────────────────────────────────────┐   │
 │  │                    main.rs (manual arg parsing)                │   │
 │  │  arg parsing, env reading, session init,                      │   │
-│  │  mode dispatch (print / interactive)                          │   │
+│  │  mode dispatch (print / interactive), extension gating,       │   │
+│  │  context file loading, skills, auth                            │   │
 │  └────────────────────┬─────────────────────────────────────────┘   │
 │                       │                                              │
 │  ┌────────────────────▼─────────────────────────────────────────┐   │
@@ -26,22 +28,24 @@ providing the session layer, TUI, built-in tools, slash commands, and lifecycle 
 │  │  - Auto/manual compaction (compaction.rs)                    │   │
 │  │  - Branch summarization (branch_summary.rs)                  │   │
 │  │  - Branch navigation (set_branch)                            │   │
+│  │  - Pi-compatible persist_message_end pattern                 │   │
 │  └────┬──────────┬──────────┬──────────┬───────────────────────┘   │
 │       │          │          │          │                            │
 │  ┌────▼──┐ ┌────▼──┐ ┌────▼──┐ ┌────▼──┐ ┌────▼──┐ ┌────▼──┐      │
-│  │builtin│ │  tui/  │ │commands│ │settings│ │ sys   │ │ auth  │      │
-│  │read   │ │ agent/ │ │.rs     │ │.rs     │ │prompt │ │.rs    │      │
-│  │write  │ │ ui/    │ │22 slash│ │~/.rab/ │ │.rs    │ │API    │      │
-│  │edit   │ │screen  │ │commands│ │settings│ │AGENTS │ │keys,  │      │
-│  │bash   │ │editor  │ │        │ │        │ │.md    │ │OAuth  │      │
-│  │       │ │list    │ │        │ │        │ │skills │ │       │      │
-│  │       │ └───────┘ │        │ │        │ │       │ │       │      │
-│  └──┬────┘           │        │ └────────┘ └───────┘ └───────┘      │
-│     │                │        │                                     │
+│  │builtin│ │  tui/  │ │commands│ │extens-│ │settings│ │ auth  │      │
+│  │read   │ │ agent/ │ │.rs     │ │ions/  │ │.rs     │ │.rs    │      │
+│  │write  │ │ ui/    │ │22 slash│ │filesys-│ │~/.rab/ │ │API    │      │
+│  │edit   │ │screen  │ │commands│ │tem (3  │ │settings│ │keys,  │      │
+│  │bash   │ │editor  │ │        │ │tools)  │ │AGENTS  │ │OAuth  │      │
+│  │file_  │ │list    │ │        │ │        │ │.md     │ │       │      │
+│  │mutation│ └───────┘ │        │ │        │ │skills  │ │       │      │
+│  │_queue │            │        │ │        │ │        │ │       │      │
+│  └──┬────┘            │        │ └────────┘ └───────┘ └───────┘      │
+│     │                 │        │                                     │
 │     │     impl Extension trait + yoagent::types::AgentTool          │
 │     │                                                               │
 │  ┌──▼──────────────────────────────────────────────────────────┐   │
-│  │              agent/extension.rs (Extension trait)            │   │
+│  │              agent/extension.rs (Extension trait)             │   │
 │  │  pub trait Extension: Send + Sync {                          │   │
 │  │    fn name(&self) -> Cow<'static, str>;                      │   │
 │  │    fn tools(&self) -> Vec<ToolWithMeta>;                     │   │
@@ -49,6 +53,10 @@ providing the session layer, TUI, built-in tools, slash commands, and lifecycle 
 │  │    fn tool_renderer(&self, name) -> Option<Box<dyn ToolRenderer>>;│ │
 │  │    fn skills(&self) -> SkillSet;                             │   │
 │  │  }                                                           │   │
+│  │  ToolWithMeta wraps AgentTool with: snippet, guidelines,     │   │
+│  │  prepare_arguments (type coercion), before_tool_call hook,   │   │
+│  │  after_tool_call hook.                                       │   │
+│  │  validate_tool_arguments() + coerce_with_json_schema()       │   │
 │  │  Builtin + user extensions share this trait                  │   │
 │  └──────────────────────────────────────────────────────────────┘   │
 │                       │                                              │
@@ -85,7 +93,7 @@ providing the session layer, TUI, built-in tools, slash commands, and lifecycle 
 │  └──────────────────────────────────────────────────────────────┘   │
 │                                                                      │
 │  ┌──────────────────────────────────────────────────────────────┐   │
-│  │  TUI (src/tui/ + src/agent/ui/) — 48 modules, ~508 tests    │   │
+│  │  TUI (src/tui/ + src/agent/ui/) — 50+ modules, ~600 tests   │   │
 │  │  Direct Rust port on crossterm 0.29                          │   │
 │  └──────────────────────────────────────────────────────────────┘   │
 └──────────────────────────────────────────────────────────────────────┘
@@ -95,11 +103,23 @@ providing the session layer, TUI, built-in tools, slash commands, and lifecycle 
 
 - **yoagent is the core dependency**, not genai. rab delegates the agent loop,
   provider layer, and message types to yoagent. rab provides the session layer,
-  TUI, built-in tools, slash commands, and lifecycle management on top.
+  TUI, built-in tools, filesystem tools, slash commands, and lifecycle
+  management on top.
 
 - **One extension mechanism** — built-in tools and user extensions use the same
   `Extension` trait. No separate tool registration path. All tools, commands,
   renderers, and skills go through `Extension`.
+
+- **ToolWithMeta wraps every tool** — each `AgentTool` is wrapped in a
+  `ToolWithMeta` that carries prompt snippet metadata, guidelines, argument
+  preparation hooks (`prepare_arguments`), `before_tool_call` and
+  `after_tool_call` hooks (pi-compatible), and automatic JSON Schema argument
+  coercion + validation.
+
+- **Pluggable operations** — every built-in tool (read, write, edit, bash,
+  grep, find, ls) delegates filesystem/shell operations through a trait
+  (e.g. `ReadOperations`, `BashOperations`, `GrepOperations`), making it
+  possible to replace local execution with remote (SSH) execution.
 
 - **Provider layer lives in yoagent** — rab has no `adapter.rs` or `provider.rs`.
   yoagent's `Provider` trait and `OpenAiCompatProvider` handle all LLM
@@ -114,19 +134,29 @@ providing the session layer, TUI, built-in tools, slash commands, and lifecycle 
   are all re-exported from `yoagent::types`. rab's `types.rs` is a thin shim
   with helper functions only (no rab-specific enums).
 
+- **File mutation queue** — concurrent file writes/edits to the same file are
+  serialized via `with_file_mutation_queue()` so the model can issue multiple
+  sequential edits to the same file without races.
+
 ## Pi component mapping
 
 | pi component | rab equivalent | Status |
 |---|---|---|
-| `pi-tui` (terminal UI, components, editor) | `src/tui/` + `src/agent/ui/` | ✅ Complete — 48 modules, ~508 tests. Direct Rust port on crossterm 0.29. |
-| `pi-agent-core` (agent loop, session, compaction, skills) | Delegated to **yoagent** (agent loop, types, provider, skills) + rab's `AgentSession` (session lifecycle, compaction, branching) | ✅ Agent loop in yoagent (`yoagent::agent::Agent`). ✅ Session in `session.rs` (2749 lines). ✅ Compaction in `compaction.rs` (679 lines) — fully implemented. ✅ Branch summarization in `branch_summary.rs` (270 lines). ✅ Skills loaded via `yoagent::skills::SkillSet`. |
-| `coding-agent` (CLI, extensions, tools, settings, commands) | `main.rs`, `builtin/`, `settings.rs`, `auth.rs`, `commands.rs` | ✅ Tools (read/write/edit/bash), settings, auth, CLI done. ✅ 22 slash commands implemented. ✅ Extension trait with tools, commands, renderers, skills. |
+| `pi-tui` (terminal UI, components, editor) | `src/tui/` + `src/agent/ui/` | ✅ Complete — 50+ modules, ~600 tests. Direct Rust port on crossterm 0.29. |
+| `pi-agent-core` (agent loop, session, compaction, skills) | Delegated to **yoagent** (agent loop, types, provider, skills) + rab's `AgentSession` (session lifecycle, compaction, branching) | ✅ Agent loop in yoagent (`yoagent::agent::Agent`). ✅ Session in `session.rs` (~2700 lines). ✅ Compaction in `compaction.rs` (~680 lines) — fully implemented. ✅ Branch summarization in `branch_summary.rs` (~270 lines). ✅ Skills loaded via `yoagent::skills::SkillSet`. |
+| `coding-agent` (CLI, extensions, tools, settings, commands) | `main.rs`, `builtin/`, `extensions/`, `settings.rs`, `auth.rs`, `commands.rs` | ✅ Tools (read/write/edit/bash/grep/find/ls), settings, auth, CLI done. ✅ 22 slash commands implemented. ✅ Extension trait with tools, commands, renderers, skills, hooks. |
+| `GrepTool`, `FindTool`, `LsTool` (pi agent tools) | `src/extensions/filesystem.rs` | ✅ grep (ripgrep/grep fallback), find (fd/find fallback), ls — all with pluggable operations. |
 | provider | `yoagent::provider::OpenAiCompatProvider` | ✅ OpenCode Go default. Auto-detection by model prefix (claude → Anthropic, gpt → OpenAI, ollama → Ollama). |
+| `beforeToolCall` / `afterToolCall` | `ToolWithMeta.before_tool_call` / `.after_tool_call` | ✅ Per-tool hooks for blocking/preprocessing/postprocessing |
+| `validateToolArguments` | `extension::validate_tool_arguments()` | ✅ Full JSON Schema validation with pi-compatible error paths |
+| Argument coercion | `extension::coerce_with_json_schema()` | ✅ Type coercion matching pi's `Value.Convert` + `coerceWithJsonSchema` |
 | Theme system | `src/agent/ui/theme.rs` | ✅ JSON theme system with resolution, fallback, detection (715 lines) |
 | Resource loading (AGENTS.md/CLAUDE.md) | `src/agent/context_files.rs` | ✅ AGENTS.md/CLAUDE.md discovery, `<project_context>` wrapping |
-| Skills | `yoagent::skills::SkillSet` | ✅ Skill loading, frontmatter, prompt formatting, /skill:name expansion |
+| Skills | `yoagent::skills::SkillSet` + `SystemPromptBuilder.skills()` | ✅ Skill loading, frontmatter, prompt formatting, /skill:name expansion |
 | Image support (Kitty protocol) | `src/tui/components/markdown.rs` (hyperlinks) + base64 data URLs | ✅ Image display via Kitty protocol. Input (clipboard paste) TBD. |
 | Config files | `~/.rab/` | ✅ Same schema as pi. Auth at `~/.rab/agent/auth.json`. |
+| Footer data (git branch, extensions) | `src/agent/footer_data_provider.rs` | ✅ Git branch resolution (worktree/reftable support), extension statuses, provider count |
+| File mutation queue | `src/builtin/file_mutation_queue.rs` | ✅ Per-file serialization using tokio::sync::Notify, same pattern as pi |
 | MCP extensions | Not started | ⬜ Phase 2 |
 | WASM plugin system | Not started | ⬜ Phase 2 |
 
@@ -145,8 +175,8 @@ pub use yoagent::types::{AgentMessage, Content, Message};
 //   AgentMessage::Llm(Message) — user, assistant, tool_result
 //   AgentMessage::Extension(...) — extension-specific data
 // Message::User { content, timestamp, ... }
-// Message::Assistant { content, model, provider, usage, ... }
-// Message::ToolResult { tool_call_id, content, is_error, ... }
+// Message::Assistant { content, model, provider, usage, error_message, ... }
+// Message::ToolResult { tool_call_id, tool_name, content, is_error, ... }
 // Content::Text { text }
 // Content::ToolCall { id, name, arguments }
 // Content::Thinking { text, signature }
@@ -200,22 +230,27 @@ pub struct AgentSession {
    assistant messages not yet captured. Uses `persisted_message_ids` /
    `persisted_tool_call_ids` for deduplication.
 
-2. **Model/thinking/tool change tracking** — `on_model_change()`,
+2. **Pi-compatible persist_message_end** — `persist_message_end()` persists
+   individual messages as they arrive (user, assistant, toolResult) on
+   `MessageEnd` events. Tool results are already persisted via
+   `ToolExecutionEnd` so they are skipped.
+
+3. **Model/thinking/tool change tracking** — `on_model_change()`,
    `on_thinking_level_change()`, `on_active_tools_change()` detect changes and
    append metadata entries to the session (diff-based — only appends when
    value differs from last known).
 
-3. **Auto-compaction** — `check_auto_compact()` runs after the agent finishes
+4. **Auto-compaction** — `check_auto_compact()` runs after the agent finishes
    a turn. Checks `should_compact()` against the model's context window,
    calls `compact()` to generate a summary, and appends a `CompactionEntry`.
 
-4. **Manual compaction** — `run_manual_compact()` for `/compact` command.
+5. **Manual compaction** — `run_manual_compact()` for `/compact` command.
 
-5. **Branch summarization** — `summarize_branch_navigation()` summarises
+6. **Branch summarization** — `summarize_branch_navigation()` summarises
    abandoned branches when navigating the session tree. `set_branch()` moves
    the leaf pointer and optionally triggers branch summarization.
 
-6. **New session** — `new_session()` resets all tracked state.
+7. **New session** — `new_session()` resets all tracked state.
 
 ### Typical usage in print mode
 
@@ -225,7 +260,7 @@ agent_session.set_compaction_config(api_key, &model, context_window);
 
 // Submit user message
 let msg = user_message("list .rs files");
-agent_session.submit_user_message_obj(&msg);
+agent_session.send_user_message_obj(&msg);
 
 // Spawn yoagent agent loop
 let agent = yoagent::agent::Agent::new(OpenAiCompatProvider)
@@ -248,7 +283,7 @@ agent_session.check_auto_compact().await;
 
 ---
 
-## Session layer (`src/agent/session.rs`) — 2749 lines
+## Session layer (`src/agent/session.rs`) — ~2700 lines
 
 ### Format
 
@@ -307,9 +342,11 @@ pub struct SessionManager {
 ```
 
 Key methods: `create()`, `open()`, `continue_recent()`, `fork_from()`,
-`append_message()`, `append_model_change()`, `append_thinking_level_change()`,
+`create_with_options()`, `in_memory()`, `append_message()`,
+`append_model_change()`, `append_thinking_level_change()`,
 `append_compaction()`, `append_branch_summary()`, `build_session_context()`,
-`set_branch()`, `list_sessions()`, `session_info()`.
+`set_branch()`, `list_sessions()`, `list_all()`, `session_info()`,
+`entry()`, `branch()`, `find_entries_by_type()`, `new_session()`.
 
 ---
 
@@ -354,7 +391,7 @@ cwd filtering for the session picker UI.
 
 ---
 
-## Compaction (`src/agent/compaction.rs`) — 679 lines ✅ IMPLEMENTED
+## Compaction (`src/agent/compaction.rs`) — ~680 lines ✅ IMPLEMENTED
 
 When the conversation approaches the model's context window, older messages
 are summarized to free space. Ported from pi's compaction algorithm.
@@ -387,7 +424,8 @@ pub struct CompactionSettings {
 }
 ```
 
-Defaults: enabled, 16K reserve, 20K keep recent.
+Defaults: enabled, 16K reserve, 20K keep recent. Configurable via settings
+(`autoCompact`, `compactReserveTokens`, `compactKeepRecentTokens`).
 
 ### Manual trigger
 
@@ -402,7 +440,7 @@ low temperature) to generate summaries.
 
 ---
 
-## Branch summarization (`src/agent/branch_summary.rs`) — 270 lines ✅ IMPLEMENTED
+## Branch summarization (`src/agent/branch_summary.rs`) — ~270 lines ✅ IMPLEMENTED
 
 When the user navigates to a different branch in the session tree, the
 abandoned branch is summarized so context is preserved.
@@ -419,13 +457,16 @@ abandoned branch is summarized so context is preserved.
 
 3. **Generate summary** (`generate_branch_summary()`) — Call the provider
    with a structured prompt (Goal / Progress / Key Decisions / Next Steps).
-   Append a `BranchSummaryEntry` with file operation details.
+   Append a `BranchSummaryEntry` with file operation details (readFiles,
+   modifiedFiles extracted from tool calls).
 
 ---
 
 ## Extension trait (`src/agent/extension.rs`)
 
 All capability — built-in or user-provided — comes through the same trait.
+Supports pi-compatible `beforeToolCall` / `afterToolCall` hooks, argument
+type coercion via JSON Schema, and full schema validation.
 
 ```rust
 #[async_trait]
@@ -449,13 +490,21 @@ pub trait Extension: Send + Sync {
 ### Supporting types
 
 ```rust
-/// A tool bundled with its prompt metadata (replaces old snippet/guideline hooks).
+/// A tool bundled with its prompt metadata.
 pub struct ToolWithMeta {
     pub tool: Box<dyn yoagent::types::AgentTool>,
     pub snippet: &'static str,
     pub guidelines: &'static [&'static str],
+    /// Optional pre-processing of raw LLM arguments (type coercion).
     pub prepare_arguments: Option<fn(serde_json::Value) -> Result<serde_json::Value, String>>,
+    /// Called before tool execution (pi's beforeToolCall).
+    pub before_tool_call: Option<fn(&serde_json::Value) -> Option<BeforeToolCallResult>>,
+    /// Called after tool execution (pi's afterToolCall).
+    pub after_tool_call: Option<fn(&yoagent::types::ToolResult, bool) -> Option<AfterToolCallResult>>,
 }
+
+pub struct BeforeToolCallResult { pub block: bool, pub reason: String }
+pub struct AfterToolCallResult { pub content: Option<Vec<Content>>, pub details: Option<Value>, pub is_error: Option<bool> }
 
 pub struct AutocompleteItem { pub value: String, pub label: String, pub description: Option<String> }
 
@@ -464,19 +513,56 @@ pub trait CommandHandler: Send + Sync {
     fn argument_completions(&self, prefix: &str) -> Vec<AutocompleteItem>;
 }
 
-pub enum CommandResult { Info(String), Quit, ModelChanged(String), ... }
+pub enum CommandResult { Info(String), Quit, ModelChanged(String), ShowHelp, Reloaded,
+    NewSession, SessionSwitched, SessionInfo, OpenSessionSelector, SessionNamed,
+    OpenSettings, ScopedModels, ExportSession, ImportSession, ShareSession,
+    CopyLastMessage, ShowChangelog, ForkSession, CloneSession, SessionTree,
+    TrustDecision, Login, Logout, CompactSession, ... }
 
 pub struct SlashCommand { pub name: String, pub description: String, pub handler: Box<dyn CommandHandler> }
 
+/// Tool-specific rendering interface.
 pub trait ToolRenderer: Send + Sync {
     fn render_call(&self, args: &Value, width: usize, theme: &dyn Theme, ctx: &ToolRenderContext) -> Vec<String>;
     fn render_result(&self, content: &str, width: usize, theme: &dyn Theme, ctx: &ToolRenderContext) -> Vec<String>;
     fn render_self(&self) -> bool;
     fn render_bg_key(&self) -> Option<&'static str>;
 }
+
+/// Context passed to ToolRenderer methods (pi-compatible).
+pub struct ToolRenderContext {
+    pub expanded: bool,
+    pub args_complete: bool,
+    pub is_partial: bool,
+    pub is_error: bool,
+    pub cwd: String,
+    pub duration_secs: Option<f64>,
+    pub exit_code: Option<i32>,
+    pub cancelled: bool,
+    pub was_truncated: bool,
+    pub full_output_path: Option<String>,
+    pub file_path: Option<String>,
+    pub expand_key: String,
+    pub details: Option<serde_json::Value>,       // structured rendering data
+    pub invalidate: Option<UnboundedSender<()>>,  // re-render request callback
+}
 ```
 
-At startup, extensions are collected from builtins:
+### Argument coercion and validation
+
+Every tool call goes through `ToolWithMeta::execute()`:
+
+1. **`prepare_arguments`** — custom per-tool pre-processing (e.g., write tool
+   coerces `path`/`content` to strings)
+2. **`coerce_with_json_schema()`** — recursive type coercion for common LLM
+   mistakes (numbers as strings, booleans as strings, null handling, etc.)
+3. **`validate_tool_arguments()`** — full JSON Schema validation with
+   pi-compatible error paths (Required, additionalProperties, type mismatch)
+4. **`before_tool_call`** — optional hook that can block execution
+5. **Execute** — call inner `AgentTool::execute()`
+6. **`after_tool_call`** — optional hook that can modify the result
+
+At startup, extensions are collected from builtins + filesystem:
 
 ```rust
 let extensions: Vec<Box<dyn Extension>> = vec![
@@ -485,14 +571,14 @@ let extensions: Vec<Box<dyn Extension>> = vec![
     Box::new(WriteExtension::new(cwd)),
     Box::new(EditExtension::new(cwd)),
     Box::new(BashExtension::new(cwd)),
+    Box::new(FilesystemExtension::new(cwd)),  // grep, find, ls
 ];
 ```
 
-Tools, commands, renderers, and hooks are all derived by
-flattening all extensions — no separate registration path. `ToolWithMeta`
-wraps each inner `AgentTool` with prompt snippets and guidelines, and
-`impl AgentTool for ToolWithMeta` handles argument normalization (shape guard,
-null stripping, per-tool `prepare_arguments`).
+Extension gating is done via `is_extension_active()` which checks
+`settings.tools` (whitelist) and `settings.exclude_tools` (blacklist).
+Core extensions (commands, read, write, edit, bash) are always active
+when no whitelist is set. Grep/find/ls are opt-in via settings.
 
 ---
 
@@ -529,10 +615,34 @@ null stripping, per-tool `prepare_arguments`).
 
 | Tool | Key features |
 |------|-------------|
-| **read** | Path resolution, line numbers, 50KB truncation. Image support (base64 data URL). |
-| **write** | Temp file + atomic rename, parent dir creation |
-| **edit** | Exact-match search/replace, error on zero/multiple matches. Diff rendering with intra-line character-level inverse. |
-| **bash** | `sh -c <command>`, 120s default timeout, streaming via ToolProgress. Last 2000 lines / 50KB truncation. Security: no deny-list (run anything). |
+| **read** | Path resolution, line numbers, 50KB truncation. Image support (base64 data URL). Pluggable `ReadOperations` trait. |
+| **write** | Temp file + atomic rename, parent dir creation. `prepare_write_args` for type coercion. Preview rendering with syntax highlighting (partial+full). |
+| **edit** | Exact-match search/replace, error on zero/multiple matches. Diff rendering with intra-line character-level inverse. Pluggable `EditOperations` trait. File mutation queue for serialized concurrent edits. |
+| **bash** | `sh -c <command>`, configurable timeout, streaming via ToolProgress. Last 2000 lines / 50KB truncation. Pluggable `BashOperations` trait, command prefix, custom shell path. |
+
+### Filesystem extension (`src/extensions/filesystem.rs`)
+
+| Tool | Key features |
+|------|-------------|
+| **grep** | Uses ripgrep (`rg`) with `--json` output, falls back to `grep`. Respects .gitignore. Options: pattern, path, glob, ignoreCase, literal, context, limit (default 100). Pluggable `GrepOperations`. |
+| **find** | Uses `fd` (rust rewrite of find) with glob matching and .gitignore awareness, falls back to `find -name`. Options: pattern, path, limit (default 1000). Pluggable `FindOperations`. |
+| **ls** | Directory listing with `/` suffix for directories, dotfiles included. Options: path, limit (default 500). Pluggable `LsOperations`. |
+
+### File mutation queue (`src/builtin/file_mutation_queue.rs`)
+
+Serializes concurrent file mutations targeting the same file path.
+Different files run in parallel. Uses `tokio::sync::Notify` stored in a
+global `LazyLock<Mutex<HashMap>>`. Operations chain through `Notify`
+signals (each operation waits for the previous one's signal, then stores
+its own for the next). Cleanup removes stale entries.
+
+```rust
+pub async fn with_file_mutation_queue<T, E, F, Fut>(
+    file_path: &str,
+    cwd: &Path,
+    f: F,
+) -> Result<T, E>
+```
 
 ---
 
@@ -549,12 +659,38 @@ pub enum AuthCredential {
 pub struct AuthStorage(HashMap<String, AuthCredential>);
 ```
 
-Load order: `~/.rab/agent/auth.json`. Currently only `opencode-go` provider
-is configured (API key from `oc_...`).
+Load order: `~/.rab/agent/auth.json`. Supports multiple providers (api_key
+or oauth). Methods: `api_key(provider)`, `oauth_token(provider)`.
 
 ---
 
-## Settings (`src/agent/settings.rs`) — 798 lines
+## Footer data provider (`src/agent/footer_data_provider.rs`)
+
+Provides git branch, extension statuses, and provider count to the Footer
+on a **pull** basis. Owned by the App behind `Rc<RefCell<>>`.
+
+Git branch resolution:
+1. Walk up from `cwd` looking for `.git`
+2. If `.git` is a file → worktree: parse `gitdir:` path, find HEAD
+3. If `.git` is a directory → regular repo: find HEAD
+4. Read HEAD file; if `ref: refs/heads/.invalid` → fall back to git
+5. Otherwise treat as detached HEAD
+
+Reftable repos are detected via the `.invalid` sentinel and fall back to
+`git symbolic-ref --short HEAD`.
+
+```rust
+pub struct FooterDataProvider {
+    cwd: PathBuf,
+    git_branch: Option<String>,
+    extension_statuses: BTreeMap<String, String>,
+    available_provider_count: usize,
+}
+```
+
+---
+
+## Settings (`src/agent/settings.rs`) — ~800 lines
 
 Same file names and format as pi, under `~/.rab/agent/`.
 
@@ -566,7 +702,7 @@ Same file names and format as pi, under `~/.rab/agent/`.
 | `.pi/settings.json` | `.rab/settings.json` | ✅ (project-local overrides) |
 | `~/.pi/agent/auth.json` | `~/.rab/agent/auth.json` | ✅ |
 | `~/.pi/agent/models.json` | `~/.rab/models.json` | ⬜ Not implemented |
-| `~/.pi/agent/AGENTS.md` | `~/.rab/AGENTS.md` | ✅ |
+| `~/.pi/agent/AGENTS.md` | `~/.rab/agent/AGENTS.md` | ✅ |
 | `AGENTS.md` / `CLAUDE.md` | `AGENTS.md` / `CLAUDE.md` | ✅ (project + ancestor walk) |
 | `~/.pi/agent/keybindings.json` | `~/.rab/keybindings.json` | ✅ |
 | `~/.pi/agent/sessions/` | `~/.rab/sessions/` | ✅ |
@@ -585,21 +721,27 @@ Same file names and format as pi, under `~/.rab/agent/`.
     "theme": "dark",
     "verbose": false,
     "hideThinkingBlock": true,
-    "collapseToolOutput": true
+    "collapseToolOutput": true,
+    "autoCompact": true,
+    "compactReserveTokens": 16384,
+    "compactKeepRecentTokens": 20000
 }
 ```
 
 Load order: global `~/.rab/agent/settings.json`, then project `.rab/settings.json`
 overlays. CLI flags (`--model`, `--thinking`, `--no-context-files`, etc.) take
-precedence over both.
+precedence over both. Settings modifications during a session (Ctrl+T, Ctrl+O,
+Ctrl+Shift+C toggles) are tracked via `modified_fields` and only written
+back for fields that were explicitly changed (preserving project-level overrides).
 
 ---
 
-## System prompt (`system_prompt.rs`) — 399 lines
+## System prompt (`src/agent/system_prompt.rs`) — ~400 lines
 
 Built via `SystemPromptBuilder`:
 
-1. **Default prompt** — tool descriptions, response format, tool guidelines.
+1. **Default prompt** — tool descriptions, response format, tool guidelines,
+   available tools from `ToolWithMeta.snippet` / `.guidelines`.
 2. **Custom SYSTEM.md** — `~/.rab/agent/SYSTEM.md` (global) or `.rab/SYSTEM.md`
    (project). Replaces the default prompt.
 3. **APPEND_SYSTEM.md** — appended after all prompts.
@@ -607,6 +749,8 @@ Built via `SystemPromptBuilder`:
    wrapped in `<project_instructions path="...">` tags.
 5. **Skills** — available skills listed as `<available_skills>` XML.
 6. **Date and cwd** — `Current date: YYYY-MM-DD`, `Current working directory: /path`.
+
+Skills from extensions are merged via `skill_set.merge(ext.skills())`.
 
 ---
 
@@ -637,9 +781,17 @@ Other:
   --session-dir <path>       Session storage directory override
 ```
 
+Session resolution supports both paths and partial UUID prefixes.
+`--fork` resolves the session file, validates no conflicts with `--session-id`,
+and calls `SessionManager::fork_from()`.
+
 **Currently only OpenCode Go is configured** (via `yoagent::provider::OpenAiCompatProvider`
 with `openai_compat()` model config pointing to `opencode.ai/zen/go/v1`).
 Models: `deepseek-v4-flash` (default), `deepseek-v4-pro`.
+
+Extension gating: `is_extension_active()` checks `settings.tools` whitelist
+and `settings.exclude_tools` blacklist. Core extensions are always active
+when no whitelist is set. Filesystem tools (grep, find, ls) are opt-in.
 
 ---
 
@@ -657,7 +809,8 @@ $ cat README.md | rab "Summarize this"
 ```
 
 Streams the response to stdout. Thinking blocks shown dimmed on stderr.
-Tool calls and results shown prefixed. Uses a simple event loop:
+Tool calls and results shown prefixed with colored indicators. Has a 120s
+timeout to prevent hanging on stuck providers. Uses a simple event loop:
 `yoagent::agent::Agent::prompt_with_sender()` → process `AgentEvent` stream →
 `AgentSession::handle_yo_event()` for persistence.
 
@@ -665,13 +818,13 @@ Tool calls and results shown prefixed. Uses a simple event loop:
 
 Same agent loop, different sink: `App` in `src/agent/ui/` subscribes to the
 agent event stream and renders to a pi-tui-style main-screen TUI instead of
-stdout. Uses `yoagent::agent::Agent::prompt_with_sender()` with event channnels.
+stdout. Uses `yoagent::agent::Agent::prompt_with_sender()` with event channels.
 
 ---
 
-## TUI (`src/tui/` + `src/agent/ui/`) — 48 modules, ~508 tests
+## TUI (`src/tui/` + `src/agent/ui/`) — 50+ modules, ~600 tests
 
-The TUI library is a 1/1 port of pi's `@earendil-works/pi-tui`.
+The TUI library is a direct Rust port of pi's `@earendil-works/pi-tui`.
 
 ### Core (`src/tui/`)
 
@@ -714,7 +867,7 @@ The TUI library is a 1/1 port of pi's `@earendil-works/pi-tui`.
 
 | Module | Description |
 |--------|-------------|
-| `app.rs` | Main `App` struct — event handler, agent loop management, message queuing, compose_ui |
+| `app.rs` | Main `App` struct — event handler, agent loop management, message queuing, compose_ui, bang commands (!/!!), skills expansion |
 | `chat_editor.rs` | `ChatEditor` wrapper — input processing, slash command dispatch, /skill:name expansion |
 | `theme.rs` | `RabTheme` — JSON theme resolution, fallback, color detection, 130+ theme keys |
 | `working.rs` | `WorkingIndicator` — timer-based working animation |
@@ -727,7 +880,7 @@ The TUI library is a 1/1 port of pi's `@earendil-works/pi-tui`.
 | `components/editor_component.rs` | Editor component with border_color |
 | `components/user_message.rs` | User message component (box + markdown) |
 | `components/assistant_message.rs` | Streaming assistant message with thinking blocks |
-| `components/tool_messages.rs` | Tool execution components (read, write, edit, bash) |
+| `components/tool_messages.rs` | Tool execution components (read, write, edit, bash, grep, find, ls) |
 | `components/bash_execution.rs` | Bash execution component with streaming, duration, borders |
 | `components/info_message.rs` | Info message component (dim text) |
 | `components/session_picker.rs` | Session selector overlay |
@@ -741,7 +894,7 @@ TUI.root (Container):
   ├── HeaderComponent ("rab" logo, keybinding hints)
   ├── chat_container (RefContainer)
   │   ├── UserMessageComponent
-  │   ├── ToolExecComponent (read/write/edit/bash)
+  │   ├── ToolExecComponent (read/write/edit/bash/grep/find/ls)
   │   ├── RcRefCellComponent → AssistantMessageComponent
   │   ├── BashExecutionComponent
   │   ├── InfoMessageComponent
@@ -765,6 +918,11 @@ streaming restores queued messages to the editor.
 
 Toggle messages (Ctrl+T thinking, Ctrl+O tool output, model switch, interrupt)
 use `status_section` that appears for one frame then clears.
+
+### Bang commands
+
+- `!command` — run command, persist output to session as tool result
+- `!!command` — run command, don't persist output, useful for viewing help/man
 
 ---
 
