@@ -210,7 +210,13 @@ pub struct App {
 
 impl App {
     fn new(config: AppConfig, session: SessionManager) -> Self {
-        let agent_session = AgentSession::new(session);
+        let mut agent_session = AgentSession::new(session);
+        agent_session.set_compaction_config(
+            config.api_key.clone(),
+            &config.model,
+            crate::agent::compaction::get_model_context_window(&config.model),
+        );
+        agent_session.set_auto_compact(config.settings.auto_compact.unwrap_or(true));
         let (tx, rx) = mpsc::unbounded_channel();
         use crate::agent::ui::theme::current_theme;
         let theme = current_theme().clone();
@@ -268,6 +274,9 @@ impl App {
         footer.set_model(&config.model);
         footer.set_model_supports_reasoning(config.model_supports_reasoning);
         footer.set_thinking_level(config.thinking_level.clone());
+        footer.set_context_window(crate::agent::compaction::get_model_context_window(
+            &config.model,
+        ));
 
         let footer = Rc::new(RefCell::new(footer));
 

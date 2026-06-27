@@ -59,7 +59,7 @@ pub struct CompactionResult {
 /// Known model context windows (in tokens).
 /// Falls back to 200_000 for unknown models.
 const MODEL_CONTEXT_WINDOWS: &[(&str, u64)] = &[
-    ("deepseek", 128_000),
+    ("deepseek", 1_000_000),
     ("claude", 200_000),
     ("gpt-4", 128_000),
     ("gpt-4o", 128_000),
@@ -617,6 +617,14 @@ pub async fn summarize_text(
         })
         .collect();
 
+    let mut model_config = yoagent::provider::model::ModelConfig::openai_compat(
+        "https://opencode.ai/zen/go/v1",
+        model,
+        "opencode-go",
+        yoagent::provider::model::OpenAiCompat::deepseek(),
+    );
+    model_config.context_window = 1_000_000;
+
     let config = StreamConfig {
         model: model.to_string(),
         system_prompt: system_prompt.to_string(),
@@ -626,12 +634,7 @@ pub async fn summarize_text(
         api_key: api_key.to_string(),
         max_tokens: Some(2048),
         temperature: Some(0.3),
-        model_config: Some(yoagent::provider::model::ModelConfig::openai_compat(
-            "https://opencode.ai/zen/go/v1",
-            "deepseek-v4-flash",
-            "opencode-go",
-            yoagent::provider::model::OpenAiCompat::deepseek(),
-        )),
+        model_config: Some(model_config),
         cache_config: yoagent::types::CacheConfig::default(),
     };
 
