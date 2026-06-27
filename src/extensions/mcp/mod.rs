@@ -110,6 +110,78 @@ impl McpExtension {
             }
         }
     }
+
+    /// Bootstrap direct tools by connecting to servers that have directTools configured
+    /// but no cached metadata yet. This ensures direct tools are available immediately
+    /// on first run without requiring a prior connection.
+    pub async fn bootstrap_direct_tools(&self) {
+        let global_direct_tools = self
+            .config
+            .settings
+            .as_ref()
+            .is_some_and(|s| s.direct_tools);
+        let servers_to_bootstrap: Vec<String> = self
+            .config
+            .mcp_servers
+            .iter()
+            .filter(|(server_name, entry)| {
+                // Check if this server has directTools enabled
+                let has_direct = match entry.direct_tools.as_ref() {
+                    Some(v) if v.is_boolean() => v.as_bool().unwrap_or(false),
+                    Some(v) if v.is_array() => true,
+                    None => global_direct_tools,
+                    Some(_) => false,
+                };
+                if !has_direct {
+                    return false;
+                }
+                // Only bootstrap if no valid cache exists
+                let config_hash = config::compute_server_config_hash(entry);
+                !has_valid_cache(server_name, config_hash)
+            })
+            .map(|(name, _)| name.clone())
+            .collect();
+
+        if servers_to_bootstrap.is_empty() {
+            return;
+        }
+
+        for server_name in &servers_to_bootstrap {
+            // Try to connect and cache tools
+            let connected = {
+                let mut manager = self.manager.lock().await;
+                manager.ensure_connected(server_name).await
+            };
+
+            if connected {
+                // Populate tool cache
+                let manager = self.manager.lock().await;
+                let client = manager.get_client(server_name);
+                drop(manager);
+
+                if let Some(client) = client {
+                    let client = client.lock().await;
+                    if let Ok(tools) = client.list_tools().await {
+                        let config_hash = self
+                            .config
+                            .mcp_servers
+                            .get(server_name)
+                            .map(config::compute_server_config_hash)
+                            .unwrap_or(0);
+
+                        let mut tool_cache = self.tool_cache.lock().await;
+                        tool_cache.insert(server_name.clone(), tools.clone());
+                        drop(tool_cache);
+
+                        update_cache_entry(server_name, config_hash, &tools);
+                        eprintln!("MCP: bootstrapped {} ({} tools)", server_name, tools.len());
+                    }
+                }
+            } else {
+                eprintln!("MCP: bootstrap failed for {}", server_name);
+            }
+        }
+    }
 }
 
 impl Extension for McpExtension {

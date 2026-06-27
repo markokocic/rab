@@ -405,6 +405,9 @@ async fn main() -> anyhow::Result<()> {
     if is_extension_active("mcp", &settings) {
         let mcp_ext = rab::extensions::mcp::McpExtension::from_cwd(&cwd);
         mcp_ext.restore_cache().await;
+        // Bootstrap servers with directTools configured so their tools are
+        // available as native AgentTools from the start.
+        mcp_ext.bootstrap_direct_tools().await;
         extensions.push(Box::new(mcp_ext));
     }
 
