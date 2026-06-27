@@ -608,7 +608,7 @@ pub async fn run(config: AppConfig, session: SessionManager) -> anyhow::Result<(
             dirty = false;
         }
 
-        // Safety timeout: force stop streaming if no agent events for 60s.
+        // Safety timeout: force stop streaming if no agent events for 15s.
         // Prevents the event loop from spinning at 16ms with `is_streaming`
         // stuck true after the agent task completes or panics without
         // delivering AgentEnd through the channel.
@@ -618,7 +618,24 @@ pub async fn run(config: AppConfig, session: SessionManager) -> anyhow::Result<(
             app.is_streaming = false;
             app.working.stop();
             app.footer.borrow_mut().set_streaming(false);
-            app.status_text = Some("Streaming timed out - agent may have crashed".into());
+            // Abort the stuck agent so a new prompt doesn't run alongside it
+            if let Some(ref s) = app.session {
+                s.abort();
+            }
+            if let Some(handle) = app.bash_abort_handle.take() {
+                handle.abort();
+            }
+            // Show a persistent error message in the chat so the user
+            // understands why the agent stopped.
+            chat_add(
+                &mut app,
+                std::boxed::Box::new(InfoMessageComponent::new(
+                    "The agent timed out after 15 seconds of inactivity. \
+                     It may have crashed or encountered a network issue. \
+                     You can send a new message to try again."
+                        .to_string(),
+                )),
+            );
             dirty = true;
         }
 
