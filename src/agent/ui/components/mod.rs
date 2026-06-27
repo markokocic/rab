@@ -1,5 +1,4 @@
 pub mod assistant_message;
-pub mod bash_execution;
 pub mod editor_component;
 pub mod footer_component;
 pub mod header;
@@ -9,7 +8,6 @@ pub mod tool_messages;
 pub mod user_message;
 
 pub use assistant_message::AssistantMessageComponent;
-pub use bash_execution::{BashExecution, BashStatus};
 pub use editor_component::EditorComponent;
 pub use footer_component::FooterComponent;
 pub use header::HeaderComponent;

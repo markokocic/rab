@@ -160,9 +160,6 @@ pub struct App {
     streaming_component:
         Option<Weak<RefCell<crate::agent::ui::components::AssistantMessageComponent>>>,
 
-    /// Active bash execution component (for bang commands - updated when result arrives).
-    bash_component: Option<Weak<RefCell<crate::agent::ui::components::BashExecution>>>,
-
     /// Working indicator.
     working: WorkingIndicator,
 
@@ -325,6 +322,7 @@ impl App {
                 &cwd_string,
                 config.hide_thinking,
                 config.collapse_tool_output,
+                &config.extensions,
             );
         }
 
@@ -341,7 +339,6 @@ impl App {
             tool_call_start_times: HashMap::new(),
             invalidate_rxs: Vec::new(),
             streaming_component: None,
-            bash_component: None,
             pending_section: std::rc::Rc::new(std::cell::RefCell::new(
                 crate::tui::components::DynamicLines::new(),
             )),
@@ -1148,6 +1145,7 @@ fn interrupt_streaming(app: &mut App) {
             &app.cwd.to_string_lossy(),
             app.hide_thinking,
             app.collapse_tool_output,
+            &app.extensions,
         );
     }
 
@@ -1392,6 +1390,7 @@ fn handle_session_picker_input(app: &mut App, key: &crossterm::event::KeyEvent) 
                     &app.cwd.to_string_lossy(),
                     app.hide_thinking,
                     app.collapse_tool_output,
+                    &app.extensions,
                 );
                 app.session = Some(new_session);
                 app.agent = None; // Force recreation from new session on next prompt
@@ -1580,6 +1579,7 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
                 &app.cwd.to_string_lossy(),
                 app.hide_thinking,
                 app.collapse_tool_output,
+                &app.extensions,
             );
             app.session = Some(new_session);
             app.agent = None;
@@ -1849,6 +1849,7 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
                                         &app.cwd.to_string_lossy(),
                                         app.hide_thinking,
                                         app.collapse_tool_output,
+                                        &app.extensions,
                                     );
                                     app.session = Some(new_session);
                                     app.agent = None;
@@ -1948,25 +1949,35 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
 }
 
 /// Handle ! and !! bang commands.
-/// Renders via BashExecutionComponent (borders, spinner, expand/collapse)
-/// matching pi's handleBashCommand.
+/// Renders via ToolExecComponent with the bash renderer (same visual treatment
+/// as LLM-invoked bash tool calls, eliminating the separate BashExecution split).
 fn handle_bang_command(app: &mut App, command: String) {
     let cwd = app.cwd.clone();
     let tx = app.event_tx.clone();
     use yoagent::types::{AgentEvent as YoEvent, Content as YoContent, ToolResult as YoResult};
 
-    // Add BashExecutionComponent to chat_container (track for result updates)
-    let bash_comp = Rc::new(RefCell::new(
-        crate::agent::ui::components::BashExecution::new(&command),
-    ));
-    bash_comp
-        .borrow_mut()
-        .set_started_at(std::time::Instant::now());
-    bash_comp.borrow_mut().set_expanded(app.tools_expanded);
-    app.bash_component = Some(Rc::downgrade(&bash_comp));
+    let renderer = app
+        .extensions
+        .iter()
+        .find_map(|ext| ext.tool_renderer("bash"));
+    let mut tool = crate::agent::ui::components::ToolExecComponent::new(
+        "bash",
+        renderer,
+        serde_json::json!({"command": command}),
+        app.cwd.to_string_lossy().to_string(),
+    );
+    tool.set_started_at(std::time::Instant::now());
+    let (invalidate_tx, invalidate_rx) =
+        crate::agent::ui::components::ToolExecComponent::make_invalidation_channel();
+    app.invalidate_rxs.push(invalidate_rx);
+    tool.set_invalidate_tx(invalidate_tx);
+    tool.set_expanded(app.tools_expanded);
+    let tool = Rc::new(RefCell::new(tool));
+    app.pending_tools
+        .insert("__bang__".to_string(), Rc::downgrade(&tool));
     chat_add(
         app,
-        std::boxed::Box::new(crate::tui::components::RcRefCellComponent(bash_comp)),
+        std::boxed::Box::new(crate::agent::ui::components::RcToolExec(tool)),
     );
     app.is_streaming = true;
     app.working.start();
@@ -1991,7 +2002,6 @@ fn handle_bang_command(app: &mut App, command: String) {
             sent: false,
         };
 
-        let started = std::time::Instant::now();
         let mut child = match tokio::process::Command::new("sh")
             .arg("-c")
             .arg(&command)
@@ -2002,13 +2012,8 @@ fn handle_bang_command(app: &mut App, command: String) {
         {
             Ok(c) => c,
             Err(e) => {
-                let _ = tx.send(YoEvent::ProgressMessage {
-                    tool_call_id: String::new(),
-                    tool_name: "bash".into(),
-                    text: format!("Failed to spawn: {}", e),
-                });
                 let _ = tx.send(YoEvent::ToolExecutionEnd {
-                    tool_call_id: String::new(),
+                    tool_call_id: "__bang__".to_string(),
                     tool_name: "bash".into(),
                     result: YoResult {
                         content: vec![YoContent::Text {
@@ -2043,7 +2048,7 @@ fn handle_bang_command(app: &mut App, command: String) {
                             if let Ok(text) = std::str::from_utf8(&buf1[..n]) {
                                 all_output.push_str(text);
                                 let _ = tx.send(YoEvent::ProgressMessage {
-                                    tool_call_id: String::new(),
+                                    tool_call_id: "__bang__".to_string(),
                                     tool_name: "bash".into(),
                                     text: text.to_string(),
                                 });
@@ -2059,7 +2064,7 @@ fn handle_bang_command(app: &mut App, command: String) {
                             if let Ok(text) = std::str::from_utf8(&buf2[..n]) {
                                 all_output.push_str(text);
                                 let _ = tx.send(YoEvent::ProgressMessage {
-                                    tool_call_id: String::new(),
+                                    tool_call_id: "__bang__".to_string(),
                                     tool_name: "bash".into(),
                                     text: text.to_string(),
                                 });
@@ -2076,7 +2081,6 @@ fn handle_bang_command(app: &mut App, command: String) {
 
         // Wait for process to finish
         let status = child.wait().await;
-        let elapsed = started.elapsed();
         let is_error = match &status {
             Ok(s) => !s.success(),
             Err(_) => true,
@@ -2088,17 +2092,10 @@ fn handle_bang_command(app: &mut App, command: String) {
         };
 
         let _ = tx.send(YoEvent::ToolExecutionEnd {
-            tool_call_id: String::new(),
+            tool_call_id: "__bang__".to_string(),
             tool_name: "bash".into(),
             result: YoResult {
-                content: vec![YoContent::Text {
-                    text: format!(
-                        "$ {}\n\n{}\n\n[{}s]",
-                        command,
-                        result,
-                        elapsed.as_secs_f64()
-                    ),
-                }],
+                content: vec![YoContent::Text { text: result }],
                 details: serde_json::Value::Null,
             },
             is_error,
@@ -2118,6 +2115,7 @@ pub fn rebuild_chat_from_messages(
     cwd: &str,
     hide_thinking: bool,
     _collapse_tool_output: bool,
+    extensions: &[Box<dyn crate::agent::extension::Extension>],
 ) {
     chat.clear();
     use std::collections::HashMap;
@@ -2161,13 +2159,13 @@ pub fn rebuild_chat_from_messages(
                     }
                     // Create ToolExecComponent for each tool call
                     for (id, name, args) in &tcs {
-                        let mut tool = crate::agent::ui::components::ToolExecComponent::new(
+                        let renderer = extensions.iter().find_map(|ext| ext.tool_renderer(name));
+                        let tool = crate::agent::ui::components::ToolExecComponent::new(
                             name,
-                            None,
+                            renderer,
                             args.clone(),
                             cwd.to_string(),
                         );
-                        tool.set_bash(name == "bash");
                         let tool = Rc::new(RefCell::new(tool));
                         chat.add_child(std::boxed::Box::new(
                             crate::agent::ui::components::RcToolExec(tool.clone()),
@@ -2368,13 +2366,13 @@ fn handle_agent_event(app: &mut App, event: yoagent::types::AgentEvent) {
             {
                 comp.borrow_mut()
                     .set_result_with_details(&content, is_error, Some(result.details));
-                if let Some(start) = app.tool_call_start_times.remove(&tool_call_id) {
-                    comp.borrow_mut()
-                        .set_final_duration(start.elapsed().as_secs_f64());
-                }
+                app.tool_call_start_times.remove(&tool_call_id);
             }
-            // Crash-safe persistence: persist tool result immediately
-            if let Some(ref mut s) = app.session {
+            // Crash-safe persistence: persist tool result immediately.
+            // Skip bang commands (user-initiated, not agent-invoked).
+            if tool_call_id != "__bang__"
+                && let Some(ref mut s) = app.session
+            {
                 s.persist_tool_result(&tool_call_id, content.clone(), is_error);
             }
         }
@@ -2382,8 +2380,11 @@ fn handle_agent_event(app: &mut App, event: yoagent::types::AgentEvent) {
             text, tool_name, ..
         } => {
             app.last_streaming_event = std::time::Instant::now();
-            if let Some(weak) = app.bash_component.as_ref().and_then(|w| w.upgrade()) {
-                weak.borrow_mut().append_output(&text);
+            // Bang (") command progress feeds into pending_tools["__bang__"]
+            if let Some(weak) = app.pending_tools.get("__bang__")
+                && let Some(comp) = weak.upgrade()
+            {
+                comp.borrow_mut().append_output(&text);
             } else if tool_name.is_empty() {
                 // General progress message (not tool-specific) — show as status
                 app.status_text = Some(text.trim().to_string());
