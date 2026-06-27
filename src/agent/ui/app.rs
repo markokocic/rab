@@ -1311,6 +1311,11 @@ async fn start_agent_loop(app: &mut App, message: String) {
 
     let agent = app.agent.as_mut().unwrap();
 
+    // Update the reused Agent's model/thinking level to reflect runtime changes
+    // (pi-compatible: setModel/setThinkingLevel called before each turn)
+    agent.model = app.model.clone();
+    agent.thinking_level = thinking;
+
     // Record model/thinking changes in the session
     if let Some(ref mut session) = app.session {
         session.on_model_change("opencode-go", &app.model);
