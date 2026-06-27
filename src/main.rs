@@ -435,15 +435,6 @@ async fn main() -> anyhow::Result<()> {
     let all_tools: Vec<rab::agent::extension::ToolWithMeta> =
         extensions.iter().flat_map(|ext| ext.tools()).collect();
 
-    // Build tool renderer lookup from bundled renderers before consuming tools
-    let tool_renderers: std::collections::HashMap<
-        String,
-        std::sync::Arc<dyn rab::agent::extension::ToolRenderer>,
-    > = all_tools
-        .iter()
-        .filter_map(|twm| twm.renderer.clone().map(|r| (twm.name().to_string(), r)))
-        .collect();
-
     // Build tool snippets and guidelines from ToolWithMeta metadata
     let tool_snippets: Vec<rab::agent::ToolSnippet> = all_tools
         .iter()
@@ -529,7 +520,6 @@ async fn main() -> anyhow::Result<()> {
             tool_execution: yoagent::types::ToolExecutionStrategy::Parallel,
             session_info: Some(session_info),
             api_key: auth.api_key("opencode-go").unwrap_or_default(),
-            tool_renderers,
         };
         ui::run(config, session).await
     } else {
