@@ -2253,7 +2253,12 @@ fn handle_agent_event(app: &mut App, event: yoagent::types::AgentEvent) {
             app.last_streaming_event = std::time::Instant::now();
             app.refresh_git_branch();
         }
-        E::TurnStart => {}
+        E::TurnStart => {
+            app.last_streaming_event = std::time::Instant::now();
+        }
+        E::MessageStart { .. } => {
+            app.last_streaming_event = std::time::Instant::now();
+        }
         E::MessageUpdate { delta, .. } => {
             app.last_streaming_event = std::time::Instant::now();
             use yoagent::types::StreamDelta;
@@ -2425,6 +2430,7 @@ fn handle_agent_event(app: &mut App, event: yoagent::types::AgentEvent) {
             }
         }
         E::MessageEnd { message } => {
+            app.last_streaming_event = std::time::Instant::now();
             // Check for error messages from the provider (network errors, etc.)
             // Show in UI but do NOT persist to session.
             if let Some(err) = crate::agent::types::message_error(&message) {
@@ -2446,6 +2452,7 @@ fn handle_agent_event(app: &mut App, event: yoagent::types::AgentEvent) {
             }
         }
         E::InputRejected { reason } => {
+            app.last_streaming_event = std::time::Instant::now();
             let msg = format!("Input rejected: {}", reason);
             chat_add(
                 app,
