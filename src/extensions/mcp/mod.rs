@@ -13,7 +13,7 @@ mod renderer;
 pub mod server;
 pub mod types;
 
-use crate::agent::extension::{Extension, ToolWithMeta};
+use crate::agent::extension::{Extension, ToolDefinition};
 use cache::{has_valid_cache, load_cache, update_cache_entry};
 use renderer::{McpProxyToolRenderer, McpToolRenderer};
 use server::ServerManager;
@@ -157,11 +157,11 @@ impl Extension for McpExtension {
         "mcp".into()
     }
 
-    fn tools(&self) -> Vec<ToolWithMeta> {
-        let mut tools: Vec<ToolWithMeta> = Vec::new();
+    fn tools(&self) -> Vec<ToolDefinition> {
+        let mut tools: Vec<ToolDefinition> = Vec::new();
 
         // The proxy mcp tool is always available
-        tools.push(ToolWithMeta {
+        tools.push(ToolDefinition {
             tool: Box::new(McpProxyTool {
                 config: self.config.clone(),
                 manager: self.manager.clone(),
@@ -270,7 +270,7 @@ impl Extension for McpExtension {
                         )
                     });
 
-                tools.push(ToolWithMeta {
+                tools.push(ToolDefinition {
                     tool: Box::new(McpDirectTool {
                         server_name: server_name.clone(),
                         original_name: tool_name.clone(),

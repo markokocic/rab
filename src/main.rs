@@ -432,10 +432,10 @@ async fn main() -> anyhow::Result<()> {
         .collect();
 
     // Collect tools + metadata from all extensions
-    let all_tools: Vec<rab::agent::extension::ToolWithMeta> =
+    let all_tools: Vec<rab::agent::extension::ToolDefinition> =
         extensions.iter().flat_map(|ext| ext.tools()).collect();
 
-    // Build tool snippets and guidelines from ToolWithMeta metadata
+    // Build tool snippets and guidelines from ToolDefinition metadata
     let tool_snippets: Vec<rab::agent::ToolSnippet> = all_tools
         .iter()
         .map(|twm| rab::agent::ToolSnippet {
@@ -450,7 +450,7 @@ async fn main() -> anyhow::Result<()> {
         .map(|s| s.to_string())
         .collect();
 
-    // ToolWithMeta IS an AgentTool now — no unwrapping needed
+    // ToolDefinition IS an AgentTool now — no unwrapping needed
     let agent_tools: Vec<Box<dyn yoagent::types::AgentTool>> = all_tools
         .into_iter()
         .map(|twm| Box::new(twm) as Box<dyn yoagent::types::AgentTool>)

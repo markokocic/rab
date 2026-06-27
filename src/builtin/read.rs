@@ -1,4 +1,4 @@
-use crate::agent::extension::{Extension, ToolWithMeta};
+use crate::agent::extension::{Extension, ToolDefinition};
 use crate::agent::extension::{ToolRenderContext, ToolRenderer};
 use crate::tui::Theme;
 use crate::tui::ThemeKey;
@@ -66,8 +66,8 @@ impl Extension for ReadExtension {
         "read".into()
     }
 
-    fn tools(&self) -> Vec<ToolWithMeta> {
-        vec![ToolWithMeta {
+    fn tools(&self) -> Vec<ToolDefinition> {
+        vec![ToolDefinition {
             tool: Box::new(ReadTool {
                 cwd: self.cwd.clone(),
                 operations: self.operations.clone(),

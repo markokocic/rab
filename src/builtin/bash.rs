@@ -1,4 +1,4 @@
-use crate::agent::extension::{Cancel, Extension, ToolWithMeta};
+use crate::agent::extension::{Cancel, Extension, ToolDefinition};
 use crate::agent::extension::{ToolRenderContext, ToolRenderer};
 use crate::tui::Theme;
 use crate::tui::ThemeKey;
@@ -75,8 +75,8 @@ impl Extension for BashExtension {
         "bash".into()
     }
 
-    fn tools(&self) -> Vec<ToolWithMeta> {
-        vec![ToolWithMeta {
+    fn tools(&self) -> Vec<ToolDefinition> {
+        vec![ToolDefinition {
             tool: Box::new(BashTool {
                 cwd: self.cwd.clone(),
                 shell_path: self.options.shell_path.clone(),

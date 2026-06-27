@@ -1,4 +1,4 @@
-use crate::agent::extension::{Extension, ToolWithMeta};
+use crate::agent::extension::{Extension, ToolDefinition};
 use crate::agent::extension::{ToolRenderContext, ToolRenderer};
 use crate::builtin;
 use crate::tui::Theme;
@@ -111,8 +111,8 @@ impl Extension for WriteExtension {
         "write".into()
     }
 
-    fn tools(&self) -> Vec<ToolWithMeta> {
-        vec![ToolWithMeta {
+    fn tools(&self) -> Vec<ToolDefinition> {
+        vec![ToolDefinition {
             tool: Box::new(WriteTool {
                 cwd: self.cwd.clone(),
                 operations: self.operations.clone(),

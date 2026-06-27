@@ -32,7 +32,7 @@ pub struct AfterToolCallResult {
 ///
 /// Mirrors pi's `ToolDefinition` which carries `promptSnippet`,
 /// `promptGuidelines` and `prepareArguments` directly on the tool definition.
-pub struct ToolWithMeta {
+pub struct ToolDefinition {
     pub tool: Box<dyn yoagent::types::AgentTool>,
     /// One-line snippet for the "Available tools" section of the system prompt.
     pub snippet: &'static str,
@@ -614,7 +614,7 @@ pub trait ToolRenderer: Send + Sync {
 }
 
 #[async_trait::async_trait]
-impl yoagent::types::AgentTool for ToolWithMeta {
+impl yoagent::types::AgentTool for ToolDefinition {
     fn name(&self) -> &str {
         self.tool.name()
     }
@@ -716,7 +716,7 @@ pub trait Extension: Send + Sync {
     fn name(&self) -> Cow<'static, str>;
 
     /// Tools this extension provides (LLM-callable), each with its own prompt metadata.
-    fn tools(&self) -> Vec<ToolWithMeta> {
+    fn tools(&self) -> Vec<ToolDefinition> {
         vec![]
     }
 

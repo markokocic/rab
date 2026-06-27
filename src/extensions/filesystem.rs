@@ -1,4 +1,4 @@
-use crate::agent::extension::{Extension, ToolRenderContext, ToolRenderer, ToolWithMeta};
+use crate::agent::extension::{Extension, ToolDefinition, ToolRenderContext, ToolRenderer};
 use crate::tui::Theme;
 use crate::tui::ThemeKey;
 use async_trait::async_trait;
@@ -154,9 +154,9 @@ impl Extension for FilesystemExtension {
         "filesystem".into()
     }
 
-    fn tools(&self) -> Vec<ToolWithMeta> {
+    fn tools(&self) -> Vec<ToolDefinition> {
         vec![
-            ToolWithMeta {
+            ToolDefinition {
                 tool: Box::new(GrepTool {
                     cwd: self.cwd.clone(),
                     operations: self.grep_operations.clone(),
@@ -168,7 +168,7 @@ impl Extension for FilesystemExtension {
                 after_tool_call: None,
                 renderer: Some(std::sync::Arc::new(ListRenderer::grep())),
             },
-            ToolWithMeta {
+            ToolDefinition {
                 tool: Box::new(FindTool {
                     cwd: self.cwd.clone(),
                     operations: self.find_operations.clone(),
@@ -180,7 +180,7 @@ impl Extension for FilesystemExtension {
                 after_tool_call: None,
                 renderer: Some(std::sync::Arc::new(ListRenderer::find())),
             },
-            ToolWithMeta {
+            ToolDefinition {
                 tool: Box::new(LsTool {
                     cwd: self.cwd.clone(),
                     operations: self.ls_operations.clone(),

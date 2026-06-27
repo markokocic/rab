@@ -1950,7 +1950,7 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
     }
 }
 
-/// Look up a tool renderer by name from extensions (bundled in ToolWithMeta.renderer).
+/// Look up a tool renderer by name from extensions (bundled in ToolDefinition.renderer).
 fn find_tool_renderer(
     extensions: &[Box<dyn crate::agent::extension::Extension>],
     name: &str,
