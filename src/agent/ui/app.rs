@@ -125,6 +125,12 @@ pub struct App {
     /// Timestamp of last agent event received (used for streaming safety timeout).
     last_streaming_event: std::time::Instant,
 
+    /// Number of tool executions currently in-flight.
+    /// Incremented on ToolExecutionStart, decremented on ToolExecutionEnd.
+    /// Used to skip the 15s inactivity timeout while tools are running,
+    /// since long-running tools (e.g. bash) may not emit progress events.
+    pending_tool_executions: usize,
+
     /// Bash abort handle for bang (!) commands.
     bash_abort_handle: Option<tokio::task::AbortHandle>,
 
@@ -363,6 +369,7 @@ impl App {
 
             should_quit: false,
             last_streaming_event: std::time::Instant::now(),
+            pending_tool_executions: 0,
             bash_abort_handle: None,
             session: Some(agent_session),
             footer,
@@ -637,7 +644,12 @@ pub async fn run(config: AppConfig, session: SessionManager) -> anyhow::Result<(
         // Prevents the event loop from spinning at 16ms with `is_streaming`
         // stuck true after the agent task completes or panics without
         // delivering AgentEnd through the channel.
+        //
+        // Skipped while tool executions are in-flight because long-running
+        // tools (e.g. bash commands) may not emit progress events during
+        // execution, which would cause false positive timeouts.
         if app.is_streaming
+            && app.pending_tool_executions == 0
             && app.last_streaming_event.elapsed() > std::time::Duration::from_secs(15)
         {
             app.is_streaming = false;
@@ -1960,6 +1972,7 @@ fn handle_bang_command(app: &mut App, command: String) {
     app.working.start();
     app.footer.borrow_mut().set_streaming(true);
     app.last_streaming_event = std::time::Instant::now();
+    app.pending_tool_executions += 1;
 
     let handle = tokio::spawn(async move {
         struct Guard<'a> {
@@ -2297,6 +2310,7 @@ fn handle_agent_event(app: &mut App, event: yoagent::types::AgentEvent) {
             args,
         } => {
             app.last_streaming_event = std::time::Instant::now();
+            app.pending_tool_executions += 1;
             flush_all(app);
             app.streaming_component = None;
             let name = tool_name;
@@ -2336,6 +2350,7 @@ fn handle_agent_event(app: &mut App, event: yoagent::types::AgentEvent) {
             is_error,
         } => {
             app.last_streaming_event = std::time::Instant::now();
+            app.pending_tool_executions = app.pending_tool_executions.saturating_sub(1);
             let content: String = result
                 .content
                 .iter()
