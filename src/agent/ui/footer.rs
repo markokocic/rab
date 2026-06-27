@@ -135,8 +135,13 @@ impl Footer {
         let mut total_cache_read = 0u64;
         let mut total_cache_write = 0u64;
         let mut latest_cache_hit_rate: Option<f64> = None;
+        // Track the last assistant message's total tokens for context %.
+        // usage.input represents the FULL context sent in that request
+        // (system + accumulated history). Using the last message avoids
+        // summing all historical usage values (which would overcount).
+        let mut last_context_tokens: Option<u64> = None;
 
-        // Walk session entries, summing usage from all assistant messages
+        // Walk session entries summing usage from all assistant messages
         for entry in session.entries() {
             if let crate::agent::session::SessionEntry::Message(msg_entry) = entry
                 && let Some(yoagent::types::Message::Assistant { usage, .. }) =
@@ -146,6 +151,8 @@ impl Footer {
                 total_output += usage.output;
                 total_cache_read += usage.cache_read;
                 total_cache_write += usage.cache_write;
+                // Keep updating — after the loop this holds the LAST assistant's usage
+                last_context_tokens = Some(usage.input + usage.output + usage.cache_read);
 
                 let total_prompt = usage.input + usage.cache_read + usage.cache_write;
                 if total_prompt > 0 {
@@ -161,10 +168,21 @@ impl Footer {
         self.total_cache_write = total_cache_write;
         self.latest_cache_hit_rate = latest_cache_hit_rate;
 
-        // Compute context percentage from total tokens and model's context window
-        let total_tokens = total_input + total_output + total_cache_read + total_cache_write;
-        if self.context_window > 0 {
-            self.context_percent = Some((total_tokens as f64 / self.context_window as f64) * 100.0);
+        // Compute context percentage from the LAST assistant message's
+        // total tokens (not the sum of all usage), matching
+        // compaction::estimate_context_tokens approach.
+        // This avoids massive overcounting from summing all usage.input
+        // values (each represents the full context for that request).
+        if let Some(ctx_tokens) = last_context_tokens {
+            if self.context_window > 0 {
+                self.context_percent =
+                    Some((ctx_tokens as f64 / self.context_window as f64) * 100.0);
+            } else {
+                self.context_percent = None;
+            }
+        } else if self.context_window > 0 {
+            // No assistant messages yet — show unknown
+            self.context_percent = None;
         } else {
             self.context_percent = None;
         }
@@ -198,14 +216,10 @@ impl Footer {
 
     pub fn set_context_window(&mut self, window: u64) {
         self.context_window = window;
-        // Recompute context percentage with new window
-        let total_tokens =
-            self.total_input + self.total_output + self.total_cache_read + self.total_cache_write;
-        if self.context_window > 0 {
-            self.context_percent = Some((total_tokens as f64 / self.context_window as f64) * 100.0);
-        } else {
-            self.context_percent = None;
-        }
+        // Don't recompute context_percent here — it's set correctly by
+        // refresh_from_session which uses the last assistant's usage.
+        // If set_context_window is called before refresh_from_session,
+        // context_percent stays None (shown as "?/window").
     }
 
     pub fn set_experimental_enabled(&mut self, enabled: bool) {
@@ -606,8 +620,7 @@ mod tests {
         let mut footer = Footer::new("/home/user/project", provider);
         footer.set_model("test-model");
         footer.set_auto_compact(true);
-        footer.total_input = 64000;
-        footer.context_window = 128000;
+        footer.context_window = 64000;
         footer.context_percent = Some(50.0);
         let lines = footer.render(80);
         assert!(
@@ -615,7 +628,7 @@ mod tests {
             "Should show (auto) next to context percentage"
         );
         assert!(
-            lines[1].contains("50.0%/128k (auto)"),
+            lines[1].contains("50.0%/64k (auto)"),
             "Should show context percent with auto compact"
         );
     }
@@ -646,12 +659,12 @@ mod tests {
         )));
         let mut footer = Footer::new("/home/user/project", provider);
         footer.set_model("test-model");
-        footer.context_window = 128000;
+        footer.context_window = 64000;
         footer.context_percent = Some(95.0);
         let lines = footer.render(80);
         assert!(lines[1].contains("95"), "Should show context percent");
         assert!(
-            lines[1].contains("128k"),
+            lines[1].contains("64k"),
             "Should show formatted window size"
         );
         assert!(
@@ -771,7 +784,7 @@ mod tests {
         footer.total_output = 50000;
         footer.total_cache_read = 10000;
         footer.context_window = 128000;
-        footer.context_percent = Some(45.0);
+        footer.context_percent = Some(12.0);
         let lines = footer.render(10);
         assert!(!lines.is_empty(), "Should render even at width 10");
         for line in &lines {
