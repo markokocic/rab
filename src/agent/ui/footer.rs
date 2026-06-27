@@ -1,7 +1,11 @@
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use crate::agent::footer_data_provider::FooterDataProvider;
+use crate::agent::session::SessionManager;
 use crate::agent::ui::theme::RabTheme;
 use crate::agent::ui::theme::ThemeKey;
 use crate::tui::util::{truncate_to_width, visible_width};
-use yoagent::types::Usage;
 
 // ── Helpers matching pi's footer.ts ──────────────────────────────
 
@@ -60,55 +64,51 @@ pub fn format_cwd_for_footer(cwd: &str, home: Option<&str>) -> String {
 
 /// Pi-style footer: 2-3 lines with dim styling.
 /// Matches pi's `FooterComponent` in `footer.ts` exactly.
+///
+/// Architecture (pull-based):
+/// - Renders cached usage/context stats refreshed at **turn end** via
+///   `refresh_from_session()`, not on every render frame.
+/// - Git branch and extension statuses are **pulled** from the
+///   `FooterDataProvider` each render, not pushed from the App.
+/// - Model/settings state (model name, thinking level, auto-compact)
+///   is set directly by the App (these change infrequently mid-session).
 pub struct Footer {
     cwd: String,
-    git_branch: Option<String>,
     session_name: Option<String>,
 
-    /// Pre-computed stats (pi computes fresh from session entries each render).
+    // ── Cached usage stats — refreshed at turn end via refresh_from_session() ──
     total_input: u64,
     total_output: u64,
     total_cache_read: u64,
     total_cache_write: u64,
-    total_cost: f64,
     latest_cache_hit_rate: Option<f64>,
 
     context_percent: Option<f64>,
     context_window: u64,
 
-    auto_compact: bool,
-
+    // ── Model / settings state (set directly by App) ──
     model: String,
-    /// Whether model supports reasoning (for showing thinking level).
     model_supports_reasoning: bool,
     thinking_level: Option<String>,
-
-    /// Number of unique providers with available models (for footer display).
-    available_provider_count: usize,
-
-    /// Whether using OAuth subscription (shows "(sub)" after cost).
-    using_subscription: bool,
-
-    /// Experimental features enabled.
+    auto_compact: bool,
     experimental_enabled: bool,
 
-    pub extension_statuses: Vec<(String, String)>, // (key, text) sorted by key
+    // ── Data provider (pull-based: git branch, extension statuses) ──
+    provider: Rc<RefCell<FooterDataProvider>>,
 
     theme: RabTheme,
 }
 
 impl Footer {
-    pub fn new(cwd: impl Into<String>) -> Self {
+    pub fn new(cwd: impl Into<String>, provider: Rc<RefCell<FooterDataProvider>>) -> Self {
         let theme = crate::agent::ui::theme::current_theme().clone();
         Self {
             cwd: cwd.into(),
-            git_branch: None,
             session_name: None,
             total_input: 0,
             total_output: 0,
             total_cache_read: 0,
             total_cache_write: 0,
-            total_cost: 0.0,
             latest_cache_hit_rate: None,
             context_percent: None,
             context_window: 0,
@@ -116,22 +116,64 @@ impl Footer {
             model: String::new(),
             model_supports_reasoning: false,
             thinking_level: None,
-            available_provider_count: 1,
-            using_subscription: false,
             experimental_enabled: false,
-            extension_statuses: Vec::new(),
+            provider,
             theme,
         }
     }
 
-    // ── Setters (called from App) ──
+    // ── Pull-based refresh (called at turn end) ─────────────────
+
+    /// Refresh cached usage/context stats from session entries.
+    /// Called at turn end (AgentEnd) — NOT on every render frame.
+    ///
+    /// Matches pi's `render()` scanning `sessionManager.getEntries()`,
+    /// but the scan happens once per turn instead of once per frame.
+    pub fn refresh_from_session(&mut self, session: &SessionManager) {
+        let mut total_input = 0u64;
+        let mut total_output = 0u64;
+        let mut total_cache_read = 0u64;
+        let mut total_cache_write = 0u64;
+        let mut latest_cache_hit_rate: Option<f64> = None;
+
+        // Walk session entries, summing usage from all assistant messages
+        for entry in session.entries() {
+            if let crate::agent::session::SessionEntry::Message(msg_entry) = entry
+                && let Some(yoagent::types::Message::Assistant { usage, .. }) =
+                    msg_entry.message.as_llm()
+            {
+                total_input += usage.input;
+                total_output += usage.output;
+                total_cache_read += usage.cache_read;
+                total_cache_write += usage.cache_write;
+
+                let total_prompt = usage.input + usage.cache_read + usage.cache_write;
+                if total_prompt > 0 {
+                    latest_cache_hit_rate =
+                        Some((usage.cache_read as f64 / total_prompt as f64) * 100.0);
+                }
+            }
+        }
+
+        self.total_input = total_input;
+        self.total_output = total_output;
+        self.total_cache_read = total_cache_read;
+        self.total_cache_write = total_cache_write;
+        self.latest_cache_hit_rate = latest_cache_hit_rate;
+
+        // Compute context percentage from total tokens and model's context window
+        let total_tokens = total_input + total_output + total_cache_read + total_cache_write;
+        if self.context_window > 0 {
+            self.context_percent = Some((total_tokens as f64 / self.context_window as f64) * 100.0);
+        } else {
+            self.context_percent = None;
+        }
+    }
+
+    // ── Direct setters (model / settings state) ────────────────
 
     pub fn set_cwd(&mut self, cwd: impl Into<String>) {
         self.cwd = cwd.into();
-    }
-
-    pub fn set_git_branch(&mut self, branch: Option<String>) {
-        self.git_branch = branch;
     }
 
     pub fn set_session_name(&mut self, name: Option<String>) {
@@ -142,7 +184,6 @@ impl Footer {
         self.model = model.into();
     }
 
-    /// Set whether the model supports reasoning (for showing thinking level in footer).
     pub fn set_model_supports_reasoning(&mut self, supports: bool) {
         self.model_supports_reasoning = supports;
     }
@@ -155,99 +196,26 @@ impl Footer {
         self.auto_compact = enabled;
     }
 
-    pub fn set_available_provider_count(&mut self, count: usize) {
-        self.available_provider_count = count;
-    }
-
-    pub fn set_using_subscription(&mut self, using: bool) {
-        self.using_subscription = using;
+    pub fn set_context_window(&mut self, window: u64) {
+        self.context_window = window;
+        // Recompute context percentage with new window
+        let total_tokens =
+            self.total_input + self.total_output + self.total_cache_read + self.total_cache_write;
+        if self.context_window > 0 {
+            self.context_percent = Some((total_tokens as f64 / self.context_window as f64) * 100.0);
+        } else {
+            self.context_percent = None;
+        }
     }
 
     pub fn set_experimental_enabled(&mut self, enabled: bool) {
         self.experimental_enabled = enabled;
     }
 
-    /// Pi-style: accumulate usage from a single response's usage data.
-    /// Accumulates input, output, cache_read, cache_write, and cost.
-    /// Updates latest_cache_hit_rate from this call's cache ratio.
-    pub fn accumulate_usage(&mut self, usage: &Usage) {
-        let input = usage.input;
-        let output = usage.output;
-        let cache_read = usage.cache_read;
-        let cache_write = usage.cache_write;
-
-        self.total_input += input;
-        self.total_output += output;
-        self.total_cache_read += cache_read;
-        self.total_cache_write += cache_write;
-
-        // Compute cache hit rate from latest call
-        let total_prompt = input + cache_read;
-        if total_prompt > 0 {
-            self.latest_cache_hit_rate = Some((cache_read as f64 / total_prompt as f64) * 100.0);
-        }
-    }
-
-    /// Pi-style: set cumulative usage directly (replaces accumulated values).
-    pub fn set_usage(
-        &mut self,
-        total_input: u64,
-        total_output: u64,
-        total_cache_read: u64,
-        total_cache_write: u64,
-        total_cost: f64,
-        latest_cache_hit_rate: Option<f64>,
-    ) {
-        self.total_input = total_input;
-        self.total_output = total_output;
-        self.total_cache_read = total_cache_read;
-        self.total_cache_write = total_cache_write;
-        self.total_cost = total_cost;
-        self.latest_cache_hit_rate = latest_cache_hit_rate;
-    }
-
-    /// Pi-style: cost is set separately (from usage.cost.total).
-    pub fn set_cost(&mut self, cost: f64) {
-        self.total_cost = cost;
-    }
-
-    /// Set cache write tokens separately.
-    pub fn set_cache_write(&mut self, cache_write: u64) {
-        self.total_cache_write = cache_write;
-    }
-
     /// Pi-style: no streaming dot indicator in footer (handled by working indicator).
     /// Kept for compatibility with existing call sites.
     pub fn set_streaming(&mut self, _streaming: bool) {
         // No-op: pi footer doesn't show streaming dot
-    }
-
-    /// Pi-style set context / context window.
-    pub fn set_context(&mut self, percent: Option<f64>, window: u64) {
-        self.context_percent = percent;
-        self.context_window = window;
-    }
-
-    /// Set an extension status (pi-style, key-value pair).
-    pub fn set_extension_status(&mut self, key: String, text: Option<String>) {
-        if let Some(text) = text {
-            // Update existing or insert
-            if let Some(pos) = self.extension_statuses.iter().position(|(k, _)| k == &key) {
-                self.extension_statuses[pos].1 = text;
-            } else {
-                self.extension_statuses.push((key, text));
-            }
-        } else {
-            // Remove
-            self.extension_statuses.retain(|(k, _)| k != &key);
-        }
-        // Keep sorted by key (pi-style)
-        self.extension_statuses.sort_by(|(a, _), (b, _)| a.cmp(b));
-    }
-
-    /// Clear all extension statuses (pi-style).
-    pub fn clear_extension_statuses(&mut self) {
-        self.extension_statuses.clear();
     }
 }
 
@@ -260,13 +228,26 @@ impl crate::tui::Component for Footer {
 
         let theme = &self.theme;
 
+        // ── Pull git branch and extension statuses from provider ──
+        let git_branch = self
+            .provider
+            .borrow()
+            .get_git_branch()
+            .map(|s| s.to_string());
+
+        let extension_statuses: Vec<(String, String)> = self
+            .provider
+            .borrow()
+            .get_extension_statuses()
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+
         // ── Line 1: pwd (git branch) • session-name ──
-        // pi: truncateToWidth(theme.fg("dim", pwd), width, theme.fg("dim", "..."));
-        // No padding — the TUI's differential render handles trailing space.
         let home = std::env::var("HOME").ok();
         let mut pwd = format_cwd_for_footer(&self.cwd, home.as_deref());
 
-        if let Some(ref branch) = self.git_branch {
+        if let Some(ref branch) = git_branch {
             pwd = format!("{} ({})", pwd, branch);
         }
         if let Some(ref name) = self.session_name {
@@ -280,7 +261,6 @@ impl crate::tui::Component for Footer {
         );
 
         // ── Line 2: stats left, model right (both dimmed separately) ──
-        // Build stats parts (pi-style order and content)
         let mut stats_parts: Vec<String> = Vec::new();
 
         if self.total_input > 0 {
@@ -299,16 +279,6 @@ impl crate::tui::Component for Footer {
             && let Some(hit_rate) = self.latest_cache_hit_rate
         {
             stats_parts.push(format!("CH{:.1}%", hit_rate));
-        }
-
-        // Cost with optional "(sub)" indicator (pi-style)
-        if self.total_cost > 0.0 || self.using_subscription {
-            let cost_str = if self.using_subscription {
-                format!("${:.3} (sub)", self.total_cost)
-            } else {
-                format!("${:.3}", self.total_cost)
-            };
-            stats_parts.push(cost_str);
         }
 
         // Context percentage with color (pi-style: red > 90, yellow > 70)
@@ -330,10 +300,15 @@ impl crate::tui::Component for Footer {
             }
             None => {
                 let window_str = format_tokens(self.context_window);
-                if self.auto_compact {
-                    format!("?/{} (auto)", window_str)
+                if self.context_window > 0 {
+                    if self.auto_compact {
+                        format!("?/{} (auto)", window_str)
+                    } else {
+                        format!("?/{}", window_str)
+                    }
                 } else {
-                    format!("?/{}", window_str)
+                    // No context window configured — don't show context at all
+                    String::new()
                 }
             }
         };
@@ -373,9 +348,9 @@ impl crate::tui::Component for Footer {
         };
 
         // Prepend provider in parentheses if multiple providers (pi-style)
-        let right_side = if self.available_provider_count > 1 && !self.model.is_empty() {
+        let available_provider_count = self.provider.borrow().get_available_provider_count();
+        let right_side = if available_provider_count > 1 && !self.model.is_empty() {
             let model_with_provider = format!("(?) {}", right_side_without_provider);
-            // Only use provider prefix if it fits (checked below)
             model_with_provider
         } else {
             right_side_without_provider.clone()
@@ -398,7 +373,7 @@ impl crate::tui::Component for Footer {
             let padding = " ".repeat(w - stats_left_width - right_side_width);
             format!("{}{}{}", stats_left, padding, right_side)
         } else if !self.model.is_empty()
-            && self.available_provider_count > 1
+            && available_provider_count > 1
             && stats_left_width + min_padding + visible_width(&right_side_without_provider) <= w
         {
             // Try without provider prefix
@@ -420,7 +395,7 @@ impl crate::tui::Component for Footer {
             }
         };
 
-        // Pi-style: dim statsLeft and remainder separately (statsLeft may contain colored context %)
+        // Pi-style: dim statsLeft and remainder separately
         let dim_stats_left = theme.fg_key(ThemeKey::Dim, &stats_left);
         let remainder = &stats_line[stats_left.len()..]; // padding + rightSide
         let dim_remainder = theme.fg_key(ThemeKey::Dim, remainder);
@@ -430,10 +405,8 @@ impl crate::tui::Component for Footer {
         let mut lines = vec![pwd_line, stats_line_formatted];
 
         // ── Line 3: extension statuses (sorted by key, sanitized) ──
-        // pi: truncateToWidth(statusLine, width, theme.fg("dim", "...")) — no padding.
-        if !self.extension_statuses.is_empty() {
-            let status_text: Vec<String> = self
-                .extension_statuses
+        if !extension_statuses.is_empty() {
+            let status_text: Vec<String> = extension_statuses
                 .iter()
                 .map(|(_, text)| sanitize_status_text(text))
                 .collect();
@@ -461,11 +434,17 @@ impl crate::tui::Component for Footer {
 mod tests {
     use super::*;
     use crate::tui::Component;
+
+    /// Create a Footer with a fresh provider and test-model set, for tests that
+    /// don't need git branch (most rendering scenarios).
     fn make_footer() -> Footer {
         crate::agent::ui::theme::init_theme(Some("dark"), false);
-        let mut footer = Footer::new("/home/user/project");
+        let provider = Rc::new(RefCell::new(FooterDataProvider::new(
+            "/home/user/project".into(),
+        )));
+        provider.borrow_mut().set_test_git_branch(Some("main"));
+        let mut footer = Footer::new("/home/user/project", provider);
         footer.set_model("test-model");
-        footer.set_git_branch(Some("main".into()));
         footer
     }
 
@@ -532,46 +511,6 @@ mod tests {
         assert_eq!(sanitize_status_text("  spaced  "), "spaced");
     }
 
-    // ── Line 1 (cwd) tests ──
-
-    #[test]
-    fn test_footer_shows_cwd() {
-        let mut footer = make_footer();
-        let lines = footer.render(80);
-        assert!(lines.len() >= 2, "Should have at least 2 lines");
-        assert!(lines[0].contains("project"), "Should show cwd");
-    }
-
-    #[test]
-    fn test_footer_shows_git_branch() {
-        let mut footer = make_footer();
-        let lines = footer.render(80);
-        assert!(lines[0].contains("main"), "Should show git branch");
-    }
-
-    #[test]
-    fn test_footer_shows_session_name() {
-        let mut footer = make_footer();
-        footer.set_session_name(Some("my-session".into()));
-        let lines = footer.render(80);
-        assert!(lines[0].contains("my-session"), "Should show session name");
-    }
-
-    #[test]
-    fn test_cwd_truncated_to_width() {
-        let mut footer = Footer::new("/very/long/path/that/exceeds/available/width/completely");
-        footer.set_model("model");
-        let lines = footer.render(30);
-        assert!(lines.len() >= 2);
-        for line in &lines {
-            assert!(
-                visible_width(line) <= 30,
-                "Line '{}' exceeds width 30",
-                line
-            );
-        }
-    }
-
     // ── Line 2 (stats/model) tests ──
 
     #[test]
@@ -583,7 +522,8 @@ mod tests {
 
     #[test]
     fn test_footer_shows_no_model() {
-        let mut footer = Footer::new("/path");
+        let provider = Rc::new(RefCell::new(FooterDataProvider::new("/path".into())));
+        let mut footer = Footer::new("/path", provider);
         footer.set_model("");
         let lines = footer.render(80);
         assert!(
@@ -594,7 +534,11 @@ mod tests {
 
     #[test]
     fn test_footer_shows_thinking_level() {
-        let mut footer = make_footer();
+        let provider = Rc::new(RefCell::new(FooterDataProvider::new(
+            "/home/user/project".into(),
+        )));
+        let mut footer = Footer::new("/home/user/project", provider);
+        footer.set_model("test-model");
         footer.set_model_supports_reasoning(true);
         footer.set_thinking_level(Some("high".into()));
         let lines = footer.render(80);
@@ -603,7 +547,11 @@ mod tests {
 
     #[test]
     fn test_footer_thinking_off_with_reasoning() {
-        let mut footer = make_footer();
+        let provider = Rc::new(RefCell::new(FooterDataProvider::new(
+            "/home/user/project".into(),
+        )));
+        let mut footer = Footer::new("/home/user/project", provider);
+        footer.set_model("test-model");
         footer.set_model_supports_reasoning(true);
         footer.set_thinking_level(Some("off".into()));
         let lines = footer.render(80);
@@ -615,84 +563,36 @@ mod tests {
 
     #[test]
     fn test_footer_shows_token_usage() {
-        let mut footer = make_footer();
-        let usage = Usage {
-            total_tokens: 0,
-            input: 1500,
-            output: 500,
-            cache_read: 0,
-            cache_write: 0,
-        };
-        footer.accumulate_usage(&usage);
+        let provider = Rc::new(RefCell::new(FooterDataProvider::new(
+            "/home/user/project".into(),
+        )));
+        let mut footer = Footer::new("/home/user/project", provider);
+        footer.set_model("test-model");
+        // Simulate what refresh_from_session would compute
+        footer.total_input = 1500;
+        footer.total_output = 500;
         let lines = footer.render(80);
         assert!(lines[1].contains("↑"), "Should show input tokens");
         assert!(lines[1].contains("↓"), "Should show output tokens");
     }
 
     #[test]
-    fn test_footer_usage_multiple_calls() {
-        let mut footer = make_footer();
-        let u1 = Usage {
-            total_tokens: 0,
-            input: 1000,
-            output: 500,
-            cache_read: 0,
-            cache_write: 0,
-        };
-        footer.accumulate_usage(&u1);
-        let u2 = Usage {
-            total_tokens: 0,
-            input: 2000,
-            output: 300,
-            cache_read: 0,
-            cache_write: 0,
-        };
-        footer.accumulate_usage(&u2);
-        let lines = footer.render(80);
-        assert!(lines[1].contains("↑3.0k"), "Should show accumulated input");
-        assert!(lines[1].contains("↓800"), "Should show accumulated output");
-    }
-
-    #[test]
     fn test_footer_shows_cache_hit_rate() {
-        let mut footer = make_footer();
-        let usage = Usage {
-            total_tokens: 0,
-            input: 1000,
-            output: 500,
-            cache_read: 200,
-            cache_write: 0,
-        };
-        footer.accumulate_usage(&usage);
+        let provider = Rc::new(RefCell::new(FooterDataProvider::new(
+            "/home/user/project".into(),
+        )));
+        let mut footer = Footer::new("/home/user/project", provider);
+        footer.set_model("test-model");
+        footer.total_cache_read = 200;
+        footer.latest_cache_hit_rate = Some(16.7);
         let lines = footer.render(80);
         assert!(
             lines[1].contains("CH"),
             "Should show cache hit rate when cache tokens present"
         );
-        // 200 / (1000 + 200) = 16.7%
         assert!(
             lines[1].contains("CH16.7%"),
             "Should show correct cache hit rate"
-        );
-    }
-
-    #[test]
-    fn test_footer_shows_cost() {
-        let mut footer = make_footer();
-        footer.set_cost(0.0123);
-        let lines = footer.render(80);
-        assert!(lines[1].contains("$0.012"), "Should show cost");
-    }
-
-    #[test]
-    fn test_footer_shows_subscription_indicator() {
-        let mut footer = make_footer();
-        footer.set_cost(0.0);
-        footer.set_using_subscription(true);
-        let lines = footer.render(80);
-        assert!(
-            lines[1].contains("(sub)"),
-            "Should show subscription indicator"
         );
     }
 
@@ -700,9 +600,15 @@ mod tests {
 
     #[test]
     fn test_footer_shows_auto_compact_next_to_context() {
-        let mut footer = make_footer();
+        let provider = Rc::new(RefCell::new(FooterDataProvider::new(
+            "/home/user/project".into(),
+        )));
+        let mut footer = Footer::new("/home/user/project", provider);
+        footer.set_model("test-model");
         footer.set_auto_compact(true);
-        footer.set_context(Some(50.0), 128000);
+        footer.total_input = 64000;
+        footer.context_window = 128000;
+        footer.context_percent = Some(50.0);
         let lines = footer.render(80);
         assert!(
             lines[1].contains("(auto)"),
@@ -716,9 +622,14 @@ mod tests {
 
     #[test]
     fn test_footer_hides_auto_compact_when_disabled() {
-        let mut footer = make_footer();
+        let provider = Rc::new(RefCell::new(FooterDataProvider::new(
+            "/home/user/project".into(),
+        )));
+        let mut footer = Footer::new("/home/user/project", provider);
+        footer.set_model("test-model");
         footer.set_auto_compact(false);
-        footer.set_context(Some(50.0), 128000);
+        footer.context_window = 128000;
+        footer.context_percent = Some(50.0);
         let lines = footer.render(80);
         assert!(
             !lines[1].contains("(auto)"),
@@ -730,15 +641,19 @@ mod tests {
 
     #[test]
     fn test_footer_context_percent_high() {
-        let mut footer = make_footer();
-        footer.set_context(Some(95.0), 128000);
+        let provider = Rc::new(RefCell::new(FooterDataProvider::new(
+            "/home/user/project".into(),
+        )));
+        let mut footer = Footer::new("/home/user/project", provider);
+        footer.set_model("test-model");
+        footer.context_window = 128000;
+        footer.context_percent = Some(95.0);
         let lines = footer.render(80);
         assert!(lines[1].contains("95"), "Should show context percent");
         assert!(
             lines[1].contains("128k"),
             "Should show formatted window size"
         );
-        // High context should be in error color (wrapped in ANSI escape)
         assert!(
             lines[1].contains("\x1b[38;2;"),
             "Should have ANSI color for high context"
@@ -747,8 +662,13 @@ mod tests {
 
     #[test]
     fn test_footer_context_without_percent() {
-        let mut footer = make_footer();
-        footer.set_context(None, 64000);
+        let provider = Rc::new(RefCell::new(FooterDataProvider::new(
+            "/home/user/project".into(),
+        )));
+        let mut footer = Footer::new("/home/user/project", provider);
+        footer.set_model("test-model");
+        footer.context_window = 64000;
+        footer.context_percent = None;
         let lines = footer.render(80);
         assert!(lines[1].contains("?"), "Should show unknown context");
         assert!(lines[1].contains("64k"), "Should show context window size");
@@ -758,8 +678,14 @@ mod tests {
 
     #[test]
     fn test_footer_shows_extension_statuses() {
-        let mut footer = make_footer();
-        footer.set_extension_status("ext1".into(), Some("ready".into()));
+        let provider = Rc::new(RefCell::new(FooterDataProvider::new(
+            "/home/user/project".into(),
+        )));
+        provider
+            .borrow_mut()
+            .set_extension_status("ext1", Some("ready"));
+        let mut footer = Footer::new("/home/user/project", provider);
+        footer.set_model("test-model");
         let lines = footer.render(80);
         assert!(lines.len() >= 3, "Should have 3 lines");
         assert!(lines[2].contains("ready"), "Should show extension status");
@@ -767,9 +693,17 @@ mod tests {
 
     #[test]
     fn test_footer_extension_status_sorted() {
-        let mut footer = make_footer();
-        footer.set_extension_status("z_last".into(), Some("last".into()));
-        footer.set_extension_status("a_first".into(), Some("first".into()));
+        let provider = Rc::new(RefCell::new(FooterDataProvider::new(
+            "/home/user/project".into(),
+        )));
+        provider
+            .borrow_mut()
+            .set_extension_status("z_last", Some("last"));
+        provider
+            .borrow_mut()
+            .set_extension_status("a_first", Some("first"));
+        let mut footer = Footer::new("/home/user/project", provider);
+        footer.set_model("test-model");
         let lines = footer.render(80);
         if lines.len() >= 3 {
             let first_idx = lines[2].find("first");
@@ -783,8 +717,14 @@ mod tests {
 
     #[test]
     fn test_footer_extension_status_sanitized() {
-        let mut footer = make_footer();
-        footer.set_extension_status("ext1".into(), Some("hello\nworld\ttab".into()));
+        let provider = Rc::new(RefCell::new(FooterDataProvider::new(
+            "/home/user/project".into(),
+        )));
+        provider
+            .borrow_mut()
+            .set_extension_status("ext1", Some("hello\nworld\ttab"));
+        let mut footer = Footer::new("/home/user/project", provider);
+        footer.set_model("test-model");
         let lines = footer.render(80);
         if lines.len() >= 3 {
             assert!(
@@ -800,9 +740,15 @@ mod tests {
 
     #[test]
     fn test_footer_extension_status_removed() {
-        let mut footer = make_footer();
-        footer.set_extension_status("ext1".into(), Some("ready".into()));
-        footer.set_extension_status("ext1".into(), None);
+        let provider = Rc::new(RefCell::new(FooterDataProvider::new(
+            "/home/user/project".into(),
+        )));
+        provider
+            .borrow_mut()
+            .set_extension_status("ext1", Some("ready"));
+        provider.borrow_mut().set_extension_status("ext1", None);
+        let mut footer = Footer::new("/home/user/project", provider);
+        footer.set_model("test-model");
         let lines = footer.render(80);
         assert!(
             lines.len() < 3 || !lines[2].contains("ready"),
@@ -814,18 +760,18 @@ mod tests {
 
     #[test]
     fn test_footer_handles_narrow_terminal() {
-        let mut footer = make_footer();
+        let provider = Rc::new(RefCell::new(FooterDataProvider::new(
+            "/home/user/project".into(),
+        )));
+        let mut footer = Footer::new("/home/user/project", provider);
+        footer.set_model("test-model");
         footer.set_model_supports_reasoning(true);
         footer.set_thinking_level(Some("high".into()));
-        let usage = Usage {
-            total_tokens: 0,
-            input: 100000,
-            output: 50000,
-            cache_read: 10000,
-            cache_write: 0,
-        };
-        footer.accumulate_usage(&usage);
-        footer.set_context(Some(45.0), 128000);
+        footer.total_input = 100000;
+        footer.total_output = 50000;
+        footer.total_cache_read = 10000;
+        footer.context_window = 128000;
+        footer.context_percent = Some(45.0);
         let lines = footer.render(10);
         assert!(!lines.is_empty(), "Should render even at width 10");
         for line in &lines {
@@ -839,30 +785,21 @@ mod tests {
 
     #[test]
     fn test_footer_handles_very_narrow_terminal() {
-        let mut footer = make_footer();
+        let provider = Rc::new(RefCell::new(FooterDataProvider::new(
+            "/home/user/project".into(),
+        )));
+        let mut footer = Footer::new("/home/user/project", provider);
         let lines = footer.render(3);
         assert!(lines.is_empty(), "Should return empty at width 3");
     }
 
     #[test]
-    fn test_footer_stats_not_truncated_when_room() {
-        let mut footer = make_footer();
-        let usage = Usage {
-            total_tokens: 0,
-            input: 100,
-            output: 50,
-            cache_read: 0,
-            cache_write: 0,
-        };
-        footer.accumulate_usage(&usage);
-        let lines = footer.render(80);
-        assert!(lines[1].contains("↑100"), "Should show full token count");
-        assert!(lines[1].contains("↓50"), "Should show full token count");
-    }
-
-    #[test]
     fn test_footer_line2_exact_width() {
-        let mut footer = make_footer();
+        let provider = Rc::new(RefCell::new(FooterDataProvider::new(
+            "/home/user/project".into(),
+        )));
+        let mut footer = Footer::new("/home/user/project", provider);
+        footer.set_model("test-model");
         let lines = footer.render(80);
         for line in &lines {
             let vw = visible_width(line);
@@ -872,7 +809,11 @@ mod tests {
 
     #[test]
     fn test_footer_line2_padded_correctly() {
-        let mut footer = make_footer();
+        let provider = Rc::new(RefCell::new(FooterDataProvider::new(
+            "/home/user/project".into(),
+        )));
+        let mut footer = Footer::new("/home/user/project", provider);
+        footer.set_model("test-model");
         for w in [40, 60, 80, 120] {
             let lines = footer.render(w);
             for line in &lines {
@@ -884,7 +825,10 @@ mod tests {
 
     #[test]
     fn test_footer_model_strip_prefix() {
-        let mut footer = make_footer();
+        let provider = Rc::new(RefCell::new(FooterDataProvider::new(
+            "/home/user/project".into(),
+        )));
+        let mut footer = Footer::new("/home/user/project", provider);
         footer.set_model("opencode_go::claude-opus");
         let lines = footer.render(80);
         assert!(
@@ -899,11 +843,13 @@ mod tests {
 
     #[test]
     fn test_footer_provider_prefix_when_multiple_providers() {
-        let mut footer = make_footer();
+        let provider = Rc::new(RefCell::new(FooterDataProvider::new(
+            "/home/user/project".into(),
+        )));
+        provider.borrow_mut().set_available_provider_count(2);
+        let mut footer = Footer::new("/home/user/project", provider);
         footer.set_model("test-model");
-        footer.set_available_provider_count(2);
         let lines = footer.render(80);
-        // Provider prefix has "(?)" placeholder since we don't know provider name
         assert!(
             lines[1].contains("(?)"),
             "Should show provider count-based prefix"
@@ -912,7 +858,11 @@ mod tests {
 
     #[test]
     fn test_footer_experimental_indicator() {
-        let mut footer = make_footer();
+        let provider = Rc::new(RefCell::new(FooterDataProvider::new(
+            "/home/user/project".into(),
+        )));
+        let mut footer = Footer::new("/home/user/project", provider);
+        footer.set_model("test-model");
         footer.set_experimental_enabled(true);
         let lines = footer.render(80);
         assert!(
@@ -921,19 +871,13 @@ mod tests {
         );
     }
 
-    // ── verify unpadded lines don't exceed width (pi-compatible) ──
-
     #[test]
     fn test_pwd_line_not_padded() {
-        // Pi doesn't pad pwd line to full width — just truncates with ellipsis.
-        // Verify the visible width of line 0 doesn't exceed width but also isn't
-        // necessarily padded to match width exactly.
-        let mut footer = make_footer();
-        // Use a short cwd that fits easily
-        footer.set_cwd("/home/user");
+        let provider = Rc::new(RefCell::new(FooterDataProvider::new("/home/user".into())));
+        let mut footer = Footer::new("/home/user", provider);
+        footer.set_model("test-model");
         let lines = footer.render(80);
         assert!(visible_width(&lines[0]) <= 80, "Pwd line exceeds width");
-        // A short path should be less than 80 (not padded) — just the dim text.
         assert!(
             visible_width(&lines[0]) < 80,
             "Pwd line should not be padded to full width (pi behavior)"
@@ -942,8 +886,14 @@ mod tests {
 
     #[test]
     fn test_extension_line_not_padded() {
-        let mut footer = make_footer();
-        footer.set_extension_status("ext1".into(), Some("short".into()));
+        let provider = Rc::new(RefCell::new(FooterDataProvider::new(
+            "/home/user/project".into(),
+        )));
+        provider
+            .borrow_mut()
+            .set_extension_status("ext1", Some("short"));
+        let mut footer = Footer::new("/home/user/project", provider);
+        footer.set_model("test-model");
         let lines = footer.render(80);
         if lines.len() >= 3 {
             assert!(

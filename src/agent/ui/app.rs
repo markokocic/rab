@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use crate::agent::AgentSession;
 use crate::agent::extension::{CommandResult, Extension};
+use crate::agent::footer_data_provider::FooterDataProvider;
 use crate::agent::session::SessionManager;
 
 use crate::agent::ui::chat_editor::{ChatEditor, InputAction};
@@ -42,7 +43,6 @@ pub struct AppConfig {
     pub extensions: Vec<Box<dyn Extension>>,
     pub cwd: PathBuf,
     pub thinking_level: Option<String>,
-    pub git_branch: Option<String>,
     pub available_models: Vec<String>,
     pub hide_thinking: bool,
     pub collapse_tool_output: bool,
@@ -132,6 +132,9 @@ pub struct App {
 
     /// Footer (shared ownership - App mutates, TUI.root renders).
     footer: Rc<RefCell<Footer>>,
+
+    /// Footer data provider (pull-based: git branch, extension statuses).
+    footer_provider: Rc<RefCell<FooterDataProvider>>,
 
     /// Pending tool executions keyed by tool call ID.
     /// Used to update ToolExecComponent when ToolResult arrives (pi's `pendingTools` Map).
@@ -259,8 +262,12 @@ impl App {
 
         let editor = Rc::new(RefCell::new(editor));
 
-        let mut footer = Footer::new(config.cwd.to_string_lossy().to_string());
-        footer.set_git_branch(config.git_branch.clone());
+        let footer_provider = Rc::new(RefCell::new(FooterDataProvider::new(config.cwd.clone())));
+
+        let mut footer = Footer::new(
+            config.cwd.to_string_lossy().to_string(),
+            footer_provider.clone(),
+        );
         footer.set_model(&config.model);
         footer.set_model_supports_reasoning(config.model_supports_reasoning);
         footer.set_thinking_level(config.thinking_level.clone());
@@ -354,6 +361,7 @@ impl App {
             bash_abort_handle: None,
             session: Some(agent_session),
             footer,
+            footer_provider,
             working: WorkingIndicator::new(),
             extensions: Arc::new(config.extensions),
             steering_queue: Arc::new(std::sync::Mutex::new(Vec::new())),
@@ -393,22 +401,7 @@ impl App {
     /// Refresh git branch for footer display.
     /// Called on AgentStart to match pi's FooterDataProvider.onBranchChange.
     fn refresh_git_branch(&self) {
-        if let Ok(output) = std::process::Command::new("git")
-            .args([
-                "-C",
-                &self.cwd.to_string_lossy(),
-                "rev-parse",
-                "--abbrev-ref",
-                "HEAD",
-            ])
-            .output()
-            && output.status.success()
-        {
-            let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if !branch.is_empty() {
-                self.footer.borrow_mut().set_git_branch(Some(branch));
-            }
-        }
+        self.footer_provider.borrow_mut().refresh_git_branch();
     }
 }
 
@@ -2389,6 +2382,10 @@ fn handle_agent_event(app: &mut App, event: yoagent::types::AgentEvent) {
             // Safety net: persist any remaining messages not captured on message_end
             if let Some(ref mut s) = app.session {
                 s.on_agent_end(&messages);
+            }
+            // Refresh footer cached stats from session at turn end (pull-based)
+            if let Some(ref s) = app.session {
+                app.footer.borrow_mut().refresh_from_session(s.session());
             }
         }
         E::MessageEnd { message } => {

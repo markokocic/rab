@@ -495,14 +495,12 @@ async fn main() -> anyhow::Result<()> {
     let thinking_level_str = thinking_level.as_deref().or(Some("xhigh"));
 
     if message_parts.is_empty() {
-        let git_branch = get_git_branch(&cwd);
         let config = ui::AppConfig {
             model,
             system_prompt,
             extensions,
             cwd,
             thinking_level: thinking_level_str.map(|s| s.to_string()),
-            git_branch,
             available_models,
             hide_thinking: settings.hide_thinking.unwrap_or(true),
             collapse_tool_output: settings.collapse_tool_output.unwrap_or(true),
@@ -702,21 +700,6 @@ async fn run_print_mode(
     }
 
     Ok(())
-}
-
-fn get_git_branch(cwd: &std::path::Path) -> Option<String> {
-    let output = std::process::Command::new("git")
-        .args(["branch", "--show-current"])
-        .current_dir(cwd)
-        .output()
-        .ok()?;
-    if output.status.success() {
-        let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        if !branch.is_empty() {
-            return Some(branch);
-        }
-    }
-    None
 }
 
 /// Get the agent config directory (~/.rab/agent).

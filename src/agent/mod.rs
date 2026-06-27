@@ -3,6 +3,7 @@ pub mod branch_summary;
 pub mod compaction;
 pub mod context_files;
 pub mod extension;
+pub mod footer_data_provider;
 pub mod session;
 pub mod session_repo;
 pub mod session_storage;
