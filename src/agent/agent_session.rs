@@ -1,28 +1,16 @@
 use crate::agent::branch_summary::{collect_entries_for_branch_summary, generate_branch_summary};
 use crate::agent::compaction::{self, CompactionSettings, compact, prepare_compaction};
-use crate::agent::extension::Extension;
 use crate::agent::session::SessionManager;
 use crate::agent::types::{message_text, tool_result_message, user_message};
 use std::collections::HashSet;
-use std::sync::Arc;
-use std::sync::Mutex as StdMutex;
-use tokio::sync::mpsc;
-use tokio_util::sync::CancellationToken;
-use yoagent::agent::Agent;
-use yoagent::provider::OpenAiCompatProvider;
-use yoagent::provider::model::ModelConfig;
-use yoagent::types::AgentEvent;
 use yoagent::types::AgentMessage;
-use yoagent::types::AgentTool;
 use yoagent::types::Content;
-use yoagent::types::ThinkingLevel;
 
-/// Lifecycle layer that bridges the agent loop and session manager.
+/// Bridges the agent loop events and session persistence.
 ///
 /// Handles:
 /// - Event-driven message persistence (persist tool results as they arrive)
 /// - Automatic model/thinking/tool change detection and persistence
-/// - Lifecycle hooks for agent start/end
 ///
 /// Usage:
 /// ```ignore
@@ -35,16 +23,6 @@ use yoagent::types::ThinkingLevel;
 /// agent_session.on_model_change("opencode_go", "deepseek-v4-pro");
 /// agent_session.on_thinking_level_change("high");
 /// ```
-///
-/// Build parameters for initializing and recreating the Agent.
-#[derive(Clone)]
-pub struct AgentBuildParams {
-    pub model: String,
-    pub api_key: String,
-    pub system_prompt: String,
-    pub thinking_level: ThinkingLevel,
-    pub model_config: ModelConfig,
-}
 pub struct AgentSession {
     session: SessionManager,
     /// Last known model for change detection.
@@ -66,20 +44,6 @@ pub struct AgentSession {
     model_name: String,
     /// API key for compaction LLM calls.
     compaction_api_key: Option<String>,
-
-    // ── Persistent agent (pi-compatible lifecycle) ──
-    /// The Agent, stored between turns. Taken on prompt(), returned on completion.
-    agent_slot: Arc<StdMutex<Option<Agent>>>,
-    /// Cancellation token for the current turn's agent loop.
-    cancel_token: Arc<StdMutex<Option<CancellationToken>>>,
-    /// JoinHandle of the current turn's spawned task (for abort).
-    current_turn_handle: Arc<StdMutex<Option<tokio::task::JoinHandle<()>>>>,
-    /// Persistent event sender (cloned to spawned tasks).
-    event_tx: Option<tokio::sync::mpsc::UnboundedSender<AgentEvent>>,
-    /// Extensions (used to rebuild tools if agent is recreated after abort).
-    extensions: Option<Arc<Vec<Box<dyn Extension>>>>,
-    /// Stored build parameters for recreating the agent after abort.
-    build_params: Option<AgentBuildParams>,
 }
 
 impl AgentSession {
@@ -113,12 +77,6 @@ impl AgentSession {
             context_window: 200_000,
             model_name: String::new(),
             compaction_api_key: None,
-            agent_slot: Arc::new(StdMutex::new(None)),
-            cancel_token: Arc::new(StdMutex::new(None)),
-            current_turn_handle: Arc::new(StdMutex::new(None)),
-            event_tx: None,
-            extensions: None,
-            build_params: None,
         }
     }
 
@@ -164,296 +122,6 @@ impl AgentSession {
     /// Consume the AgentSession and return the inner SessionManager.
     pub fn into_session(self) -> SessionManager {
         self.session
-    }
-
-    // ── Persistent agent lifecycle (pi-compatible) ─────────────────
-
-    /// Initialize the persistent Agent. Call once before the first turn.
-    /// The agent is stored in `agent_slot` and reused across turns.
-    pub fn init_agent(
-        &mut self,
-        event_tx: mpsc::UnboundedSender<AgentEvent>,
-        extensions: Arc<Vec<Box<dyn Extension>>>,
-        params: AgentBuildParams,
-        initial_messages: Vec<AgentMessage>,
-    ) {
-        self.build_params = Some(params.clone());
-        self.event_tx = Some(event_tx);
-        self.extensions = Some(extensions);
-
-        let tools = self._collect_tools();
-        let agent = Self::_build_agent(
-            &params.model,
-            &params.api_key,
-            &params.system_prompt,
-            params.thinking_level,
-            &params.model_config,
-            tools,
-            initial_messages,
-        );
-        self.agent_slot.lock().unwrap().replace(agent);
-    }
-
-    /// Check whether the persistent agent has been initialized.
-    pub fn is_agent_initialized(&self) -> bool {
-        self.agent_slot.lock().unwrap().is_some()
-    }
-
-    /// Send a prompt to the agent (pi-compatible).
-    /// Takes the agent from the slot, spawns a task, returns it when done.
-    /// If the agent was lost (abort), recreates it from stored params.
-    pub fn prompt(&self, message: String) {
-        let slot = self.agent_slot.clone();
-        let cancel_token = self.cancel_token.clone();
-        let handle_arc = self.current_turn_handle.clone();
-        let event_tx = self.event_tx.clone();
-        let build_params = self.build_params.clone();
-        let extensions = self.extensions.clone();
-
-        let handle_arc2 = handle_arc.clone();
-        let build_params2 = build_params.clone();
-        let handle = tokio::spawn(async move {
-            let mut agent = slot.lock().unwrap().take().unwrap_or_else(|| {
-                // Agent lost (aborted) — recreate from stored params
-                let params = build_params.expect("init_agent must be called before prompt");
-                let tools: Vec<Box<dyn AgentTool>> = extensions
-                    .as_ref()
-                    .map(|exts| {
-                        exts.iter()
-                            .flat_map(|ext| ext.tools())
-                            .map(|twm| Box::new(twm) as Box<dyn AgentTool>)
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                Self::_build_agent(
-                    &params.model,
-                    &params.api_key,
-                    &params.system_prompt,
-                    params.thinking_level,
-                    &params.model_config,
-                    tools,
-                    Vec::new(),
-                )
-            });
-
-            // Create a cancellation token and store it so abort() can cancel
-            // cooperatively instead of just killing the outer JoinHandle.
-            let cancel = tokio_util::sync::CancellationToken::new();
-            cancel_token.lock().unwrap().replace(cancel.clone());
-
-            let (yo_tx, mut yo_rx) = mpsc::unbounded_channel();
-
-            let inner_handle = tokio::spawn(async move {
-                agent.prompt_with_sender(message, yo_tx).await;
-                agent
-            });
-
-            // Forward events until AgentEnd or cancellation
-            let mut aborted_by_cancel = false;
-            loop {
-                tokio::select! {
-                    biased;
-                    _ = cancel.cancelled() => {
-                        // abort() was called — abort inner task and send synthetic AgentEnd
-                        inner_handle.abort();
-                        if let Some(ref tx) = event_tx {
-                            tx.send(AgentEvent::AgentEnd { messages: vec![] }).ok();
-                            tx.send(AgentEvent::ProgressMessage {
-                                tool_call_id: String::new(),
-                                tool_name: String::new(),
-                                text: "\n\u{26a0} Agent loop aborted.\n".to_string(),
-                            }).ok();
-                        }
-                        aborted_by_cancel = true;
-                        break;
-                    }
-                    event = yo_rx.recv() => {
-                        match event {
-                            Some(event) => {
-                                let is_end = matches!(&event, AgentEvent::AgentEnd { .. });
-                                if let Some(ref tx) = event_tx {
-                                    tx.send(event).ok();
-                                }
-                                if is_end {
-                                    break;
-                                }
-                            }
-                            None => {
-                                // Channel closed — agent loop finished.
-                                // If the last event wasn't AgentEnd (e.g. panic before
-                                // agent_loop could send it), send a synthetic one so
-                                // the UI doesn't hang with is_streaming=true.
-                                if let Some(ref tx) = event_tx {
-                                    tx.send(AgentEvent::AgentEnd { messages: vec![] }).ok();
-                                }
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Get agent back (or recreate if inner task was aborted/panicked)
-            let agent = if aborted_by_cancel {
-                // Agent was lost (inner task aborted). Create fresh from stored params.
-                let params = build_params2.expect("build_params must be set");
-                let tools: Vec<Box<dyn AgentTool>> = extensions
-                    .as_ref()
-                    .map(|exts| {
-                        exts.iter()
-                            .flat_map(|ext| ext.tools())
-                            .map(|twm| Box::new(twm) as Box<dyn AgentTool>)
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                Self::_build_agent(
-                    &params.model,
-                    &params.api_key,
-                    &params.system_prompt,
-                    params.thinking_level,
-                    &params.model_config,
-                    tools,
-                    Vec::new(),
-                )
-            } else {
-                match inner_handle.await {
-                    Ok(agent) => agent,
-                    Err(_) => {
-                        // Send synthetic AgentEnd to unstick the UI
-                        if let Some(ref tx) = event_tx {
-                            tx.send(AgentEvent::AgentEnd { messages: vec![] }).ok();
-                            tx.send(AgentEvent::ProgressMessage {
-                                tool_call_id: String::new(),
-                                tool_name: String::new(),
-                                text: "\n\u{26a0} Agent loop ended unexpectedly — it may have crashed or encountered a network error.\n".to_string(),
-                            }).ok();
-                        }
-                        // Task aborted/panicked — create a fresh agent
-                        let params = build_params2.expect("build_params must be set");
-                        let tools: Vec<Box<dyn AgentTool>> = extensions
-                            .as_ref()
-                            .map(|exts| {
-                                exts.iter()
-                                    .flat_map(|ext| ext.tools())
-                                    .map(|twm| Box::new(twm) as Box<dyn AgentTool>)
-                                    .collect()
-                            })
-                            .unwrap_or_default();
-                        Self::_build_agent(
-                            &params.model,
-                            &params.api_key,
-                            &params.system_prompt,
-                            params.thinking_level,
-                            &params.model_config,
-                            tools,
-                            Vec::new(),
-                        )
-                    }
-                }
-            };
-
-            slot.lock().unwrap().replace(agent);
-            handle_arc2.lock().unwrap().take();
-            // cancel_token is consumed by abort() or the next prompt() call
-        });
-
-        *handle_arc.lock().unwrap() = Some(handle);
-    }
-
-    /// Push a steering message into the agent's built-in queue.
-    /// Call this before `prompt` to drain app-level queues into the agent.
-    pub fn steer(&self, msg: AgentMessage) {
-        let mut slot = self.agent_slot.lock().unwrap();
-        if let Some(ref mut agent) = *slot {
-            agent.steer(msg);
-        }
-    }
-
-    /// Push a follow-up message into the agent's built-in queue.
-    pub fn follow_up(&self, msg: AgentMessage) {
-        let mut slot = self.agent_slot.lock().unwrap();
-        if let Some(ref mut agent) = *slot {
-            agent.follow_up(msg);
-        }
-    }
-
-    /// Abort the current turn. The agent is lost and will be recreated on the next turn.
-    pub fn abort(&self) {
-        // Cancel the token first (cooperative cancellation). The spawned task
-        // checks this inside the forwarding loop and aborts the inner agent
-        // loop cleanly, sending a synthetic AgentEnd to unstick the UI.
-        let guard = self.cancel_token.lock().unwrap();
-        if let Some(token) = guard.as_ref() {
-            token.cancel();
-        }
-        drop(guard);
-
-        // Abort the JoinHandle as a fallback (forceful cancellation).
-        // If the token was already consumed (normal completion), this is a no-op.
-        if let Some(handle) = self.current_turn_handle.lock().unwrap().take() {
-            handle.abort();
-        }
-    }
-
-    /// Check whether the current turn's spawned task is still running.
-    /// Returns false when no turn is active or the task has completed/aborted.
-    /// Used by the UI to decide whether to queue a message or start a fresh loop.
-    pub fn is_turn_running(&self) -> bool {
-        let guard = self.current_turn_handle.lock().unwrap();
-        match guard.as_ref() {
-            Some(handle) => !handle.is_finished(),
-            None => false,
-        }
-    }
-
-    /// Set the model on the idle agent (pi-compatible: setModel).
-    pub fn set_model(&mut self, model: &str) {
-        if let Some(ref mut params) = self.build_params {
-            params.model = model.to_string();
-        }
-        let mut slot = self.agent_slot.lock().unwrap();
-        if let Some(ref mut agent) = *slot {
-            agent.model = model.to_string();
-        }
-    }
-
-    /// Set the thinking level on the idle agent (pi-compatible: setThinkingLevel).
-    pub fn set_thinking_level(&mut self, level: ThinkingLevel) {
-        let mut slot = self.agent_slot.lock().unwrap();
-        if let Some(ref mut agent) = *slot {
-            agent.thinking_level = level;
-        }
-    }
-
-    fn _collect_tools(&self) -> Vec<Box<dyn AgentTool>> {
-        self.extensions
-            .as_ref()
-            .map(|exts| {
-                exts.iter()
-                    .flat_map(|ext| ext.tools())
-                    .map(|twm| Box::new(twm) as Box<dyn AgentTool>)
-                    .collect()
-            })
-            .unwrap_or_default()
-    }
-
-    fn _build_agent(
-        model: &str,
-        api_key: &str,
-        system_prompt: &str,
-        thinking_level: ThinkingLevel,
-        model_config: &ModelConfig,
-        tools: Vec<Box<dyn AgentTool>>,
-        initial_messages: Vec<AgentMessage>,
-    ) -> Agent {
-        Agent::new(OpenAiCompatProvider)
-            .with_model(model)
-            .with_api_key(api_key)
-            .with_model_config(model_config.clone())
-            .with_system_prompt(system_prompt)
-            .with_thinking(thinking_level)
-            .with_messages(initial_messages)
-            .with_tools(tools)
     }
 
     // ── Model / thinking / tool change tracking ─────────────────
@@ -696,15 +364,6 @@ impl AgentSession {
             &self.model_name,
         )
         .await
-    }
-
-    /// Clean up resources held by the current session (pi-compatible: dispose).
-    /// Should be called before switching to a different session or disposing.
-    pub fn dispose(&mut self) {
-        // Reset persisted message tracking (they belong to the old session)
-        self.persisted_message_ids.clear();
-        self.persisted_tool_call_ids.clear();
-        // Provider connections will be dropped when the Arc is cleaned up
     }
 
     /// Move the leaf pointer to an earlier entry (starts a new branch).

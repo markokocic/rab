@@ -77,9 +77,6 @@ pub struct App {
     /// Available models for the model selector.
     available_models: Vec<String>,
 
-    /// Conversation history (AgentMessage).
-    conversation: Vec<yoagent::types::AgentMessage>,
-
     /// Component-based chat area - mirrors pi's `this.chatContainer`.
     /// Components are added here in handle_agent_event instead of pushing to messages.
     pub chat_container: std::rc::Rc<std::cell::RefCell<crate::tui::Container>>,
@@ -89,8 +86,6 @@ pub struct App {
     pub pending_section: std::rc::Rc<std::cell::RefCell<crate::tui::components::DynamicLines>>,
     /// Status text section (transient, dim).
     pub status_section: std::rc::Rc<std::cell::RefCell<crate::tui::components::DynamicLines>>,
-    /// Queued messages section.
-    pub queued_section: std::rc::Rc<std::cell::RefCell<crate::tui::components::DynamicLines>>,
     /// Working indicator section.
     pub working_section: std::rc::Rc<std::cell::RefCell<crate::tui::components::DynamicLines>>,
 
@@ -103,6 +98,12 @@ pub struct App {
 
     /// Streaming state.
     is_streaming: bool,
+    /// Pending agent submission (set by sync handle_input, consumed by async main loop).
+    pending_submit: Option<String>,
+    /// The reused Agent (accumulates messages across turns, supports mid-turn steering).
+    agent: Option<yoagent::agent::Agent>,
+    /// Lightweight forwarding task: agent's event receiver → app.event_tx.
+    forward_handle: Option<tokio::task::JoinHandle<()>>,
     pending_text: Option<String>,
     pending_thinking: Option<String>,
 
@@ -172,10 +173,6 @@ pub struct App {
 
     /// Steering queue: messages delivered after current turn's tool calls finish,
     /// before the next LLM call. Shared with the agent loop.
-    steering_queue: Arc<std::sync::Mutex<Vec<yoagent::types::AgentMessage>>>,
-    /// Follow-up queue: messages delivered only after the agent has no more
-    /// tool calls (fully idle). Shared with the agent loop.
-    follow_up_queue: Arc<std::sync::Mutex<Vec<yoagent::types::AgentMessage>>>,
     /// Tool execution mode (parallel by default).
     #[allow(dead_code)]
     tool_execution: yoagent::types::ToolExecutionStrategy,
@@ -324,7 +321,6 @@ impl App {
             theme,
             commands,
             available_models: config.available_models,
-            conversation: history_messages,
             chat_container,
             pending_tools: HashMap::new(),
             tool_call_start_times: HashMap::new(),
@@ -337,9 +333,6 @@ impl App {
             status_section: std::rc::Rc::new(std::cell::RefCell::new(
                 crate::tui::components::DynamicLines::new(),
             )),
-            queued_section: std::rc::Rc::new(std::cell::RefCell::new(
-                crate::tui::components::DynamicLines::new(),
-            )),
             working_section: std::rc::Rc::new(std::cell::RefCell::new(
                 crate::tui::components::DynamicLines::new(),
             )),
@@ -347,6 +340,9 @@ impl App {
             event_tx: tx,
             event_rx: rx,
             is_streaming: false,
+            pending_submit: None,
+            agent: None,
+            forward_handle: None,
             pending_text: None,
             pending_command_result: None,
             pending_thinking: None,
@@ -364,8 +360,6 @@ impl App {
             footer_provider,
             working: WorkingIndicator::new(),
             extensions: Arc::new(config.extensions),
-            steering_queue: Arc::new(std::sync::Mutex::new(Vec::new())),
-            follow_up_queue: Arc::new(std::sync::Mutex::new(Vec::new())),
             tool_execution: config.tool_execution,
             skills: config.skills,
             session_info: config.session_info,
@@ -450,10 +444,6 @@ pub async fn run(config: AppConfig, session: SessionManager) -> anyhow::Result<(
             as std::rc::Rc<std::cell::RefCell<dyn crate::tui::Component>>),
     ));
     tui.root.add_child(std::boxed::Box::new(
-        crate::tui::components::RcRefCellComponent(app.queued_section.clone()
-            as std::rc::Rc<std::cell::RefCell<dyn crate::tui::Component>>),
-    ));
-    tui.root.add_child(std::boxed::Box::new(
         crate::tui::components::RcRefCellComponent(app.working_section.clone()
             as std::rc::Rc<std::cell::RefCell<dyn crate::tui::Component>>),
     ));
@@ -516,6 +506,26 @@ pub async fn run(config: AppConfig, session: SessionManager) -> anyhow::Result<(
         }
         if had_event {
             dirty = true;
+        }
+
+        // Handle pending agent submission (async, after events are drained)
+        if let Some(text) = app.pending_submit.take() {
+            start_agent_loop(&mut app, text).await;
+            dirty = true;
+        }
+
+        // Recover Agent state after a completed turn
+        if let Some(handle) = app.forward_handle.as_ref()
+            && handle.is_finished()
+        {
+            app.forward_handle.take();
+            if let Some(ref mut agent) = app.agent {
+                // agent.prompt() already updated agent.messages internally;
+                // finish() awaits the spawned task to restore tools.
+                // The JoinHandle is resolved, so this returns instantly.
+                agent.finish().await;
+            }
+            // is_streaming was already set to false by handle_agent_event(AgentEnd)
         }
 
         // Handle pending command results that need TUI access (overlays, etc.)
@@ -625,12 +635,16 @@ pub async fn run(config: AppConfig, session: SessionManager) -> anyhow::Result<(
             app.working.stop();
             app.footer.borrow_mut().set_streaming(false);
             // Abort the stuck agent so a new prompt doesn't run alongside it
-            if let Some(ref s) = app.session {
-                s.abort();
+            if let Some(ref agent) = app.agent {
+                agent.abort();
+            }
+            if let Some(handle) = app.forward_handle.take() {
+                handle.abort();
             }
             if let Some(handle) = app.bash_abort_handle.take() {
                 handle.abort();
             }
+            app.agent = None;
             // Show a persistent error message in the chat so the user
             // understands why the agent stopped.
             chat_add(
@@ -676,7 +690,6 @@ fn compose_ui(app: &mut App, width: usize) {
         // Clear chat container when picker is active
         app.chat_container.borrow_mut().clear();
         app.status_section.borrow_mut().set_lines(vec![]);
-        app.queued_section.borrow_mut().set_lines(vec![]);
         app.working_section.borrow_mut().set_lines(vec![]);
         return;
     }
@@ -732,48 +745,6 @@ fn compose_ui(app: &mut App, width: usize) {
         status_lines.push(crate::agent::ui::render_utils::pad_to_width(&line, width));
     }
     app.status_section.borrow_mut().set_lines(status_lines);
-
-    // ── Queued messages (pi-style: shown between chat and editor) ──
-    // Shows both steering and follow-up queue contents.
-    let mut queued_lines = Vec::new();
-    let steer_count = {
-        let q = app.steering_queue.lock().unwrap();
-        q.len()
-    };
-    let follow_count = {
-        let q = app.follow_up_queue.lock().unwrap();
-        q.len()
-    };
-    if steer_count > 0 {
-        let line = app.theme.fg(
-            "dim",
-            &format!(
-                " ◷ {} steer message{} pending",
-                steer_count,
-                if steer_count == 1 { "" } else { "s" }
-            ),
-        );
-        queued_lines.push(crate::agent::ui::render_utils::pad_to_width(&line, width));
-    }
-    if follow_count > 0 {
-        let line = app.theme.fg(
-            "dim",
-            &format!(
-                " ◷ {} follow-up message{} pending",
-                follow_count,
-                if follow_count == 1 { "" } else { "s" }
-            ),
-        );
-        queued_lines.push(crate::agent::ui::render_utils::pad_to_width(&line, width));
-    }
-    if steer_count > 0 || follow_count > 0 {
-        let hint = app.theme.fg_key(
-            ThemeKey::Dim,
-            " ↳ Esc to abort, Alt+↑ to restore follow-ups",
-        );
-        queued_lines.push(crate::agent::ui::render_utils::pad_to_width(&hint, width));
-    }
-    app.queued_section.borrow_mut().set_lines(queued_lines);
 
     // ── Working indicator (pi-style: blank line + spinner before editor) ──
     let mut working_lines = Vec::new();
@@ -884,9 +855,6 @@ fn handle_input(app: &mut App, tui: &mut TUI, term: &mut ProcessTerminal, key: &
         InputAction::FollowUp(text) => {
             handle_follow_up(app, text);
         }
-        InputAction::Dequeue => {
-            handle_dequeue(app);
-        }
         InputAction::CompactToggle => {
             handle_compact_toggle(app);
         }
@@ -942,14 +910,6 @@ fn handle_thinking_cycle(app: &mut App) {
     // Record the change in the session and update the persistent agent
     if let Some(ref mut agent_session) = app.session {
         agent_session.on_thinking_level_change(next);
-        let thinking = match next {
-            "off" => yoagent::types::ThinkingLevel::Off,
-            "low" => yoagent::types::ThinkingLevel::Low,
-            "medium" => yoagent::types::ThinkingLevel::Medium,
-            "high" | "xhigh" => yoagent::types::ThinkingLevel::High,
-            _ => yoagent::types::ThinkingLevel::High,
-        };
-        agent_session.set_thinking_level(thinking);
     }
     app.status_text = Some(format!("Thinking level: {}", next));
 }
@@ -976,7 +936,6 @@ fn handle_model_cycle(app: &mut App, dir: isize) {
     // Record the change in the session and update the persistent agent
     if let Some(ref mut agent_session) = app.session {
         agent_session.on_model_change("opencode-go", &app.model);
-        agent_session.set_model(&app.model);
     }
     app.status_text = Some(format!("Model: {}", app.model));
 }
@@ -1106,37 +1065,18 @@ fn handle_editor_external(app: &mut App, tui: &mut TUI, term: &mut ProcessTermin
 /// (delivered only after agent has no more tool calls). When idle, submits immediately.
 fn handle_follow_up(app: &mut App, text: String) {
     if app.is_streaming {
-        app.follow_up_queue
-            .lock()
-            .unwrap()
-            .push(crate::agent::types::user_message(text));
-        app.status_text = Some("Message queued - will send when agent finishes".into());
-    } else {
-        // Not streaming - submit immediately
-        submit_message(app, text);
+        if let Some(ref agent) = app.agent
+            && agent.is_streaming()
+        {
+            // Push to agent's follow-up queue (delivered after fully idle)
+            agent.follow_up(crate::agent::types::user_message(text));
+            app.status_text = Some("Message queued - will send when agent finishes".into());
+            return;
+        }
+        // Stale is_streaming flag — submit directly
+        app.is_streaming = false;
     }
-}
-
-/// Restore queued messages to editor (Alt+Up).
-/// Restores from the follow-up queue (steering messages are consumed during streaming).
-fn handle_dequeue(app: &mut App) {
-    let mut queue = app.follow_up_queue.lock().unwrap();
-    if queue.is_empty() {
-        app.status_text = Some("No queued messages to restore".into());
-        return;
-    }
-
-    let count = queue.len();
-    let all: Vec<yoagent::types::AgentMessage> = queue.drain(..).collect();
-    let restored: Vec<String> = all.iter().map(crate::agent::types::message_text).collect();
-    let text = restored.join("\n\n");
-    app.editor.borrow_mut().editor.set_text(&text);
-    app.editor.borrow_mut().check_autocomplete();
-    app.status_text = Some(format!(
-        "Restored {} queued message{}",
-        count,
-        if count == 1 { "" } else { "s" }
-    ));
+    submit_message(app, text);
 }
 
 /// Toggle auto-compact indicator (Ctrl+Shift+C).
@@ -1159,41 +1099,35 @@ fn handle_compact_toggle(app: &mut App) {
 
 /// Interrupt streaming agent and restore queued messages to editor.
 fn interrupt_streaming(app: &mut App) {
-    // Abort the agent (cancels the current turn, agent is recreated on next turn)
-    if let Some(ref s) = app.session {
-        s.abort();
+    // Cooperatively cancel the running agent loop (fires cancel token)
+    if let Some(ref agent) = app.agent {
+        agent.abort();
+    }
+    // Kill the forwarding task
+    if let Some(handle) = app.forward_handle.take() {
+        handle.abort();
     }
     if let Some(handle) = app.bash_abort_handle.take() {
         handle.abort();
     }
+    // Drop the agent — its tools were moved into the aborted loop and are lost.
+    // A fresh agent will be created from session on the next turn.
+    app.agent = None;
     app.is_streaming = false;
     app.working.stop();
     app.footer.borrow_mut().set_streaming(false);
 
-    // Rebuild in-memory conversation from the session to pick up any
-    // messages that were persisted via message_end during the aborted turn
-    // but were never added to app.conversation (which only updates on AgentEnd).
-    // This ensures the next LLM turn has full context.
+    // Rebuild chat from session (authoritative store after abort)
     if let Some(ref s) = app.session {
         let ctx = s.session().build_session_context();
-        app.conversation = ctx.messages;
-    }
-
-    // Restore follow-up queue messages to editor (steering are mid-stream, not restorable).
-    // The queues are only accessed from the main thread, so lock() is safe.
-    {
-        let mut follow_up = app.follow_up_queue.lock().unwrap();
-        if !follow_up.is_empty() {
-            let all: Vec<yoagent::types::AgentMessage> = follow_up.drain(..).collect();
-            let text: Vec<String> = all.iter().map(crate::agent::types::message_text).collect();
-            app.editor.borrow_mut().editor.set_text(&text.join("\n\n"));
-            app.queued_section.borrow_mut().set_lines(vec![]);
-        }
-    }
-
-    {
-        let mut steering = app.steering_queue.lock().unwrap();
-        steering.clear();
+        let mut chat = app.chat_container.borrow_mut();
+        rebuild_chat_from_messages(
+            &mut chat,
+            &ctx.messages,
+            &app.cwd.to_string_lossy(),
+            app.hide_thinking,
+            app.collapse_tool_output,
+        );
     }
 
     app.status_text = Some("Interrupted".into());
@@ -1234,21 +1168,25 @@ fn submit_message(app: &mut App, message: String) {
                 &expanded,
             )),
         );
-        // Message will be persisted on message_end (pi-compatible)
         if app.is_streaming {
-            app.steering_queue
-                .lock()
-                .unwrap()
-                .push(crate::agent::types::user_message(expanded));
-            return;
+            if let Some(ref agent) = app.agent
+                && agent.is_streaming()
+            {
+                // Mid-turn steering: push directly to Agent's shared queue
+                agent.steer(crate::agent::types::user_message(&expanded));
+                return;
+            }
+            // Stale streaming flag — reset
+            app.is_streaming = false;
+            app.working.stop();
+            app.footer.borrow_mut().set_streaming(false);
         }
-        start_agent_loop(app, expanded);
+        app.pending_submit = Some(expanded);
         return;
     }
 
     // Handle /commands (need TUI from app for overlays)
     if trimmed.starts_with('/') {
-        // If TUI was stored on App, we'd use it here. For now, just handle basic commands.
         handle_slash_command(app, &trimmed);
         return;
     }
@@ -1260,7 +1198,6 @@ fn submit_message(app: &mut App, message: String) {
     }
 
     // Normal message submission to LLM
-    // Add Component to chat_container with spacer
     chat_add(
         app,
         std::boxed::Box::new(crate::agent::ui::components::UserMessageComponent::new(
@@ -1268,38 +1205,80 @@ fn submit_message(app: &mut App, message: String) {
         )),
     );
 
-    // In-memory conversation is updated on AgentEnd (pi-compatible: messages
-    // are persisted to the session file on message_end, not here).
-
     if app.is_streaming {
-        // Check whether the agent's spawned task is still genuinely running.
-        // This is more reliable than a time-based heuristic: a slow provider
-        // that's still sending events will have `is_turn_running() == true`,
-        // while a crashed/aborted task will have `is_turn_running() == false`.
-        let agent_alive = app.session.as_ref().is_some_and(|s| s.is_turn_running());
-
-        if agent_alive {
-            // Steering: delivered after current turn's tool calls finish, before next LLM call
-            app.steering_queue
-                .lock()
-                .unwrap()
-                .push(crate::agent::types::user_message(trimmed));
+        if let Some(ref agent) = app.agent
+            && agent.is_streaming()
+        {
+            // Mid-turn steering: push directly to Agent's shared queue.
+            // The running loop picks it up via get_steering_messages() callback
+            // between tool executions or before the next LLM call (pi-compatible).
+            agent.steer(crate::agent::types::user_message(&trimmed));
             return;
         }
 
         // Agent task has completed/aborted but is_streaming wasn't reset.
-        // Reset state so we start a fresh loop.
         app.is_streaming = false;
         app.working.stop();
         app.footer.borrow_mut().set_streaming(false);
     }
 
-    start_agent_loop(app, trimmed);
+    // Queue for async start in the main loop
+    app.pending_submit = Some(trimmed);
 }
 
 /// Actually start an agent loop (not queued).
 /// Uses the persistent Agent on AgentSession (pi-compatible).
-fn start_agent_loop(app: &mut App, message: String) {
+/// Build a fresh Agent with the given messages and app configuration.
+fn build_fresh_agent(
+    model: &str,
+    api_key: &str,
+    system_prompt: &str,
+    thinking_level: yoagent::types::ThinkingLevel,
+    messages: Vec<yoagent::types::AgentMessage>,
+    extensions: &[Box<dyn Extension>],
+) -> yoagent::agent::Agent {
+    let mut mc = yoagent::provider::model::ModelConfig::openai_compat(
+        "https://opencode.ai/zen/go/v1",
+        model,
+        "opencode-go",
+        yoagent::provider::model::OpenAiCompat::deepseek(),
+    );
+    mc.context_window = 1_000_000;
+
+    let tools: Vec<Box<dyn yoagent::types::AgentTool>> = extensions
+        .iter()
+        .flat_map(|ext| ext.tools())
+        .map(|twm| Box::new(twm) as Box<dyn yoagent::types::AgentTool>)
+        .collect();
+
+    yoagent::agent::Agent::new(yoagent::provider::OpenAiCompatProvider)
+        .with_model(model)
+        .with_api_key(api_key)
+        .with_model_config(mc)
+        .with_system_prompt(system_prompt)
+        .with_thinking(thinking_level)
+        .with_messages(messages)
+        .with_tools(tools)
+}
+
+/// Map rab's thinking level string to yoagent's ThinkingLevel enum.
+fn map_thinking_level(level: Option<&str>) -> yoagent::types::ThinkingLevel {
+    match level {
+        Some("off") => yoagent::types::ThinkingLevel::Off,
+        Some("low") => yoagent::types::ThinkingLevel::Low,
+        Some("medium") => yoagent::types::ThinkingLevel::Medium,
+        Some("high") | Some("xhigh") => yoagent::types::ThinkingLevel::High,
+        _ => yoagent::types::ThinkingLevel::High,
+    }
+}
+
+/// Start an agent turn asynchronously. Called from the main loop.
+/// Uses the reused Agent (pi-compatible pattern):
+/// 1. Creates the Agent once, keeps it alive across turns
+/// 2. `agent.prompt()` spawns the loop internally, returns a receiver
+/// 3. Agent stays accessible for mid-turn `agent.steer()` calls
+/// 4. Forwarding task relays events from the receiver to app.event_tx
+async fn start_agent_loop(app: &mut App, message: String) {
     if app.session.is_none() {
         return;
     }
@@ -1311,61 +1290,48 @@ fn start_agent_loop(app: &mut App, message: String) {
     app.pending_thinking = None;
     app.last_streaming_event = std::time::Instant::now();
 
-    let session = app.session.as_mut().unwrap();
+    let thinking = map_thinking_level(app.thinking_level.as_deref());
 
-    // Drain steering/follow-up from app-level queues into the agent
-    let steer_msgs: Vec<yoagent::types::AgentMessage> =
-        app.steering_queue.lock().unwrap().drain(..).collect();
-    let follow_msgs: Vec<yoagent::types::AgentMessage> =
-        app.follow_up_queue.lock().unwrap().drain(..).collect();
-    for msg in steer_msgs {
-        session.steer(msg);
-    }
-    for msg in follow_msgs {
-        session.follow_up(msg);
-    }
-
-    // Map thinking level
-    let thinking = match app.thinking_level.as_deref() {
-        Some("off") => yoagent::types::ThinkingLevel::Off,
-        Some("low") => yoagent::types::ThinkingLevel::Low,
-        Some("medium") => yoagent::types::ThinkingLevel::Medium,
-        Some("high") | Some("xhigh") => yoagent::types::ThinkingLevel::High,
-        _ => yoagent::types::ThinkingLevel::High,
-    };
-
-    // Initialize the persistent agent on first call
-    if !session.is_agent_initialized() {
-        let params = crate::agent::agent_session::AgentBuildParams {
-            model: app.model.clone(),
-            api_key: app.api_key.clone(),
-            system_prompt: app.system_prompt.clone(),
-            thinking_level: thinking,
-            model_config: {
-                let mut mc = yoagent::provider::model::ModelConfig::openai_compat(
-                    "https://opencode.ai/zen/go/v1",
-                    &app.model,
-                    "opencode-go",
-                    yoagent::provider::model::OpenAiCompat::deepseek(),
-                );
-                mc.context_window = 1_000_000;
-                mc
-            },
-        };
-        session.init_agent(
-            app.event_tx.clone(),
-            Arc::clone(&app.extensions),
-            params,
-            app.conversation.clone(),
-        );
-    } else {
-        // Update model/thinking on the idle agent for runtime changes
-        session.set_model(&app.model);
-        session.set_thinking_level(thinking);
+    // Create the Agent on first turn, or after abort (agent was dropped)
+    if app.agent.is_none() {
+        let msgs = app
+            .session
+            .as_ref()
+            .map(|s| s.session().build_session_context().messages)
+            .unwrap_or_default();
+        app.agent = Some(build_fresh_agent(
+            &app.model,
+            &app.api_key,
+            &app.system_prompt,
+            thinking,
+            msgs,
+            &app.extensions,
+        ));
     }
 
-    // Start the turn (takes agent from slot, spawns task, returns when done)
-    session.prompt(message);
+    let agent = app.agent.as_mut().unwrap();
+
+    // Record model/thinking changes in the session
+    if let Some(ref mut session) = app.session {
+        session.on_model_change("opencode-go", &app.model);
+        session.on_thinking_level_change(app.thinking_level.as_deref().unwrap_or("off"));
+    }
+
+    // Start the turn: agent.prompt() spawns the loop internally,
+    // keeps the Agent in scope, and returns a receiver.
+    let mut rx = agent.prompt(message).await;
+
+    // Forward events from the agent's receiver to the UI channel.
+    // This runs concurrently while the agent loop processes the turn.
+    let tx = app.event_tx.clone();
+    let handle = tokio::spawn(async move {
+        while let Some(event) = rx.recv().await {
+            if tx.send(event).is_err() {
+                break;
+            }
+        }
+    });
+    app.forward_handle = Some(handle);
 }
 /// Handle keyboard input for the session picker.
 fn handle_session_picker_input(app: &mut App, key: &crossterm::event::KeyEvent) {
@@ -1388,7 +1354,6 @@ fn handle_session_picker_input(app: &mut App, key: &crossterm::event::KeyEvent) 
                 let new_sm = SessionManager::open(&path, None, Some(&app.cwd));
                 let new_session = AgentSession::new(new_sm);
                 let ctx = new_session.session().build_session_context();
-                app.conversation = ctx.messages;
                 app.chat_container.borrow_mut().clear();
                 app.streaming_component = None;
                 app.pending_text = None;
@@ -1397,12 +1362,13 @@ fn handle_session_picker_input(app: &mut App, key: &crossterm::event::KeyEvent) 
                 app.tool_call_start_times.clear();
                 rebuild_chat_from_messages(
                     &mut app.chat_container.borrow_mut(),
-                    &app.conversation,
+                    &ctx.messages,
                     &app.cwd.to_string_lossy(),
                     app.hide_thinking,
                     app.collapse_tool_output,
                 );
                 app.session = Some(new_session);
+                app.agent = None; // Force recreation from new session on next prompt
                 app.update_session_info();
                 app.status_text = Some(format!("Switched to session: {}", path.display()));
             }
@@ -1559,7 +1525,7 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
             }
 
             // Clear everything (matching pi's renderCurrentSessionState)
-            app.conversation.clear();
+            app.agent = None;
             app.chat_container.borrow_mut().clear();
             app.streaming_component = None;
             app.pending_text = None;
@@ -1573,29 +1539,24 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
             chat_add(app, std::boxed::Box::new(Text::new(styled, 1, 1, None)));
         }
         CommandResult::SessionSwitched { path } => {
-            // Open the new session file
             let new_sm = crate::agent::session::SessionManager::open(&path, None, Some(&app.cwd));
             let new_session = crate::agent::AgentSession::new(new_sm);
-
-            // Load conversation from new session
             let ctx = new_session.session().build_session_context();
-            app.conversation = ctx.messages;
             app.chat_container.borrow_mut().clear();
             app.streaming_component = None;
             app.pending_text = None;
             app.pending_thinking = None;
             app.pending_tools.clear();
             app.tool_call_start_times.clear();
-
             rebuild_chat_from_messages(
                 &mut app.chat_container.borrow_mut(),
-                &app.conversation,
+                &ctx.messages,
                 &app.cwd.to_string_lossy(),
                 app.hide_thinking,
                 app.collapse_tool_output,
             );
-
             app.session = Some(new_session);
+            app.agent = None;
             app.update_session_info();
             app.status_text = Some(format!("Switched to session: {}", path.display()));
         }
@@ -1615,7 +1576,13 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
             cache_write_tokens: _,
             cost: _,
         } => {
-            // Compute live stats from app.conversation (always fresh)
+            // Compute live stats from session (authoritative store)
+            let msgs = app
+                .session
+                .as_ref()
+                .map(|s| s.session().build_session_context().messages)
+                .unwrap_or_default();
+
             let name_display = name
                 .as_deref()
                 .or_else(|| {
@@ -1637,23 +1604,19 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
                 session_id
             };
 
-            let user_messages = app
-                .conversation
+            let user_messages = msgs
                 .iter()
                 .filter(|m| crate::agent::types::message_is_user(m))
                 .count();
-            let assistant_messages = app
-                .conversation
+            let assistant_messages = msgs
                 .iter()
                 .filter(|m| crate::agent::types::message_is_assistant(m))
                 .count();
-            let tool_results = app
-                .conversation
+            let tool_results = msgs
                 .iter()
                 .filter(|m| crate::agent::types::message_is_tool_result(m))
                 .count();
-            let tool_calls: usize = app
-                .conversation
+            let tool_calls: usize = msgs
                 .iter()
                 .map(crate::agent::types::message_tool_call_count)
                 .sum();
@@ -1663,7 +1626,7 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
             let mut output_tokens: u64 = 0;
             let mut cache_read_tokens: u64 = 0;
             let cost: f64 = 0.0;
-            for msg in &app.conversation {
+            for msg in &msgs {
                 if let Some(usage) = crate::agent::types::message_usage(msg) {
                     input_tokens += usage.input;
                     output_tokens += usage.output;
@@ -1847,25 +1810,22 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
                                     );
                                     let new_session = crate::agent::AgentSession::new(new_sm);
 
-                                    // Reload conversation
                                     let ctx = new_session.session().build_session_context();
-                                    app.conversation = ctx.messages;
                                     app.chat_container.borrow_mut().clear();
                                     app.streaming_component = None;
                                     app.pending_text = None;
                                     app.pending_thinking = None;
                                     app.pending_tools.clear();
                                     app.tool_call_start_times.clear();
-
                                     rebuild_chat_from_messages(
                                         &mut app.chat_container.borrow_mut(),
-                                        &app.conversation,
+                                        &ctx.messages,
                                         &app.cwd.to_string_lossy(),
                                         app.hide_thinking,
                                         app.collapse_tool_output,
                                     );
-
                                     app.session = Some(new_session);
+                                    app.agent = None;
 
                                     let styled = app.theme.fg(
                                         "accent",
@@ -2410,12 +2370,6 @@ fn handle_agent_event(app: &mut App, event: yoagent::types::AgentEvent) {
             app.is_streaming = false;
             app.working.stop();
             app.footer.borrow_mut().set_streaming(false);
-            // Update in-memory conversation with all messages from this turn.
-            // (Messages are already persisted on message_end — on_agent_end is a
-            //  safety net for any stragglers not covered by message_end.)
-            for msg in &messages {
-                app.conversation.push(msg.clone());
-            }
             // Safety net: persist any remaining messages not captured on message_end
             if let Some(ref mut s) = app.session {
                 s.on_agent_end(&messages);
