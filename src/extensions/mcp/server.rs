@@ -2,11 +2,126 @@
 //! Mirrors pi-mcp-adapter's McpLifecycleManager + McpServerManager pattern.
 
 use crate::extensions::mcp::types::ServerEntry;
+use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::Mutex;
 use yoagent::mcp::McpClient;
+use yoagent::mcp::McpTransport;
+use yoagent::mcp::types::*;
+
+// ---------------------------------------------------------------------------
+// SSE-aware HTTP transport — handles servers that return SSE events (e.g. exa)
+// instead of plain JSON-RPC responses. Falls back to direct JSON parsing
+// for servers that return plain JSON-RPC.
+// ---------------------------------------------------------------------------
+
+/// HTTP transport that handles both SSE (Server-Sent Events) and direct JSON-RPC responses.
+///
+/// Modern MCP servers (exa, etc.) return SSE events like:
+/// ```text
+/// event: message
+/// data: {"jsonrpc":"2.0","result":{...},"id":1}
+///
+/// ```
+/// This transport parses those events and extracts the JSON-RPC response.
+struct SseHttpTransport {
+    client: reqwest::Client,
+    base_url: String,
+    headers: Vec<(String, String)>,
+}
+
+impl SseHttpTransport {
+    fn new(url: &str) -> Self {
+        Self {
+            client: reqwest::Client::new(),
+            base_url: url.trim_end_matches('/').to_string(),
+            headers: Vec::new(),
+        }
+    }
+
+    fn with_headers(mut self, headers: Option<&std::collections::HashMap<String, String>>) -> Self {
+        if let Some(h) = headers {
+            for (k, v) in h {
+                self.headers.push((k.clone(), v.clone()));
+            }
+        }
+        self
+    }
+
+    /// Parse an SSE response body to extract JSON-RPC responses.
+    fn parse_sse_response(body: &str) -> Result<JsonRpcResponse, McpError> {
+        // Try direct JSON parse first (for old-style HTTP transport)
+        if let Ok(r) = serde_json::from_str::<JsonRpcResponse>(body) {
+            return Ok(r);
+        }
+
+        // SSE format: split by double newlines, look for `data:` lines
+        for event in body.split("\n\n") {
+            let event = event.trim();
+            if event.is_empty() {
+                continue;
+            }
+            // Find the data line
+            for line in event.lines() {
+                if let Some(data) = line
+                    .strip_prefix("data: ")
+                    .or_else(|| line.strip_prefix("data:"))
+                {
+                    let data = data.trim();
+                    if data.starts_with('{')
+                        && let Ok(r) = serde_json::from_str::<JsonRpcResponse>(data)
+                    {
+                        return Ok(r);
+                    }
+                }
+            }
+        }
+
+        Err(McpError::Transport(format!(
+            "Cannot parse SSE response: {}",
+            body.chars().take(200).collect::<String>()
+        )))
+    }
+}
+
+#[async_trait]
+impl McpTransport for SseHttpTransport {
+    async fn send(&self, request: JsonRpcRequest) -> Result<JsonRpcResponse, McpError> {
+        let mut req = self.client.post(&self.base_url).json(&request);
+        for (k, v) in &self.headers {
+            req = req.header(k.as_str(), v.as_str());
+        }
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| McpError::Transport(format!("HTTP error: {}", e)))?;
+
+        let status = resp.status();
+
+        // 202 Accepted — the server will stream the result via SSE.
+        // Read the body which should contain SSE events.
+        let body = resp
+            .text()
+            .await
+            .map_err(|e| McpError::Transport(format!("Failed to read response: {}", e)))?;
+
+        if status.is_success() || status == 202 {
+            Self::parse_sse_response(&body)
+        } else {
+            Err(McpError::Transport(format!(
+                "HTTP {} from server: {}",
+                status,
+                body.chars().take(200).collect::<String>()
+            )))
+        }
+    }
+
+    async fn close(&self) -> Result<(), McpError> {
+        Ok(())
+    }
+}
 
 /// Connection status for a server.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -78,7 +193,13 @@ impl ServerManager {
         };
 
         let client = match &entry.url {
-            Some(url) => McpClient::connect_http(url).await,
+            Some(url) => {
+                // Use SSE-aware HTTP transport instead of the plain yoagent one
+                let transport =
+                    Box::new(SseHttpTransport::new(url).with_headers(entry.headers.as_ref()));
+                let mut c = McpClient::from_transport(transport);
+                c.initialize().await.map(|_| c)
+            }
             None => {
                 let env = entry.env.as_ref().cloned();
                 let cmd = entry.command.as_deref().unwrap_or("npx");
