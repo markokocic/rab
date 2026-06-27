@@ -8,7 +8,7 @@ use crate::agent::extension::{ToolRenderContext, ToolRenderer};
 use crate::tui::Theme;
 use serde_json::Value;
 
-/// Renderer for individual direct MCP tools.
+/// Renderer for individual direct MCP tools (matching pi's createMcpDirectToolCallRenderer).
 pub struct McpToolRenderer {
     display_name: String,
 }
@@ -31,14 +31,11 @@ impl ToolRenderer for McpToolRenderer {
     ) -> Vec<String> {
         let title = theme.bold(&self.display_name);
         let header = theme.fg("toolTitle", &title);
-        let mut lines = vec![header];
-
-        if has_useful_args(args) {
-            let args_str = format_jsonish(args);
-            lines.push(theme.fg("toolOutput", &args_str));
+        if !has_useful_args(args) {
+            return vec![header];
         }
-
-        lines
+        let args_str = format_jsonish(args);
+        vec![header, theme.fg("muted", &args_str)]
     }
 
     fn render_result(
@@ -51,45 +48,49 @@ impl ToolRenderer for McpToolRenderer {
         if ctx.is_partial {
             return vec![theme.fg("warning", "Running MCP tool...")];
         }
-
-        let max_lines = if ctx.is_error || ctx.expanded {
-            usize::MAX
-        } else {
-            3
-        };
-
-        let text_lines: Vec<&str> = content.lines().collect();
-        if text_lines.is_empty() || (text_lines.len() == 1 && text_lines[0].is_empty()) {
-            return vec![theme.fg("muted", "(empty result)")];
-        }
-
-        let mut lines: Vec<String> = Vec::new();
-        if text_lines.len() <= max_lines {
-            for line in &text_lines {
-                if !line.is_empty() {
-                    lines.push(theme.fg("toolOutput", line));
-                }
-            }
-        } else {
-            for line in text_lines.iter().take(max_lines) {
-                if !line.is_empty() {
-                    lines.push(theme.fg("toolOutput", line));
-                }
-            }
-            // Collapsed hint
-            let expand_key = if ctx.expand_key.is_empty() {
-                "Ctrl+O".to_string()
-            } else {
-                ctx.expand_key.clone()
-            };
-            lines.push(theme.fg("muted", &format!("... ({} to expand)", expand_key)));
-        }
-
-        lines
+        render_compact_result(content, theme, ctx)
     }
 }
 
-/// Renderer for the proxy `mcp` tool (multi-purpose gateway).
+/// Shared result rendering for both proxy and direct MCP tools (matching pi's renderMcpToolResult).
+/// Shows at most 3 lines when collapsed, with an ellipsis and expand hint.
+fn render_compact_result(content: &str, theme: &dyn Theme, ctx: &ToolRenderContext) -> Vec<String> {
+    let text_lines: Vec<&str> = content.lines().collect();
+    if text_lines.is_empty() || (text_lines.len() == 1 && text_lines[0].is_empty()) {
+        return vec![theme.fg("muted", "(empty result)")];
+    }
+
+    let is_truncated = !ctx.is_error && !ctx.expanded && text_lines.len() > 3;
+    let display_lines: &[&str] = if is_truncated {
+        &text_lines[..3]
+    } else {
+        &text_lines[..]
+    };
+
+    let mut lines: Vec<String> = Vec::new();
+    for line in display_lines {
+        if line.is_empty() {
+            lines.push(String::new());
+        } else {
+            lines.push(theme.fg("toolOutput", line));
+        }
+    }
+
+    if is_truncated {
+        // pi pattern: ellipsis + expand hint
+        lines.push(theme.fg("muted", "…"));
+        let expand_key = if ctx.expand_key.is_empty() {
+            "Ctrl+O"
+        } else {
+            &ctx.expand_key
+        };
+        lines.push(theme.fg("muted", &format!("({} to expand)", expand_key)));
+    }
+
+    lines
+}
+
+/// Renderer for the proxy `mcp` tool (multi-purpose gateway, matching pi's renderMcpProxyToolCall).
 pub struct McpProxyToolRenderer;
 
 impl ToolRenderer for McpProxyToolRenderer {
@@ -115,40 +116,7 @@ impl ToolRenderer for McpProxyToolRenderer {
         if ctx.is_partial {
             return vec![theme.fg("warning", "Running MCP tool...")];
         }
-
-        let max_lines = if ctx.is_error || ctx.expanded {
-            usize::MAX
-        } else {
-            3
-        };
-
-        let text_lines: Vec<&str> = content.lines().collect();
-        if text_lines.is_empty() || (text_lines.len() == 1 && text_lines[0].is_empty()) {
-            return vec![theme.fg("muted", "(empty result)")];
-        }
-
-        let mut lines: Vec<String> = Vec::new();
-        if text_lines.len() <= max_lines {
-            for line in &text_lines {
-                if !line.is_empty() {
-                    lines.push(theme.fg("toolOutput", line));
-                }
-            }
-        } else {
-            for line in text_lines.iter().take(max_lines) {
-                if !line.is_empty() {
-                    lines.push(theme.fg("toolOutput", line));
-                }
-            }
-            let expand_key = if ctx.expand_key.is_empty() {
-                "Ctrl+O".to_string()
-            } else {
-                ctx.expand_key.clone()
-            };
-            lines.push(theme.fg("muted", &format!("... ({} to expand)", expand_key)));
-        }
-
-        lines
+        render_compact_result(content, theme, ctx)
     }
 }
 
