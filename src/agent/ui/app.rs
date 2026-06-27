@@ -2407,11 +2407,8 @@ fn handle_agent_event(app: &mut App, event: yoagent::types::AgentEvent) {
             if let Some(ref s) = app.session {
                 app.footer.borrow_mut().refresh_from_session(s.session());
             }
-            // Workaround: yoagent's openai_compat provider never sends
-            // StreamEvent::Error through the channel, so the forwarder in
-            // stream_assistant_response exits without dispatching MessageEnd
-            // with the error. Check the final assistant message for errors
-            // here on AgentEnd and display them if found.
+            // Check for errors in messages — display if found.
+            let mut displayed_error = false;
             for msg in &messages {
                 if let Some(err) = crate::agent::types::message_error(msg) {
                     let error_text = if err.is_empty() {
@@ -2423,7 +2420,41 @@ fn handle_agent_event(app: &mut App, event: yoagent::types::AgentEvent) {
                         app,
                         std::boxed::Box::new(InfoMessageComponent::new(error_text)),
                     );
+                    displayed_error = true;
                     break;
+                }
+            }
+            // Detect silent stops: if the last assistant message was empty
+            // (no text, no tool calls) with stop_reason=Stop, the agent returned
+            // without producing any visible output. Show an indicator so the
+            // user understands what happened instead of seeing nothing.
+            if !displayed_error {
+                for msg in messages.iter().rev() {
+                    if let Some(yoagent::types::Message::Assistant {
+                        content,
+                        stop_reason,
+                        error_message,
+                        ..
+                    }) = msg.as_llm()
+                        && error_message.is_none()
+                        && stop_reason != &yoagent::types::StopReason::ToolUse
+                        && (content.is_empty()
+                            || content.iter().all(|c| {
+                                matches!(c, yoagent::types::Content::Text { text } if text.trim().is_empty())
+                            }))
+                    {
+                        chat_add(
+                            app,
+                            std::boxed::Box::new(InfoMessageComponent::new(
+                                "The agent returned an empty response. \
+                                 This can happen when the provider's context \
+                                 limit is exceeded or the model declined to \
+                                 respond. Try sending a new message."
+                                    .to_string(),
+                            )),
+                        );
+                        break;
+                    }
                 }
             }
         }
