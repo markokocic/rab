@@ -608,6 +608,12 @@ pub async fn run(config: AppConfig, session: SessionManager) -> anyhow::Result<(
             dirty = false;
         }
 
+        // Yield to the tokio runtime so spawned agent-loop tasks get a
+        // chance to run. Without this, the entirely-synchronous main loop
+        // (no .await other than this) can starve background tasks on
+        // single-threaded runtimes or when work-stealing is delayed.
+        tokio::task::yield_now().await;
+
         // Safety timeout: force stop streaming if no agent events for 15s.
         // Prevents the event loop from spinning at 16ms with `is_streaming`
         // stuck true after the agent task completes or panics without
