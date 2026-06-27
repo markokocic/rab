@@ -206,61 +206,84 @@ impl Extension for McpExtension {
                 continue;
             }
 
-            // Check cache for this server
-            let config_hash = config::compute_server_config_hash(entry);
-            if !has_valid_cache(server_name, config_hash) {
+            // Collect tool names for this server.
+            // When directTools is an array, use those names directly (no cache needed).
+            // When directTools is true, fall back to cached metadata.
+            let tool_names: Vec<String> = match direct {
+                Some(v) if v.is_array() => v
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .filter_map(|s| s.as_str().map(String::from))
+                    .collect(),
+                _ => {
+                    // Need cache to know tool names
+                    let config_hash = config::compute_server_config_hash(entry);
+                    if !has_valid_cache(server_name, config_hash) {
+                        continue;
+                    }
+                    cache
+                        .servers
+                        .get(server_name)
+                        .map(|s| &s.tools)
+                        .into_iter()
+                        .flatten()
+                        .map(|ct| ct.name.clone())
+                        .collect()
+                }
+            };
+
+            if tool_names.is_empty() {
                 continue;
             }
 
-            let server_cache = cache.servers.get(server_name);
-            let cached_tools = server_cache.map(|s| &s.tools);
+            // Look up cached metadata for descriptions/schemas if available
+            let cached_tools: Vec<&CachedTool> = cache
+                .servers
+                .get(server_name)
+                .map(|s| s.tools.iter().collect())
+                .unwrap_or_default();
+            for tool_name in &tool_names {
+                let prefixed = format_tool_name(tool_name, server_name, prefix_mode);
 
-            if let Some(tool_list) = cached_tools {
-                for ct in tool_list {
-                    // Check tool filter
-                    let include = match direct {
-                        Some(v) if v.is_array() => {
-                            let names: Vec<&str> = v
-                                .as_array()
-                                .unwrap()
-                                .iter()
-                                .filter_map(|s| s.as_str())
-                                .collect();
-                            names.is_empty() || names.contains(&ct.name.as_str())
-                        }
-                        _ => true,
-                    };
-
-                    if !include {
-                        continue;
-                    }
-
-                    let prefixed = format_tool_name(&ct.name, server_name, prefix_mode);
-                    let input_schema = if ct.input_schema.is_null() {
-                        serde_json::json!({"type": "object", "properties": {}})
-                    } else {
-                        ct.input_schema.clone()
-                    };
-
-                    tools.push(ToolWithMeta {
-                        tool: Box::new(McpDirectTool {
-                            server_name: server_name.clone(),
-                            original_name: ct.name.clone(),
-                            display_name: prefixed.clone(),
-                            description: ct
-                                .description
-                                .clone()
-                                .unwrap_or_else(|| "MCP tool".to_string()),
-                            input_schema,
-                            manager: self.manager.clone(),
-                        }),
-                        snippet: "MCP direct tool",
-                        guidelines: &[],
-                        prepare_arguments: None,
-                        before_tool_call: None,
-                        after_tool_call: None,
+                // Use cached metadata if available, otherwise provide defaults
+                let (description, input_schema) = cached_tools
+                    .iter()
+                    .find(|ct| ct.name == *tool_name)
+                    .map(|ct| {
+                        let desc = ct
+                            .description
+                            .clone()
+                            .unwrap_or_else(|| "MCP tool".to_string());
+                        let schema = if ct.input_schema.is_null() {
+                            serde_json::json!({"type": "object", "properties": {}})
+                        } else {
+                            ct.input_schema.clone()
+                        };
+                        (desc, schema)
+                    })
+                    .unwrap_or_else(|| {
+                        (
+                            format!("MCP tool: {} on {}", tool_name, server_name),
+                            serde_json::json!({"type": "object", "properties": {}}),
+                        )
                     });
-                }
+
+                tools.push(ToolWithMeta {
+                    tool: Box::new(McpDirectTool {
+                        server_name: server_name.clone(),
+                        original_name: tool_name.clone(),
+                        display_name: prefixed.clone(),
+                        description,
+                        input_schema,
+                        manager: self.manager.clone(),
+                    }),
+                    snippet: "MCP direct tool",
+                    guidelines: &[],
+                    prepare_arguments: None,
+                    before_tool_call: None,
+                    after_tool_call: None,
+                });
             }
         }
 
