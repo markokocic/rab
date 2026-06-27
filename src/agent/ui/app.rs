@@ -1337,12 +1337,16 @@ fn start_agent_loop(app: &mut App, message: String) {
             api_key: app.api_key.clone(),
             system_prompt: app.system_prompt.clone(),
             thinking_level: thinking,
-            model_config: yoagent::provider::model::ModelConfig::openai_compat(
-                "https://opencode.ai/zen/go/v1",
-                &app.model,
-                "opencode-go",
-                yoagent::provider::model::OpenAiCompat::deepseek(),
-            ),
+            model_config: {
+                let mut mc = yoagent::provider::model::ModelConfig::openai_compat(
+                    "https://opencode.ai/zen/go/v1",
+                    &app.model,
+                    "opencode-go",
+                    yoagent::provider::model::OpenAiCompat::deepseek(),
+                );
+                mc.context_window = 1_000_000;
+                mc
+            },
         };
         session.init_agent(
             app.event_tx.clone(),

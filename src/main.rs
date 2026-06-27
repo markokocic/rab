@@ -555,12 +555,16 @@ async fn run_print_mode(
     let mut agent = yoagent::agent::Agent::new(yoagent::provider::OpenAiCompatProvider)
         .with_model(&model)
         .with_api_key(&api_key)
-        .with_model_config(yoagent::provider::model::ModelConfig::openai_compat(
-            "https://opencode.ai/zen/go/v1",
-            "deepseek-v4-flash",
-            "opencode-go",
-            yoagent::provider::model::OpenAiCompat::deepseek(),
-        ))
+        .with_model_config({
+            let mut mc = yoagent::provider::model::ModelConfig::openai_compat(
+                "https://opencode.ai/zen/go/v1",
+                "deepseek-v4-flash",
+                "opencode-go",
+                yoagent::provider::model::OpenAiCompat::deepseek(),
+            );
+            mc.context_window = 1_000_000;
+            mc
+        })
         .with_system_prompt(&system_prompt)
         .with_thinking(yoagent::types::ThinkingLevel::High)
         .with_tools(agent_tools);
