@@ -67,6 +67,11 @@ pub fn coerce_primitive_by_type(schema_type: &str, value: &mut serde_json::Value
                 });
             } else if value.is_null() {
                 *value = serde_json::Value::String(String::new());
+            } else if value.is_array() || value.is_object() {
+                // TypeBox's Value.Convert stringifies arrays/objects when schema expects string
+                *value = serde_json::Value::String(
+                    serde_json::to_string(value).unwrap_or_default()
+                );
             }
         }
         "number" => {
@@ -120,6 +125,43 @@ pub fn coerce_primitive_by_type(schema_type: &str, value: &mut serde_json::Value
 
 /// Recursively coerce tool arguments to match a JSON Schema (modifies in place).
 pub fn coerce_with_json_schema(schema: &serde_json::Value, args: &mut serde_json::Value) {
+    // Handle composed schemas (matching pi's coerceWithJsonSchema order)
+    if let Some(all_of) = schema.get("allOf").and_then(|v| v.as_array()) {
+        for sub in all_of {
+            coerce_with_json_schema(sub, args);
+        }
+    }
+
+    if let Some(any_of) = schema.get("anyOf").and_then(|v| v.as_array()) {
+        // Try each anyOf alternative; keep the first that changes the value
+        if !any_of.is_empty() {
+            let original = args.clone();
+            for sub in any_of {
+                let mut candidate = original.clone();
+                coerce_with_json_schema(sub, &mut candidate);
+                if candidate != original {
+                    *args = candidate;
+                    break;
+                }
+            }
+        }
+    }
+
+    if let Some(one_of) = schema.get("oneOf").and_then(|v| v.as_array()) {
+        // Same strategy for oneOf
+        if !one_of.is_empty() {
+            let original = args.clone();
+            for sub in one_of {
+                let mut candidate = original.clone();
+                coerce_with_json_schema(sub, &mut candidate);
+                if candidate != original {
+                    *args = candidate;
+                    break;
+                }
+            }
+        }
+    }
+
     if !args.is_object() {
         return;
     }
@@ -130,25 +172,58 @@ pub fn coerce_with_json_schema(schema: &serde_json::Value, args: &mut serde_json
         if args.get(key).is_none() {
             continue;
         }
-        let type_str = match resolve_schema_type(prop_schema) {
-            Some(t) => t,
-            None => continue,
-        };
         let arg_value = args.get_mut(key).unwrap();
-        coerce_primitive_by_type(type_str, arg_value);
-        if type_str == "object" {
-            coerce_with_json_schema(prop_schema, arg_value);
-        }
-        if type_str == "array"
-            && let Some(items_schema) = prop_schema.get("items")
-            && let Some(arr) = arg_value.as_array_mut()
-        {
-            for item in arr.iter_mut() {
-                coerce_with_json_schema(items_schema, item);
+
+        // Try each schema type in order (matching pi's approach of iterating types)
+        let schema_types = collect_schema_types(prop_schema);
+        if !schema_types.is_empty() {
+            // Check if value already matches one of the types
+            let already_matches = schema_types.iter().any(|t| matches_json_type(arg_value, t));
+            if !already_matches {
+                for st in &schema_types {
+                    let before = arg_value.clone();
+                    coerce_primitive_by_type(st, arg_value);
+                    if *arg_value != before {
+                        break;
+                    }
+                }
+            }
+
+            // Recurse into objects and arrays
+            if schema_types.iter().any(|t| t == "object") && arg_value.is_object() {
+                coerce_with_json_schema(prop_schema, arg_value);
+            }
+            if schema_types.iter().any(|t| t == "array")
+                && let Some(items_schema) = prop_schema.get("items")
+                && let Some(arr) = arg_value.as_array_mut()
+            {
+                for item in arr.iter_mut() {
+                    coerce_with_json_schema(items_schema, item);
+                }
             }
         }
     }
 }
+
+/// Collect all type names from a schema property, handling both plain strings and arrays.
+fn collect_schema_types(schema: &serde_json::Value) -> Vec<String> {
+    let type_val = match schema.get("type") {
+        Some(t) => t,
+        None => return vec![],
+    };
+    if let Some(s) = type_val.as_str() {
+        return vec![s.to_string()];
+    }
+    if let Some(arr) = type_val.as_array() {
+        return arr
+            .iter()
+            .filter_map(|t| t.as_str().map(|s| s.to_string()))
+            .collect();
+    }
+    vec![]
+}
+
+/// Check whether a JSON value matches a JSON Schema type.
 
 // ── Schema validation (matching pi's validateToolArguments) ──────
 
@@ -161,14 +236,13 @@ fn resolve_schema_type(schema: &serde_json::Value) -> Option<&str> {
     }
     if type_val.is_array() {
         // Use the first non-null type (handles ["string", "null"])
+        // This is still used by validate_tool_arguments for single-type checks
         return type_val
             .as_array()
             .and_then(|arr| arr.iter().find_map(|t| t.as_str().filter(|&s| s != "null")));
     }
     None
 }
-
-/// Check whether a JSON value matches a JSON Schema type.
 fn matches_json_type(value: &serde_json::Value, schema_type: &str) -> bool {
     match schema_type {
         "string" => value.is_string(),

@@ -34,13 +34,14 @@ file mutation queue, and lifecycle management.
 │  ┌────▼──┐ ┌────▼──┐ ┌────▼──┐ ┌────▼──┐ ┌────▼──┐ ┌────▼──┐      │
 │  │builtin│ │  tui/  │ │commands│ │extens-│ │settings│ │ auth  │      │
 │  │read   │ │ agent/ │ │.rs     │ │ions/  │ │.rs     │ │.rs    │      │
-│  │write  │ │ ui/    │ │22 slash│ │filesys-│ │~/.rab/ │ │API    │      │
-│  │edit   │ │screen  │ │commands│ │tem (3  │ │settings│ │keys,  │      │
-│  │bash   │ │editor  │ │        │ │tools)  │ │AGENTS  │ │OAuth  │      │
-│  │file_  │ │list    │ │        │ │        │ │.md     │ │       │      │
-│  │mutation│ └───────┘ │        │ │        │ │skills  │ │       │      │
-│  │_queue │            │        │ │        │ │        │ │       │      │
-│  └──┬────┘            │        │ └────────┘ └───────┘ └───────┘      │
+│  │write  │ │ ui/    │ │22 slash│ ┌──────────────┐ │~/.rab/ │ │API    │
+│  │edit   │ │screen  │ │commands│ │filesystem (3) │ │settings│ │keys,  │
+│  │bash   │ │editor  │ │        │ │mcp/ (6 mods,  │ │AGENTS  │ │OAuth  │
+│  │file_  │ │list    │ │        │ │ 2K lines)     │ │.md     │ │       │
+│  │mutation│ └───────┘ │        │ │AGENTS.md       │ │skills  │ │       │
+│  │_queue │            │        │ │skills          │ │        │ │       │
+│  │cancel │            │        │ │                │ │        │ │       │
+│  └──┬────┘            │        │ └──────────────┘ └───────┘ └───────┘      │
 │     │                 │        │                                     │
 │     │     impl Extension trait + yoagent::types::AgentTool          │
 │     │                                                               │
@@ -48,14 +49,13 @@ file mutation queue, and lifecycle management.
 │  │              agent/extension.rs (Extension trait)             │   │
 │  │  pub trait Extension: Send + Sync {                          │   │
 │  │    fn name(&self) -> Cow<'static, str>;                      │   │
-│  │    fn tools(&self) -> Vec<ToolWithMeta>;                     │   │
+│  │    fn tools(&self) -> Vec<ToolDefinition>;                   │   │
 │  │    fn commands(&self) -> Vec<SlashCommand>;                  │   │
-│  │    fn tool_renderer(&self, name) -> Option<Box<dyn ToolRenderer>>;│ │
 │  │    fn skills(&self) -> SkillSet;                             │   │
 │  │  }                                                           │   │
-│  │  ToolWithMeta wraps AgentTool with: snippet, guidelines,     │   │
-│  │  prepare_arguments (type coercion), before_tool_call hook,   │   │
-│  │  after_tool_call hook.                                       │   │
+│  │  ToolDefinition wraps AgentTool with: snippet, guidelines,   │   │
+│  │  prepare_arguments, before_tool_call hook, after_tool_call   │   │
+│  │  hook, and bundled ToolRenderer.                             │   │
 │  │  validate_tool_arguments() + coerce_with_json_schema()       │   │
 │  │  Builtin + user extensions share this trait                  │   │
 │  └──────────────────────────────────────────────────────────────┘   │
@@ -110,8 +110,8 @@ file mutation queue, and lifecycle management.
   `Extension` trait. No separate tool registration path. All tools, commands,
   renderers, and skills go through `Extension`.
 
-- **ToolWithMeta wraps every tool** — each `AgentTool` is wrapped in a
-  `ToolWithMeta` that carries prompt snippet metadata, guidelines, argument
+- **ToolDefinition wraps every tool** — each `AgentTool` is wrapped in a
+  `ToolDefinition` that carries prompt snippet metadata, guidelines, argument
   preparation hooks (`prepare_arguments`), `before_tool_call` and
   `after_tool_call` hooks (pi-compatible), and automatic JSON Schema argument
   coercion + validation.
@@ -146,8 +146,9 @@ file mutation queue, and lifecycle management.
 | `pi-agent-core` (agent loop, session, compaction, skills) | Delegated to **yoagent** (agent loop, types, provider, skills) + rab's `AgentSession` (session lifecycle, compaction, branching) | ✅ Agent loop in yoagent (`yoagent::agent::Agent`). ✅ Session in `session.rs` (~2700 lines). ✅ Compaction in `compaction.rs` (~680 lines) — fully implemented. ✅ Branch summarization in `branch_summary.rs` (~270 lines). ✅ Skills loaded via `yoagent::skills::SkillSet`. |
 | `coding-agent` (CLI, extensions, tools, settings, commands) | `main.rs`, `builtin/`, `extensions/`, `settings.rs`, `auth.rs`, `commands.rs` | ✅ Tools (read/write/edit/bash/grep/find/ls), settings, auth, CLI done. ✅ 22 slash commands implemented. ✅ Extension trait with tools, commands, renderers, skills, hooks. |
 | `GrepTool`, `FindTool`, `LsTool` (pi agent tools) | `src/extensions/filesystem.rs` | ✅ grep (ripgrep/grep fallback), find (fd/find fallback), ls — all with pluggable operations. |
+| MCP adapter (pi-mcp-adapter) | `src/extensions/mcp/` (6 modules, ~2K lines) | ✅ Proxy `mcp` tool, direct tool adapters, SSE-aware HTTP transport, config loading (global+project merge), server lifecycle (lazy connect, idle timeout), persistent metadata cache, tool renderers. |
 | provider | `yoagent::provider::OpenAiCompatProvider` | ✅ OpenCode Go default. Auto-detection by model prefix (claude → Anthropic, gpt → OpenAI, ollama → Ollama). |
-| `beforeToolCall` / `afterToolCall` | `ToolWithMeta.before_tool_call` / `.after_tool_call` | ✅ Per-tool hooks for blocking/preprocessing/postprocessing |
+| `beforeToolCall` / `afterToolCall` | `ToolDefinition.before_tool_call` / `.after_tool_call` | ✅ Per-tool hooks for blocking/preprocessing/postprocessing |
 | `validateToolArguments` | `extension::validate_tool_arguments()` | ✅ Full JSON Schema validation with pi-compatible error paths |
 | Argument coercion | `extension::coerce_with_json_schema()` | ✅ Type coercion matching pi's `Value.Convert` + `coerceWithJsonSchema` |
 | Theme system | `src/agent/ui/theme.rs` | ✅ JSON theme system with resolution, fallback, detection (715 lines) |
@@ -157,7 +158,7 @@ file mutation queue, and lifecycle management.
 | Config files | `~/.rab/` | ✅ Same schema as pi. Auth at `~/.rab/agent/auth.json`. |
 | Footer data (git branch, extensions) | `src/agent/footer_data_provider.rs` | ✅ Git branch resolution (worktree/reftable support), extension statuses, provider count |
 | File mutation queue | `src/builtin/file_mutation_queue.rs` | ✅ Per-file serialization using tokio::sync::Notify, same pattern as pi |
-| MCP extensions | Not started | ⬜ Phase 2 |
+| MCP extension | `src/extensions/mcp/` | ✅ Proxy `mcp` tool, direct tools, config loading, server lifecycle, cache, renderers |
 | WASM plugin system | Not started | ⬜ Phase 2 |
 
 ---
@@ -474,13 +475,10 @@ pub trait Extension: Send + Sync {
     fn name(&self) -> Cow<'static, str>;
 
     /// Tools this extension provides (LLM-callable), each with prompt metadata.
-    fn tools(&self) -> Vec<ToolWithMeta> { vec![] }
+    fn tools(&self) -> Vec<ToolDefinition> { vec![] }
 
     /// Slash commands (e.g. `/quit`, `/model`).
     fn commands(&self) -> Vec<SlashCommand> { vec![] }
-
-    /// Tool-specific renderer for the TUI.
-    fn tool_renderer(&self, _name: &str) -> Option<Box<dyn ToolRenderer>> { None }
 
     /// Skills this extension provides.
     fn skills(&self) -> yoagent::skills::SkillSet { yoagent::skills::SkillSet::empty() }
@@ -491,7 +489,7 @@ pub trait Extension: Send + Sync {
 
 ```rust
 /// A tool bundled with its prompt metadata.
-pub struct ToolWithMeta {
+pub struct ToolDefinition {
     pub tool: Box<dyn yoagent::types::AgentTool>,
     pub snippet: &'static str,
     pub guidelines: &'static [&'static str],
@@ -550,7 +548,7 @@ pub struct ToolRenderContext {
 
 ### Argument coercion and validation
 
-Every tool call goes through `ToolWithMeta::execute()`:
+Every tool call goes through `ToolDefinition::execute()`:
 
 1. **`prepare_arguments`** — custom per-tool pre-processing (e.g., write tool
    coerces `path`/`content` to strings)
@@ -741,7 +739,7 @@ back for fields that were explicitly changed (preserving project-level overrides
 Built via `SystemPromptBuilder`:
 
 1. **Default prompt** — tool descriptions, response format, tool guidelines,
-   available tools from `ToolWithMeta.snippet` / `.guidelines`.
+   available tools from `ToolDefinition.snippet` / `.guidelines`.
 2. **Custom SYSTEM.md** — `~/.rab/agent/SYSTEM.md` (global) or `.rab/SYSTEM.md`
    (project). Replaces the default prompt.
 3. **APPEND_SYSTEM.md** — appended after all prompts.
@@ -1007,10 +1005,31 @@ bindings. Hot reload via file watcher.
 See the old architecture doc for the detailed WIT interface and
 plugin author experience (design deferred to Phase 2).
 
-### MCP adapter — ⬜ NOT STARTED
+### MCP adapter — ✅ IMPLEMENTED
 
-Planned: An `Extension` that connects to MCP servers via `rmcp` and
-exposes their tools. Configured via `.rab/mcp.json`.
+The `src/extensions/mcp/` module (6 modules, ~2K lines) provides a full MCP
+adapter matching pi-mcp-adapter's architecture. Configured via `~/.rab/agent/mcp.json`
+(global) and `.rab/mcp.json` (project-local overrides).
+
+#### Key components:
+
+| Module | Description |
+|--------|-------------|
+| `mcp/mod.rs` | `McpExtension` struct, proxy `mcp` tool, `McpDirectTool` adapter |
+| `mcp/config.rs` | Config loading + merging (global + project), server config hashing |
+| `mcp/server.rs` | `ServerManager` — lazy connection, idle timeout, keep-alive, SSE-aware HTTP transport |
+| `mcp/types.rs` | `McpConfig`, `ServerEntry`, `McpSettings`, `MetadataCache`, tool name formatting |
+| `mcp/cache.rs` | Persistent metadata cache (`mcp-cache.json`) for fast startup |
+| `mcp/renderer.rs` | `McpToolRenderer` and `McpProxyToolRenderer` for TUI rendering |
+
+#### Dual architecture:
+- **Proxy tool** (`mcp` gateway) — status, list, search, describe, connect, call, auth actions
+- **Direct tools** — servers with `directTools` enabled register individual tools as native `AgentTool`s
+
+#### Server lifecycle:
+- `lazy` (default) — connects on first use, disconnects after idle timeout
+- `eager` — connects at agent startup
+- `keep-alive` — never disconnects
 
 ### models.json — ⬜ NOT IMPLEMENTED
 

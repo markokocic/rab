@@ -236,31 +236,62 @@ fn prepare_edit_arguments(args: &serde_json::Value) -> Result<(String, Vec<Edit>
 /// Normalize tool arguments before execution.
 /// Returns restructured JSON matching execute()'s expected format, or the
 /// original args on error (execute() will produce its own error message).
-pub fn prepare_edit_args(args: serde_json::Value) -> Result<serde_json::Value, String> {
+pub fn prepare_edit_args(mut args: serde_json::Value) -> Result<serde_json::Value, String> {
     let (path_str, edits) = prepare_edit_arguments(&args)?;
-    Ok(serde_json::json!({
-        "path": path_str,
-        "edits": edits.iter().map(|e| serde_json::json!({
-            "oldText": e.old_text,
-            "newText": e.new_text
-        })).collect::<Vec<_>>()
-    }))
+
+    // Build the edits array in pi's camelCase format
+    let edits_array: Vec<serde_json::Value> = edits
+        .iter()
+        .map(|e| {
+            serde_json::json!({
+                "oldText": e.old_text,
+                "newText": e.new_text
+            })
+        })
+        .collect();
+
+    // Preserve all other fields (pi-compatible spread), only removing
+    // the legacy fields that were merged into edits.
+    if let Some(obj) = args.as_object_mut() {
+        obj.remove("oldText");
+        obj.remove("newText");
+        obj.remove("old_text");
+        obj.remove("new_text");
+        obj.insert("path".to_string(), serde_json::Value::String(path_str));
+        obj.insert("edits".to_string(), serde_json::Value::Array(edits_array));
+    }
+
+    Ok(args)
 }
 
 /// Normalize tool arguments before execution (test-only).
 #[allow(dead_code)]
-fn prepare_edit_tool_args(args: serde_json::Value) -> serde_json::Value {
+fn prepare_edit_tool_args(mut args: serde_json::Value) -> serde_json::Value {
     let (path_str, edits) = match prepare_edit_arguments(&args) {
         Ok(result) => result,
         Err(_) => return args,
     };
-    serde_json::json!({
-        "path": path_str,
-        "edits": edits.iter().map(|e| serde_json::json!({
-            "oldText": e.old_text,
-            "newText": e.new_text
-        })).collect::<Vec<_>>()
-    })
+
+    let edits_array: Vec<serde_json::Value> = edits
+        .iter()
+        .map(|e| {
+            serde_json::json!({
+                "oldText": e.old_text,
+                "newText": e.new_text
+            })
+        })
+        .collect();
+
+    if let Some(obj) = args.as_object_mut() {
+        obj.remove("oldText");
+        obj.remove("newText");
+        obj.remove("old_text");
+        obj.remove("new_text");
+        obj.insert("path".to_string(), serde_json::Value::String(path_str));
+        obj.insert("edits".to_string(), serde_json::Value::Array(edits_array));
+    }
+
+    args
 }
 
 // ── Line-span tracking for fuzzy mapping ────────────────────────

@@ -29,14 +29,20 @@ pub fn prepare_write_args(mut args: serde_json::Value) -> Result<serde_json::Val
     // Coerce content to string if possible
     if let Some(val) = args.get("content")
         && !val.is_string()
-        && (val.is_number() || val.is_boolean() || val.is_null())
     {
-        args["content"] = serde_json::Value::String(match val {
-            serde_json::Value::Number(n) => n.to_string(),
-            serde_json::Value::Bool(b) => b.to_string(),
-            serde_json::Value::Null => String::new(),
-            _ => unreachable!(),
-        });
+        if val.is_number() || val.is_boolean() || val.is_null() {
+            args["content"] = serde_json::Value::String(match val {
+                serde_json::Value::Number(n) => n.to_string(),
+                serde_json::Value::Bool(b) => b.to_string(),
+                serde_json::Value::Null => String::new(),
+                _ => unreachable!(),
+            });
+        } else if val.is_array() || val.is_object() {
+            // Stringify arrays/objects when schema expects string
+            args["content"] = serde_json::Value::String(
+                serde_json::to_string(val).unwrap_or_default(),
+            );
+        }
     }
 
     Ok(args)
