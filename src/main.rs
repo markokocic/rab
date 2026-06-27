@@ -366,7 +366,7 @@ async fn main() -> anyhow::Result<()> {
             return false;
         }
 
-        let core_extensions: &[&str] = &["commands", "read", "write", "edit", "bash"];
+        let core_extensions: &[&str] = &["commands", "read", "write", "edit", "bash", "mcp"];
 
         // If tools whitelist is set, only those are active
         if !settings.tools.is_empty() {
@@ -401,6 +401,9 @@ async fn main() -> anyhow::Result<()> {
         extensions.push(Box::new(
             rab::extensions::filesystem::FilesystemExtension::new(cwd.clone()),
         ));
+    }
+    if is_extension_active("mcp", &settings) {
+        extensions.push(Box::new(rab::extensions::mcp::McpExtension::from_cwd(&cwd)));
     }
 
     let agent_dir = get_agent_dir();
