@@ -44,7 +44,9 @@ pub fn compute_server_config_hash(entry: &crate::extensions::mcp::types::ServerE
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
     let mut hasher = DefaultHasher::new();
-    entry.command.hash(&mut hasher);
+    if let Some(ref cmd) = entry.command {
+        cmd.hash(&mut hasher);
+    }
     entry.args.hash(&mut hasher);
     // Include env keys (not values) so config change detection works
     if let Some(ref env) = entry.env {

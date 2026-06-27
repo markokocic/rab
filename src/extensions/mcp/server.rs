@@ -81,7 +81,8 @@ impl ServerManager {
             Some(url) => McpClient::connect_http(url).await,
             None => {
                 let env = entry.env.as_ref().cloned();
-                McpClient::connect_stdio(&entry.command, &to_str_slice(&entry.args), env).await
+                let cmd = entry.command.as_deref().unwrap_or("npx");
+                McpClient::connect_stdio(cmd, &to_str_slice(&entry.args), env).await
             }
         };
 

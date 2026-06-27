@@ -19,7 +19,9 @@ pub struct McpConfig {
 #[serde(rename_all = "camelCase")]
 pub struct ServerEntry {
     /// Command to spawn (e.g. "npx", "node").
-    pub command: String,
+    /// Optional for URL-based servers.
+    #[serde(default)]
+    pub command: Option<String>,
 
     #[serde(default)]
     pub args: Vec<String>,

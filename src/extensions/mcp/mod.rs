@@ -138,80 +138,88 @@ impl Extension for McpExtension {
             after_tool_call: None,
         });
 
-        // Add direct tools for servers with directTools enabled
-        if let Some(ref settings) = self.config.settings
-            && settings.direct_tools
-        {
-            let cache = load_cache();
-            let prefix_mode = &settings.tool_prefix;
+        // Add direct tools for servers with directTools enabled.
+        // Per-server directTools takes precedence; falls back to global setting.
+        let global_direct_tools = self
+            .config
+            .settings
+            .as_ref()
+            .is_some_and(|s| s.direct_tools);
+        let cache = load_cache();
+        let prefix_mode = self
+            .config
+            .settings
+            .as_ref()
+            .map(|s| s.tool_prefix.as_str())
+            .unwrap_or("server");
 
-            for (server_name, entry) in &self.config.mcp_servers {
-                let direct = entry.direct_tools.as_ref();
-                let has_direct = match direct {
-                    Some(v) if v.is_boolean() => v.as_bool().unwrap_or(false),
-                    Some(v) if v.is_array() => true,
-                    _ => false,
-                };
+        for (server_name, entry) in &self.config.mcp_servers {
+            let direct = entry.direct_tools.as_ref();
+            let has_direct = match direct {
+                Some(v) if v.is_boolean() => v.as_bool().unwrap_or(false),
+                Some(v) if v.is_array() => true,
+                None => global_direct_tools,
+                Some(_) => false,
+            };
 
-                if !has_direct {
-                    continue;
-                }
+            if !has_direct {
+                continue;
+            }
 
-                // Check cache for this server
-                let config_hash = config::compute_server_config_hash(entry);
-                if !has_valid_cache(server_name, config_hash) {
-                    continue;
-                }
+            // Check cache for this server
+            let config_hash = config::compute_server_config_hash(entry);
+            if !has_valid_cache(server_name, config_hash) {
+                continue;
+            }
 
-                let server_cache = cache.servers.get(server_name);
-                let cached_tools = server_cache.map(|s| &s.tools);
+            let server_cache = cache.servers.get(server_name);
+            let cached_tools = server_cache.map(|s| &s.tools);
 
-                if let Some(tool_list) = cached_tools {
-                    for ct in tool_list {
-                        // Check tool filter
-                        let include = match direct {
-                            Some(v) if v.is_array() => {
-                                let names: Vec<&str> = v
-                                    .as_array()
-                                    .unwrap()
-                                    .iter()
-                                    .filter_map(|s| s.as_str())
-                                    .collect();
-                                names.is_empty() || names.contains(&ct.name.as_str())
-                            }
-                            _ => true,
-                        };
-
-                        if !include {
-                            continue;
+            if let Some(tool_list) = cached_tools {
+                for ct in tool_list {
+                    // Check tool filter
+                    let include = match direct {
+                        Some(v) if v.is_array() => {
+                            let names: Vec<&str> = v
+                                .as_array()
+                                .unwrap()
+                                .iter()
+                                .filter_map(|s| s.as_str())
+                                .collect();
+                            names.is_empty() || names.contains(&ct.name.as_str())
                         }
+                        _ => true,
+                    };
 
-                        let prefixed = format_tool_name(&ct.name, server_name, prefix_mode);
-                        let input_schema = if ct.input_schema.is_null() {
-                            serde_json::json!({"type": "object", "properties": {}})
-                        } else {
-                            ct.input_schema.clone()
-                        };
-
-                        tools.push(ToolWithMeta {
-                            tool: Box::new(McpDirectTool {
-                                server_name: server_name.clone(),
-                                original_name: ct.name.clone(),
-                                display_name: prefixed.clone(),
-                                description: ct
-                                    .description
-                                    .clone()
-                                    .unwrap_or_else(|| "MCP tool".to_string()),
-                                input_schema,
-                                manager: self.manager.clone(),
-                            }),
-                            snippet: "MCP direct tool",
-                            guidelines: &[],
-                            prepare_arguments: None,
-                            before_tool_call: None,
-                            after_tool_call: None,
-                        });
+                    if !include {
+                        continue;
                     }
+
+                    let prefixed = format_tool_name(&ct.name, server_name, prefix_mode);
+                    let input_schema = if ct.input_schema.is_null() {
+                        serde_json::json!({"type": "object", "properties": {}})
+                    } else {
+                        ct.input_schema.clone()
+                    };
+
+                    tools.push(ToolWithMeta {
+                        tool: Box::new(McpDirectTool {
+                            server_name: server_name.clone(),
+                            original_name: ct.name.clone(),
+                            display_name: prefixed.clone(),
+                            description: ct
+                                .description
+                                .clone()
+                                .unwrap_or_else(|| "MCP tool".to_string()),
+                            input_schema,
+                            manager: self.manager.clone(),
+                        }),
+                        snippet: "MCP direct tool",
+                        guidelines: &[],
+                        prepare_arguments: None,
+                        before_tool_call: None,
+                        after_tool_call: None,
+                    });
                 }
             }
         }
