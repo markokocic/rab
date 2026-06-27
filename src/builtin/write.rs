@@ -39,9 +39,8 @@ pub fn prepare_write_args(mut args: serde_json::Value) -> Result<serde_json::Val
             });
         } else if val.is_array() || val.is_object() {
             // Stringify arrays/objects when schema expects string
-            args["content"] = serde_json::Value::String(
-                serde_json::to_string(val).unwrap_or_default(),
-            );
+            args["content"] =
+                serde_json::Value::String(serde_json::to_string(val).unwrap_or_default());
         }
     }
 

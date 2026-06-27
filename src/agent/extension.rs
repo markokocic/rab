@@ -69,9 +69,8 @@ pub fn coerce_primitive_by_type(schema_type: &str, value: &mut serde_json::Value
                 *value = serde_json::Value::String(String::new());
             } else if value.is_array() || value.is_object() {
                 // TypeBox's Value.Convert stringifies arrays/objects when schema expects string
-                *value = serde_json::Value::String(
-                    serde_json::to_string(value).unwrap_or_default()
-                );
+                *value =
+                    serde_json::Value::String(serde_json::to_string(value).unwrap_or_default());
             }
         }
         "number" => {
@@ -109,6 +108,15 @@ pub fn coerce_primitive_by_type(schema_type: &str, value: &mut serde_json::Value
                 *value = serde_json::Value::Bool(value.as_f64().unwrap_or(0.0) != 0.0);
             } else if value.is_null() {
                 *value = serde_json::Value::Bool(false);
+            }
+        }
+        "null" => {
+            // Pi-compatible: treat empty string, 0, or false as null
+            if value.as_str().is_some_and(|s| s.is_empty())
+                || value.as_f64() == Some(0.0)
+                || value.as_bool() == Some(false)
+            {
+                *value = serde_json::Value::Null;
             }
         }
         "array" => {
@@ -222,8 +230,6 @@ fn collect_schema_types(schema: &serde_json::Value) -> Vec<String> {
     }
     vec![]
 }
-
-/// Check whether a JSON value matches a JSON Schema type.
 
 // ── Schema validation (matching pi's validateToolArguments) ──────
 
