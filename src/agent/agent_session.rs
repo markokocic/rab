@@ -443,7 +443,6 @@ impl AgentSession {
             .with_thinking(thinking_level)
             .with_messages(initial_messages)
             .with_tools(tools)
-            .without_context_management()
     }
 
     // ── Model / thinking / tool change tracking ─────────────────

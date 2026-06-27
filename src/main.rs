@@ -563,8 +563,7 @@ async fn run_print_mode(
         ))
         .with_system_prompt(&system_prompt)
         .with_thinking(yoagent::types::ThinkingLevel::High)
-        .with_tools(agent_tools)
-        .without_context_management();
+        .with_tools(agent_tools);
 
     let (yo_tx, mut yo_rx) = tokio::sync::mpsc::unbounded_channel();
     let msg_for_agent = message.clone();
