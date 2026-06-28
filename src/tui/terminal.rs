@@ -181,6 +181,24 @@ pub fn poll_terminal_event(timeout: Option<Duration>) -> io::Result<Option<Termi
     Ok(event)
 }
 
+/// Non-blocking version of `poll_terminal_event`. Returns `None` if no event
+/// is available or the channel is disconnected. Never blocks.
+pub fn try_recv_terminal_event() -> Option<TerminalEvent> {
+    use std::sync::mpsc::TryRecvError;
+    let rx_opt = EVENT_RX.lock().unwrap().take();
+    let rx = rx_opt.as_ref()?;
+    let (event, keep) = match rx.try_recv() {
+        Ok(event) => (Some(event), true),
+        Err(TryRecvError::Empty) => (None, true),
+        Err(TryRecvError::Disconnected) => (None, false),
+    };
+    let _ = rx;
+    if keep {
+        *EVENT_RX.lock().unwrap() = rx_opt;
+    }
+    event
+}
+
 pub fn poll_key_event(timeout: Option<Duration>) -> io::Result<Option<KeyEvent>> {
     match poll_terminal_event(timeout)? {
         Some(TerminalEvent::Key(key)) => Ok(Some(key)),

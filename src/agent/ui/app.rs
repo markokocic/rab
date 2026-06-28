@@ -502,34 +502,29 @@ pub async fn run(config: AppConfig, session: AgentSession) -> anyhow::Result<()>
             dirty = true;
         }
 
-        // THEN poll for terminal input (state reflects any events just processed)
-        // Reduced poll frequency: 16ms active (~60fps), 50ms idle - terminal UI
-        // doesn't benefit from >60fps and lower frequency saves CPU/battery.
-        let timeout = if dirty || app.is_streaming || app.working.should_show() {
-            Duration::from_millis(16)
-        } else {
-            Duration::from_millis(50)
-        };
-        if let Some(evt) = terminal::poll_terminal_event(Some(timeout))? {
-            match evt {
-                terminal::TerminalEvent::Key(key) => {
+        // Drain terminal events (non-blocking — stdin reader runs on a
+        // separate thread). The stdin thread is already decoupled from the
+        // main loop, so we just drain whatever has arrived since last check.
+        loop {
+            match terminal::try_recv_terminal_event() {
+                Some(terminal::TerminalEvent::Key(key)) => {
                     // TUI overlay routing first (overlays get first crack at input)
                     if !tui.route_input(&key) {
                         handle_input(&mut app, &mut tui, &mut term, &key);
                     }
                 }
-                terminal::TerminalEvent::Paste(content) => {
+                Some(terminal::TerminalEvent::Paste(content)) => {
                     // Route to focused overlay first (e.g. Input in settings),
                     // fall back to the main Editor.
                     if !tui.route_paste(&content) {
                         app.editor.borrow_mut().editor.handle_paste(&content);
                     }
                 }
-                terminal::TerminalEvent::Resize(w, h) => {
-                    // Update editor's terminal height for dynamic max-visible-lines
+                Some(terminal::TerminalEvent::Resize(w, h)) => {
                     app.editor.borrow_mut().editor.set_terminal_rows(h as usize);
                     tui.set_dimensions(w as usize, h as usize);
                 }
+                None => break,
             }
             dirty = true;
         }
@@ -685,11 +680,15 @@ pub async fn run(config: AppConfig, session: AgentSession) -> anyhow::Result<()>
             dirty = false;
         }
 
-        // Yield to the tokio runtime so spawned agent-loop tasks get a
-        // chance to run. Without this, the entirely-synchronous main loop
-        // (no .await other than this) can starve background tasks on
-        // single-threaded runtimes or when work-stealing is delayed.
-        tokio::task::yield_now().await;
+        // Idle backpressure: sleep briefly so we don't busy-wait when idle.
+        // Active frames (dirty, streaming, working spinner) run at ~60fps;
+        // idle frames pace at ~20fps to save CPU/battery.
+        tokio::time::sleep(if dirty || app.is_streaming || app.working.should_show() {
+            Duration::from_millis(16)
+        } else {
+            Duration::from_millis(50)
+        })
+        .await;
 
         // Pi: clear transient status after rendering
         app.status_text = None;
