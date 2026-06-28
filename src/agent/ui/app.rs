@@ -175,9 +175,6 @@ pub struct App {
     /// Agent tools (for tool execution).
     /// Extensions.
     extensions: Arc<Vec<Box<dyn Extension>>>,
-    /// Steering queue: messages delivered after current turn's tool calls finish,
-    /// before the next LLM call. Shared with the agent loop.
-
     /// Skills loaded for the session (/skill:name expansion).
     skills: Vec<yoagent::skills::Skill>,
     /// API key for yoagent provider.
@@ -205,6 +202,13 @@ pub struct App {
     /// Used by `show_status()` to replace consecutive status messages in-place
     /// instead of appending indefinitely.
     last_status_len: Option<usize>,
+
+    /// Number of queued steering messages (for status display).
+    /// Incremented on steer(), reset on AgentEnd.
+    queued_steering_count: usize,
+    /// Number of queued follow-up messages (for status display).
+    /// Incremented on follow_up(), reset on AgentEnd.
+    queued_follow_up_count: usize,
     // ── Message rendering cache (avoids re-rendering messages every frame) ──
     // Cache fields removed - messages now rendered via Components in chat_container.
 }
@@ -389,6 +393,8 @@ impl App {
             )),
             session_picker: None,
             last_status_len: None,
+            queued_steering_count: 0,
+            queued_follow_up_count: 0,
         };
 
         // Initial session info for /session command
@@ -527,19 +533,17 @@ pub async fn run(config: AppConfig, session: AgentSession) -> anyhow::Result<()>
         // AgentEnd (which sets is_streaming=false) can land between the initial
         // drain above and the user hitting Enter — processing terminal events
         // can take real time (edit operations, overlays, etc). Without this,
-        // submit_message may see a stale is_streaming=true, and even though it
-        // now always sets pending_submit, we still want settled state before
-        // start_agent_loop decides whether to steer or start a new turn.
+        // submit_message may see a stale is_streaming=true and incorrectly try
+        // to steer a finished agent.
         while let Ok(event) = app.event_rx.try_recv() {
             handle_agent_event(&mut app, event);
             dirty = true;
         }
 
         // Handle pending agent submission (async).
-        // Deferred while streaming — the message stays in pending_submit and
-        // will be processed when the current turn finishes (AgentEnd sets
-        // is_streaming = false). This avoids blocking on agent.finish().await
-        // which would freeze the UI (pi-compatible: steer via queue, not block).
+        // During streaming, submit_message uses agent.steer() directly so
+        // pending_submit is only set for the idle path. Processed here as
+        // soon as is_streaming becomes false.
         if !app.is_streaming
             && let Some(text) = app.pending_submit.take()
         {
@@ -715,19 +719,34 @@ fn compose_ui(app: &mut App, width: usize) {
         status_lines.push(crate::agent::ui::render_utils::pad_to_width(&line, width));
     }
 
-    // ── Queued message indicator (pi-style: shows when a message is queued during streaming) ──
-    if let Some(ref msg) = app.pending_submit
-        && app.is_streaming
-    {
-        let preview = if msg.len() > 60 {
-            format!("{}…", &msg[..60])
-        } else {
-            msg.clone()
-        };
-        let line = app
-            .theme
-            .fg_key(ThemeKey::Dim, &format!(" 📝 queued: {}", preview));
-        status_lines.push(crate::agent::ui::render_utils::pad_to_width(&line, width));
+    // ── Queued message indicator (pi-style: shows queued messages during streaming) ──
+    if app.is_streaming {
+        // Show pending_submit if set (idle path, before agent loop starts)
+        if let Some(ref msg) = app.pending_submit {
+            let preview = if msg.len() > 60 {
+                format!("{}…", &msg[..60])
+            } else {
+                msg.clone()
+            };
+            let line = app
+                .theme
+                .fg_key(ThemeKey::Dim, &format!(" 📝 queued: {}", preview));
+            status_lines.push(crate::agent::ui::render_utils::pad_to_width(&line, width));
+        }
+        // Show queued steering/follow-up counts
+        if app.queued_steering_count > 0 || app.queued_follow_up_count > 0 {
+            let mut parts = Vec::new();
+            if app.queued_steering_count > 0 {
+                parts.push(format!("{} steering", app.queued_steering_count));
+            }
+            if app.queued_follow_up_count > 0 {
+                parts.push(format!("{} follow-up", app.queued_follow_up_count));
+            }
+            let line = app
+                .theme
+                .fg_key(ThemeKey::Dim, &format!(" 📝 queued: {} ", parts.join(", ")));
+            status_lines.push(crate::agent::ui::render_utils::pad_to_width(&line, width));
+        }
     }
     app.status_section.borrow_mut().set_lines(status_lines);
 
@@ -736,6 +755,16 @@ fn compose_ui(app: &mut App, width: usize) {
     let wl = app.working.render(width);
     working_lines.extend(wl);
     app.working_section.borrow_mut().set_lines(working_lines);
+}
+
+// Helper: create an AgentMessage for a user text input (used for steer/follow_up).
+fn user_agent_message(text: &str) -> yoagent::types::AgentMessage {
+    yoagent::types::AgentMessage::Llm(yoagent::types::Message::User {
+        content: vec![yoagent::types::Content::Text {
+            text: text.to_string(),
+        }],
+        timestamp: yoagent::types::now_ms(),
+    })
 }
 
 /// Handle keyboard input. Mirrors pi's InteractiveMode key dispatch:
@@ -1055,29 +1084,38 @@ fn handle_editor_external(app: &mut App, tui: &mut TUI, term: &mut ProcessTermin
     }
 }
 
-/// Queue a follow-up message (Alt+Enter). Queues in pending_submit during
-/// streaming (deferred until current turn finishes). When idle, submits immediately.
-fn handle_follow_up(app: &mut App, text: String) {
+/// Queue a follow-up message (Alt+Enter). Uses agent.follow_up() during
+/// streaming (queued until current turn finishes, then processed).
+/// When idle, submits immediately.
+pub fn handle_follow_up(app: &mut App, text: String) {
+    let trimmed = text.trim().to_string();
+    if trimmed.is_empty() {
+        return;
+    }
+
+    // Add user message to chat display first (before agent access to avoid borrow conflicts)
     if app.is_streaming {
-        if let Some(ref agent) = app.agent
-            && agent.is_streaming()
-        {
-            // Queue via pending_submit — same path as regular steer.
-            // Delivered when the agent finishes its current turn.
+        let should_follow_up = app.agent.as_ref().is_some_and(|a| a.is_streaming());
+        if should_follow_up {
             chat_add(
                 app,
                 std::boxed::Box::new(crate::agent::ui::components::UserMessageComponent::new(
-                    &text,
+                    &trimmed,
                 )),
             );
-            app.pending_submit = Some(text);
-            app.status_text = Some("Message queued - will send when agent finishes".into());
+            // Queue via follow_up() — delivered after current turn finishes
+            let follow_msg = user_agent_message(&trimmed);
+            if let Some(ref agent) = app.agent {
+                agent.follow_up(follow_msg);
+            }
+            app.queued_follow_up_count += 1;
+            app.status_text = Some("Follow-up queued - will send when agent finishes".into());
             return;
         }
-        // Stale is_streaming flag — submit directly
+        // Stale streaming flag — submit directly
         app.is_streaming = false;
     }
-    submit_message(app, text);
+    submit_message(app, trimmed);
 }
 
 /// Toggle auto-compact indicator (Ctrl+Shift+C).
@@ -1123,6 +1161,9 @@ fn interrupt_streaming(app: &mut App) {
     app.is_streaming = false;
     app.working.stop();
     app.footer.borrow_mut().set_streaming(false);
+    // Reset queue tracking on abort
+    app.queued_steering_count = 0;
+    app.queued_follow_up_count = 0;
 
     // Rebuild chat from session (authoritative store after abort)
     if let Some(ref s) = app.session {
@@ -1177,9 +1218,17 @@ fn submit_message(app: &mut App, message: String) {
                 &expanded,
             )),
         );
-        if app.is_streaming && app.agent.as_ref().is_none_or(|a| !a.is_streaming()) {
-            // Stale streaming flag — the agent task finished but we haven't
-            // called finish() yet. Reset so the new turn starts cleanly.
+        if app.is_streaming && app.agent.as_ref().is_some_and(|a| a.is_streaming()) {
+            let steer_msg = user_agent_message(&expanded);
+            if let Some(ref agent) = app.agent {
+                agent.steer(steer_msg);
+                app.queued_steering_count += 1;
+                app.status_text = Some("Skill steering message sent".into());
+            }
+            return;
+        }
+        if app.is_streaming {
+            // Stale streaming flag — reset
             app.is_streaming = false;
             app.working.stop();
             app.footer.borrow_mut().set_streaming(false);
@@ -1209,13 +1258,24 @@ fn submit_message(app: &mut App, message: String) {
     );
 
     if app.is_streaming {
-        // Message will remain queued in pending_submit until the current
-        // turn finishes (the main loop skips start_agent_loop while
-        // is_streaming). Pi-compatible: queue, don't block.
-        app.status_text = Some("Message queued - will send when agent finishes".into());
-
-        if app.agent.as_ref().is_none_or(|a| !a.is_streaming()) {
-            // Agent task has completed/aborted but is_streaming wasn't reset.
+        // When streaming, use steer() to deliver the message mid-turn.
+        // The agent loop picks it up between tool calls or after the
+        // current assistant turn, then continues processing.
+        if app.agent.as_ref().is_some_and(|a| a.is_streaming()) {
+            let steer_msg = user_agent_message(&trimmed);
+            if let Some(ref agent) = app.agent {
+                agent.steer(steer_msg);
+                app.queued_steering_count += 1;
+                app.status_text = Some("Steering message sent - interrupting current turn".into());
+            }
+            // Reset overflow recovery for the steer'd message
+            if let Some(ref mut s) = app.session {
+                s.reset_overflow_recovery();
+            }
+            return; // Don't set pending_submit — agent loop handles this
+        } else {
+            // Stale streaming flag — agent task finished but is_streaming
+            // not reset. Fall through to normal submission path.
             app.is_streaming = false;
             app.working.stop();
             app.footer.borrow_mut().set_streaming(false);
@@ -2538,6 +2598,10 @@ fn handle_agent_event(app: &mut App, event: yoagent::types::AgentEvent) {
             app.is_streaming = false;
             app.working.stop();
             app.footer.borrow_mut().set_streaming(false);
+            // Reset queue tracking — all queued messages have been consumed
+            // by the agent loop (steer/follow_up queues drained at turn end).
+            app.queued_steering_count = 0;
+            app.queued_follow_up_count = 0;
             // Refresh footer cached stats from session at turn end (pull-based)
             if let Some(ref s) = app.session {
                 app.footer.borrow_mut().refresh_from_session(s.session());
