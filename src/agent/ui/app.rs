@@ -1140,7 +1140,8 @@ fn submit_message(app: &mut App, message: String) {
             )),
         );
         if app.is_streaming && app.agent.as_ref().is_none_or(|a| !a.is_streaming()) {
-            // Stale streaming flag — reset
+            // Stale streaming flag — the agent task finished but we haven't
+            // called finish() yet. Reset so the new turn starts cleanly.
             app.is_streaming = false;
             app.working.stop();
             app.footer.borrow_mut().set_streaming(false);
@@ -1170,10 +1171,9 @@ fn submit_message(app: &mut App, message: String) {
     );
 
     if app.is_streaming {
-        // Mid-turn steering is now handled by start_agent_loop, not here.
-        // Always fall through to set pending_submit below instead of returning
-        // early, to avoid the race where the agent loop’s steering-check window
-        // closes between steer() and AgentEnd, causing the message to be lost.
+        // Always set pending_submit below instead of returning early.
+        // start_agent_loop waits for the current turn to complete before
+        // starting a new one — no steering involved.
 
         if app.agent.as_ref().is_none_or(|a| !a.is_streaming()) {
             // Agent task has completed/aborted but is_streaming wasn’t reset.
@@ -1248,17 +1248,15 @@ async fn start_agent_loop(app: &mut App, message: String) {
         return;
     }
 
-    // If the agent loop is still running (e.g. this message arrived before
-    // AgentEnd), steer into the running loop instead of starting a new one.
-    // This handles the race where submit_message set pending_submit before
-    // AgentEnd had been processed — by the time we get here, AgentEnd may
-    // have been handled (is_streaming = false), in which case we fall through
-    // and start a new turn normally.
-    if let Some(ref agent) = app.agent
-        && agent.is_streaming()
+    // If the agent loop is still running (the previous AgentEnd was handled
+    // but agent.finish() hasn't been called yet), wait for it to complete
+    // before starting a new turn.  Steering into a running loop is unreliable
+    // — the inner loop may have already passed its last steering check and
+    // is about to exit, causing the steered message to be lost.
+    if app.agent.as_ref().is_some_and(|a| a.is_streaming())
+        && let Some(ref mut agent) = app.agent
     {
-        agent.steer(crate::agent::types::user_message(&message));
-        return;
+        agent.finish().await;
     }
 
     app.is_streaming = true;
