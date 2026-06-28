@@ -28,6 +28,17 @@ pub struct AfterToolCallResult {
     pub is_error: Option<bool>,
 }
 
+/// Result returned from `before_compact` (matching pi's `SessionBeforeCompactResult`).
+/// Returning `{ cancel: true }` prevents compaction.
+pub struct BeforeCompactResult {
+    /// If true, compaction is cancelled entirely.
+    pub cancel: bool,
+    /// If provided, uses this summary instead of calling the provider.
+    pub summary: Option<String>,
+    /// Optional details stored with the compaction entry.
+    pub details: Option<serde_json::Value>,
+}
+
 /// A tool bundled with its prompt metadata.
 ///
 /// Mirrors pi's `ToolDefinition` which carries `promptSnippet`,
@@ -561,7 +572,7 @@ pub enum CommandResult {
     /// Remove provider authentication.
     Logout { provider: Option<String> },
     /// Manually compact the session context.
-    CompactSession,
+    CompactSession(Option<String>),
 }
 
 /// A registered slash command.
@@ -810,6 +821,32 @@ pub trait Extension: Send + Sync {
     /// Merged into the session's skill set for /skill:name expansion and system prompt.
     fn skills(&self) -> yoagent::skills::SkillSet {
         yoagent::skills::SkillSet::empty()
+    }
+
+    /// Called before compaction runs (matching pi's `session_before_compact`).
+    /// Return `Some(BeforeCompactResult { cancel: true, .. })` to cancel compaction.
+    /// Return `Some(BeforeCompactResult { cancel: false, summary: Some(...), .. })`
+    /// to provide a custom summary instead of calling the provider.
+    /// Return `None` to let the default compaction proceed.
+    fn before_compact(
+        &self,
+        _first_kept_entry_id: &str,
+        _tokens_before: u64,
+        _reason: &str,
+    ) -> Option<BeforeCompactResult> {
+        None
+    }
+
+    /// Called after compaction completes (matching pi's `session_compact`).
+    fn after_compact(
+        &self,
+        _summary: &str,
+        _first_kept_entry_id: &str,
+        _tokens_before: u64,
+        _estimated_tokens_after: u64,
+        _from_hook: bool,
+        _reason: &str,
+    ) {
     }
 }
 

@@ -1,10 +1,34 @@
 use crate::agent::branch_summary::{collect_entries_for_branch_summary, generate_branch_summary};
-use crate::agent::compaction::{self, CompactionSettings, compact, prepare_compaction};
+use crate::agent::compaction::{
+    self, CompactionReason, CompactionResult, CompactionSettings, compact, prepare_compaction,
+};
+use crate::agent::extension::Extension;
 use crate::agent::session::SessionManager;
 use crate::agent::types::{message_text, tool_result_message, user_message};
 use std::collections::HashSet;
 use yoagent::types::AgentMessage;
 use yoagent::types::Content;
+
+// ── Compaction lifecycle events ─────────────────────────────────────
+
+/// Events emitted during the compaction lifecycle.
+/// Matches pi's `compaction_start` / `compaction_end` event semantics.
+#[derive(Debug, Clone)]
+pub enum CompactionEvent {
+    /// Compaction has started with the given reason.
+    Start { reason: CompactionReason },
+    /// Compaction completed successfully.
+    End {
+        reason: CompactionReason,
+        result: CompactionResult,
+        aborted: bool,
+        will_retry: bool,
+        error_message: Option<String>,
+    },
+}
+
+/// Callback for compaction lifecycle events.
+pub type CompactionEventCallback = Box<dyn Fn(&CompactionEvent) + Send + Sync>;
 
 /// Bridges the agent loop events and session persistence.
 ///
@@ -44,6 +68,16 @@ pub struct AgentSession {
     model_name: String,
     /// API key for compaction LLM calls.
     compaction_api_key: Option<String>,
+    /// Model configuration for compaction LLM calls (base URL, compat flags, etc.).
+    model_config: Option<yoagent::provider::model::ModelConfig>,
+    /// Current thinking level from the session (for compaction summarization).
+    thinking_level: yoagent::types::ThinkingLevel,
+    /// Registered extensions (for compaction hooks).
+    extensions: Vec<Box<dyn Extension>>,
+    /// Lifecycle event listeners.
+    event_listeners: Vec<CompactionEventCallback>,
+    /// Whether overflow recovery has already been attempted (prevents loops).
+    overflow_recovery_attempted: bool,
 }
 
 impl AgentSession {
@@ -77,24 +111,46 @@ impl AgentSession {
             context_window: 200_000,
             model_name: String::new(),
             compaction_api_key: None,
+            model_config: None,
+            thinking_level: yoagent::types::ThinkingLevel::Off,
+            extensions: Vec::new(),
+            event_listeners: Vec::new(),
+            overflow_recovery_attempted: false,
         }
     }
 
-    /// Configure compaction with API key, model, and context window.
+    /// Configure compaction with API key, model, context window, and model config.
     pub fn set_compaction_config(
         &mut self,
         api_key: String,
         model_name: &str,
         context_window: u64,
+        model_config: Option<yoagent::provider::model::ModelConfig>,
     ) {
         self.compaction_api_key = Some(api_key);
         self.model_name = model_name.to_string();
         self.context_window = context_window;
+        self.model_config = model_config;
     }
 
     /// Enable or disable auto-compaction.
     pub fn set_auto_compact(&mut self, enabled: bool) {
         self.compaction_settings.enabled = enabled;
+    }
+
+    /// Sync the thinking level from the session context.
+    /// Should be called after the session context changes.
+    pub fn sync_thinking_level(&mut self) {
+        let ctx = self.session.build_session_context();
+        let level_str = ctx.thinking_level.to_lowercase();
+        self.thinking_level = match level_str.as_str() {
+            "off" => yoagent::types::ThinkingLevel::Off,
+            "minimal" => yoagent::types::ThinkingLevel::Minimal,
+            "low" => yoagent::types::ThinkingLevel::Low,
+            "medium" => yoagent::types::ThinkingLevel::Medium,
+            "high" => yoagent::types::ThinkingLevel::High,
+            _ => yoagent::types::ThinkingLevel::Off,
+        };
     }
 
     /// Get the current compaction settings (mutable, for modification).
@@ -105,6 +161,44 @@ impl AgentSession {
     /// Get the current compaction settings.
     pub fn compaction_settings(&self) -> &CompactionSettings {
         &self.compaction_settings
+    }
+
+    /// Set the list of extensions (for compaction hooks).
+    pub fn set_extensions(&mut self, extensions: Vec<Box<dyn Extension>>) {
+        self.extensions = extensions;
+    }
+
+    /// Register a compaction lifecycle event listener.
+    pub fn on_compaction_event(&mut self, callback: CompactionEventCallback) {
+        self.event_listeners.push(callback);
+    }
+
+    /// Emit a compaction event to all registered listeners.
+    fn emit_compaction_event(&self, event: &CompactionEvent) {
+        for listener in &self.event_listeners {
+            listener(event);
+        }
+    }
+
+    /// Reset overflow recovery state (called when starting a new turn).
+    pub fn reset_overflow_recovery(&mut self) {
+        self.overflow_recovery_attempted = false;
+    }
+
+    /// Check if a provider error indicates context overflow.
+    /// Matches pi's context overflow detection patterns.
+    pub fn is_context_overflow_error(msg: &AgentMessage) -> bool {
+        let text = message_text(msg);
+        let lower = text.to_lowercase();
+        // Pi-compatible: detect HTTP 413, "prompt too long", "context_length_exceeded", etc.
+        lower.contains("413")
+            || lower.contains("request_too_large")
+            || lower.contains("prompt too long")
+            || lower.contains("context_length_exceeded")
+            || lower.contains("context overflow")
+            || lower.contains("max context length")
+            || lower.contains("exceeded max tokens")
+            || lower.contains("maximum context length")
     }
 
     // ── Accessors ─────────────────────────────────────────────────
@@ -265,69 +359,176 @@ impl AgentSession {
     /// Should be called after the agent finishes a turn (after on_agent_end).
     /// Returns `true` if compaction was performed.
     pub async fn check_auto_compact(&mut self) -> Result<bool, String> {
-        if !self.compaction_settings.enabled {
+        Ok(self
+            ._run_compaction(CompactionReason::Threshold, None, false)
+            .await?
+            .is_some())
+    }
+
+    /// Run compaction after a context overflow error.
+    /// If `will_retry` is true, the agent turn will be retried after compaction.
+    /// Returns `Ok(true)` if compaction was performed, `Ok(false)` if recovery already attempted.
+    pub async fn check_overflow_compact(&mut self, will_retry: bool) -> Result<bool, String> {
+        if self.overflow_recovery_attempted {
             return Ok(false);
         }
-        if self.compaction_api_key.is_none() || self.model_name.is_empty() {
-            return Ok(false);
-        }
-
-        let entries = self.session.entries();
-        let context_msgs = self.session.build_session_context().messages;
-        let context_tokens = compaction::estimate_context_tokens(&context_msgs);
-
-        if !compaction::should_compact(
-            context_tokens,
-            self.context_window,
-            &self.compaction_settings,
-        ) {
-            return Ok(false);
-        }
-
-        let Some(prep) = prepare_compaction(entries, &self.compaction_settings) else {
-            return Ok(false);
-        };
-
-        let api_key = self.compaction_api_key.as_ref().unwrap();
-        let result = compact(&prep, api_key, &self.model_name, None).await?;
-
-        // Append the compaction entry to the session
-        self.session.append_compaction(
-            &result.summary,
-            &result.first_kept_entry_id,
-            result.tokens_before,
-            result.details,
-            None, // from_hook: pi-generated
-        );
-
-        Ok(true)
+        self.overflow_recovery_attempted = true;
+        Ok(self
+            ._run_compaction(CompactionReason::Overflow, None, will_retry)
+            .await?
+            .is_some())
     }
 
     /// Run compaction manually (ignores auto-compact setting).
     /// Returns the compaction summary text, or an error message.
-    pub async fn run_manual_compact(&mut self) -> Result<String, String> {
-        if self.compaction_api_key.is_none() || self.model_name.is_empty() {
-            return Err("No provider configured for compaction".to_string());
+    pub async fn run_manual_compact(
+        &mut self,
+        custom_instructions: Option<&str>,
+    ) -> Result<String, String> {
+        let result = self
+            ._run_compaction(CompactionReason::Manual, custom_instructions, false)
+            .await?;
+        Ok(result.map(|r| r.summary).unwrap_or_default())
+    }
+
+    /// Internal: run compaction with the given reason, emitting lifecycle events.
+    /// Returns the CompactionResult if compaction was performed, or None if skipped.
+    async fn _run_compaction(
+        &mut self,
+        reason: CompactionReason,
+        custom_instructions: Option<&str>,
+        will_retry: bool,
+    ) -> Result<Option<CompactionResult>, String> {
+        // For threshold compaction, check if auto-compact is enabled
+        if reason == CompactionReason::Threshold && !self.compaction_settings.enabled {
+            return Ok(None);
         }
 
+        if self.compaction_api_key.is_none() || self.model_name.is_empty() {
+            return Ok(None);
+        }
+
+        // Emit compaction_start
+        self.emit_compaction_event(&CompactionEvent::Start { reason });
+
         let entries = self.session.entries();
+
+        // Check threshold for auto-compact
+        if reason == CompactionReason::Threshold {
+            let context_msgs = self.session.build_session_context().messages;
+            let context_tokens = compaction::estimate_context_tokens(&context_msgs);
+            if !compaction::should_compact(
+                context_tokens,
+                self.context_window,
+                &self.compaction_settings,
+            ) {
+                return Ok(None);
+            }
+        }
+
         let Some(prep) = prepare_compaction(entries, &self.compaction_settings) else {
-            return Err("Nothing to compact – session is already compacted or empty".to_string());
+            return Ok(None);
         };
 
-        let api_key = self.compaction_api_key.as_ref().unwrap();
-        let result = compact(&prep, api_key, &self.model_name, None).await?;
+        // Extension hooks: before_compact
+        let mut from_hook = false;
+        let mut hook_summary: Option<String> = None;
+        let mut hook_details: Option<serde_json::Value> = None;
+
+        for ext in &self.extensions {
+            if let Some(result) = ext.before_compact(
+                &prep.first_kept_entry_id,
+                prep.tokens_before,
+                &reason.to_string(),
+            ) {
+                if result.cancel {
+                    self.emit_compaction_event(&CompactionEvent::End {
+                        reason,
+                        aborted: true,
+                        will_retry: false,
+                        error_message: Some("Compaction cancelled by extension".to_string()),
+                        result: CompactionResult {
+                            summary: String::new(),
+                            first_kept_entry_id: prep.first_kept_entry_id.clone(),
+                            tokens_before: prep.tokens_before,
+                            estimated_tokens_after: 0,
+                            details: None,
+                        },
+                    });
+                    return Ok(None);
+                }
+                if result.summary.is_some() {
+                    hook_summary = result.summary;
+                    hook_details = result.details;
+                    from_hook = true;
+                    break;
+                }
+            }
+        }
+
+        let result = if let Some(summary) = hook_summary {
+            // Extension provided custom summary
+            CompactionResult {
+                summary,
+                first_kept_entry_id: prep.first_kept_entry_id.clone(),
+                tokens_before: prep.tokens_before,
+                estimated_tokens_after: 0, // will be computed after append
+                details: hook_details,
+            }
+        } else {
+            // Call provider for summarization
+            let api_key = self.compaction_api_key.as_ref().unwrap();
+            compact(
+                &prep,
+                api_key,
+                &self.model_name,
+                custom_instructions,
+                self.thinking_level,
+                self.model_config.clone(),
+            )
+            .await?
+        };
 
         // Append the compaction entry to the session
         self.session.append_compaction(
             &result.summary,
             &result.first_kept_entry_id,
             result.tokens_before,
-            result.details,
-            None, // from_hook: pi-generated
+            result.details.clone(),
+            Some(from_hook),
         );
 
-        Ok(result.summary)
+        // Compute estimated tokens after compaction
+        let context_after = self.session.build_session_context().messages;
+        let estimated_tokens_after = compaction::estimate_context_tokens(&context_after);
+
+        let final_result = CompactionResult {
+            estimated_tokens_after,
+            ..result
+        };
+
+        // Extension hooks: after_compact
+        for ext in &self.extensions {
+            ext.after_compact(
+                &final_result.summary,
+                &final_result.first_kept_entry_id,
+                final_result.tokens_before,
+                final_result.estimated_tokens_after,
+                from_hook,
+                &reason.to_string(),
+            );
+        }
+
+        // Emit compaction_end
+        self.emit_compaction_event(&CompactionEvent::End {
+            reason,
+            result: final_result.clone(),
+            aborted: false,
+            will_retry,
+            error_message: None,
+        });
+
+        Ok(Some(final_result))
     }
 
     // ── Branch summarization ───────────────────────────────────────
@@ -362,6 +563,8 @@ impl AgentSession {
             target_id,
             api_key,
             &self.model_name,
+            self.thinking_level,
+            self.model_config.clone(),
         )
         .await
     }

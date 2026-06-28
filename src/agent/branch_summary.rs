@@ -129,6 +129,8 @@ pub async fn generate_branch_summary(
     target_id: &str,
     api_key: &str,
     model: &str,
+    thinking_level: yoagent::types::ThinkingLevel,
+    model_config: Option<yoagent::provider::model::ModelConfig>,
 ) -> Result<String, String> {
     let settings = CompactionSettings::default();
     let context_window = crate::agent::compaction::get_model_context_window(model);
@@ -191,7 +193,15 @@ Keep it concise. Preserve exact file paths, function names, and error messages."
     let summary_msg = user_message(&prompt);
     let system_prompt = "You are a precise summarizer. Summarize the conversation branch above.";
 
-    let summary = compaction::summarize_text(api_key, model, system_prompt, &[summary_msg]).await?;
+    let summary = compaction::summarize_text(
+        api_key,
+        model,
+        system_prompt,
+        &[summary_msg],
+        thinking_level,
+        model_config,
+    )
+    .await?;
 
     if summary.is_empty() {
         return Err("Branch summarization returned empty response".to_string());

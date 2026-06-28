@@ -99,6 +99,8 @@ pub struct App {
     is_streaming: bool,
     /// Pending agent submission (set by sync handle_input, consumed by async main loop).
     pending_submit: Option<String>,
+    /// Pending manual compaction (carries optional custom instructions).
+    pending_compact: Option<Option<String>>,
     /// The reused Agent (accumulates messages across turns, supports mid-turn steering).
     agent: Option<yoagent::agent::Agent>,
     /// Handle for the forwarding task that relays events from the agent's event
@@ -208,10 +210,19 @@ pub struct App {
 impl App {
     fn new(config: AppConfig, session: SessionManager) -> Self {
         let mut agent_session = AgentSession::new(session);
+        let mut model_config = yoagent::provider::model::ModelConfig::openai_compat(
+            "https://opencode.ai/zen/go/v1",
+            &config.model,
+            "opencode-go",
+            yoagent::provider::model::OpenAiCompat::deepseek(),
+        );
+        model_config.context_window =
+            crate::agent::compaction::get_model_context_window(&config.model) as u32;
         agent_session.set_compaction_config(
             config.api_key.clone(),
             &config.model,
             crate::agent::compaction::get_model_context_window(&config.model),
+            Some(model_config),
         );
         agent_session.set_auto_compact(config.settings.auto_compact.unwrap_or(true));
         let (tx, rx) = mpsc::unbounded_channel();
@@ -345,6 +356,7 @@ impl App {
             event_rx: rx,
             is_streaming: false,
             pending_submit: None,
+            pending_compact: None,
             agent: None,
             forward_handle: None,
             pending_command_result: None,
@@ -515,6 +527,12 @@ pub async fn run(config: AppConfig, session: SessionManager) -> anyhow::Result<(
         // Handle pending agent submission (async, after events are drained)
         if let Some(text) = app.pending_submit.take() {
             start_agent_loop(&mut app, text).await;
+            dirty = true;
+        }
+
+        // Handle pending manual compaction (async)
+        if let Some(custom_instructions) = app.pending_compact.take() {
+            handle_compact_command(&mut app, custom_instructions).await;
             dirty = true;
         }
 
@@ -1299,6 +1317,67 @@ async fn start_agent_loop(app: &mut App, message: String) {
     });
     app.forward_handle = Some(handle);
 }
+
+/// Handle manual compaction asynchronously.
+/// Called from the main loop when pending_compact is set.
+async fn handle_compact_command(app: &mut App, custom_instructions: Option<String>) {
+    if app.session.is_none() {
+        chat_add(
+            app,
+            std::boxed::Box::new(InfoMessageComponent::new(
+                "No active session to compact".to_string(),
+            )),
+        );
+        return;
+    }
+
+    let agent_session = app.session.as_mut().unwrap();
+
+    app.working.start();
+
+    match agent_session
+        .run_manual_compact(custom_instructions.as_deref())
+        .await
+    {
+        Ok(_summary) => {
+            app.working.stop();
+            app.status_text = None;
+
+            // Rebuild chat from the updated session context
+            let context = agent_session.session().build_session_context();
+            {
+                let mut chat = app.chat_container.borrow_mut();
+                rebuild_chat_from_messages(
+                    &mut chat,
+                    &context.messages,
+                    &app.cwd.to_string_lossy(),
+                    app.hide_thinking,
+                    app.collapse_tool_output,
+                    &app.extensions,
+                );
+            }
+
+            // Update agent messages if agent exists
+            if let Some(ref mut agent) = app.agent {
+                agent.replace_messages(context.messages);
+            }
+
+            show_status(app, "Compaction completed".to_string());
+        }
+        Err(e) => {
+            app.working.stop();
+            app.status_text = None;
+            chat_add(
+                app,
+                std::boxed::Box::new(InfoMessageComponent::new(format!(
+                    "Compaction failed: {}",
+                    e
+                ))),
+            );
+        }
+    }
+}
+
 /// Handle keyboard input for the session picker.
 fn handle_session_picker_input(app: &mut App, key: &crossterm::event::KeyEvent) {
     use crossterm::event::KeyCode;
@@ -1859,26 +1938,12 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
                 std::boxed::Box::new(InfoMessageComponent::new(msg.clone())),
             );
         }
-        CommandResult::CompactSession => {
-            // Run manual compaction via AgentSession
-            if let Some(ref mut _agent_session) = app.session {
-                // Show working indicator
-                app.working.start();
-
-                // We can't await in this sync context, so we return a status message
-                // and the actual compaction runs asynchronously. For now, show a note.
-                let msg = "Manual compaction requested. Use /compact in print mode or restart interactive.".to_string();
-                chat_add(
-                    app,
-                    std::boxed::Box::new(InfoMessageComponent::new(msg.clone())),
-                );
-            } else {
-                let msg = "No active session to compact".to_string();
-                chat_add(
-                    app,
-                    std::boxed::Box::new(InfoMessageComponent::new(msg.clone())),
-                );
+        CommandResult::CompactSession(custom_instructions) => {
+            // If streaming, interrupt first
+            if app.is_streaming {
+                interrupt_streaming(app);
             }
+            app.pending_compact = Some(custom_instructions);
         }
     }
 }

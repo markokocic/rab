@@ -12,7 +12,7 @@ pub mod system_prompt;
 pub mod types;
 pub mod ui;
 
-pub use agent_session::AgentSession;
+pub use agent_session::{AgentSession, CompactionEvent, CompactionEventCallback};
 pub use context_files::{ContextFile, load_context_files};
 pub use extension::{CommandHandler, CommandResult, Extension, SlashCommand, ToolDefinition};
 pub use session::SessionManager;

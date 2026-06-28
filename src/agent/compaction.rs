@@ -25,6 +25,30 @@ impl Default for CompactionSettings {
     }
 }
 
+// ── Compaction reason ──────────────────────────────────────────────
+
+/// Why compaction was triggered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CompactionReason {
+    /// User manually triggered `/compact`.
+    Manual,
+    /// Context usage exceeded the configured threshold.
+    Threshold,
+    /// Provider returned a context overflow error.
+    Overflow,
+}
+
+impl std::fmt::Display for CompactionReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CompactionReason::Manual => write!(f, "manual"),
+            CompactionReason::Threshold => write!(f, "threshold"),
+            CompactionReason::Overflow => write!(f, "overflow"),
+        }
+    }
+}
+
 // ── Result types ───────────────────────────────────────────────────
 
 /// Result of prepare_compaction — what to summarise and what to keep.
@@ -50,6 +74,8 @@ pub struct CompactionResult {
     pub summary: String,
     pub first_kept_entry_id: String,
     pub tokens_before: u64,
+    /// Estimated context tokens immediately after compaction is applied.
+    pub estimated_tokens_after: u64,
     /// File operation details (readFiles, modifiedFiles).
     pub details: Option<serde_json::Value>,
 }
@@ -83,14 +109,40 @@ pub fn get_model_context_window(model: &str) -> u64 {
 
 /// Estimate token count for a single message (chars/4 heuristic, conservative).
 pub fn estimate_tokens(message: &AgentMessage) -> u64 {
+    use yoagent::types::Content;
+
     let text = crate::agent::types::message_text(message);
     let mut chars: usize = text.len();
 
     if let AgentMessage::Llm(yoagent::types::Message::Assistant { content, .. }) = message {
-        let tcs = crate::agent::types::content_tool_calls(content);
-        for (_, name, args) in &tcs {
-            chars += name.len();
-            chars += serde_json::to_string(args).unwrap_or_default().len();
+        // Account for thinking blocks and images in assistant messages (pi-compatible).
+        // text.len() is already counted via message_text above, so only add extra non-text content.
+        for c in content {
+            match c {
+                Content::Text { .. } => {
+                    // Already counted in message_text
+                }
+                Content::Thinking { thinking, .. } => {
+                    chars += thinking.len();
+                }
+                Content::ToolCall {
+                    name, arguments, ..
+                } => {
+                    chars += name.len();
+                    chars += serde_json::to_string(arguments).unwrap_or_default().len();
+                }
+                Content::Image { .. } => {
+                    // Pi estimates 4800 chars per image
+                    chars += 4800;
+                }
+            }
+        }
+    } else if let AgentMessage::Llm(yoagent::types::Message::User { content: c, .. }) = message {
+        // Account for images in user messages (pi-compatible)
+        for c in c {
+            if matches!(c, Content::Image { .. }) {
+                chars += 4800;
+            }
         }
     }
 
@@ -156,9 +208,11 @@ fn find_valid_cut_points(entries: &[SessionEntry], start: usize, end: usize) -> 
                     points.push(i);
                 }
             }
-            SessionEntry::BranchSummary(_)
-            | SessionEntry::CustomMessage(_)
-            | SessionEntry::ThinkingLevelChange(_)
+            // Pi-compatible: branch_summary and custom_message are valid cut points
+            SessionEntry::BranchSummary(_) | SessionEntry::CustomMessage(_) => {
+                points.push(i);
+            }
+            SessionEntry::ThinkingLevelChange(_)
             | SessionEntry::ModelChange(_)
             | SessionEntry::ActiveToolsChange(_)
             | SessionEntry::Custom(_)
@@ -182,6 +236,7 @@ fn find_turn_start_index(
             SessionEntry::Message(m) if crate::agent::types::message_is_user(&m.message) => {
                 return Some(i);
             }
+            // Pi-compatible: branch_summary and custom_message start a turn
             SessionEntry::BranchSummary(_) | SessionEntry::CustomMessage(_) => return Some(i),
             _ => {}
         }
@@ -375,55 +430,11 @@ pub fn prepare_compaction(
 
 // ── Summarization prompts ──────────────────────────────────────────
 
-const SUMMARIZATION_SYSTEM_PROMPT: &str = r#"You are a precise summarizer. Your task is to create a structured summary of a conversation that another LLM will use to continue the work.
+const SUMMARIZATION_SYSTEM_PROMPT: &str = "You are a context summarization assistant. Your task is to read a conversation between a user and an AI assistant, then produce a structured summary following the exact format specified.\n\nDo NOT continue the conversation. Do NOT respond to any questions in the conversation. ONLY output the structured summary.";
 
-Focus on:
-- What the user is trying to accomplish
-- What has been done so far (completed tasks, changes made)
-- What is in progress
-- Key decisions and their rationale
-- Exact file paths, function names, and error messages
-- What should happen next
+const SUMMARIZATION_PROMPT: &str = "The messages above are a conversation to summarize. Create a structured context checkpoint summary that another LLM will use to continue the work.\n\nUse this EXACT format:\n\n## Goal\n[What is the user trying to accomplish? Can be multiple items if the session covers different tasks.]\n\n## Constraints & Preferences\n- [Any constraints, preferences, or requirements mentioned by user]\n- [Or \"(none)\" if none were mentioned]\n\n## Progress\n### Done\n- [x] [Completed tasks/changes]\n\n### In Progress\n- [ ] [Current work]\n\n### Blocked\n- [Issues preventing progress, if any]\n\n## Key Decisions\n- **[Decision]**: [Brief rationale]\n\n## Next Steps\n1. [Ordered list of what should happen next]\n\n## Critical Context\n- [Any data, examples, or references needed to continue]\n- [Or \"(none)\" if not applicable]\n\nKeep each section concise. Preserve exact file paths, function names, and error messages.";
 
-Be concise but preserve all specific details needed to continue the work."#;
-
-const SUMMARIZATION_PROMPT: &str = r#"The conversation above is to be summarized. Create a structured context checkpoint summary.
-
-Use this format:
-
-## Goal
-[What is the user trying to accomplish?]
-
-## Progress
-### Done
-- [Completed items]
-
-### In Progress
-- [Current work]
-
-### Blocked
-- [Issues, if any]
-
-## Key Decisions
-- [Decisions made]
-
-## Next Steps
-1. [Ordered list]
-
-## Critical Context
-- [Exact file paths, function names, error messages needed to continue]
-
-Keep each section concise."#;
-
-const UPDATE_SUMMARIZATION_PROMPT: &str = r#"The conversation above contains NEW messages to incorporate into the existing summary provided in <previous-summary> tags.
-
-Update the existing summary with new information. RULES:
-- PRESERVE all existing information
-- ADD new progress, decisions, and context
-- UPDATE "Next Steps" based on what was accomplished
-- PRESERVE exact file paths, function names, and error messages
-
-Use the same structured format."#;
+const UPDATE_SUMMARIZATION_PROMPT: &str = "The messages above are NEW conversation messages to incorporate into the existing summary provided in <previous-summary> tags.\n\nUpdate the existing structured summary with new information. RULES:\n- PRESERVE all existing information from the previous summary\n- ADD new progress, decisions, and context from the new messages\n- UPDATE the Progress section: move items from \"In Progress\" to \"Done\" when completed\n- UPDATE \"Next Steps\" based on what was accomplished\n- PRESERVE exact file paths, function names, and error messages\n- If something is no longer relevant, you may remove it\n\nUse this EXACT format:\n\n## Goal\n[Preserve existing goals, add new ones if the task expanded]\n\n## Constraints & Preferences\n- [Preserve existing, add new ones discovered]\n\n## Progress\n### Done\n- [x] [Include previously done items AND newly completed items]\n\n### In Progress\n- [ ] [Current work - update based on progress]\n\n### Blocked\n- [Current blockers - remove if resolved]\n\n## Key Decisions\n- **[Decision]**: [Brief rationale] (preserve all previous, add new)\n\n## Next Steps\n1. [Update based on current state]\n\n## Critical Context\n- [Preserve important context, add new if needed]\n\nKeep each section concise. Preserve exact file paths, function names, and error messages.";
 
 const TURN_PREFIX_SUMMARIZATION_PROMPT: &str = r#"This is the PREFIX of a turn that was too large to keep. The SUFFIX (recent work) is retained.
 
@@ -440,63 +451,102 @@ Summarize the prefix to provide context for the retained suffix:
 
 // ── File operation extraction ──────────────────────────────────────
 
-/// Extract file operations from a list of messages (for compaction details).
-fn extract_file_ops(messages: &[AgentMessage]) -> Option<serde_json::Value> {
-    let mut read_files: Vec<String> = Vec::new();
-    let mut modified_files: Vec<String> = Vec::new();
+/// File operations accumulator, matching pi's FileOperations / createFileOps.
+pub struct FileOps {
+    pub read: std::collections::HashSet<String>,
+    pub written: std::collections::HashSet<String>,
+    pub edited: std::collections::HashSet<String>,
+}
 
-    for msg in messages {
+impl FileOps {
+    pub fn new() -> Self {
+        Self {
+            read: std::collections::HashSet::new(),
+            written: std::collections::HashSet::new(),
+            edited: std::collections::HashSet::new(),
+        }
+    }
+
+    /// Extract file ops from a single assistant message (pi-compatible).
+    pub fn extract_from_message(&mut self, msg: &AgentMessage) {
         if let AgentMessage::Llm(yoagent::types::Message::Assistant { content, .. }) = msg {
             let tcs = crate::agent::types::content_tool_calls(content);
             for (_, name, args) in &tcs {
+                // Pi only checks `path` field (not `file_path`)
                 let path = args
-                    .get("file_path")
-                    .or_else(|| args.get("path"))
+                    .get("path")
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string());
-
-                if let Some(p) = path {
-                    match name.as_str() {
-                        "read" => {
-                            if !read_files.contains(&p) {
-                                read_files.push(p);
-                            }
-                        }
-                        "write" | "edit" if !modified_files.contains(&p) => {
-                            modified_files.push(p);
-                        }
-                        _ => {}
+                let Some(p) = path else { continue };
+                match name.as_str() {
+                    "read" => {
+                        self.read.insert(p);
                     }
+                    "write" => {
+                        self.written.insert(p);
+                    }
+                    "edit" => {
+                        self.edited.insert(p);
+                    }
+                    _ => {}
                 }
             }
         }
     }
 
-    if read_files.is_empty() && modified_files.is_empty() {
-        return None;
+    /// Compute sorted read-only and modified file lists (pi-compatible).
+    pub fn compute_lists(&self) -> (Vec<String>, Vec<String>) {
+        let modified: std::collections::HashSet<String> =
+            self.edited.union(&self.written).cloned().collect();
+        let mut read_only: Vec<String> = self.read.difference(&modified).cloned().collect();
+        read_only.sort();
+        let mut modified_sorted: Vec<String> = modified.into_iter().collect();
+        modified_sorted.sort();
+        (read_only, modified_sorted)
     }
 
-    read_files.sort();
-    modified_files.sort();
+    /// Serialize to JSON for compaction details (pi-compatible).
+    pub fn to_json_value(&self) -> Option<serde_json::Value> {
+        let (read_files, modified_files) = self.compute_lists();
+        if read_files.is_empty() && modified_files.is_empty() {
+            return None;
+        }
+        Some(serde_json::json!({
+            "readFiles": read_files,
+            "modifiedFiles": modified_files,
+        }))
+    }
+}
 
-    // Deduplicate: files that are both read and modified go only in modified
-    read_files.retain(|f| !modified_files.contains(f));
+impl Default for FileOps {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
-    Some(serde_json::json!({
-        "readFiles": read_files,
-        "modifiedFiles": modified_files,
-    }))
+/// Extract file operations from a list of messages (for compaction details).
+fn extract_file_ops(messages: &[AgentMessage]) -> Option<serde_json::Value> {
+    let mut ops = FileOps::new();
+    for msg in messages {
+        ops.extract_from_message(msg);
+    }
+    ops.to_json_value()
 }
 
 // ── compact ────────────────────────────────────────────────────────
 
 /// Execute compaction: send messages to the provider for summarisation
 /// and return the result ready to append to the session.
+///
+/// `model_config` should be the session's current model configuration.
+/// `thinking_level` controls whether the summarization uses reasoning mode.
 pub async fn compact(
     preparation: &CompactionPreparation,
     api_key: &str,
     model: &str,
     system_prompt_override: Option<&str>,
+    thinking_level: yoagent::types::ThinkingLevel,
+    model_config: Option<yoagent::provider::model::ModelConfig>,
 ) -> Result<CompactionResult, String> {
     // Serialize messages to summarise into a single text block
     let mut conversation_text = String::new();
@@ -544,18 +594,48 @@ pub async fn compact(
     let summary_msg = crate::agent::types::user_message(&prompt);
 
     // Get summary from provider via yoagent
-    let summary_text = summarize_text(api_key, model, system, &[summary_msg]).await?;
+    let summary_text = summarize_text(
+        api_key,
+        model,
+        system,
+        &[summary_msg],
+        thinking_level,
+        model_config,
+    )
+    .await?;
 
     // Extract file operations from messages being summarised
     let mut all_messages = preparation.messages_to_summarize.clone();
     all_messages.extend(preparation.turn_prefix_messages.clone());
     let details = extract_file_ops(&all_messages);
 
+    // Estimate tokens after compaction:
+    //   summary text + kept messages (estimated via heuristic)
+    let summary_msg_est = (summary_text.len() as u64).div_ceil(4);
+    let kept_tokens = preparation
+        .tokens_before
+        .saturating_sub(
+            preparation
+                .messages_to_summarize
+                .iter()
+                .map(estimate_tokens)
+                .sum::<u64>(),
+        )
+        .saturating_sub(
+            preparation
+                .turn_prefix_messages
+                .iter()
+                .map(estimate_tokens)
+                .sum::<u64>(),
+        );
+    let estimated_tokens_after = summary_msg_est + kept_tokens;
+
     // Build the result
     Ok(CompactionResult {
         summary: summary_text,
         first_kept_entry_id: preparation.first_kept_entry_id.clone(),
         tokens_before: preparation.tokens_before,
+        estimated_tokens_after,
         details,
     })
 }
@@ -956,11 +1036,17 @@ mod tests {
 // ── Summarization helper (shared with branch_summary) ──
 
 /// Call yoagent's provider for a simple text completion (no tools, no streaming).
+///
+/// Uses the provided `model_config` (base URL, compat flags, etc.) and `thinking_level`
+/// instead of hardcoded values. When `model_config` is None, falls back to the default
+/// OpenCode Go endpoint for backward compatibility.
 pub async fn summarize_text(
     api_key: &str,
     model: &str,
     system_prompt: &str,
     messages: &[AgentMessage],
+    thinking_level: yoagent::types::ThinkingLevel,
+    model_config: Option<yoagent::provider::model::ModelConfig>,
 ) -> Result<String, String> {
     use yoagent::provider::StreamProvider;
     use yoagent::provider::traits::StreamConfig;
@@ -973,20 +1059,24 @@ pub async fn summarize_text(
         })
         .collect();
 
-    let mut model_config = yoagent::provider::model::ModelConfig::openai_compat(
-        "https://opencode.ai/zen/go/v1",
-        model,
-        "opencode-go",
-        yoagent::provider::model::OpenAiCompat::deepseek(),
-    );
-    model_config.context_window = 1_000_000;
+    // Use provided model config, or fall back to hardcoded OpenCode Go for backward compat
+    let model_config = model_config.unwrap_or_else(|| {
+        let mut mc = yoagent::provider::model::ModelConfig::openai_compat(
+            "https://opencode.ai/zen/go/v1",
+            model,
+            "opencode-go",
+            yoagent::provider::model::OpenAiCompat::deepseek(),
+        );
+        mc.context_window = 1_000_000;
+        mc
+    });
 
     let config = StreamConfig {
         model: model.to_string(),
         system_prompt: system_prompt.to_string(),
         messages: yoagent_messages,
         tools: vec![],
-        thinking_level: yoagent::types::ThinkingLevel::Off,
+        thinking_level,
         api_key: api_key.to_string(),
         max_tokens: Some(2048),
         temperature: Some(0.3),

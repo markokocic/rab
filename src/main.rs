@@ -525,10 +525,18 @@ async fn main() -> anyhow::Result<()> {
         let message = message_parts.join(" ");
         let mut agent_session = rab::agent::AgentSession::new(session);
         let api_key = auth.api_key("opencode-go").unwrap_or_default();
+        let mut mc = yoagent::provider::model::ModelConfig::openai_compat(
+            "https://opencode.ai/zen/go/v1",
+            &model,
+            "opencode-go",
+            yoagent::provider::model::OpenAiCompat::deepseek(),
+        );
+        mc.context_window = rab::agent::compaction::get_model_context_window(&model) as u32;
         agent_session.set_compaction_config(
             api_key.clone(),
             &model,
             rab::agent::compaction::get_model_context_window(&model),
+            Some(mc),
         );
 
         // Populate session info for /session command

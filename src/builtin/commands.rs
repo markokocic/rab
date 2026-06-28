@@ -479,8 +479,13 @@ impl CommandHandler for ForkCommand {
 struct CompactCommand;
 
 impl CommandHandler for CompactCommand {
-    fn execute(&self, _args: &str) -> anyhow::Result<CommandResult> {
-        Ok(CommandResult::CompactSession)
+    fn execute(&self, args: &str) -> anyhow::Result<CommandResult> {
+        let custom_instructions = if args.trim().is_empty() {
+            None
+        } else {
+            Some(args.trim().to_string())
+        };
+        Ok(CommandResult::CompactSession(custom_instructions))
     }
 }
 
