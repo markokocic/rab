@@ -523,6 +523,18 @@ pub async fn run(config: AppConfig, session: AgentSession) -> anyhow::Result<()>
             dirty = true;
         }
 
+        // Re-drain agent events that arrived during terminal event processing.
+        // AgentEnd (which sets is_streaming=false) can land between the initial
+        // drain above and the user hitting Enter — processing terminal events
+        // can take real time (edit operations, overlays, etc). Without this,
+        // submit_message may see a stale is_streaming=true, and even though it
+        // now always sets pending_submit, we still want settled state before
+        // start_agent_loop decides whether to steer or start a new turn.
+        while let Ok(event) = app.event_rx.try_recv() {
+            handle_agent_event(&mut app, event);
+            dirty = true;
+        }
+
         // Handle pending agent submission (async).
         if let Some(text) = app.pending_submit.take() {
             start_agent_loop(&mut app, text).await;
@@ -1127,14 +1139,7 @@ fn submit_message(app: &mut App, message: String) {
                 &expanded,
             )),
         );
-        if app.is_streaming {
-            if let Some(ref agent) = app.agent
-                && agent.is_streaming()
-            {
-                // Mid-turn steering: push directly to Agent's shared queue
-                agent.steer(crate::agent::types::user_message(&expanded));
-                return;
-            }
+        if app.is_streaming && app.agent.as_ref().is_none_or(|a| !a.is_streaming()) {
             // Stale streaming flag — reset
             app.is_streaming = false;
             app.working.stop();
@@ -1165,20 +1170,17 @@ fn submit_message(app: &mut App, message: String) {
     );
 
     if app.is_streaming {
-        if let Some(ref agent) = app.agent
-            && agent.is_streaming()
-        {
-            // Mid-turn steering: push directly to Agent's shared queue.
-            // The running loop picks it up via get_steering_messages() callback
-            // between tool executions or before the next LLM call (pi-compatible).
-            agent.steer(crate::agent::types::user_message(&trimmed));
-            return;
-        }
+        // Mid-turn steering is now handled by start_agent_loop, not here.
+        // Always fall through to set pending_submit below instead of returning
+        // early, to avoid the race where the agent loop’s steering-check window
+        // closes between steer() and AgentEnd, causing the message to be lost.
 
-        // Agent task has completed/aborted but is_streaming wasn't reset.
-        app.is_streaming = false;
-        app.working.stop();
-        app.footer.borrow_mut().set_streaming(false);
+        if app.agent.as_ref().is_none_or(|a| !a.is_streaming()) {
+            // Agent task has completed/aborted but is_streaming wasn’t reset.
+            app.is_streaming = false;
+            app.working.stop();
+            app.footer.borrow_mut().set_streaming(false);
+        }
     }
 
     // Pi-compatible: reset overflow recovery state at the start of each turn
@@ -1243,6 +1245,19 @@ fn map_thinking_level(level: Option<&str>) -> yoagent::types::ThinkingLevel {
 /// The Agent stays in `app.agent` during streaming, enabling mid-turn steer().
 async fn start_agent_loop(app: &mut App, message: String) {
     if app.session.is_none() {
+        return;
+    }
+
+    // If the agent loop is still running (e.g. this message arrived before
+    // AgentEnd), steer into the running loop instead of starting a new one.
+    // This handles the race where submit_message set pending_submit before
+    // AgentEnd had been processed — by the time we get here, AgentEnd may
+    // have been handled (is_streaming = false), in which case we fall through
+    // and start a new turn normally.
+    if let Some(ref agent) = app.agent
+        && agent.is_streaming()
+    {
+        agent.steer(crate::agent::types::user_message(&message));
         return;
     }
 

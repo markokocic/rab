@@ -2,6 +2,7 @@
 - run `cargo fmt && cargo check && cargo clippy` after every code change - all three must pass clean with zero warnings
 - reference pi source code in `~/src/cvstree/pi/` for inspiration
 - reference yoagent source code in `~/src/cvstree/yoagent/` for reference
+- yoagent is a 3rd party library. Never modify it
 - mcp implementation inspired by pi-mcp-adapter
 - pi-mcp-adapter source code in `~/src/cvstree/pi-mcp-adapter/`
 - agent specific ui components in `src/agent/ui`
