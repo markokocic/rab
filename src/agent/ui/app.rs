@@ -202,9 +202,10 @@ pub struct App {
     /// Number of queued steering messages (for status display).
     /// Incremented on steer(), reset on AgentEnd.
     queued_steering_count: usize,
-    /// Number of queued follow-up messages (for status display).
-    /// Incremented on follow_up(), reset on AgentEnd.
-    queued_follow_up_count: usize,
+    /// Follow-up messages queued via Alt+Enter during streaming.
+    /// Stored in App state (not yoagent's private queue) so they survive
+    /// agent replacement. Re-submitted as new prompts at AgentEnd.
+    pending_follow_ups: Vec<String>,
     // ── Message rendering cache (avoids re-rendering messages every frame) ──
     // Cache fields removed - messages now rendered via Components in chat_container.
 }
@@ -390,7 +391,7 @@ impl App {
             session_picker: None,
             last_status_len: None,
             queued_steering_count: 0,
-            queued_follow_up_count: 0,
+            pending_follow_ups: Vec::new(),
         };
 
         // Initial session info for /session command
@@ -734,8 +735,8 @@ fn compose_ui(app: &mut App, width: usize) {
         if app.queued_steering_count > 0 {
             queued_parts.push(format!("{} steering", app.queued_steering_count));
         }
-        if app.queued_follow_up_count > 0 {
-            queued_parts.push(format!("{} follow-up", app.queued_follow_up_count));
+        if !app.pending_follow_ups.is_empty() {
+            queued_parts.push(format!("{} follow-up", app.pending_follow_ups.len()));
         }
         if !queued_parts.is_empty() {
             let line = app.theme.fg_key(
@@ -1107,9 +1108,8 @@ fn handle_compact_toggle(app: &mut App) {
 
 /// Queue a follow-up message (Alt+Enter) during streaming.
 /// Queue a follow-up message (Alt+Enter) during streaming.
-/// Uses agent.follow_up() which pushes to yoagent's private follow_up_queue.
-/// Since the agent is reused across turns (not recreated), follow-ups persist
-/// in the queue and are picked up by the running loop's getFollowUpMessages.
+/// Saved in app.pending_follow_ups (not yoagent's private queue) so it
+/// survives agent replacement. Re-submitted as a new prompt at AgentEnd.
 pub fn handle_follow_up(app: &mut App, text: String) {
     let trimmed = text.trim().to_string();
     if trimmed.is_empty() {
@@ -1123,11 +1123,7 @@ pub fn handle_follow_up(app: &mut App, text: String) {
                 &trimmed,
             )),
         );
-        let follow_msg = user_agent_message(&trimmed);
-        if let Some(ref agent) = app.agent {
-            agent.follow_up(follow_msg);
-        }
-        app.queued_follow_up_count += 1;
+        app.pending_follow_ups.push(trimmed);
         app.status_text = Some("Follow-up queued — will send when agent finishes".into());
     } else {
         // Not streaming — submit directly
@@ -1159,7 +1155,7 @@ fn interrupt_streaming(app: &mut App) {
     app.footer.borrow_mut().set_streaming(false);
     // Reset queue tracking on abort
     app.queued_steering_count = 0;
-    app.queued_follow_up_count = 0;
+    app.pending_follow_ups.clear();
 
     // Rebuild chat from session (authoritative store after abort)
     if let Some(ref s) = app.session {
@@ -1350,39 +1346,22 @@ async fn start_agent_loop(app: &mut App, message: String) {
 
     let thinking = map_thinking_level(app.thinking_level.as_deref());
 
-    if app.agent.is_none() {
-        // First turn or after abort — create fresh agent with session messages.
-        let msgs = app
-            .session
-            .as_ref()
-            .map(|s| s.session().build_session_context().messages)
-            .unwrap_or_default();
-        app.agent = Some(build_fresh_agent(
-            &app.model,
-            &app.api_key,
-            &app.system_prompt,
-            thinking,
-            msgs,
-            &app.extensions,
-        ));
-    } else {
-        // Reuse the agent across turns (matching pi's pattern).
-        // Important: finish() FIRST to consume pending_completion, then
-        // sync messages from the session (which filters transient errors).
-        // This avoids the bug where prompt()'s internal finish() would
-        // restore stale context.messages and overwrite replace_messages().
-        if let Some(agent) = app.agent.as_mut() {
-            agent.finish().await;
-            agent.clear_all_queues();
-            // Sync messages from session (authoritative, error-filtered source).
-            let msgs = app
-                .session
-                .as_ref()
-                .map(|s| s.session().build_session_context().messages)
-                .unwrap_or_default();
-            agent.replace_messages(msgs);
-        }
-    }
+    // Fresh agent each turn from session (authoritative, error-filtered source).
+    // Avoids yoagent's finish() restoring stale context.messages with transient
+    // errors that the session filters out.
+    let msgs = app
+        .session
+        .as_ref()
+        .map(|s| s.session().build_session_context().messages)
+        .unwrap_or_default();
+    app.agent = Some(build_fresh_agent(
+        &app.model,
+        &app.api_key,
+        &app.system_prompt,
+        thinking,
+        msgs,
+        &app.extensions,
+    ));
 
     let agent = app.agent.as_mut().unwrap();
 
@@ -2594,10 +2573,22 @@ fn handle_agent_event(app: &mut App, event: yoagent::types::AgentEvent) {
             app.is_streaming = false;
             app.working.stop();
             app.footer.borrow_mut().set_streaming(false);
-            // Reset queue tracking — all queued messages have been consumed
-            // by the agent loop (steer/follow_up queues drained at turn end).
+            // Reset steering count (queue drained by loop at turn end).
             app.queued_steering_count = 0;
-            app.queued_follow_up_count = 0;
+            // Re-submit any unconsumed follow-ups as new prompts.
+            // Saved in app.pending_follow_ups (not yoagent's private queue)
+            // so they survive agent replacement.
+            if !app.pending_follow_ups.is_empty() {
+                let follow_text = app.pending_follow_ups.join("\n");
+                app.pending_follow_ups.clear();
+                chat_add(
+                    app,
+                    std::boxed::Box::new(crate::agent::ui::components::UserMessageComponent::new(
+                        &follow_text,
+                    )),
+                );
+                app.pending_submit = Some(follow_text);
+            }
             // Refresh footer cached stats from session at turn end (pull-based)
             if let Some(ref s) = app.session {
                 app.footer.borrow_mut().refresh_from_session(s.session());
