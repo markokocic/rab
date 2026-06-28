@@ -6,10 +6,6 @@ use std::rc::{Rc, Weak};
 use std::sync::Arc;
 use std::time::Duration;
 
-/// Maximum time to wait for an agent turn to complete.
-/// After this duration without an AgentEnd event, the turn is aborted and
-/// an error is shown in the chat. This prevents indefinite hangs when the
-/// provider stalls, a tool never returns, or the agent loop silently exits.
 use crate::agent::extension::ToolRenderer;
 use yoagent::types::AgentTool;
 
@@ -733,18 +729,19 @@ fn compose_ui(app: &mut App, width: usize) {
                 .fg_key(ThemeKey::Dim, &format!(" 📝 queued: {}", preview));
             status_lines.push(crate::agent::ui::render_utils::pad_to_width(&line, width));
         }
-        // Show queued steering/follow-up counts
-        if app.queued_steering_count > 0 || app.queued_follow_up_count > 0 {
-            let mut parts = Vec::new();
-            if app.queued_steering_count > 0 {
-                parts.push(format!("{} steering", app.queued_steering_count));
-            }
-            if app.queued_follow_up_count > 0 {
-                parts.push(format!("{} follow-up", app.queued_follow_up_count));
-            }
-            let line = app
-                .theme
-                .fg_key(ThemeKey::Dim, &format!(" 📝 queued: {} ", parts.join(", ")));
+        // Show queued message counts
+        let mut queued_parts: Vec<String> = Vec::new();
+        if app.queued_steering_count > 0 {
+            queued_parts.push(format!("{} steering", app.queued_steering_count));
+        }
+        if app.queued_follow_up_count > 0 {
+            queued_parts.push(format!("{} follow-up", app.queued_follow_up_count));
+        }
+        if !queued_parts.is_empty() {
+            let line = app.theme.fg_key(
+                ThemeKey::Dim,
+                &format!(" 📝 queued: {} ", queued_parts.join(", ")),
+            );
             status_lines.push(crate::agent::ui::render_utils::pad_to_width(&line, width));
         }
     }
@@ -1084,40 +1081,6 @@ fn handle_editor_external(app: &mut App, tui: &mut TUI, term: &mut ProcessTermin
     }
 }
 
-/// Queue a follow-up message (Alt+Enter). Uses agent.follow_up() during
-/// streaming (queued until current turn finishes, then processed).
-/// When idle, submits immediately.
-pub fn handle_follow_up(app: &mut App, text: String) {
-    let trimmed = text.trim().to_string();
-    if trimmed.is_empty() {
-        return;
-    }
-
-    // Add user message to chat display first (before agent access to avoid borrow conflicts)
-    if app.is_streaming {
-        let should_follow_up = app.agent.as_ref().is_some_and(|a| a.is_streaming());
-        if should_follow_up {
-            chat_add(
-                app,
-                std::boxed::Box::new(crate::agent::ui::components::UserMessageComponent::new(
-                    &trimmed,
-                )),
-            );
-            // Queue via follow_up() — delivered after current turn finishes
-            let follow_msg = user_agent_message(&trimmed);
-            if let Some(ref agent) = app.agent {
-                agent.follow_up(follow_msg);
-            }
-            app.queued_follow_up_count += 1;
-            app.status_text = Some("Follow-up queued - will send when agent finishes".into());
-            return;
-        }
-        // Stale streaming flag — submit directly
-        app.is_streaming = false;
-    }
-    submit_message(app, trimmed);
-}
-
 /// Toggle auto-compact indicator (Ctrl+Shift+C).
 /// Pi-compatible: syncs with AgentSession and persists to settings.
 fn handle_compact_toggle(app: &mut App) {
@@ -1140,6 +1103,39 @@ fn handle_compact_toggle(app: &mut App) {
     } else {
         "Auto-compact: off".into()
     });
+}
+
+/// Queue a follow-up message (Alt+Enter) during streaming.
+/// Queue a follow-up message (Alt+Enter) during streaming.
+/// Uses agent.follow_up() which pushes to yoagent's private follow_up_queue.
+/// Since the agent is reused across turns (not recreated), follow-ups persist
+/// in the queue and are picked up by the running loop's getFollowUpMessages.
+pub fn handle_follow_up(app: &mut App, text: String) {
+    let trimmed = text.trim().to_string();
+    if trimmed.is_empty() {
+        return;
+    }
+
+    if app.is_streaming && app.agent.as_ref().is_some_and(|a| a.is_streaming()) {
+        chat_add(
+            app,
+            std::boxed::Box::new(crate::agent::ui::components::UserMessageComponent::new(
+                &trimmed,
+            )),
+        );
+        let follow_msg = user_agent_message(&trimmed);
+        if let Some(ref agent) = app.agent {
+            agent.follow_up(follow_msg);
+        }
+        app.queued_follow_up_count += 1;
+        app.status_text = Some("Follow-up queued — will send when agent finishes".into());
+    } else {
+        // Not streaming — submit directly
+        if app.is_streaming {
+            app.is_streaming = false;
+        }
+        submit_message(app, trimmed);
+    }
 }
 
 /// Interrupt streaming agent and restore queued messages to editor.
@@ -1354,8 +1350,8 @@ async fn start_agent_loop(app: &mut App, message: String) {
 
     let thinking = map_thinking_level(app.thinking_level.as_deref());
 
-    // Create the Agent on first turn, or after abort (agent was dropped)
     if app.agent.is_none() {
+        // First turn or after abort — create fresh agent with session messages.
         let msgs = app
             .session
             .as_ref()
@@ -1370,25 +1366,25 @@ async fn start_agent_loop(app: &mut App, message: String) {
             &app.extensions,
         ));
     } else {
-        // Sync agent messages with session context to drop any transient
-        // messages that were filtered out (e.g., provider error messages
-        // with empty content that would cause the provider to reject requests).
-        let msgs = app
-            .session
-            .as_ref()
-            .map(|s| s.session().build_session_context().messages)
-            .unwrap_or_default();
+        // Reuse the agent across turns (matching pi's pattern).
+        // Important: finish() FIRST to consume pending_completion, then
+        // sync messages from the session (which filters transient errors).
+        // This avoids the bug where prompt()'s internal finish() would
+        // restore stale context.messages and overwrite replace_messages().
         if let Some(agent) = app.agent.as_mut() {
+            agent.finish().await;
+            agent.clear_all_queues();
+            // Sync messages from session (authoritative, error-filtered source).
+            let msgs = app
+                .session
+                .as_ref()
+                .map(|s| s.session().build_session_context().messages)
+                .unwrap_or_default();
             agent.replace_messages(msgs);
         }
     }
 
     let agent = app.agent.as_mut().unwrap();
-
-    // Update the reused Agent's model/thinking level to reflect runtime changes
-    // (pi-compatible: setModel/setThinkingLevel called before each turn)
-    agent.model = app.model.clone();
-    agent.thinking_level = thinking;
 
     // Record model/thinking changes in the session
     if let Some(ref mut session) = app.session {
