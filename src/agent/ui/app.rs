@@ -106,6 +106,8 @@ pub struct App {
     pending_submit: Option<String>,
     /// Pending manual compaction (carries optional custom instructions).
     pending_compact: Option<Option<String>>,
+    /// Pending auto-compaction check after AgentEnd (pi-compatible).
+    pending_auto_compact: bool,
     /// The reused Agent (accumulates messages across turns, supports mid-turn steering).
     agent: Option<yoagent::agent::Agent>,
     /// Handle for the forwarding task that relays events from the agent's event
@@ -359,6 +361,7 @@ impl App {
             is_streaming: false,
             pending_submit: None,
             pending_compact: None,
+            pending_auto_compact: false,
             agent: None,
             forward_handle: None,
             pending_command_result: None,
@@ -559,6 +562,14 @@ pub async fn run(config: AppConfig, session: AgentSession) -> anyhow::Result<()>
         // Handle pending manual compaction (async)
         if let Some(custom_instructions) = app.pending_compact.take() {
             handle_compact_command(&mut app, custom_instructions).await;
+            dirty = true;
+        }
+
+        // Pi-compatible: auto-compaction check after agent ends.
+        // Runs in the background so UI events continue to be processed.
+        if app.pending_auto_compact {
+            app.pending_auto_compact = false;
+            handle_auto_compact(&mut app).await;
             dirty = true;
         }
 
@@ -1047,9 +1058,15 @@ fn handle_follow_up(app: &mut App, text: String) {
 }
 
 /// Toggle auto-compact indicator (Ctrl+Shift+C).
+/// Pi-compatible: syncs with AgentSession and persists to settings.
 fn handle_compact_toggle(app: &mut App) {
     app.auto_compact = !app.auto_compact;
     app.footer.borrow_mut().set_auto_compact(app.auto_compact);
+
+    // Sync with AgentSession (pi-compatible: compaction_settings.enabled)
+    if let Some(ref mut s) = app.session {
+        s.set_auto_compact(app.auto_compact);
+    }
 
     // Persist to settings
     app.settings.set_auto_compact(Some(app.auto_compact));
@@ -1188,6 +1205,11 @@ fn submit_message(app: &mut App, message: String) {
         app.is_streaming = false;
         app.working.stop();
         app.footer.borrow_mut().set_streaming(false);
+    }
+
+    // Pi-compatible: reset overflow recovery state at the start of each turn
+    if let Some(ref mut s) = app.session {
+        s.reset_overflow_recovery();
     }
 
     // Queue for async start in the main loop
@@ -1371,6 +1393,51 @@ async fn handle_compact_command(app: &mut App, custom_instructions: Option<Strin
                     e
                 ))),
             );
+        }
+    }
+}
+
+/// Pi-compatible: auto-compaction check after agent ends.
+/// Calls `check_auto_compact()` on the session. If compaction was performed,
+/// rebuilds the chat from the updated session context and updates agent state.
+async fn handle_auto_compact(app: &mut App) {
+    if app.session.is_none() {
+        return;
+    }
+
+    let agent_session = app.session.as_mut().unwrap();
+
+    match agent_session.check_auto_compact().await {
+        Ok(true) => {
+            // Rebuild chat from the updated session context
+            let context = agent_session.session().build_session_context();
+            {
+                let mut chat = app.chat_container.borrow_mut();
+                rebuild_chat_from_messages(
+                    &mut chat,
+                    &context.messages,
+                    &app.cwd.to_string_lossy(),
+                    app.hide_thinking,
+                    app.collapse_tool_output,
+                    &app.extensions,
+                );
+            }
+            // Update agent messages if agent exists
+            if let Some(ref mut agent) = app.agent {
+                agent.replace_messages(context.messages);
+            }
+            // Refresh footer stats (token counts may have changed)
+            if let Some(ref s) = app.session {
+                app.footer.borrow_mut().refresh_from_session(s.session());
+            }
+            app.status_text = Some("Auto-compaction completed".to_string());
+        }
+        Ok(false) => {
+            // No compaction needed — nothing to do
+        }
+        Err(e) => {
+            eprintln!("Warning: Auto-compaction failed: {}", e);
+            app.status_text = Some(format!("Auto-compaction skipped: {}", e));
         }
     }
 }
@@ -2262,6 +2329,13 @@ fn handle_agent_event(app: &mut App, event: yoagent::types::AgentEvent) {
     // Match on &event while event is still owned, to avoid consuming it.
     match &event {
         E::MessageEnd { message } => {
+            // Pi-compatible: reset overflow recovery when a user message arrives
+            // (matches pi's _overflowRecoveryAttempted reset in message_start for user).
+            if crate::agent::types::message_is_user(message)
+                && let Some(ref mut s) = app.session
+            {
+                s.reset_overflow_recovery();
+            }
             // Special cases: persist as extension (excluded from LLM context).
             // handle_yo_event would persist them as regular LLM messages, so skip.
             if crate::agent::types::message_error(message).is_some()
@@ -2452,6 +2526,9 @@ fn handle_agent_event(app: &mut App, event: yoagent::types::AgentEvent) {
             if let Some(ref s) = app.session {
                 app.footer.borrow_mut().refresh_from_session(s.session());
             }
+            // Pi-compatible: schedule auto-compaction check after agent ends.
+            // check_auto_compact() is called asynchronously in the main loop.
+            app.pending_auto_compact = app.auto_compact;
             // Detect silent stops: if the last assistant message was empty
             // (and not a provider error, which is handled in MessageEnd above),
             // surface a clear message.

@@ -501,6 +501,11 @@ impl AgentSession {
                 self.flush_pending_writes();
             }
             YoEvent::MessageEnd { message } => {
+                // Pi-compatible: reset overflow recovery when a user message arrives
+                // (matches pi's _overflowRecoveryAttempted reset in message_start for user role).
+                if crate::agent::types::message_is_user(message) {
+                    self.reset_overflow_recovery();
+                }
                 // Pi-compatible: persist every message immediately on message_end,
                 // not deferred to agent_end. Extension messages use custom_message
                 // entries (excluded from LLM context); all others use regular messages.
