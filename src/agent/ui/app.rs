@@ -122,9 +122,6 @@ pub struct App {
     /// Exit flag.
     should_quit: bool,
 
-    /// Timestamp of last agent event received (used for streaming safety timeout).
-    last_streaming_event: std::time::Instant,
-
     /// Number of tool executions currently in-flight.
     /// Incremented on ToolExecutionStart, decremented on ToolExecutionEnd.
     /// Used to skip the 15s inactivity timeout while tools are running,
@@ -367,7 +364,6 @@ impl App {
             last_clear_time: std::time::Instant::now(),
 
             should_quit: false,
-            last_streaming_event: std::time::Instant::now(),
             pending_tool_executions: 0,
             bash_abort_handle: None,
             session: Some(agent_session),
@@ -644,46 +640,6 @@ pub async fn run(config: AppConfig, session: SessionManager) -> anyhow::Result<(
         // (no .await other than this) can starve background tasks on
         // single-threaded runtimes or when work-stealing is delayed.
         tokio::task::yield_now().await;
-
-        // Safety timeout: force stop streaming if no agent events for 15s.
-        // Prevents the event loop from spinning at 16ms with `is_streaming`
-        // stuck true after the agent task completes or panics without
-        // delivering AgentEnd through the channel.
-        //
-        // Skipped while tool executions are in-flight because long-running
-        // tools (e.g. bash commands) may not emit progress events during
-        // execution, which would cause false positive timeouts.
-        if app.is_streaming
-            && app.pending_tool_executions == 0
-            && app.last_streaming_event.elapsed() > std::time::Duration::from_secs(15)
-        {
-            app.is_streaming = false;
-            app.working.stop();
-            app.footer.borrow_mut().set_streaming(false);
-            // Abort the stuck agent so a new prompt doesn't run alongside it
-            if let Some(ref agent) = app.agent {
-                agent.abort();
-            }
-            if let Some(handle) = app.forward_handle.take() {
-                handle.abort();
-            }
-            if let Some(handle) = app.bash_abort_handle.take() {
-                handle.abort();
-            }
-            app.agent = None;
-            // Show a persistent error message in the chat so the user
-            // understands why the agent stopped.
-            chat_add(
-                &mut app,
-                std::boxed::Box::new(InfoMessageComponent::new(
-                    "The agent timed out after 15 seconds of inactivity. \
-                     It may have crashed or encountered a network issue. \
-                     You can send a new message to try again."
-                        .to_string(),
-                )),
-            );
-            dirty = true;
-        }
 
         // Pi: clear transient status after rendering
         app.status_text = None;
@@ -1267,7 +1223,6 @@ async fn start_agent_loop(app: &mut App, message: String) {
     app.is_streaming = true;
     app.working.start();
     app.footer.borrow_mut().set_streaming(true);
-    app.last_streaming_event = std::time::Instant::now();
 
     let thinking = map_thinking_level(app.thinking_level.as_deref());
 
@@ -1995,7 +1950,6 @@ fn handle_bang_command(app: &mut App, command: String) {
     app.is_streaming = true;
     app.working.start();
     app.footer.borrow_mut().set_streaming(true);
-    app.last_streaming_event = std::time::Instant::now();
     app.pending_tool_executions += 1;
 
     let handle = tokio::spawn(async move {
@@ -2270,17 +2224,11 @@ fn handle_agent_event(app: &mut App, event: yoagent::types::AgentEvent) {
         E::AgentStart => {
             app.is_streaming = true;
             app.working.start();
-            app.last_streaming_event = std::time::Instant::now();
             app.refresh_git_branch();
         }
-        E::TurnStart => {
-            app.last_streaming_event = std::time::Instant::now();
-        }
-        E::MessageStart { .. } => {
-            app.last_streaming_event = std::time::Instant::now();
-        }
+        E::TurnStart => {}
+        E::MessageStart { .. } => {}
         E::MessageUpdate { delta, .. } => {
-            app.last_streaming_event = std::time::Instant::now();
             use yoagent::types::StreamDelta;
             match delta {
                 StreamDelta::Text { delta } => {
@@ -2327,7 +2275,6 @@ fn handle_agent_event(app: &mut App, event: yoagent::types::AgentEvent) {
             tool_name,
             args,
         } => {
-            app.last_streaming_event = std::time::Instant::now();
             app.pending_tool_executions += 1;
             app.streaming_component = None;
             let name = tool_name;
@@ -2363,7 +2310,6 @@ fn handle_agent_event(app: &mut App, event: yoagent::types::AgentEvent) {
             partial_result,
             ..
         } => {
-            app.last_streaming_event = std::time::Instant::now();
             // Forward partial results to the pending tool component (live streaming).
             let partial_text: String = partial_result
                 .content
@@ -2390,7 +2336,6 @@ fn handle_agent_event(app: &mut App, event: yoagent::types::AgentEvent) {
             result,
             is_error,
         } => {
-            app.last_streaming_event = std::time::Instant::now();
             app.pending_tool_executions = app.pending_tool_executions.saturating_sub(1);
             let content: String = result
                 .content
@@ -2422,7 +2367,6 @@ fn handle_agent_event(app: &mut App, event: yoagent::types::AgentEvent) {
         E::ProgressMessage {
             text, tool_name, ..
         } => {
-            app.last_streaming_event = std::time::Instant::now();
             // Bang (") command progress feeds into pending_tools["__bang__"]
             if let Some(weak) = app.pending_tools.get("__bang__")
                 && let Some(comp) = weak.upgrade()
@@ -2434,7 +2378,6 @@ fn handle_agent_event(app: &mut App, event: yoagent::types::AgentEvent) {
             }
         }
         E::TurnEnd { .. } => {
-            app.last_streaming_event = std::time::Instant::now();
             app.streaming_component = None;
         }
         E::AgentEnd { messages } => {
@@ -2450,9 +2393,11 @@ fn handle_agent_event(app: &mut App, event: yoagent::types::AgentEvent) {
             if let Some(ref s) = app.session {
                 app.footer.borrow_mut().refresh_from_session(s.session());
             }
-            // Detect silent stops: if the last assistant message was empty
-            // (no text, no tool calls) with stop_reason=Stop, the agent returned
-            // without producing any visible output.
+            // Detect silent stops and provider errors: if the last assistant
+            // message was empty or had an error_message, surface a clear message.
+            // This catches cases where MessageEnd was already handled (error
+            // shown as status text) AND cases where the error only appears in
+            // the messages list on AgentEnd.
             for msg in messages.iter().rev() {
                 if let Some(yoagent::types::Message::Assistant {
                     content,
@@ -2460,40 +2405,42 @@ fn handle_agent_event(app: &mut App, event: yoagent::types::AgentEvent) {
                     error_message,
                     ..
                 }) = msg.as_llm()
-                    && error_message.is_none()
                     && stop_reason != &yoagent::types::StopReason::ToolUse
-                    && (content.is_empty()
+                {
+                    if let Some(err) = error_message {
+                        chat_add(
+                            app,
+                            std::boxed::Box::new(InfoMessageComponent::new(err.clone())),
+                        );
+                        break;
+                    }
+                    if content.is_empty()
                         || content.iter().all(|c| {
                             matches!(c, yoagent::types::Content::Text { text } if text.trim().is_empty())
-                        }))
-                {
-                    chat_add(
-                        app,
-                        std::boxed::Box::new(InfoMessageComponent::new(
-                            "The agent returned an empty response. \
-                             This can happen when the provider's context \
-                             limit is exceeded or the model declined to \
-                             respond. Try sending a new message."
-                                .to_string(),
-                        )),
-                    );
-                    break;
+                        })
+                    {
+                        chat_add(
+                            app,
+                            std::boxed::Box::new(InfoMessageComponent::new(
+                                "The agent returned an empty response. \
+                                 This can happen when the provider's context \
+                                 limit is exceeded or the model declined to \
+                                 respond. Try sending a new message."
+                                    .to_string(),
+                            )),
+                        );
+                        break;
+                    }
                 }
             }
         }
         E::MessageEnd { message } => {
-            app.last_streaming_event = std::time::Instant::now();
             // Check for error messages from the provider (network errors, etc.)
-            // Show in UI but do NOT persist to session.
+            // Show as a chat message so it's visible in the conversation history.
             if let Some(err) = crate::agent::types::message_error(&message) {
-                let error_text = if err.is_empty() {
-                    "Provider error: The agent encountered an issue and stopped.".to_string()
-                } else {
-                    format!("Provider error: {}", err)
-                };
                 chat_add(
                     app,
-                    std::boxed::Box::new(InfoMessageComponent::new(error_text.clone())),
+                    std::boxed::Box::new(InfoMessageComponent::new(err.to_string())),
                 );
             } else if crate::agent::types::message_is_system_stop(&message) {
                 // System-generated stop messages (e.g. execution limit reached) are
@@ -2526,7 +2473,6 @@ fn handle_agent_event(app: &mut App, event: yoagent::types::AgentEvent) {
             }
         }
         E::InputRejected { reason } => {
-            app.last_streaming_event = std::time::Instant::now();
             let msg = format!("Input rejected: {}", reason);
             chat_add(
                 app,
