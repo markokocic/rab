@@ -339,6 +339,13 @@ impl AgentSession {
             if crate::agent::types::message_is_user(msg) {
                 continue;
             }
+            // Skip Llm-form error messages — they're already persisted as
+            // Extension (custom_message) in the MessageEnd handler and should
+            // not be persisted again as Llm messages, which would be included
+            // in the LLM context on subsequent turns.
+            if crate::agent::types::message_error(msg).is_some() {
+                continue;
+            }
             // Skip tool results already persisted via event-driven persistence
             if crate::agent::types::message_is_tool_result(msg)
                 && let Some(tcid) = crate::agent::types::message_tool_call_id(msg)

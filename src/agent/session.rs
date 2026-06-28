@@ -1503,9 +1503,15 @@ pub fn find_most_recent_session(session_dir: &Path, filter_cwd: Option<&Path>) -
 
 /// Convert a session tree entry to an `AgentMessage` and append to the list.
 /// Pi-compatible: handles `message`, `custom_message`, and `branch_summary` entries.
+/// Skips provider/diagnostic error messages — their empty (or error-text-only)
+/// content would cause the provider to reject subsequent requests.
 fn append_entry_to_message_list(entry: &SessionEntry, msgs: &mut Vec<AgentMessage>) {
     match entry {
         SessionEntry::Message(e) => {
+            // Skip provider/diagnostic error messages
+            if crate::agent::types::message_error(&e.message).is_some() {
+                return;
+            }
             msgs.push(e.message.clone());
         }
         SessionEntry::CustomMessage(e) => {

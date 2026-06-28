@@ -1272,6 +1272,18 @@ async fn start_agent_loop(app: &mut App, message: String) {
             msgs,
             &app.extensions,
         ));
+    } else {
+        // Sync agent messages with session context to drop any transient
+        // messages that were filtered out (e.g., provider error messages
+        // with empty content that would cause the provider to reject requests).
+        let msgs = app
+            .session
+            .as_ref()
+            .map(|s| s.session().build_session_context().messages)
+            .unwrap_or_default();
+        if let Some(agent) = app.agent.as_mut() {
+            agent.replace_messages(msgs);
+        }
     }
 
     let agent = app.agent.as_mut().unwrap();
@@ -2424,11 +2436,9 @@ fn handle_agent_event(app: &mut App, event: yoagent::types::AgentEvent) {
             if let Some(ref s) = app.session {
                 app.footer.borrow_mut().refresh_from_session(s.session());
             }
-            // Detect silent stops and provider errors: if the last assistant
-            // message was empty or had an error_message, surface a clear message.
-            // This catches cases where MessageEnd was already handled (error
-            // shown as status text) AND cases where the error only appears in
-            // the messages list on AgentEnd.
+            // Detect silent stops: if the last assistant message was empty
+            // (and not a provider error, which is handled in MessageEnd above),
+            // surface a clear message.
             for msg in messages.iter().rev() {
                 if let Some(yoagent::types::Message::Assistant {
                     content,
@@ -2437,19 +2447,13 @@ fn handle_agent_event(app: &mut App, event: yoagent::types::AgentEvent) {
                     ..
                 }) = msg.as_llm()
                     && stop_reason != &yoagent::types::StopReason::ToolUse
+                    && error_message.is_none()
                 {
-                    if let Some(err) = error_message {
-                        chat_add(
-                            app,
-                            std::boxed::Box::new(InfoMessageComponent::new(err.clone())),
-                        );
-                        break;
-                    }
-                    if content.is_empty()
+                    let is_empty = content.is_empty()
                         || content.iter().all(|c| {
                             matches!(c, yoagent::types::Content::Text { text } if text.trim().is_empty())
-                        })
-                    {
+                        });
+                    if is_empty {
                         chat_add(
                             app,
                             std::boxed::Box::new(InfoMessageComponent::new(
@@ -2467,12 +2471,20 @@ fn handle_agent_event(app: &mut App, event: yoagent::types::AgentEvent) {
         }
         E::MessageEnd { message } => {
             // Check for error messages from the provider (network errors, etc.)
-            // Show as a chat message so it's visible in the conversation history.
+            // Show as a chat message and persist as Extension (custom_message)
+            // so it appears on session reload but is never sent to the LLM
+            // (default_convert_to_llm filters out Extension messages).
             if let Some(err) = crate::agent::types::message_error(&message) {
                 chat_add(
                     app,
                     std::boxed::Box::new(InfoMessageComponent::new(err.to_string())),
                 );
+                // Persist as Extension message (pi-compatible custom_message),
+                // which is excluded from LLM context by as_llm().
+                let ext = crate::agent::types::extension_message("error", err, true);
+                if let Some(ref mut s) = app.session {
+                    s.persist_extension_message(&ext);
+                }
             } else if crate::agent::types::message_is_system_stop(&message) {
                 // System-generated stop messages (e.g. execution limit reached) are
                 // injected as user messages by the agent loop. Convert to an Extension
