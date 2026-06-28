@@ -10,8 +10,6 @@ use std::time::Duration;
 /// After this duration without an AgentEnd event, the turn is aborted and
 /// an error is shown in the chat. This prevents indefinite hangs when the
 /// provider stalls, a tool never returns, or the agent loop silently exits.
-const AGENT_TURN_TIMEOUT: Duration = Duration::from_secs(300);
-
 use crate::agent::extension::ToolRenderer;
 use yoagent::types::AgentTool;
 
@@ -113,9 +111,6 @@ pub struct App {
     /// Handle for the forwarding task that relays events from the agent's event
     /// receiver to the UI channel. The Agent stays in `app.agent` during streaming.
     forward_handle: Option<tokio::task::JoinHandle<()>>,
-
-    /// When the current agent turn started (for effective per-turn timeout).
-    turn_start_time: std::time::Instant,
 
     /// Display settings.
     hide_thinking: bool,
@@ -367,7 +362,6 @@ impl App {
             pending_auto_compact: false,
             agent: None,
             forward_handle: None,
-            turn_start_time: std::time::Instant::now(),
             pending_command_result: None,
             hide_thinking: config.hide_thinking,
             collapse_tool_output: config.collapse_tool_output,
@@ -530,9 +524,6 @@ pub async fn run(config: AppConfig, session: AgentSession) -> anyhow::Result<()>
         }
 
         // Handle pending agent submission (async).
-        // start_agent_loop spawns the agent loop and returns quickly — the
-        // actual per-turn timeout is enforced by the time-based check below
-        // (turn_start_time.elapsed()), which catches hung provider/tool calls.
         if let Some(text) = app.pending_submit.take() {
             start_agent_loop(&mut app, text).await;
             dirty = true;
@@ -549,31 +540,6 @@ pub async fn run(config: AppConfig, session: AgentSession) -> anyhow::Result<()>
         if app.pending_auto_compact {
             app.pending_auto_compact = false;
             handle_auto_compact(&mut app).await;
-            dirty = true;
-        }
-
-        // Effective per-turn timeout: abort if the agent has been streaming
-        // longer than AGENT_TURN_TIMEOUT. Catches hung provider/tool calls
-        // that never produce an AgentEnd event.
-        if app.is_streaming && app.turn_start_time.elapsed() > AGENT_TURN_TIMEOUT {
-            if let Some(ref agent) = app.agent {
-                agent.abort();
-            }
-            app.is_streaming = false;
-            app.turn_start_time = std::time::Instant::now();
-            app.working.stop();
-            app.footer.borrow_mut().set_streaming(false);
-            app.forward_handle.take();
-            chat_add(
-                &mut app,
-                std::boxed::Box::new(InfoMessageComponent::new(format!(
-                    "The agent timed out after {} seconds. \
-                     This can happen when the provider is slow, a tool \
-                     hangs, or the agent exits silently. \
-                     Send a new message to try again.",
-                    AGENT_TURN_TIMEOUT.as_secs()
-                ))),
-            );
             dirty = true;
         }
 
@@ -1061,7 +1027,6 @@ fn handle_follow_up(app: &mut App, text: String) {
         }
         // Stale is_streaming flag — submit directly
         app.is_streaming = false;
-        app.turn_start_time = std::time::Instant::now();
     }
     submit_message(app, text);
 }
@@ -1107,7 +1072,6 @@ fn interrupt_streaming(app: &mut App) {
     // A fresh agent will be created from session on the next turn.
     app.agent = None;
     app.is_streaming = false;
-    app.turn_start_time = std::time::Instant::now();
     app.working.stop();
     app.footer.borrow_mut().set_streaming(false);
 
@@ -1173,7 +1137,6 @@ fn submit_message(app: &mut App, message: String) {
             }
             // Stale streaming flag — reset
             app.is_streaming = false;
-            app.turn_start_time = std::time::Instant::now();
             app.working.stop();
             app.footer.borrow_mut().set_streaming(false);
         }
@@ -1214,7 +1177,6 @@ fn submit_message(app: &mut App, message: String) {
 
         // Agent task has completed/aborted but is_streaming wasn't reset.
         app.is_streaming = false;
-        app.turn_start_time = std::time::Instant::now();
         app.working.stop();
         app.footer.borrow_mut().set_streaming(false);
     }
@@ -1285,7 +1247,6 @@ async fn start_agent_loop(app: &mut App, message: String) {
     }
 
     app.is_streaming = true;
-    app.turn_start_time = std::time::Instant::now();
     app.working.start();
     app.footer.borrow_mut().set_streaming(true);
 
