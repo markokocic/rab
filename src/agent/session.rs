@@ -1509,21 +1509,15 @@ fn append_entry_to_message_list(entry: &SessionEntry, msgs: &mut Vec<AgentMessag
             msgs.push(e.message.clone());
         }
         SessionEntry::CustomMessage(e) => {
-            msgs.push(AgentMessage::Llm(yoagent::types::Message::Assistant {
-                content: vec![yoagent::types::Content::Text {
-                    text: format!(
-                        "[{}] {}",
-                        e.custom_type,
-                        serde_json::to_string(&e.content).unwrap_or_default()
-                    ),
-                }],
-                stop_reason: yoagent::types::StopReason::Stop,
-                model: String::new(),
-                provider: String::new(),
-                usage: yoagent::types::Usage::default(),
-                timestamp: chrono::Utc::now().timestamp_millis() as u64,
-                error_message: None,
-            }));
+            msgs.push(AgentMessage::Extension(
+                yoagent::types::ExtensionMessage::new(
+                    &e.custom_type,
+                    serde_json::json!({
+                        "text": e.content.get("text").and_then(|v| v.as_str()).unwrap_or(""),
+                        "display": e.display,
+                    }),
+                ),
+            ));
         }
         SessionEntry::BranchSummary(e) if !e.summary.is_empty() => {
             msgs.push(AgentMessage::Llm(yoagent::types::Message::Assistant {

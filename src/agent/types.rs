@@ -77,6 +77,17 @@ pub fn message_usage(msg: &AgentMessage) -> Option<yoagent::types::Usage> {
     }
 }
 
+/// Check if an AgentMessage is a system-generated stop notification
+/// (e.g. execution limit reached, max tokens exceeded).
+/// The agent loop injects these as user messages starting with `[Agent stopped:`.
+pub fn message_is_system_stop(msg: &AgentMessage) -> bool {
+    if !message_is_user(msg) {
+        return false;
+    }
+    let text = message_text(msg);
+    text.trim_start().starts_with("[Agent stopped:")
+}
+
 /// Extract the error_message from an Assistant message, if present.
 pub fn message_error(msg: &AgentMessage) -> Option<&str> {
     match msg {
@@ -149,4 +160,64 @@ pub fn message_tool_call_count(msg: &AgentMessage) -> usize {
         AgentMessage::Llm(_) => 0,
         _ => 0,
     }
+}
+
+// ── Extension message helpers (pi-compatible custom_message) ────────
+
+/// Check if an AgentMessage is an Extension message.
+pub fn message_is_extension(msg: &AgentMessage) -> bool {
+    matches!(msg, AgentMessage::Extension(_))
+}
+
+/// Get the kind/customType from an Extension message.
+pub fn message_extension_kind(msg: &AgentMessage) -> Option<&str> {
+    match msg {
+        AgentMessage::Extension(ext) => Some(ext.kind.as_str()),
+        _ => None,
+    }
+}
+
+/// Get the text content from an Extension message's data field.
+pub fn message_extension_text(msg: &AgentMessage) -> Option<String> {
+    match msg {
+        AgentMessage::Extension(ext) => ext
+            .data
+            .get("text")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+        _ => None,
+    }
+}
+
+/// Create an Extension message (pi-compatible custom_message).
+/// `kind` identifies the type ("info", "error", "system_stop", etc.).
+pub fn extension_message(
+    kind: impl Into<String>,
+    text: impl Into<String>,
+    display: bool,
+) -> AgentMessage {
+    AgentMessage::Extension(yoagent::types::ExtensionMessage::new(
+        kind,
+        serde_json::json!({
+            "text": text.into(),
+            "display": display,
+        }),
+    ))
+}
+
+/// Create an Extension message with structured details.
+pub fn extension_message_with_details(
+    kind: impl Into<String>,
+    text: impl Into<String>,
+    display: bool,
+    details: serde_json::Value,
+) -> AgentMessage {
+    AgentMessage::Extension(yoagent::types::ExtensionMessage::new(
+        kind,
+        serde_json::json!({
+            "text": text.into(),
+            "display": display,
+            "details": details,
+        }),
+    ))
 }

@@ -407,6 +407,20 @@ impl AgentSession {
         self.persist_message(&msg);
     }
 
+    /// Persist an Extension message as a `custom_message` session entry (pi-compatible).
+    /// Extension messages are NOT persisted as regular messages — they use the
+    /// `custom_message` entry type which supports `custom_type`, `display`, and `details`.
+    pub fn persist_extension_message(&mut self, msg: &AgentMessage) {
+        let Some(kind) = crate::agent::types::message_extension_kind(msg) else {
+            return;
+        };
+        let text = crate::agent::types::message_extension_text(msg)
+            .unwrap_or_else(|| crate::agent::types::message_text(msg));
+        let content = serde_json::json!({"text": text});
+        self.session
+            .append_custom_message_entry(kind, content, true, None);
+    }
+
     /// Persist a single message on `message_end` (pi-compatible pattern).
     ///
     /// Pi persists every message (user, assistant, toolResult) immediately on `message_end`,

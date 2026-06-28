@@ -1280,6 +1280,11 @@ fn build_fresh_agent(
         .with_thinking(thinking_level)
         .with_messages(messages)
         .with_tools(tools)
+        .with_execution_limits(yoagent::context::ExecutionLimits {
+            max_total_tokens: usize::MAX,
+            max_turns: usize::MAX,
+            max_duration: std::time::Duration::from_secs(u64::MAX),
+        })
 }
 
 /// Map rab's thinking level string to yoagent's ThinkingLevel enum.
@@ -2214,6 +2219,14 @@ pub fn rebuild_chat_from_messages(
                 let mut tool = tool.borrow_mut();
                 tool.set_result_with_details(clean, is_error, None);
             }
+        } else if crate::agent::types::message_is_extension(msg) {
+            // Extension messages (info, error, system_stop) rendered as info text.
+            if let Some(text) = crate::agent::types::message_extension_text(msg) {
+                if !chat.children().is_empty() {
+                    chat.add_child(std::boxed::Box::new(Spacer::new(1)));
+                }
+                chat.add_child(std::boxed::Box::new(InfoMessageComponent::new(text)));
+            }
         }
     }
 }
@@ -2443,8 +2456,24 @@ fn handle_agent_event(app: &mut App, event: yoagent::types::AgentEvent) {
             // (no text, no tool calls) with stop_reason=Stop, the agent returned
             // without producing any visible output. Show an indicator so the
             // user understands what happened instead of seeing nothing.
+            // Also check for system stop messages that weren't displayed in
+            // MessageEnd (in case they arrived between MessageEnd and AgentEnd).
             if !displayed_error {
                 for msg in messages.iter().rev() {
+                    if crate::agent::types::message_is_system_stop(msg) {
+                        let text = crate::agent::types::message_text(msg);
+                        chat_add(
+                            app,
+                            std::boxed::Box::new(InfoMessageComponent::new(text.clone())),
+                        );
+                        // Persist as Extension if not already done
+                        if let Some(ref mut s) = app.session {
+                            let ext =
+                                crate::agent::types::extension_message("system_stop", text, true);
+                            s.persist_extension_message(&ext);
+                        }
+                        break;
+                    }
                     if let Some(yoagent::types::Message::Assistant {
                         content,
                         stop_reason,
@@ -2487,6 +2516,28 @@ fn handle_agent_event(app: &mut App, event: yoagent::types::AgentEvent) {
                     app,
                     std::boxed::Box::new(InfoMessageComponent::new(error_text.clone())),
                 );
+            } else if crate::agent::types::message_is_system_stop(&message) {
+                // System-generated stop messages (e.g. execution limit reached) are
+                // injected as user messages by the agent loop. Convert to an Extension
+                // message (pi-compatible custom_message) for proper persistence.
+                let text = crate::agent::types::message_text(&message);
+                chat_add(
+                    app,
+                    std::boxed::Box::new(InfoMessageComponent::new(text.clone())),
+                );
+                if let Some(ref mut s) = app.session {
+                    let ext = crate::agent::types::extension_message("system_stop", text, true);
+                    s.persist_extension_message(&ext);
+                }
+            } else if crate::agent::types::message_is_extension(&message) {
+                // Extension messages (info, error, system_stop, etc.) — display in chat.
+                if let Some(text) = crate::agent::types::message_extension_text(&message) {
+                    chat_add(app, std::boxed::Box::new(InfoMessageComponent::new(text)));
+                }
+                // Persist as custom_message entry.
+                if let Some(ref mut s) = app.session {
+                    s.persist_extension_message(&message);
+                }
             } else {
                 // Pi-compatible: persist every message (user, assistant, toolResult) immediately
                 // on message_end, not deferred to agent_end. Error messages are shown but not persisted.

@@ -560,22 +560,25 @@ async fn run_print_mode(
     agent_tools: Vec<Box<dyn yoagent::types::AgentTool>>,
     agent_session: &mut rab::agent::AgentSession,
 ) -> anyhow::Result<()> {
+    let mut mc = yoagent::provider::model::ModelConfig::openai_compat(
+        "https://opencode.ai/zen/go/v1",
+        "deepseek-v4-flash",
+        "opencode-go",
+        yoagent::provider::model::OpenAiCompat::deepseek(),
+    );
+    mc.context_window = 1_000_000;
     let mut agent = yoagent::agent::Agent::new(yoagent::provider::OpenAiCompatProvider)
         .with_model(&model)
         .with_api_key(&api_key)
-        .with_model_config({
-            let mut mc = yoagent::provider::model::ModelConfig::openai_compat(
-                "https://opencode.ai/zen/go/v1",
-                "deepseek-v4-flash",
-                "opencode-go",
-                yoagent::provider::model::OpenAiCompat::deepseek(),
-            );
-            mc.context_window = 1_000_000;
-            mc
-        })
+        .with_model_config(mc)
         .with_system_prompt(&system_prompt)
         .with_thinking(yoagent::types::ThinkingLevel::High)
-        .with_tools(agent_tools);
+        .with_tools(agent_tools)
+        .with_execution_limits(yoagent::context::ExecutionLimits {
+            max_total_tokens: usize::MAX,
+            max_turns: usize::MAX,
+            max_duration: std::time::Duration::from_secs(u64::MAX),
+        });
 
     let (yo_tx, mut yo_rx) = tokio::sync::mpsc::unbounded_channel();
     let msg_for_agent = message.clone();
@@ -708,6 +711,19 @@ async fn run_print_mode(
                         "{}{}",
                         colored::Colorize::red("✗ "),
                         colored::Colorize::red(msg)
+                    );
+                } else if rab::agent::types::message_is_system_stop(message) {
+                    let text = rab::agent::types::message_text(message);
+                    eprintln!(
+                        "{}{}",
+                        colored::Colorize::red("✗ "),
+                        colored::Colorize::red(text.as_str())
+                    );
+                } else if let Some(text) = rab::agent::types::message_extension_text(message) {
+                    eprintln!(
+                        "{}{}",
+                        colored::Colorize::dimmed("· "),
+                        colored::Colorize::dimmed(text.as_str())
                     );
                 }
             }
