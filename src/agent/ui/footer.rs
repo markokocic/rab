@@ -186,16 +186,15 @@ impl Footer {
         } else {
             self.context_percent = None;
         }
+
+        // Update session name from session
+        self.session_name = session.session_name().map(|s| s.to_string());
     }
 
     // ── Direct setters (model / settings state) ────────────────
 
     pub fn set_cwd(&mut self, cwd: impl Into<String>) {
         self.cwd = cwd.into();
-    }
-
-    pub fn set_session_name(&mut self, name: Option<String>) {
-        self.session_name = name;
     }
 
     pub fn set_model(&mut self, model: impl Into<String>) {

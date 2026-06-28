@@ -380,6 +380,11 @@ impl App {
         // Initial session info for /session command
         result.update_session_info();
 
+        // Initialize footer stats and session name from session
+        if let Some(ref s) = result.session {
+            result.footer.borrow_mut().refresh_from_session(s.session());
+        }
+
         result
     }
 
@@ -1491,6 +1496,11 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
             app.pending_tools.clear();
             app.tool_call_start_times.clear();
 
+            // Refresh footer cached stats from the now-empty session
+            if let Some(ref s) = app.session {
+                app.footer.borrow_mut().refresh_from_session(s.session());
+            }
+
             // Add "✓ New session started" with accent color, matching pi's
             // `new Text(theme.fg("accent", "✓ New session started"), 1, 1)`
             let styled = app.theme.fg("accent", "✓ New session started");
@@ -1512,6 +1522,11 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
                 app.collapse_tool_output,
                 &app.extensions,
             );
+            // Refresh footer cached stats for the switched-to session
+            app.footer
+                .borrow_mut()
+                .refresh_from_session(new_session.session());
+
             app.session = Some(new_session);
             app.agent = None;
             app.update_session_info();
@@ -1674,8 +1689,16 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
         CommandResult::SessionNamed { name } => {
             app.status_text = Some(format!("Session name: {}", name));
 
-            // Update session info for /session command
+            // Persist name in session
+            if let Some(ref mut s) = app.session {
+                s.session_mut().append_session_info(&name);
+            }
+
+            // Update session info and footer (refresh_from_session picks up the new name)
             app.update_session_info();
+            if let Some(ref s) = app.session {
+                app.footer.borrow_mut().refresh_from_session(s.session());
+            }
         }
         CommandResult::OpenSettings => {
             // Needs TUI overlay - defer
