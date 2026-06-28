@@ -6,6 +6,12 @@ use std::rc::{Rc, Weak};
 use std::sync::Arc;
 use std::time::Duration;
 
+/// Maximum time to wait for an agent turn to complete.
+/// After this duration without an AgentEnd event, the turn is aborted and
+/// an error is shown in the chat. This prevents indefinite hangs when the
+/// provider stalls, a tool never returns, or the agent loop silently exits.
+const AGENT_TURN_TIMEOUT: Duration = Duration::from_secs(300);
+
 use crate::agent::extension::ToolRenderer;
 use yoagent::types::AgentTool;
 
@@ -520,9 +526,34 @@ pub async fn run(config: AppConfig, session: SessionManager) -> anyhow::Result<(
             dirty = true;
         }
 
-        // Handle pending agent submission (async, after events are drained)
+        // Handle pending agent submission (async, after events are drained).
+        // Wrap in a timeout so a stalled provider/tool doesn't freeze the UI
+        // indefinitely. On timeout, abort the agent and surface an error message.
         if let Some(text) = app.pending_submit.take() {
-            start_agent_loop(&mut app, text).await;
+            let timeout_fut =
+                tokio::time::timeout(AGENT_TURN_TIMEOUT, start_agent_loop(&mut app, text));
+            match timeout_fut.await {
+                Ok(()) => {}
+                Err(_elapsed) => {
+                    if let Some(ref agent) = app.agent {
+                        agent.abort();
+                    }
+                    app.is_streaming = false;
+                    app.working.stop();
+                    app.footer.borrow_mut().set_streaming(false);
+                    app.forward_handle.take();
+                    chat_add(
+                        &mut app,
+                        std::boxed::Box::new(InfoMessageComponent::new(format!(
+                            "The agent timed out after {} seconds. \
+                             This can happen when the provider is slow, a tool \
+                             hangs, or the agent exits silently. \
+                             Send a new message to try again.",
+                            AGENT_TURN_TIMEOUT.as_secs()
+                        ))),
+                    );
+                }
+            }
             dirty = true;
         }
 
