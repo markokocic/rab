@@ -2320,7 +2320,7 @@ fn show_status(app: &mut App, message: String) {
 
 /// Handle agent events from the channel.
 ///
-/// Delegates persistence to `AgentSession::handle_yo_event()` (single source of truth)
+/// Delegates persistence to `AgentSession::on_agent_event()` (single source of truth)
 /// and only handles display/UI logic here. This mirrors pi's single _handleAgentEvent
 /// that all modes share — the mode-agnostic persistence lives on AgentSession, and each
 /// mode adds display on top.
@@ -2585,7 +2585,7 @@ fn handle_agent_event(app: &mut App, event: yoagent::types::AgentEvent) {
                     s.persist_extension_message(&ext);
                 }
             } else if crate::agent::types::message_is_extension(&message) {
-                // Extension messages: display in chat (persisted by handle_yo_event).
+                // Extension messages: display in chat (persisted by on_agent_event).
                 if let Some(text) = crate::agent::types::message_extension_text(&message) {
                     chat_add(app, std::boxed::Box::new(InfoMessageComponent::new(text)));
                 }
