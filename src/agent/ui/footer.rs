@@ -381,43 +381,47 @@ impl crate::tui::Component for Footer {
         let right_side_width = visible_width(&right_side);
         let min_padding: usize = 2;
 
-        let stats_line = if stats_left_width + min_padding + right_side_width <= w {
-            // Both fit
-            let padding = " ".repeat(w - stats_left_width - right_side_width);
-            format!("{}{}{}", stats_left, padding, right_side)
-        } else if !self.model.is_empty()
-            && available_provider_count > 1
-            && stats_left_width + min_padding + visible_width(&right_side_without_provider) <= w
-        {
-            // Try without provider prefix
-            let padding =
-                " ".repeat(w - stats_left_width - visible_width(&right_side_without_provider));
-            format!("{}{}{}", stats_left, padding, right_side_without_provider)
-        } else {
-            // Need to truncate right side
-            let available_for_right = w.saturating_sub(stats_left_width + min_padding);
-            if available_for_right > 0 {
-                let truncated_right =
-                    truncate_to_width(&right_side, available_for_right, "", false);
-                let truncated_right_width = visible_width(&truncated_right);
-                let padding = " ".repeat(w - stats_left_width - truncated_right_width);
-                format!("{}{}{}", stats_left, padding, truncated_right)
+        let (stats_line, extra_model_line) =
+            if stats_left_width + min_padding + right_side_width <= w {
+                // Both fit on one line
+                let padding = " ".repeat(w - stats_left_width - right_side_width);
+                (format!("{}{}{}", stats_left, padding, right_side), None)
+            } else if !self.model.is_empty()
+                && available_provider_count > 1
+                && stats_left_width + min_padding + visible_width(&right_side_without_provider) <= w
+            {
+                // Try without provider prefix
+                let padding =
+                    " ".repeat(w - stats_left_width - visible_width(&right_side_without_provider));
+                (
+                    format!("{}{}{}", stats_left, padding, right_side_without_provider),
+                    None,
+                )
             } else {
-                // Not enough space for right side at all
-                stats_left.clone()
-            }
-        };
+                // Don't fit on one line — put on separate lines
+                let model_for_line = if right_side_width > w {
+                    truncate_to_width(&right_side, w, &theme.fg_key(ThemeKey::Dim, "..."), false)
+                } else {
+                    right_side.clone()
+                };
+                (stats_left.clone(), Some(model_for_line))
+            };
 
         // Pi-style: dim statsLeft and remainder separately
         let dim_stats_left = theme.fg_key(ThemeKey::Dim, &stats_left);
-        let remainder = &stats_line[stats_left.len()..]; // padding + rightSide
+        let remainder = &stats_line[stats_left.len()..]; // padding + rightSide (if combined)
         let dim_remainder = theme.fg_key(ThemeKey::Dim, remainder);
 
         let stats_line_formatted = format!("{}{}", dim_stats_left, dim_remainder);
 
         let mut lines = vec![pwd_line, stats_line_formatted];
 
-        // ── Line 3: extension statuses (sorted by key, sanitized) ──
+        // ── Extra line: model info on its own line (when stats+model don't fit together) ──
+        if let Some(model_line) = extra_model_line {
+            lines.push(theme.fg_key(ThemeKey::Dim, &model_line));
+        }
+
+        // ── Last line(s): extension statuses (sorted by key, sanitized) ──
         if !extension_statuses.is_empty() {
             let status_text: Vec<String> = extension_statuses
                 .iter()
