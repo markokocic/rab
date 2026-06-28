@@ -19,7 +19,6 @@ use crate::agent::AgentSession;
 use crate::agent::extension::{CommandResult, Extension};
 use crate::agent::footer_data_provider::FooterDataProvider;
 
-
 use crate::agent::ui::chat_editor::{ChatEditor, InputAction};
 use crate::agent::ui::components::EditorComponent;
 use crate::agent::ui::components::FooterComponent;
@@ -1697,10 +1696,11 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
             // Parent session (fork chain)
             if let Some(ref asession) = app.session
                 && let Some(file_path) = asession.session().session_file().as_ref()
-                    && let Some(h) = crate::agent::session::read_session_header(file_path)
-                        && let Some(ref parent) = h.parent_session {
-                            info += &format!("\n\nParent: {}", parent);
-                        }
+                && let Some(h) = crate::agent::session::read_session_header(file_path)
+                && let Some(ref parent) = h.parent_session
+            {
+                info += &format!("\n\nParent: {}", parent);
+            }
 
             chat_add(
                 app,
@@ -1811,10 +1811,7 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
                 .session
                 .as_ref()
                 .and_then(|s| s.session().session_file());
-            let session_dir = app
-                .session
-                .as_ref()
-                .map(|s| s.session_dir().to_path_buf());
+            let session_dir = app.session.as_ref().map(|s| s.session_dir().to_path_buf());
             let cwd = app.cwd.clone();
 
             match (source_path, session_dir) {
@@ -1841,10 +1838,8 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
                             match new_path {
                                 Some(ref path) => {
                                     // Open the new session and replace the current one
-                                    let new_session = crate::agent::AgentSession::open(                                        path,
-                                        None,
-                                        Some(&cwd),
-                                    );
+                                    let new_session =
+                                        crate::agent::AgentSession::open(path, None, Some(&cwd));
 
                                     let ctx = new_session.session().build_session_context();
                                     app.chat_container.borrow_mut().clear();

@@ -134,8 +134,6 @@ impl InMemorySessionStorage {
             leaf_id: None,
         }
     }
-
-
 }
 
 impl SessionStorage for InMemorySessionStorage {
@@ -149,9 +147,10 @@ impl SessionStorage for InMemorySessionStorage {
 
     fn set_leaf_id(&mut self, leaf_id: Option<&str>) -> Result<(), String> {
         if let Some(id) = leaf_id
-            && !self.by_id.contains_key(id) {
-                return Err(format!("Entry {} not found", id));
-            }
+            && !self.by_id.contains_key(id)
+        {
+            return Err(format!("Entry {} not found", id));
+        }
         let entry = SessionEntry::Leaf(LeafEntry {
             id: self.create_entry_id(),
             parent_id: self.leaf_id.clone(),
@@ -340,9 +339,10 @@ impl SessionStorage for JsonlSessionStorage {
 
     fn set_leaf_id(&mut self, leaf_id: Option<&str>) -> Result<(), String> {
         if let Some(id) = leaf_id
-            && !self.by_id.contains_key(id) {
-                return Err(format!("Entry {} not found", id));
-            }
+            && !self.by_id.contains_key(id)
+        {
+            return Err(format!("Entry {} not found", id));
+        }
         let entry = SessionEntry::Leaf(LeafEntry {
             id: self.create_entry_id(),
             parent_id: self.leaf_id.clone(),

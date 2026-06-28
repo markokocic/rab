@@ -828,16 +828,26 @@ pub trait Extension: Send + Sync {
     /// Return `Some(BeforeCompactResult { cancel: false, summary: Some(...), .. })`
     /// to provide a custom summary instead of calling the provider.
     /// Return `None` to let the default compaction proceed.
+    ///
+    /// `cancel` is a cancellation token — check `cancel.is_cancelled()` in
+    /// long-running hooks and return immediately if true (matching pi's
+    /// `AbortSignal` passed to `session_before_compact`).
     fn before_compact(
         &self,
         _first_kept_entry_id: &str,
         _tokens_before: u64,
         _reason: &str,
+        _cancel: &Cancel,
     ) -> Option<BeforeCompactResult> {
         None
     }
 
     /// Called after compaction completes (matching pi's `session_compact`).
+    ///
+    /// `cancel` is a cancellation token — check `cancel.is_cancelled()` in
+    /// long-running hooks and return early if true (matching pi's
+    /// `AbortSignal` passed to `session_compact`).
+    #[allow(clippy::too_many_arguments)]
     fn after_compact(
         &self,
         _summary: &str,
@@ -846,6 +856,7 @@ pub trait Extension: Send + Sync {
         _estimated_tokens_after: u64,
         _from_hook: bool,
         _reason: &str,
+        _cancel: &Cancel,
     ) {
     }
 }

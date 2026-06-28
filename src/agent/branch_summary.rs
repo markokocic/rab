@@ -25,7 +25,8 @@ pub fn collect_entries_for_branch_summary(
 
     // Build set of ids on the path from old leaf to root
     let old_path: HashSet<String> = session
-        .get_branch(Some(old_leaf)).unwrap_or_default()
+        .get_branch(Some(old_leaf))
+        .unwrap_or_default()
         .iter()
         .map(|e| e.id().to_string())
         .collect();
@@ -346,7 +347,8 @@ mod tests {
     fn test_collect_entries_no_old_leaf() {
         let (sm, _ids) = linear_chain(3);
         let target_id = sm.entries().last().unwrap().id().to_string();
-        let (entries, ancestor) = collect_entries_for_branch_summary(sm.session(), None, &target_id);
+        let (entries, ancestor) =
+            collect_entries_for_branch_summary(sm.session(), None, &target_id);
         assert!(entries.is_empty());
         assert!(ancestor.is_none());
     }
@@ -382,7 +384,8 @@ mod tests {
         let entry_e = msg_entry(Some(&id_d));
         let id_e = push_entry(&mut sm, entry_e);
 
-        let (entries, ancestor) = collect_entries_for_branch_summary(sm.session(), Some(&id_e), &id_c);
+        let (entries, ancestor) =
+            collect_entries_for_branch_summary(sm.session(), Some(&id_e), &id_c);
 
         assert_eq!(ancestor.as_deref(), Some(id_a.as_str()));
         assert_eq!(entries.len(), 2, "should collect E and D");
@@ -410,7 +413,8 @@ mod tests {
         let entry_c = msg_entry(Some(&id_bs));
         let id_c = push_entry(&mut sm, entry_c);
 
-        let (entries, ancestor) = collect_entries_for_branch_summary(sm.session(), Some(&id_c), &id_b);
+        let (entries, ancestor) =
+            collect_entries_for_branch_summary(sm.session(), Some(&id_c), &id_b);
 
         assert_eq!(ancestor.as_deref(), Some(id_bs.as_str()));
         assert_eq!(entries.len(), 1);

@@ -744,9 +744,10 @@ impl Session {
     ) -> Result<Option<String>, String> {
         // Validate target exists
         if let Some(ref id) = entry_id
-            && self.get_entry(id).is_none() {
-                return Err(format!("Entry {} not found", id));
-            }
+            && self.get_entry(id).is_none()
+        {
+            return Err(format!("Entry {} not found", id));
+        }
         // Persist leaf via storage
         self.storage.set_leaf_id(entry_id)?;
 
@@ -814,15 +815,17 @@ pub fn build_session_context(path: &[SessionEntry]) -> SessionContext {
     // Pi-compatible: fallback — extract model from assistant messages if no explicit model_change
     if model.is_none() {
         for entry in path {
-            if let SessionEntry::Message(e) = entry {
-                if let yoagent::types::AgentMessage::Llm(yoagent::types::Message::Assistant {
-                    model: ref m, provider: ref p, ..
-                }) = e.message {
-                    if !m.is_empty() && !p.is_empty() {
-                        model = Some((p.clone(), m.clone()));
-                        break;
-                    }
-                }
+            if let SessionEntry::Message(e) = entry
+                && let yoagent::types::AgentMessage::Llm(yoagent::types::Message::Assistant {
+                    model: ref m,
+                    provider: ref p,
+                    ..
+                }) = e.message
+                && !m.is_empty()
+                && !p.is_empty()
+            {
+                model = Some((p.clone(), m.clone()));
+                break;
             }
         }
     }
@@ -1370,7 +1373,8 @@ impl SessionManager {
         from_hook: Option<bool>,
     ) -> Result<String, String> {
         let summary_tuple = Some((summary.to_string(), details, from_hook));
-        self.session.move_to(branch_from_id, summary_tuple)
+        self.session
+            .move_to(branch_from_id, summary_tuple)
             .map(|opt| opt.unwrap_or_default())
     }
 

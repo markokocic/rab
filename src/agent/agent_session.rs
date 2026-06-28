@@ -1,10 +1,10 @@
 use crate::agent::branch_summary::{collect_entries_for_branch_summary, generate_branch_summary};
-use crate::agent::session_storage::{InMemorySessionStorage, SessionMetadata, SessionStorage};
 use crate::agent::compaction::{
     self, CompactionReason, CompactionResult, CompactionSettings, compact, prepare_compaction,
 };
 use crate::agent::extension::Extension;
 use crate::agent::session::SessionManager;
+use crate::agent::session_storage::{InMemorySessionStorage, SessionMetadata, SessionStorage};
 use crate::agent::types::{message_text, tool_result_message, user_message};
 use std::collections::HashSet;
 use yoagent::types::AgentMessage;
@@ -33,17 +33,11 @@ pub type CompactionEventCallback = Box<dyn Fn(&CompactionEvent) + Send + Sync>;
 
 /// A deferred session write, queued during an agent run.
 /// Pi-compatible: batched and flushed at turn boundaries.
-enum PendingSessionWrite {
-    Message(yoagent::types::AgentMessage),
+#[allow(clippy::enum_variant_names)]
+pub(crate) enum PendingSessionWrite {
     ModelChange { provider: String, model_id: String },
     ThinkingLevelChange(String),
     ActiveToolsChange(Vec<String>),
-    CustomMessageEntry {
-        custom_type: String,
-        content: serde_json::Value,
-        display: bool,
-        details: Option<serde_json::Value>,
-    },
 }
 
 /// Bridges the agent loop events and session persistence.
@@ -103,6 +97,8 @@ pub struct AgentSession {
     event_listeners: Vec<CompactionEventCallback>,
     /// Whether overflow recovery has already been attempted (prevents loops).
     overflow_recovery_attempted: bool,
+    /// Cancellation token for in-progress compaction (pi-compatible abort).
+    compaction_cancel: crate::agent::extension::Cancel,
     /// Queued session writes, flushed at turn boundaries (pi-compatible).
     pending_writes: Vec<PendingSessionWrite>,
 }
@@ -121,9 +117,7 @@ impl AgentSession {
 
         // If the session has no thinking level change entries, set last_thinking_level
         // to empty so the first on_thinking_level_change always detects a change.
-        let has_thinking_entries = !session
-            .find_entries("thinking_level_change")
-            .is_empty();
+        let has_thinking_entries = !session.find_entries("thinking_level_change").is_empty();
         let last_thinking_level = if has_thinking_entries {
             ctx.thinking_level
         } else {
@@ -150,6 +144,7 @@ impl AgentSession {
             extensions: Vec::new(),
             event_listeners: Vec::new(),
             overflow_recovery_attempted: false,
+            compaction_cancel: crate::agent::extension::Cancel::new(),
             pending_writes: Vec::new(),
         }
     }
@@ -187,8 +182,7 @@ impl AgentSession {
         session_dir: Option<&std::path::Path>,
         options: Option<&crate::agent::session::NewSessionOptions>,
     ) -> std::io::Result<Self> {
-        SessionManager::fork_from(source_path, target_cwd, session_dir, options)
-            .map(Self::new)
+        SessionManager::fork_from(source_path, target_cwd, session_dir, options).map(Self::new)
     }
 
     /// Configure compaction with API key, model, context window, and model config.
@@ -240,6 +234,13 @@ impl AgentSession {
         self.extensions = extensions;
     }
 
+    /// Abort any in-progress compaction (matching pi's `abortCompaction()`).
+    /// The cancellation will be picked up by extension hooks on their next
+    /// `cancel.is_cancelled()` check.
+    pub fn abort_compaction(&self) {
+        self.compaction_cancel.cancel();
+    }
+
     /// Register a compaction lifecycle event listener.
     pub fn on_compaction_event(&mut self, callback: CompactionEventCallback) {
         self.event_listeners.push(callback);
@@ -255,6 +256,7 @@ impl AgentSession {
     /// Reset overflow recovery state (called when starting a new turn).
     pub fn reset_overflow_recovery(&mut self) {
         self.overflow_recovery_attempted = false;
+        self.compaction_cancel = crate::agent::extension::Cancel::new();
     }
 
     /// Check if a provider error indicates context overflow.
@@ -317,8 +319,7 @@ impl AgentSession {
                         eprintln!("Warning: failed to write entry to session file: {}", e);
                     }
                 }
-                self.session =
-                    crate::agent::session::Session::new(Box::new(file_storage));
+                self.session = crate::agent::session::Session::new(Box::new(file_storage));
                 self.flushed = true;
             }
             Err(e) => {
@@ -357,7 +358,7 @@ impl AgentSession {
     // ── Pending writes (pi-compatible batching) ─────────────────
 
     /// Queue a session write for batching. Pi-compatible: flushes at turn boundaries.
-    pub fn publish_session_write(&mut self, write: PendingSessionWrite) {
+    pub(crate) fn publish_session_write(&mut self, write: PendingSessionWrite) {
         self.pending_writes.push(write);
     }
 
@@ -366,9 +367,6 @@ impl AgentSession {
     pub fn flush_pending_writes(&mut self) {
         for write in self.pending_writes.drain(..) {
             match write {
-                PendingSessionWrite::Message(msg) => {
-                    self.session.append_message(&msg);
-                }
                 PendingSessionWrite::ModelChange { provider, model_id } => {
                     self.session.append_model_change(&provider, &model_id);
                 }
@@ -377,16 +375,6 @@ impl AgentSession {
                 }
                 PendingSessionWrite::ActiveToolsChange(tools) => {
                     self.session.append_active_tools_change(&tools);
-                }
-                PendingSessionWrite::CustomMessageEntry {
-                    custom_type,
-                    content,
-                    display,
-                    details,
-                } => {
-                    self.session.append_custom_message_entry(
-                        &custom_type, content, display, details,
-                    );
                 }
             }
         }
@@ -414,9 +402,7 @@ impl AgentSession {
     /// Returns true if a change entry was enqueued.
     pub fn on_thinking_level_change(&mut self, level: &str) -> bool {
         if self.last_thinking_level != level {
-            self.publish_session_write(PendingSessionWrite::ThinkingLevelChange(
-                level.to_string(),
-            ));
+            self.publish_session_write(PendingSessionWrite::ThinkingLevelChange(level.to_string()));
             self.last_thinking_level = level.to_string();
             true
         } else {
@@ -429,9 +415,7 @@ impl AgentSession {
     pub fn on_active_tools_change(&mut self, tools: &[String]) -> bool {
         let tools_vec = tools.to_vec();
         if self.last_active_tools.as_ref() != Some(&tools_vec) {
-            self.publish_session_write(PendingSessionWrite::ActiveToolsChange(
-                tools_vec.clone(),
-            ));
+            self.publish_session_write(PendingSessionWrite::ActiveToolsChange(tools_vec.clone()));
             self.last_active_tools = Some(tools_vec);
             true
         } else {
@@ -460,6 +444,7 @@ impl AgentSession {
         self.last_model = None;
         self.last_thinking_level = String::new();
         self.last_active_tools = None;
+        self.compaction_cancel = crate::agent::extension::Cancel::new();
     }
 
     /// Append a user message to the session and register it as persisted.
@@ -484,6 +469,7 @@ impl AgentSession {
     /// Process an agent event for automatic persistence.
     ///
     /// - `ToolResult` events are persisted immediately (crash-safe).
+    /// - `MessageEnd` persists every message in real-time (pi-compatible, crash-safe).
     /// - `AgentEnd` persists any remaining assistant messages not yet captured.
     ///
     /// Call this from your agent event handler alongside any UI updates.
@@ -513,6 +499,16 @@ impl AgentSession {
                 self.persist_message(&msg);
                 // Pi-compatible: flush tool result writes immediately (crash-safe)
                 self.flush_pending_writes();
+            }
+            YoEvent::MessageEnd { message } => {
+                // Pi-compatible: persist every message immediately on message_end,
+                // not deferred to agent_end. Extension messages use custom_message
+                // entries (excluded from LLM context); all others use regular messages.
+                if crate::agent::types::message_is_extension(message) {
+                    self.persist_extension_message(message);
+                } else {
+                    self.persist_message_end(message);
+                }
             }
             YoEvent::AgentEnd { messages } => {
                 self.on_agent_end(messages);
@@ -610,8 +606,18 @@ impl AgentSession {
             return Ok(None);
         }
 
+        // Create a fresh cancellation token for this compaction run
+        // (pi-compatible: matches AbortController per compaction call)
+        self.compaction_cancel = crate::agent::extension::Cancel::new();
+        let cancel = self.compaction_cancel.clone();
+
         // Emit compaction_start
         self.emit_compaction_event(&CompactionEvent::Start { reason });
+
+        // Check for cancellation before proceeding
+        if cancel.is_cancelled() {
+            return Ok(None);
+        }
 
         let entries = self.session.get_entries();
 
@@ -638,10 +644,14 @@ impl AgentSession {
         let mut hook_details: Option<serde_json::Value> = None;
 
         for ext in &self.extensions {
+            if cancel.is_cancelled() {
+                break;
+            }
             if let Some(result) = ext.before_compact(
                 &prep.first_kept_entry_id,
                 prep.tokens_before,
                 &reason.to_string(),
+                &cancel,
             ) {
                 if result.cancel {
                     self.emit_compaction_event(&CompactionEvent::End {
@@ -711,6 +721,9 @@ impl AgentSession {
 
         // Extension hooks: after_compact
         for ext in &self.extensions {
+            if cancel.is_cancelled() {
+                break;
+            }
             ext.after_compact(
                 &final_result.summary,
                 &final_result.first_kept_entry_id,
@@ -718,6 +731,7 @@ impl AgentSession {
                 final_result.estimated_tokens_after,
                 from_hook,
                 &reason.to_string(),
+                &cancel,
             );
         }
 
