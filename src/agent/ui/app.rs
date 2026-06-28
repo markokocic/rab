@@ -1316,26 +1316,9 @@ fn handle_session_picker_input(app: &mut App, key: &crossterm::event::KeyEvent) 
             if let Some(path) = picker.selected_path() {
                 let path = path.clone();
                 app.session_picker = None;
-                // Switch to the selected session
-                let new_sm = SessionManager::open(&path, None, Some(&app.cwd));
-                let new_session = AgentSession::new(new_sm);
-                let ctx = new_session.session().build_session_context();
-                app.chat_container.borrow_mut().clear();
-                app.streaming_component = None;
-                app.pending_tools.clear();
-                app.tool_call_start_times.clear();
-                rebuild_chat_from_messages(
-                    &mut app.chat_container.borrow_mut(),
-                    &ctx.messages,
-                    &app.cwd.to_string_lossy(),
-                    app.hide_thinking,
-                    app.collapse_tool_output,
-                    &app.extensions,
-                );
-                app.session = Some(new_session);
-                app.agent = None; // Force recreation from new session on next prompt
-                app.update_session_info();
-                app.status_text = Some(format!("Switched to session: {}", path.display()));
+                app.status_text = None;
+                // Delegate to the shared SessionSwitched handler
+                app.pending_command_result = Some(CommandResult::SessionSwitched { path });
             }
         }
         KeyCode::Up => {
