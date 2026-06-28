@@ -114,6 +114,9 @@ pub struct App {
     /// receiver to the UI channel. The Agent stays in `app.agent` during streaming.
     forward_handle: Option<tokio::task::JoinHandle<()>>,
 
+    /// When the current agent turn started (for effective per-turn timeout).
+    turn_start_time: std::time::Instant,
+
     /// Display settings.
     hide_thinking: bool,
     collapse_tool_output: bool,
@@ -364,6 +367,7 @@ impl App {
             pending_auto_compact: false,
             agent: None,
             forward_handle: None,
+            turn_start_time: std::time::Instant::now(),
             pending_command_result: None,
             hide_thinking: config.hide_thinking,
             collapse_tool_output: config.collapse_tool_output,
@@ -485,7 +489,20 @@ pub async fn run(config: AppConfig, session: AgentSession) -> anyhow::Result<()>
     let mut dirty = true; // force initial render
 
     loop {
-        // Poll for events (pi-style: process input before rendering)
+        // Drain agent events FIRST so state (is_streaming, pending_auto_compact) is
+        // up-to-date before handle_input checks it. Prevents races where a terminal
+        // event arrives in the same cycle as AgentEnd — handle_input would see stale
+        // is_streaming=true and steer the message instead of starting a new turn.
+        let mut had_event = false;
+        while let Ok(event) = app.event_rx.try_recv() {
+            handle_agent_event(&mut app, event);
+            had_event = true;
+        }
+        if had_event {
+            dirty = true;
+        }
+
+        // THEN poll for terminal input (state reflects any events just processed)
         // Reduced poll frequency: 16ms active (~60fps), 50ms idle - terminal UI
         // doesn't benefit from >60fps and lower frequency saves CPU/battery.
         let timeout = if dirty || app.is_streaming || app.working.should_show() {
@@ -493,7 +510,6 @@ pub async fn run(config: AppConfig, session: AgentSession) -> anyhow::Result<()>
         } else {
             Duration::from_millis(50)
         };
-
         if let Some(evt) = terminal::poll_terminal_event(Some(timeout))? {
             match evt {
                 terminal::TerminalEvent::Key(key) => {
@@ -518,44 +534,12 @@ pub async fn run(config: AppConfig, session: AgentSession) -> anyhow::Result<()>
             dirty = true;
         }
 
-        // Drain agent events (batch: process all pending events before rendering)
-        let mut had_event = false;
-        while let Ok(event) = app.event_rx.try_recv() {
-            handle_agent_event(&mut app, event);
-            had_event = true;
-        }
-        if had_event {
-            dirty = true;
-        }
-
-        // Handle pending agent submission (async, after events are drained).
-        // Wrap in a timeout so a stalled provider/tool doesn't freeze the UI
-        // indefinitely. On timeout, abort the agent and surface an error message.
+        // Handle pending agent submission (async).
+        // start_agent_loop spawns the agent loop and returns quickly — the
+        // actual per-turn timeout is enforced by the time-based check below
+        // (turn_start_time.elapsed()), which catches hung provider/tool calls.
         if let Some(text) = app.pending_submit.take() {
-            let timeout_fut =
-                tokio::time::timeout(AGENT_TURN_TIMEOUT, start_agent_loop(&mut app, text));
-            match timeout_fut.await {
-                Ok(()) => {}
-                Err(_elapsed) => {
-                    if let Some(ref agent) = app.agent {
-                        agent.abort();
-                    }
-                    app.is_streaming = false;
-                    app.working.stop();
-                    app.footer.borrow_mut().set_streaming(false);
-                    app.forward_handle.take();
-                    chat_add(
-                        &mut app,
-                        std::boxed::Box::new(InfoMessageComponent::new(format!(
-                            "The agent timed out after {} seconds. \
-                             This can happen when the provider is slow, a tool \
-                             hangs, or the agent exits silently. \
-                             Send a new message to try again.",
-                            AGENT_TURN_TIMEOUT.as_secs()
-                        ))),
-                    );
-                }
-            }
+            start_agent_loop(&mut app, text).await;
             dirty = true;
         }
 
@@ -570,6 +554,31 @@ pub async fn run(config: AppConfig, session: AgentSession) -> anyhow::Result<()>
         if app.pending_auto_compact {
             app.pending_auto_compact = false;
             handle_auto_compact(&mut app).await;
+            dirty = true;
+        }
+
+        // Effective per-turn timeout: abort if the agent has been streaming
+        // longer than AGENT_TURN_TIMEOUT. Catches hung provider/tool calls
+        // that never produce an AgentEnd event.
+        if app.is_streaming && app.turn_start_time.elapsed() > AGENT_TURN_TIMEOUT {
+            if let Some(ref agent) = app.agent {
+                agent.abort();
+            }
+            app.is_streaming = false;
+            app.turn_start_time = std::time::Instant::now();
+            app.working.stop();
+            app.footer.borrow_mut().set_streaming(false);
+            app.forward_handle.take();
+            chat_add(
+                &mut app,
+                std::boxed::Box::new(InfoMessageComponent::new(format!(
+                    "The agent timed out after {} seconds. \
+                     This can happen when the provider is slow, a tool \
+                     hangs, or the agent exits silently. \
+                     Send a new message to try again.",
+                    AGENT_TURN_TIMEOUT.as_secs()
+                ))),
+            );
             dirty = true;
         }
 
@@ -1053,6 +1062,7 @@ fn handle_follow_up(app: &mut App, text: String) {
         }
         // Stale is_streaming flag — submit directly
         app.is_streaming = false;
+        app.turn_start_time = std::time::Instant::now();
     }
     submit_message(app, text);
 }
@@ -1098,6 +1108,7 @@ fn interrupt_streaming(app: &mut App) {
     // A fresh agent will be created from session on the next turn.
     app.agent = None;
     app.is_streaming = false;
+    app.turn_start_time = std::time::Instant::now();
     app.working.stop();
     app.footer.borrow_mut().set_streaming(false);
 
@@ -1163,6 +1174,7 @@ fn submit_message(app: &mut App, message: String) {
             }
             // Stale streaming flag — reset
             app.is_streaming = false;
+            app.turn_start_time = std::time::Instant::now();
             app.working.stop();
             app.footer.borrow_mut().set_streaming(false);
         }
@@ -1203,6 +1215,7 @@ fn submit_message(app: &mut App, message: String) {
 
         // Agent task has completed/aborted but is_streaming wasn't reset.
         app.is_streaming = false;
+        app.turn_start_time = std::time::Instant::now();
         app.working.stop();
         app.footer.borrow_mut().set_streaming(false);
     }
@@ -1273,6 +1286,7 @@ async fn start_agent_loop(app: &mut App, message: String) {
     }
 
     app.is_streaming = true;
+    app.turn_start_time = std::time::Instant::now();
     app.working.start();
     app.footer.borrow_mut().set_streaming(true);
 
