@@ -2252,7 +2252,43 @@ fn show_status(app: &mut App, message: String) {
 }
 
 /// Handle agent events from the channel.
+///
+/// Delegates persistence to `AgentSession::handle_yo_event()` (single source of truth)
+/// and only handles display/UI logic here. This mirrors pi's single _handleAgentEvent
+/// that all modes share — the mode-agnostic persistence lives on AgentSession, and each
+/// mode adds display on top.
 fn handle_agent_event(app: &mut App, event: yoagent::types::AgentEvent) {
+    // ── Persistence: delegate to the shared handler (single source of truth) ──
+    // Match on &event while event is still owned, to avoid consuming it.
+    match &event {
+        E::MessageEnd { message } => {
+            // Special cases: persist as extension (excluded from LLM context).
+            // handle_yo_event would persist them as regular LLM messages, so skip.
+            if crate::agent::types::message_error(message).is_some()
+                || crate::agent::types::message_is_system_stop(message)
+            {
+                // Handled inline below with display.
+            } else if let Some(ref mut s) = app.session {
+                s.handle_yo_event(&event);
+            }
+        }
+        E::ToolExecutionEnd { tool_call_id, .. } => {
+            // Skip bang commands (user-initiated, not agent-invoked).
+            if tool_call_id != "__bang__"
+                && let Some(ref mut s) = app.session
+            {
+                s.handle_yo_event(&event);
+            }
+        }
+        E::AgentEnd { .. } => {
+            if let Some(ref mut s) = app.session {
+                s.handle_yo_event(&event);
+            }
+        }
+        _ => {}
+    }
+
+    // ── Display logic (consumes owned event) ──
     use yoagent::types::AgentEvent as E;
     match event {
         E::AgentStart => {
@@ -2390,13 +2426,6 @@ fn handle_agent_event(app: &mut App, event: yoagent::types::AgentEvent) {
                     .set_result_with_details(&content, is_error, Some(result.details));
                 app.tool_call_start_times.remove(&tool_call_id);
             }
-            // Crash-safe persistence: persist tool result immediately.
-            // Skip bang commands (user-initiated, not agent-invoked).
-            if tool_call_id != "__bang__"
-                && let Some(ref mut s) = app.session
-            {
-                s.persist_tool_result(&tool_call_id, content.clone(), is_error);
-            }
         }
         E::ProgressMessage {
             text, tool_name, ..
@@ -2419,10 +2448,6 @@ fn handle_agent_event(app: &mut App, event: yoagent::types::AgentEvent) {
             app.is_streaming = false;
             app.working.stop();
             app.footer.borrow_mut().set_streaming(false);
-            // Safety net: persist any remaining messages not captured on message_end
-            if let Some(ref mut s) = app.session {
-                s.on_agent_end(&messages);
-            }
             // Refresh footer cached stats from session at turn end (pull-based)
             if let Some(ref s) = app.session {
                 app.footer.borrow_mut().refresh_from_session(s.session());
@@ -2461,25 +2486,18 @@ fn handle_agent_event(app: &mut App, event: yoagent::types::AgentEvent) {
             }
         }
         E::MessageEnd { message } => {
-            // Check for error messages from the provider (network errors, etc.)
-            // Show as a chat message and persist as Extension (custom_message)
-            // so it appears on session reload but is never sent to the LLM
-            // (default_convert_to_llm filters out Extension messages).
+            // Special cases: persist as extension (excluded from LLM context).
+            // Persistence already handled above in the &event match.
             if let Some(err) = crate::agent::types::message_error(&message) {
                 chat_add(
                     app,
                     std::boxed::Box::new(InfoMessageComponent::new(err.to_string())),
                 );
-                // Persist as Extension message (pi-compatible custom_message),
-                // which is excluded from LLM context by as_llm().
                 let ext = crate::agent::types::extension_message("error", err, true);
                 if let Some(ref mut s) = app.session {
                     s.persist_extension_message(&ext);
                 }
             } else if crate::agent::types::message_is_system_stop(&message) {
-                // System-generated stop messages (e.g. execution limit reached) are
-                // injected as user messages by the agent loop. Convert to an Extension
-                // message (pi-compatible custom_message) for proper persistence.
                 let text = crate::agent::types::message_text(&message);
                 chat_add(
                     app,
@@ -2490,19 +2508,9 @@ fn handle_agent_event(app: &mut App, event: yoagent::types::AgentEvent) {
                     s.persist_extension_message(&ext);
                 }
             } else if crate::agent::types::message_is_extension(&message) {
-                // Extension messages (info, error, system_stop, etc.) — display in chat.
+                // Extension messages: display in chat (persisted by handle_yo_event).
                 if let Some(text) = crate::agent::types::message_extension_text(&message) {
                     chat_add(app, std::boxed::Box::new(InfoMessageComponent::new(text)));
-                }
-                // Persist as custom_message entry.
-                if let Some(ref mut s) = app.session {
-                    s.persist_extension_message(&message);
-                }
-            } else {
-                // Pi-compatible: persist every message (user, assistant, toolResult) immediately
-                // on message_end, not deferred to agent_end. Error messages are shown but not persisted.
-                if let Some(ref mut s) = app.session {
-                    s.persist_message_end(&message);
                 }
             }
         }
