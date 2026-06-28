@@ -625,7 +625,7 @@ async fn run_print_mode(
             }
         };
 
-        agent_session.handle_yo_event(&event);
+        agent_session.on_agent_event(&event);
 
         match &event {
             yoagent::types::AgentEvent::MessageUpdate { delta, .. } => {

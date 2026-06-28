@@ -363,7 +363,7 @@ impl AgentSession {
     }
 
     /// Flush all queued writes to the underlying session storage.
-    /// Called at the end of `handle_yo_event` and `on_agent_end`.
+    /// Called at the end of `on_agent_event` and `on_agent_end`.
     pub fn flush_pending_writes(&mut self) {
         for write in self.pending_writes.drain(..) {
             match write {
@@ -466,15 +466,15 @@ impl AgentSession {
 
     // ── Event-driven persistence ──────────────────────────────────
 
-    /// Process an agent event for automatic persistence.
+    /// Process an agent event for automatic persistence (pi-compatible).
     ///
     /// - `ToolResult` events are persisted immediately (crash-safe).
     /// - `MessageEnd` persists every message in real-time (pi-compatible, crash-safe).
     /// - `AgentEnd` persists any remaining assistant messages not yet captured.
     ///
     /// Call this from your agent event handler alongside any UI updates.
-    /// Handle a yoagent AgentEvent for session persistence.
-    pub fn handle_yo_event(&mut self, event: &yoagent::types::AgentEvent) {
+    /// This is the mode-agnostic persistence handler, matching pi's `_handleAgentEvent`.
+    pub fn on_agent_event(&mut self, event: &yoagent::types::AgentEvent) {
         use yoagent::types::AgentEvent as YoEvent;
         match event {
             YoEvent::ToolExecutionEnd {

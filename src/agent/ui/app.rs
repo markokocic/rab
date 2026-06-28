@@ -2337,13 +2337,13 @@ fn handle_agent_event(app: &mut App, event: yoagent::types::AgentEvent) {
                 s.reset_overflow_recovery();
             }
             // Special cases: persist as extension (excluded from LLM context).
-            // handle_yo_event would persist them as regular LLM messages, so skip.
+            // on_agent_event would persist them as regular LLM messages, so skip.
             if crate::agent::types::message_error(message).is_some()
                 || crate::agent::types::message_is_system_stop(message)
             {
                 // Handled inline below with display.
             } else if let Some(ref mut s) = app.session {
-                s.handle_yo_event(&event);
+                s.on_agent_event(&event);
             }
         }
         E::ToolExecutionEnd { tool_call_id, .. } => {
@@ -2351,12 +2351,12 @@ fn handle_agent_event(app: &mut App, event: yoagent::types::AgentEvent) {
             if tool_call_id != "__bang__"
                 && let Some(ref mut s) = app.session
             {
-                s.handle_yo_event(&event);
+                s.on_agent_event(&event);
             }
         }
         E::AgentEnd { .. } => {
             if let Some(ref mut s) = app.session {
-                s.handle_yo_event(&event);
+                s.on_agent_event(&event);
             }
         }
         _ => {}
