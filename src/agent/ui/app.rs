@@ -536,7 +536,13 @@ pub async fn run(config: AppConfig, session: AgentSession) -> anyhow::Result<()>
         }
 
         // Handle pending agent submission (async).
-        if let Some(text) = app.pending_submit.take() {
+        // Deferred while streaming — the message stays in pending_submit and
+        // will be processed when the current turn finishes (AgentEnd sets
+        // is_streaming = false). This avoids blocking on agent.finish().await
+        // which would freeze the UI (pi-compatible: steer via queue, not block).
+        if !app.is_streaming
+            && let Some(text) = app.pending_submit.take()
+        {
             start_agent_loop(&mut app, text).await;
             dirty = true;
         }
@@ -708,6 +714,21 @@ fn compose_ui(app: &mut App, width: usize) {
         let line = app.theme.fg_key(ThemeKey::Dim, &format!(" {}", status));
         status_lines.push(crate::agent::ui::render_utils::pad_to_width(&line, width));
     }
+
+    // ── Queued message indicator (pi-style: shows when a message is queued during streaming) ──
+    if let Some(ref msg) = app.pending_submit
+        && app.is_streaming
+    {
+        let preview = if msg.len() > 60 {
+            format!("{}…", &msg[..60])
+        } else {
+            msg.clone()
+        };
+        let line = app
+            .theme
+            .fg_key(ThemeKey::Dim, &format!(" 📝 queued: {}", preview));
+        status_lines.push(crate::agent::ui::render_utils::pad_to_width(&line, width));
+    }
     app.status_section.borrow_mut().set_lines(status_lines);
 
     // ── Working indicator (pi-style: blank line + spinner before editor) ──
@@ -818,6 +839,15 @@ fn handle_input(app: &mut App, tui: &mut TUI, term: &mut ProcessTerminal, key: &
         }
         InputAction::FollowUp(text) => {
             handle_follow_up(app, text);
+        }
+        InputAction::Dequeue => {
+            // Restore queued message back to editor (pi's app.message.dequeue)
+            if let Some(msg) = app.pending_submit.take() {
+                app.editor.borrow_mut().editor.set_text(&msg);
+                app.status_text = Some("Queued message restored to editor".into());
+            } else {
+                app.status_text = Some("No queued message".into());
+            }
         }
         InputAction::CompactToggle => {
             handle_compact_toggle(app);
@@ -1025,15 +1055,22 @@ fn handle_editor_external(app: &mut App, tui: &mut TUI, term: &mut ProcessTermin
     }
 }
 
-/// Queue a follow-up message (Alt+Enter). Pushes to follow-up queue during streaming
-/// (delivered only after agent has no more tool calls). When idle, submits immediately.
+/// Queue a follow-up message (Alt+Enter). Queues in pending_submit during
+/// streaming (deferred until current turn finishes). When idle, submits immediately.
 fn handle_follow_up(app: &mut App, text: String) {
     if app.is_streaming {
         if let Some(ref agent) = app.agent
             && agent.is_streaming()
         {
-            // Push to agent's follow-up queue (delivered after fully idle)
-            agent.follow_up(crate::agent::types::user_message(text));
+            // Queue via pending_submit — same path as regular steer.
+            // Delivered when the agent finishes its current turn.
+            chat_add(
+                app,
+                std::boxed::Box::new(crate::agent::ui::components::UserMessageComponent::new(
+                    &text,
+                )),
+            );
+            app.pending_submit = Some(text);
             app.status_text = Some("Message queued - will send when agent finishes".into());
             return;
         }
@@ -1118,8 +1155,9 @@ fn show_help_overlay(app: &mut App, tui: &mut TUI) {
     tui.show_overlay(Box::new(overlay), Default::default());
 }
 
-/// Submit or queue a user message. When streaming, pushes to the steering queue
-/// (delivered after current turn's tool calls finish, before next LLM call).
+/// Submit or queue a user message.
+/// When streaming, sets pending_submit which is deferred until the current
+/// turn finishes (the main loop skips start_agent_loop while is_streaming).
 /// When idle, starts a new agent loop immediately.
 fn submit_message(app: &mut App, message: String) {
     app.scroll_offset = 0;
@@ -1171,12 +1209,13 @@ fn submit_message(app: &mut App, message: String) {
     );
 
     if app.is_streaming {
-        // Always set pending_submit below instead of returning early.
-        // start_agent_loop waits for the current turn to complete before
-        // starting a new one — no steering involved.
+        // Message will remain queued in pending_submit until the current
+        // turn finishes (the main loop skips start_agent_loop while
+        // is_streaming). Pi-compatible: queue, don't block.
+        app.status_text = Some("Message queued - will send when agent finishes".into());
 
         if app.agent.as_ref().is_none_or(|a| !a.is_streaming()) {
-            // Agent task has completed/aborted but is_streaming wasn’t reset.
+            // Agent task has completed/aborted but is_streaming wasn't reset.
             app.is_streaming = false;
             app.working.stop();
             app.footer.borrow_mut().set_streaming(false);
@@ -1239,24 +1278,14 @@ fn map_thinking_level(level: Option<&str>) -> yoagent::types::ThinkingLevel {
     }
 }
 
-/// Start an agent turn asynchronously. Called from the main loop.
+/// Start an agent turn asynchronously. Called from the main loop only when
+/// the agent is idle (the main loop guards with `!app.is_streaming`).
 /// Uses `agent.prompt()` which spawns the loop internally and returns a
 /// receiver immediately. A forwarding task relays events to the UI channel.
-/// The Agent stays in `app.agent` during streaming, enabling mid-turn steer().
+/// The Agent stays in `app.agent` for the duration of the turn.
 async fn start_agent_loop(app: &mut App, message: String) {
     if app.session.is_none() {
         return;
-    }
-
-    // If the agent loop is still running (the previous AgentEnd was handled
-    // but agent.finish() hasn't been called yet), wait for it to complete
-    // before starting a new turn.  Steering into a running loop is unreliable
-    // — the inner loop may have already passed its last steering check and
-    // is about to exit, causing the steered message to be lost.
-    if app.agent.as_ref().is_some_and(|a| a.is_streaming())
-        && let Some(ref mut agent) = app.agent
-    {
-        agent.finish().await;
     }
 
     app.is_streaming = true;

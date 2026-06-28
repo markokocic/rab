@@ -61,6 +61,7 @@ pub const ACTION_APP_HELP: &str = "app.help";
 pub const ACTION_APP_HISTORY_UP: &str = "app.historyUp";
 pub const ACTION_APP_HISTORY_DOWN: &str = "app.historyDown";
 pub const ACTION_APP_MESSAGE_FOLLOW_UP: &str = "app.message.followUp";
+pub const ACTION_APP_MESSAGE_DEQUEUE: &str = "app.message.dequeue";
 pub const ACTION_APP_COMPACT_TOGGLE: &str = "app.compact.toggle";
 pub const ACTION_APP_SESSION_NEW: &str = "app.session.new";
 pub const ACTION_APP_SESSION_TREE: &str = "app.session.tree";
@@ -164,6 +165,7 @@ impl Keybindings {
         self.set(ACTION_APP_HISTORY_UP, vec!["up".into()]);
         self.set(ACTION_APP_HISTORY_DOWN, vec!["down".into()]);
         self.set(ACTION_APP_MESSAGE_FOLLOW_UP, vec!["alt+enter".into()]);
+        self.set(ACTION_APP_MESSAGE_DEQUEUE, vec!["alt+up".into()]);
         self.set(ACTION_APP_COMPACT_TOGGLE, vec!["ctrl+shift+c".into()]);
         // Session actions (deferred — no default keybindings)
         self.set(ACTION_APP_SESSION_NEW, vec![]);
