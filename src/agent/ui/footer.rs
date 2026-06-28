@@ -2,7 +2,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::agent::footer_data_provider::FooterDataProvider;
-use crate::agent::session::SessionManager;
+use crate::agent::session::Session;
 use crate::agent::ui::theme::RabTheme;
 use crate::agent::ui::theme::ThemeKey;
 use crate::tui::util::{truncate_to_width, visible_width};
@@ -129,7 +129,7 @@ impl Footer {
     ///
     /// Matches pi's `render()` scanning `sessionManager.getEntries()`,
     /// but the scan happens once per turn instead of once per frame.
-    pub fn refresh_from_session(&mut self, session: &SessionManager) {
+    pub fn refresh_from_session(&mut self, session: &Session) {
         let mut total_input = 0u64;
         let mut total_output = 0u64;
         let mut total_cache_read = 0u64;
@@ -142,7 +142,7 @@ impl Footer {
         let mut last_context_tokens: Option<u64> = None;
 
         // Walk session entries summing usage from all assistant messages
-        for entry in session.entries() {
+        for entry in session.get_entries() {
             if let crate::agent::session::SessionEntry::Message(msg_entry) = entry
                 && let Some(yoagent::types::Message::Assistant { usage, .. }) =
                     msg_entry.message.as_llm()

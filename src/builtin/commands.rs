@@ -1,7 +1,7 @@
 use crate::agent::extension::{
     AutocompleteItem, CommandHandler, CommandResult, Extension, SlashCommand,
 };
-use crate::agent::session::SessionManager;
+use crate::agent::session::Session;
 use crate::agent::types::{
     message_is_assistant, message_is_tool_result, message_is_user, message_tool_call_count,
     message_usage,
@@ -54,9 +54,9 @@ impl CommandsExtension {
     }
 }
 
-/// Compute session info from a SessionManager.
-pub fn compute_session_info(session: &SessionManager) -> SessionInfoInternal {
-    let entries = session.entries();
+/// Compute session info from a Session.
+pub fn compute_session_info(session: &Session) -> SessionInfoInternal {
+    let entries = session.get_entries();
     let mut message_count: usize = 0;
     let mut user_messages: usize = 0;
     let mut assistant_messages: usize = 0;
@@ -96,9 +96,9 @@ pub fn compute_session_info(session: &SessionManager) -> SessionInfoInternal {
     }
 
     SessionInfoInternal {
-        session_id: session.session_id().to_string(),
-        file_path: session.session_file().map(|p| p.to_path_buf()),
-        name: session.session_name().map(|s| s.to_string()),
+        session_id: session.session_id(),
+        file_path: session.session_file(),
+        name: session.session_name(),
         message_count,
         user_messages,
         assistant_messages,

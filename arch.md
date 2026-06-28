@@ -22,15 +22,28 @@ file mutation queue, and lifecycle management.
 │                       │                                              │
 │  ┌────────────────────▼─────────────────────────────────────────┐   │
 │  │              AgentSession (agent_session.rs)                  │   │
-│  │  Lifecycle layer bridging yoagent events ↔ session storage   │   │
+│  │  Primary entry point; owns Session + config (cwd, dir,       │   │
+│  │  persist, lazy write). Factory methods: create, open, etc.  │   │
 │  │  - Event-driven message persistence (crash-safe)             │   │
 │  │  - Model/thinking/tool change detection & recording          │   │
 │  │  - Auto/manual compaction (compaction.rs)                    │   │
 │  │  - Branch summarization (branch_summary.rs)                  │   │
 │  │  - Branch navigation (set_branch)                            │   │
 │  │  - Pi-compatible persist_message_end pattern                 │   │
-│  └────┬──────────┬──────────┬──────────┬───────────────────────┘   │
-│       │          │          │          │                            │
+│  └──────────┬───────────────────────────────────────────────────┘   │
+│             │                                                       │
+│  ┌──────────▼───────────────────────────────────────────────────┐   │
+│  │              Session (session.rs)                             │   │
+│  │  High-level API wrapping SessionStorage. Pi-compatible:      │   │
+│  │  append_*, build_context, move_to, metadata.                 │   │
+│  └──────────┬───────────────────────────────────────────────────┘   │
+│             │                                                       │
+│  ┌──────────▼───────────────────────────────────────────────────┐   │
+│  │              SessionStorage (session_storage.rs) trait        │   │
+│  │  Low-level CRUD: leaf mgmt, labels, path queries.            │   │
+│  │  Impls: InMemorySessionStorage, JsonlSessionStorage          │   │
+│  └──────────────────────────────────────────────────────────────┘   │
+│                                                                      │
 │  ┌────▼──┐ ┌────▼──┐ ┌────▼──┐ ┌────▼──┐ ┌────▼──┐ ┌────▼──┐      │
 │  │builtin│ │  tui/  │ │commands│ │extens-│ │settings│ │ auth  │      │
 │  │read   │ │ agent/ │ │.rs     │ │ions/  │ │.rs     │ │.rs    │      │
@@ -143,7 +156,7 @@ file mutation queue, and lifecycle management.
 | pi component | rab equivalent | Status |
 |---|---|---|
 | `pi-tui` (terminal UI, components, editor) | `src/tui/` + `src/agent/ui/` | ✅ Complete — 50+ modules, ~600 tests. Direct Rust port on crossterm 0.29. |
-| `pi-agent-core` (agent loop, session, compaction, skills) | Delegated to **yoagent** (agent loop, types, provider, skills) + rab's `AgentSession` (session lifecycle, compaction, branching) | ✅ Agent loop in yoagent (`yoagent::agent::Agent`). ✅ Session in `session.rs` (~2700 lines). ✅ Compaction in `compaction.rs` (~680 lines) — fully implemented. ✅ Branch summarization in `branch_summary.rs` (~270 lines). ✅ Skills loaded via `yoagent::skills::SkillSet`. |
+| `pi-agent-core` (agent loop, session, compaction, skills) | Delegated to **yoagent** (agent loop, types, provider, skills) + rab's `AgentSession` (session lifecycle, compaction, branching) | ✅ Agent loop in yoagent (`yoagent::agent::Agent`). ✅ Session in `session.rs` (~2800 lines). ✅ SessionStorage in `session_storage.rs` (~400 lines). ✅ Compaction in `compaction.rs` (~680 lines). ✅ Branch summarization in `branch_summary.rs` (~270 lines). ✅ Skills loaded via `yoagent::skills::SkillSet`. |
 | `coding-agent` (CLI, extensions, tools, settings, commands) | `main.rs`, `builtin/`, `extensions/`, `settings.rs`, `auth.rs`, `commands.rs` | ✅ Tools (read/write/edit/bash/grep/find/ls), settings, auth, CLI done. ✅ 22 slash commands implemented. ✅ Extension trait with tools, commands, renderers, skills, hooks. |
 | `GrepTool`, `FindTool`, `LsTool` (pi agent tools) | `src/extensions/filesystem.rs` | ✅ grep (ripgrep/grep fallback), find (fd/find fallback), ls — all with pluggable operations. |
 | MCP adapter (pi-mcp-adapter) | `src/extensions/mcp/` (6 modules, ~2K lines) | ✅ Proxy `mcp` tool, direct tool adapters, SSE-aware HTTP transport, config loading (global+project merge), server lifecycle (lazy connect, idle timeout), persistent metadata cache, tool renderers. |
@@ -206,57 +219,64 @@ pub fn tool_result_message(tool_call_id: &str, text: String, is_error: bool) -> 
 
 ## Agent lifecycle (`src/agent/agent_session.rs`)
 
-The `AgentSession` struct coordinates the session lifecycle, bridging the
-yoagent agent loop event stream with session persistence.
+The `AgentSession` struct is the primary entry point for session management.
+It owns a `Session` directly (not `SessionManager`) plus app-level config.
+Factory methods (`create`, `open`, `in_memory`, etc.) replace the
+`SessionManager::create()` pattern.
 
 ```rust
 pub struct AgentSession {
-    session: SessionManager,
-    last_model: Option<(String, String)>,           // change detection
-    last_thinking_level: String,                    // change detection
-    last_active_tools: Option<Vec<String>>,          // change detection
-    persisted_message_ids: HashSet<String>,          // dedup tracking
-    persisted_tool_call_ids: HashSet<String>,        // dedup tracking
+    session: Session,
+    session_dir: PathBuf,
+    cwd: PathBuf,
+    persist: bool,
+    flushed: bool,                           // lazy-write state
+    last_model: Option<(String, String)>,
+    last_thinking_level: String,
+    last_active_tools: Option<Vec<String>>,
+    persisted_message_ids: HashSet<String>,
+    persisted_tool_call_ids: HashSet<String>,
     compaction_settings: CompactionSettings,
     context_window: u64,
     model_name: String,
     compaction_api_key: Option<String>,
+    model_config: Option<yoagent::provider::model::ModelConfig>,
+    thinking_level: yoagent::types::ThinkingLevel,
+    extensions: Vec<Box<dyn Extension>>,
+    event_listeners: Vec<CompactionEventCallback>,
+    overflow_recovery_attempted: bool,
 }
 ```
 
 ### Responsibilities
 
-1. **Event-driven persistence** — `handle_yo_event()` persists `ToolExecutionEnd`
-   events immediately (crash-safe). `on_agent_end()` persists remaining
-   assistant messages not yet captured. Uses `persisted_message_ids` /
-   `persisted_tool_call_ids` for deduplication.
+1. **Factory methods** — `AgentSession::create()`, `.open()`, `.in_memory()`,
+   `.continue_recent()`, `.fork_from()` — create sessions directly.
 
-2. **Pi-compatible persist_message_end** — `persist_message_end()` persists
-   individual messages as they arrive (user, assistant, toolResult) on
-   `MessageEnd` events. Tool results are already persisted via
-   `ToolExecutionEnd` so they are skipped.
+2. **Lazy write** — `ensure_flushed()` migrates from in-memory to file-backed
+   storage on the first assistant message (pi-compatible deferred persistence).
 
-3. **Model/thinking/tool change tracking** — `on_model_change()`,
-   `on_thinking_level_change()`, `on_active_tools_change()` detect changes and
-   append metadata entries to the session (diff-based — only appends when
-   value differs from last known).
+3. **Event-driven persistence** — `handle_yo_event()` persists tool results
+   immediately (crash-safe). `on_agent_end()` persists remaining messages.
 
-4. **Auto-compaction** — `check_auto_compact()` runs after the agent finishes
-   a turn. Checks `should_compact()` against the model's context window,
-   calls `compact()` to generate a summary, and appends a `CompactionEntry`.
+4. **Model/thinking/tool change tracking** — `on_model_change()`,
+   `on_thinking_level_change()`, `on_active_tools_change()` append metadata
+   entries only when values differ from last known (diff-based).
 
-5. **Manual compaction** — `run_manual_compact()` for `/compact` command.
+5. **Auto-compaction** — `check_auto_compact()` runs after the agent finishes
+   a turn. Calls `compact()` to generate a summary.
 
-6. **Branch summarization** — `summarize_branch_navigation()` summarises
-   abandoned branches when navigating the session tree. `set_branch()` moves
-   the leaf pointer and optionally triggers branch summarization.
+6. **Manual compaction** — `run_manual_compact()` for `/compact`.
 
-7. **New session** — `new_session()` resets all tracked state.
+7. **Branch summarization** — `summarize_branch_navigation()` summarises
+   abandoned branches. `set_branch()` moves the leaf pointer.
+
+8. **New session** — `new_session()` creates a fresh in-memory session.
 
 ### Typical usage in print mode
 
 ```rust
-let mut agent_session = AgentSession::new(session);
+let mut agent_session = AgentSession::create(&cwd, session_dir.as_deref());
 agent_session.set_compaction_config(api_key, &model, context_window);
 
 // Submit user message
@@ -284,7 +304,41 @@ agent_session.check_auto_compact().await;
 
 ---
 
-## Session layer (`src/agent/session.rs`) — ~2700 lines
+## Session layer (`src/agent/session.rs`) — ~2800 lines
+
+Pi-compatible three-layer architecture:
+
+```
+AgentSession → Session → SessionStorage
+                (high-level)  (low-level CRUD)
+```
+
+### Session (high-level wrapper)
+
+Wraps `Box<dyn SessionStorage>` and provides pi-compatible entry construction,
+context building, and branch navigation. All `append_*` methods generate typed
+`SessionEntry` values with auto-generated IDs, parent chains, and timestamps.
+
+```rust
+pub struct Session {
+    storage: Box<dyn SessionStorage>,
+}
+```
+
+Key methods: `append_message()`, `append_model_change()`,
+`append_thinking_level_change()`, `append_compaction()`,
+`append_branch_summary()`, `append_label_change()`, `append_custom_entry()`,
+`append_custom_message_entry()`, `build_context()`, `move_to()`,
+`get_branch()`, `get_entries()`, `get_entry()`, `get_leaf_id()`,
+`get_label()`, `get_session_name()`, `find_entries()`, `session_id()`,
+`session_file()`, `session_name()`, `metadata()`, `set_leaf_id()`.
+
+### SessionManager (internal helper)
+
+`SessionManager` still exists as an internal helper behind the scenes.
+It provides factory methods (`create`, `open`, `in_memory`, etc.) and
+lazy-write tracking that `AgentSession` uses during construction.
+Not in the public API path — `main.rs` and `App` use `AgentSession` directly.
 
 ### Format
 
@@ -321,53 +375,47 @@ pub enum SessionEntry {
 ### Versioning
 
 Current session version: **3**. Each entry has a unique `id` and optional
-`parentId`, forming a tree. Branching moves the leaf pointer without
-modifying history — entries are append-only.
-
-### SessionManager
-
-```rust
-pub struct SessionManager {
-    storage: Box<dyn SessionStorage>,
-    session_id: String,
-    session_file: Option<PathBuf>,
-    session_dir: PathBuf,
-    cwd: PathBuf,
-    persist: bool,
-    session_header: Option<SessionHeader>,
-    file_entries: Vec<SessionEntry>,
-    by_id: HashMap<String, SessionEntry>,
-    leaf_id: Option<String>,
-    // labels_by_id, label_timestamps_by_id
-}
-```
-
-Key methods: `create()`, `open()`, `continue_recent()`, `fork_from()`,
-`create_with_options()`, `in_memory()`, `append_message()`,
-`append_model_change()`, `append_thinking_level_change()`,
-`append_compaction()`, `append_branch_summary()`, `build_session_context()`,
-`set_branch()`, `list_sessions()`, `list_all()`, `session_info()`,
-`entry()`, `branch()`, `find_entries_by_type()`, `new_session()`.
+`parentId`, forming a tree. Branching writes a persistent `LeafEntry`
+(pi-compatible durability — leaf position survives crashes).
 
 ---
 
-## Session storage (`src/agent/session_storage.rs`)
+## Session storage (`src/agent/session_storage.rs`) — ~400 lines
 
-Abstract storage trait for session persistence:
+Pi-compatible `SessionStorage` trait with full CRUD operations.
+Both implementations fully own their state (entries, by_id, labels, leaf_id).
+
+### SessionStorage trait
 
 ```rust
 pub trait SessionStorage: Send {
-    fn load(&self) -> (Option<SessionHeader>, Vec<SessionEntry>);
-    fn append(&self, entry: &SessionEntry) -> io::Result<()>;
-    fn write_full(&self, header: &SessionHeader, entries: &[SessionEntry]) -> io::Result<()>;
+    fn metadata(&self) -> SessionMetadata;
+    fn get_leaf_id(&self) -> Option<String>;
+    fn set_leaf_id(&mut self, leaf_id: Option<&str>) -> Result<(), String>;
+    fn create_entry_id(&self) -> String;
+    fn append_entry(&mut self, entry: SessionEntry) -> Result<(), String>;
+    fn get_entry(&self, id: &str) -> Option<SessionEntry>;
+    fn find_entries(&self, type_name: &str) -> Vec<SessionEntry>;
+    fn get_label(&self, id: &str) -> Option<String>;
+    fn get_path_to_root(&self, leaf_id: Option<&str>) -> Result<Vec<SessionEntry>, String>;
+    fn get_entries(&self) -> Vec<SessionEntry>;
     fn path(&self) -> Option<&Path>;
-    fn exists(&self) -> bool;
 }
 ```
 
-Implementations:
-- **`JsonlSessionStorage`** — file-backed JSONL file on disk (default).
-- **`InMemorySessionStorage`** — no-op, discards all writes (for `--no-session`).
+### Implementations
+
+- **`JsonlSessionStorage`** — file-backed. Loads all entries into memory on
+  open, persists on every `append_entry()` / `set_leaf_id()`. Leaf entries
+  are written as `type: "leaf"` JSONL lines (pi-compatible).
+- **`InMemorySessionStorage`** — fully in-memory. Used for `--no-session` mode
+  and as initial storage before the first lazy flush.
+
+### Leaf persistence
+
+Branch navigation (`move_to` / `set_branch`) writes a persistent `LeafEntry`
+with `type: "leaf"` and `targetId`, matching pi's durability model. The leaf
+position survives crashes and is restored when the session file is reopened.
 
 ---
 
@@ -781,7 +829,7 @@ Other:
 
 Session resolution supports both paths and partial UUID prefixes.
 `--fork` resolves the session file, validates no conflicts with `--session-id`,
-and calls `SessionManager::fork_from()`.
+and calls `AgentSession::fork_from()`.
 
 **Currently only OpenCode Go is configured** (via `yoagent::provider::OpenAiCompatProvider`
 with `openai_compat()` model config pointing to `opencode.ai/zen/go/v1`).
@@ -810,7 +858,7 @@ Streams the response to stdout. Thinking blocks shown dimmed on stderr.
 Tool calls and results shown prefixed with colored indicators. Has a 120s
 timeout to prevent hanging on stuck providers. Uses a simple event loop:
 `yoagent::agent::Agent::prompt_with_sender()` → process `AgentEvent` stream →
-`AgentSession::handle_yo_event()` for persistence.
+`agent_session.handle_yo_event()` for persistence.
 
 ### Interactive (TUI) mode
 

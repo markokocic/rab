@@ -439,6 +439,488 @@ pub fn generate_entry_id(by_id: &HashMap<String, SessionEntry>) -> String {
     uuid::Uuid::new_v4().to_string()
 }
 
+// ── Session (Pi-compatible high-level wrapper) ──────────────────────
+
+use crate::agent::session_storage::SessionMetadata;
+
+/// High-level session wrapper, matching pi's `Session` class.
+///
+/// Owns a `SessionStorage` and provides entry construction, context building,
+/// branch navigation, and metadata access. All `append_*` methods generate
+/// typed entries with auto-generated IDs, parent chains, and timestamps.
+pub struct Session {
+    storage: Box<dyn SessionStorage>,
+}
+
+impl Session {
+    /// Wrap an existing storage backend.
+    pub fn new(storage: Box<dyn SessionStorage>) -> Self {
+        Self { storage }
+    }
+
+    /// Access the underlying storage.
+    pub fn get_storage(&self) -> &dyn SessionStorage {
+        self.storage.as_ref()
+    }
+
+    /// Mutably access the underlying storage.
+    pub fn get_storage_mut(&mut self) -> &mut dyn SessionStorage {
+        self.storage.as_mut()
+    }
+
+    /// Consume and return the underlying storage.
+    pub fn into_storage(self) -> Box<dyn SessionStorage> {
+        self.storage
+    }
+
+    // ── Delegation to storage ──────────────────────────────────
+
+    pub fn metadata(&self) -> SessionMetadata {
+        self.storage.metadata()
+    }
+
+    pub fn get_leaf_id(&self) -> Option<String> {
+        self.storage.get_leaf_id()
+    }
+
+    pub fn get_entry(&self, id: &str) -> Option<SessionEntry> {
+        self.storage.get_entry(id)
+    }
+
+    pub fn get_entries(&self) -> Vec<SessionEntry> {
+        self.storage.get_entries()
+    }
+
+    pub fn find_entries(&self, type_name: &str) -> Vec<SessionEntry> {
+        self.storage.find_entries(type_name)
+    }
+
+    pub fn get_label(&self, id: &str) -> Option<String> {
+        self.storage.get_label(id)
+    }
+
+    /// Get the path from root to the given leaf (or current leaf if None).
+    /// Pi-compatible: delegates to storage's `get_path_to_root`.
+    pub fn get_branch(&self, from_id: Option<&str>) -> Result<Vec<SessionEntry>, String> {
+        self.storage.get_path_to_root(from_id)
+    }
+
+    /// Build the session context (messages + metadata) for the LLM.
+    /// Pi-compatible: uses `build_session_context()` from this module.
+    pub fn build_context(&self) -> SessionContext {
+        let path = self.get_branch(None).unwrap_or_default();
+        build_session_context(&path)
+    }
+
+    /// Alias for `build_context` — pi-compatible naming.
+    pub fn build_session_context(&self) -> SessionContext {
+        self.build_context()
+    }
+
+    /// Convenience: session ID from metadata.
+    pub fn session_id(&self) -> String {
+        self.metadata().id
+    }
+
+    /// Convenience: session file path from metadata.
+    pub fn session_file(&self) -> Option<PathBuf> {
+        self.metadata().path
+    }
+
+    /// Convenience: session display name.
+    pub fn session_name(&self) -> Option<String> {
+        self.get_session_name()
+    }
+
+    /// Get the latest session name from session_info entries.
+    pub fn get_session_name(&self) -> Option<String> {
+        let entries = self.find_entries("session_info");
+        let last = entries.last()?;
+        if let SessionEntry::SessionInfo(e) = last {
+            let name = e.name.trim();
+            if name.is_empty() {
+                None
+            } else {
+                Some(name.to_string())
+            }
+        } else {
+            None
+        }
+    }
+
+    // ── Entry construction (typed append methods) ───────────────
+
+    /// Append a conversation message. Returns the entry id.
+    pub fn append_message(&mut self, message: &yoagent::types::AgentMessage) -> String {
+        let entry = SessionEntry::Message(MessageEntry {
+            id: self.storage.create_entry_id(),
+            parent_id: self.storage.get_leaf_id(),
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            message: message.clone(),
+        });
+        let id = entry.id().to_string();
+        self.storage.append_entry(entry).unwrap_or_else(|e| {
+            eprintln!("Warning: failed to append message: {}", e);
+        });
+        id
+    }
+
+    /// Append a thinking level change. Returns the entry id.
+    pub fn append_thinking_level_change(&mut self, thinking_level: &str) -> String {
+        let entry = SessionEntry::ThinkingLevelChange(ThinkingLevelChangeEntry {
+            id: self.storage.create_entry_id(),
+            parent_id: self.storage.get_leaf_id(),
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            thinking_level: thinking_level.to_string(),
+        });
+        let id = entry.id().to_string();
+        self.storage.append_entry(entry).unwrap_or_else(|e| {
+            eprintln!("Warning: failed to append thinking level change: {}", e);
+        });
+        id
+    }
+
+    /// Append a model change. Returns the entry id.
+    pub fn append_model_change(&mut self, provider: &str, model_id: &str) -> String {
+        let entry = SessionEntry::ModelChange(ModelChangeEntry {
+            id: self.storage.create_entry_id(),
+            parent_id: self.storage.get_leaf_id(),
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            provider: provider.to_string(),
+            model_id: model_id.to_string(),
+        });
+        let id = entry.id().to_string();
+        self.storage.append_entry(entry).unwrap_or_else(|e| {
+            eprintln!("Warning: failed to append model change: {}", e);
+        });
+        id
+    }
+
+    /// Append an active tools change. Returns the entry id.
+    pub fn append_active_tools_change(&mut self, active_tool_names: &[String]) -> String {
+        let entry = SessionEntry::ActiveToolsChange(ActiveToolsChangeEntry {
+            id: self.storage.create_entry_id(),
+            parent_id: self.storage.get_leaf_id(),
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            active_tool_names: active_tool_names.to_vec(),
+        });
+        let id = entry.id().to_string();
+        self.storage.append_entry(entry).unwrap_or_else(|e| {
+            eprintln!("Warning: failed to append active tools change: {}", e);
+        });
+        id
+    }
+
+    /// Append a compaction summary. Returns the entry id.
+    pub fn append_compaction(
+        &mut self,
+        summary: &str,
+        first_kept_entry_id: &str,
+        tokens_before: u64,
+        details: Option<serde_json::Value>,
+        from_hook: Option<bool>,
+    ) -> String {
+        let entry = SessionEntry::Compaction(CompactionEntry {
+            id: self.storage.create_entry_id(),
+            parent_id: self.storage.get_leaf_id(),
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            summary: summary.to_string(),
+            first_kept_entry_id: first_kept_entry_id.to_string(),
+            tokens_before,
+            details,
+            from_hook,
+        });
+        let id = entry.id().to_string();
+        self.storage.append_entry(entry).unwrap_or_else(|e| {
+            eprintln!("Warning: failed to append compaction: {}", e);
+        });
+        id
+    }
+
+    /// Append a session info entry (display name). Returns the entry id.
+    pub fn append_session_info(&mut self, name: &str) -> String {
+        let entry = SessionEntry::SessionInfo(SessionInfoEntry {
+            id: self.storage.create_entry_id(),
+            parent_id: self.storage.get_leaf_id(),
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            name: name.trim().to_string(),
+        });
+        let id = entry.id().to_string();
+        self.storage.append_entry(entry).unwrap_or_else(|e| {
+            eprintln!("Warning: failed to append session info: {}", e);
+        });
+        id
+    }
+
+    /// Append a branch summary. Returns the entry id.
+    pub fn append_branch_summary(
+        &mut self,
+        from_id: &str,
+        summary: &str,
+        details: Option<serde_json::Value>,
+        from_hook: Option<bool>,
+    ) -> String {
+        let entry = SessionEntry::BranchSummary(BranchSummaryEntry {
+            id: self.storage.create_entry_id(),
+            parent_id: self.storage.get_leaf_id(),
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            from_id: from_id.to_string(),
+            summary: summary.to_string(),
+            details,
+            from_hook,
+        });
+        let id = entry.id().to_string();
+        self.storage.append_entry(entry).unwrap_or_else(|e| {
+            eprintln!("Warning: failed to append branch summary: {}", e);
+        });
+        id
+    }
+
+    /// Append a label change (bookmark/unbookmark). Returns the entry id.
+    pub fn append_label_change(&mut self, target_id: &str, label: Option<&str>) -> String {
+        let entry = SessionEntry::Label(LabelEntry {
+            id: self.storage.create_entry_id(),
+            parent_id: self.storage.get_leaf_id(),
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            target_id: target_id.to_string(),
+            label: label.map(|s| s.to_string()),
+        });
+        let id = entry.id().to_string();
+        self.storage.append_entry(entry).unwrap_or_else(|e| {
+            eprintln!("Warning: failed to append label change: {}", e);
+        });
+        id
+    }
+
+    /// Append a custom entry (extension data). Returns the entry id.
+    pub fn append_custom_entry(&mut self, custom_type: &str, data: serde_json::Value) -> String {
+        let entry = SessionEntry::Custom(CustomEntry {
+            id: self.storage.create_entry_id(),
+            parent_id: self.storage.get_leaf_id(),
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            custom_type: custom_type.to_string(),
+            data,
+        });
+        let id = entry.id().to_string();
+        self.storage.append_entry(entry).unwrap_or_else(|e| {
+            eprintln!("Warning: failed to append custom entry: {}", e);
+        });
+        id
+    }
+
+    /// Append a custom message entry (pi-compatible extension message). Returns the entry id.
+    pub fn append_custom_message_entry(
+        &mut self,
+        custom_type: &str,
+        content: serde_json::Value,
+        display: bool,
+        details: Option<serde_json::Value>,
+    ) -> String {
+        let entry = SessionEntry::CustomMessage(CustomMessageEntry {
+            id: self.storage.create_entry_id(),
+            parent_id: self.storage.get_leaf_id(),
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            custom_type: custom_type.to_string(),
+            content,
+            display,
+            details,
+        });
+        let id = entry.id().to_string();
+        self.storage.append_entry(entry).unwrap_or_else(|e| {
+            eprintln!("Warning: failed to append custom message: {}", e);
+        });
+        id
+    }
+
+    // ── Tree navigation ───────────────────────────────────────────
+
+    /// Move the leaf pointer to an earlier entry, optionally with a summary.
+    /// Pi-compatible: atomically moves leaf and appends a BranchSummaryEntry.
+    /// Returns the entry id of the BranchSummaryEntry if a summary was provided.
+    pub fn move_to(
+        &mut self,
+        entry_id: Option<&str>,
+        summary: Option<(String, Option<serde_json::Value>, Option<bool>)>,
+    ) -> Result<Option<String>, String> {
+        // Validate target exists
+        if let Some(ref id) = entry_id
+            && self.get_entry(id).is_none() {
+                return Err(format!("Entry {} not found", id));
+            }
+        // Persist leaf via storage
+        self.storage.set_leaf_id(entry_id)?;
+
+        // Optionally append BranchSummaryEntry
+        if let Some((summary_text, details, from_hook)) = summary {
+            let entry = SessionEntry::BranchSummary(BranchSummaryEntry {
+                id: self.storage.create_entry_id(),
+                parent_id: entry_id.map(|s| s.to_string()),
+                timestamp: chrono::Utc::now().to_rfc3339(),
+                from_id: entry_id.unwrap_or("root").to_string(),
+                summary: summary_text,
+                details,
+                from_hook,
+            });
+            let id = entry.id().to_string();
+            self.storage.append_entry(entry).unwrap_or_else(|e| {
+                eprintln!("Warning: failed to append branch summary: {}", e);
+            });
+            Ok(Some(id))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Reset the leaf to the given entry (in-memory + leaf entry persisted).
+    /// Pi-compatible: delegates to `set_leaf_id` on storage.
+    pub fn set_leaf_id(&mut self, leaf_id: Option<&str>) -> Result<(), String> {
+        self.storage.set_leaf_id(leaf_id)
+    }
+
+    /// Reset leaf to null (before any entries).
+    pub fn reset_leaf(&mut self) -> Result<(), String> {
+        self.storage.set_leaf_id(None)
+    }
+}
+
+/// Build the session context from a resolved branch path.
+///
+/// Pi-compatible: walks path to find latest thinking level, model, active tools,
+/// and handles compaction by replacing compacted entries with a summary message.
+pub fn build_session_context(path: &[SessionEntry]) -> SessionContext {
+    let mut thinking_level = "off".to_string();
+    let mut model: Option<(String, String)> = None;
+    let mut active_tool_names: Option<Vec<String>> = None;
+    let mut compaction_entry: Option<&CompactionEntry> = None;
+
+    for entry in path {
+        match entry {
+            SessionEntry::ThinkingLevelChange(e) => {
+                thinking_level = e.thinking_level.clone();
+            }
+            SessionEntry::ModelChange(e) => {
+                model = Some((e.provider.clone(), e.model_id.clone()));
+            }
+            SessionEntry::ActiveToolsChange(e) => {
+                active_tool_names = Some(e.active_tool_names.clone());
+            }
+            SessionEntry::Compaction(e) => {
+                compaction_entry = Some(e);
+            }
+            _ => {}
+        }
+    }
+
+    let messages = if let Some(compaction) = compaction_entry {
+        let mut msgs: Vec<yoagent::types::AgentMessage> = Vec::new();
+
+        // 1. Compaction summary message
+        msgs.push(yoagent::types::AgentMessage::Llm(
+            yoagent::types::Message::Assistant {
+                content: vec![yoagent::types::Content::Text {
+                    text: format!(
+                        "[Compaction: {} tokens → summary] {}",
+                        compaction.tokens_before, compaction.summary
+                    ),
+                }],
+                stop_reason: yoagent::types::StopReason::Stop,
+                model: String::new(),
+                provider: String::new(),
+                usage: yoagent::types::Usage::default(),
+                timestamp: chrono::Utc::now().timestamp_millis() as u64,
+                error_message: None,
+            },
+        ));
+
+        // 2. Find compaction entry index
+        let compaction_idx = path
+            .iter()
+            .position(|e| matches!(e, SessionEntry::Compaction(ce) if ce.id == compaction.id));
+
+        if let Some(cidx) = compaction_idx {
+            // Entries BEFORE the compaction: only those at/after firstKeptEntryId
+            let mut found_first_kept = false;
+            for entry in path.iter().take(cidx) {
+                if entry.id() == compaction.first_kept_entry_id {
+                    found_first_kept = true;
+                }
+                if found_first_kept {
+                    append_entry_to_message_list(entry, &mut msgs);
+                }
+            }
+
+            // Entries AFTER the compaction: include all
+            for entry in path.iter().skip(cidx + 1) {
+                append_entry_to_message_list(entry, &mut msgs);
+            }
+        } else {
+            // Fallback: include all entries
+            for entry in path {
+                append_entry_to_message_list(entry, &mut msgs);
+            }
+        }
+
+        msgs
+    } else {
+        // No compaction: include all convertible entries
+        let mut msgs: Vec<yoagent::types::AgentMessage> = Vec::new();
+        for entry in path {
+            append_entry_to_message_list(entry, &mut msgs);
+        }
+        msgs
+    };
+
+    SessionContext {
+        messages,
+        thinking_level,
+        model,
+        active_tool_names,
+    }
+}
+
+/// Convert a session tree entry to an `AgentMessage` and append to the list.
+/// Pi-compatible: handles `message`, `custom_message`, and `branch_summary` entries.
+/// Skips provider/diagnostic error messages — their empty (or error-text-only)
+/// content would cause the provider to reject subsequent requests.
+fn append_entry_to_message_list(
+    entry: &SessionEntry,
+    msgs: &mut Vec<yoagent::types::AgentMessage>,
+) {
+    match entry {
+        SessionEntry::Message(e) => {
+            // Skip provider/diagnostic error messages
+            if crate::agent::types::message_error(&e.message).is_some() {
+                return;
+            }
+            msgs.push(e.message.clone());
+        }
+        SessionEntry::CustomMessage(e) => {
+            msgs.push(yoagent::types::AgentMessage::Extension(
+                yoagent::types::ExtensionMessage::new(
+                    &e.custom_type,
+                    serde_json::json!({ "text": e.content.get("text").and_then(|v| v.as_str()).unwrap_or(""), "display": e.display }),
+                ),
+            ));
+        }
+        SessionEntry::BranchSummary(e) if !e.summary.is_empty() => {
+            msgs.push(yoagent::types::AgentMessage::Llm(
+                yoagent::types::Message::Assistant {
+                    content: vec![yoagent::types::Content::Text {
+                        text: format!("[Branch: from {}] {}", e.from_id, e.summary),
+                    }],
+                    stop_reason: yoagent::types::StopReason::Stop,
+                    model: String::new(),
+                    provider: String::new(),
+                    usage: yoagent::types::Usage::default(),
+                    timestamp: chrono::Utc::now().timestamp_millis() as u64,
+                    error_message: None,
+                },
+            ));
+        }
+        _ => {}
+    }
+}
+
 // ── SessionManager ──────────────────────────────────────────────────
 
 /// Manages conversation sessions as append-only trees in JSONL files.
@@ -447,258 +929,176 @@ pub fn generate_entry_id(by_id: &HashMap<String, SessionEntry>) -> String {
 /// Appending creates a child of the current leaf. Branching moves the
 /// leaf to an earlier entry, allowing new branches without modifying history.
 pub struct SessionManager {
-    storage: Box<dyn SessionStorage>,
-    session_id: String,
-    session_file: Option<PathBuf>,
+    /// The high-level session wrapper.
+    session: Session,
+    /// Session storage directory on disk.
     session_dir: PathBuf,
+    /// Working directory for this session.
     cwd: PathBuf,
+    /// Whether session persistence is enabled.
     persist: bool,
+    /// Whether the session file has been written at least once.
     flushed: bool,
-    session_header: Option<SessionHeader>,
-    pub(crate) file_entries: Vec<SessionEntry>,
-    pub(crate) by_id: HashMap<String, SessionEntry>,
-    labels_by_id: HashMap<String, String>,
-    label_timestamps_by_id: HashMap<String, String>,
-    pub(crate) leaf_id: Option<String>,
 }
 
 impl SessionManager {
     // ── Construction ─────────────────────────────────────────────
 
-    /// Create a SessionManager with the given storage backend.
-    fn from_storage(
-        cwd: &Path,
-        session_dir: &Path,
-        storage: Box<dyn SessionStorage>,
+    /// Create a SessionManager wrapping an existing Session.
+    pub fn with_session(
+        session: Session,
+        session_dir: PathBuf,
+        cwd: PathBuf,
         persist: bool,
-        create_new: bool,
-        options: Option<&NewSessionOptions>,
     ) -> Self {
-        let cwd = cwd.to_path_buf();
-        let session_dir = session_dir.to_path_buf();
-        let session_file = storage.path().map(|p| p.to_path_buf());
-
-        let mut sm = Self {
-            storage,
-            session_id: String::new(),
-            session_file,
+        Self {
+            session,
             session_dir,
             cwd,
             persist,
             flushed: false,
-            session_header: None,
-            file_entries: Vec::new(),
-            by_id: HashMap::new(),
-            labels_by_id: HashMap::new(),
-            label_timestamps_by_id: HashMap::new(),
-            leaf_id: None,
-        };
-
-        if create_new {
-            sm.new_session(options);
-        } else if let Some(ref path) = sm.session_file.clone() {
-            sm.set_session_file(path);
         }
-
-        sm
     }
 
-    /// Legacy constructor: builds storage from path/persist flags.
-    fn new(
+    /// Create a new persisted session.
+    /// Pi-compatible: defers file creation until first assistant message (lazy write).
+    fn create_persisted(
         cwd: &Path,
         session_dir: &Path,
-        session_file: Option<PathBuf>,
-        persist: bool,
-        create_new: bool,
         options: Option<&NewSessionOptions>,
     ) -> Self {
-        let storage: Box<dyn SessionStorage> = if persist {
-            if let Some(ref path) = session_file {
-                Box::new(JsonlSessionStorage::new(path.clone()))
-            } else {
-                // No file path yet — will be set in new_session().
-                // Use in-memory until a path is generated.
-                Box::new(InMemorySessionStorage::new())
-            }
-        } else {
-            Box::new(InMemorySessionStorage::new())
-        };
+        let id = options
+            .and_then(|o| o.id.as_deref())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        let created_at = chrono::Utc::now().to_rfc3339();
 
-        Self::from_storage(cwd, session_dir, storage, persist, create_new, options)
+        // Use in-memory storage initially — no file created yet (lazy write).
+        let meta = crate::agent::session_storage::SessionMetadata {
+            id: id.clone(),
+            created_at: created_at.clone(),
+            cwd: cwd.to_string_lossy().to_string(),
+            path: None, // Path will be set when flushed
+            parent_session_path: options.and_then(|o| o.parent_session.clone()),
+        };
+        let storage = InMemorySessionStorage::new(meta);
+        let session = Session::new(Box::new(storage));
+        Self::with_session(session, session_dir.to_path_buf(), cwd.to_path_buf(), true)
     }
 
-    /// Switch to a different session file.
-    fn set_session_file(&mut self, session_file: &Path) {
-        // Update storage if it doesn't match the new path
-        let current_path = self.storage.path().map(|p| p.to_path_buf());
-        if current_path.as_deref() != Some(session_file) {
-            self.storage = Box::new(JsonlSessionStorage::new(session_file.to_path_buf()));
-        }
+    /// Open an existing session file.
+    fn open_session(path: &Path, session_dir: &Path, cwd_override: Option<&Path>) -> Self {
+        let cwd = cwd_override
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")));
 
-        self.session_file = Some(session_file.to_path_buf());
-        if self.storage.exists() {
-            // Use storage to load header + entries
-            let (header, entries) = self.storage.load();
-            self.session_header = header;
-            self.file_entries = entries;
-
-            // If file is empty or has no valid header, treat as corrupted:
-            // start fresh, preserving the file path (defer writing until first assistant).
-            if self.file_entries.is_empty() && self.session_header.is_none() {
-                self.session_id = uuid::Uuid::new_v4().to_string();
-                self.session_header = None;
-                self.file_entries = Vec::new();
-                self.by_id.clear();
-                self.labels_by_id.clear();
-                self.label_timestamps_by_id.clear();
-                self.leaf_id = None;
-                self.flushed = false;
-                return;
+        let storage: Box<dyn SessionStorage> = match JsonlSessionStorage::open(path.to_path_buf()) {
+            Ok(s) => Box::new(s),
+            Err(e) => {
+                eprintln!("Warning: failed to open session: {}, creating new", e);
+                // Fall back: create a fresh file-backed session at the same path (overwrite)
+                let id = uuid::Uuid::new_v4().to_string();
+                match JsonlSessionStorage::create(
+                    path.to_path_buf(),
+                    &cwd.to_string_lossy(),
+                    &id,
+                    None,
+                ) {
+                    Ok(s) => Box::new(s),
+                    Err(e2) => {
+                        eprintln!("Warning: failed to create session file: {}", e2);
+                        Box::new(InMemorySessionStorage::new(
+                            crate::agent::session_storage::SessionMetadata {
+                                id,
+                                created_at: chrono::Utc::now().to_rfc3339(),
+                                cwd: cwd.to_string_lossy().to_string(),
+                                path: Some(path.to_path_buf()),
+                                parent_session_path: None,
+                            },
+                        ))
+                    }
+                }
             }
+        };
+        let cwd = cwd_override
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| PathBuf::from(storage.metadata().cwd));
+        let session = Session::new(storage);
+        Self::with_session(session, session_dir.to_path_buf(), cwd, true)
+    }
 
-            // Entries exist (or header exists but no entries yet - keep the session)
-            self.session_id = self
-                .session_header
-                .as_ref()
-                .map(|h| h.id.clone())
-                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-            self.migrate_to_current();
-            self._build_index();
-            // The file already exists and has content, so it's considered flushed.
-            // New entries appended before an assistant message will be deferred.
-            self.flushed = true;
-        } else {
-            // File doesn't exist - create new session at this path (defer writing).
-            self.session_id = uuid::Uuid::new_v4().to_string();
-            self.session_header = None;
-            self.file_entries = Vec::new();
-            self.by_id.clear();
-            self.labels_by_id.clear();
-            self.label_timestamps_by_id.clear();
-            self.leaf_id = None;
-            self.flushed = false;
-        }
+    /// Create an in-memory (non-persisted) session.
+    fn create_in_memory(cwd: &Path, session_dir: &Path) -> Self {
+        let meta = crate::agent::session_storage::SessionMetadata {
+            id: uuid::Uuid::new_v4().to_string(),
+            created_at: chrono::Utc::now().to_rfc3339(),
+            cwd: cwd.to_string_lossy().to_string(),
+            path: None,
+            parent_session_path: None,
+        };
+        let storage = InMemorySessionStorage::new(meta);
+        let session = Session::new(Box::new(storage));
+        Self::with_session(session, session_dir.to_path_buf(), cwd.to_path_buf(), false)
     }
 
     /// Create a new session (overwrites current entries).
     /// Pi-compatible: defers writing to disk until first assistant message.
     pub fn new_session(&mut self, options: Option<&NewSessionOptions>) {
-        let id = options.and_then(|o| o.id.as_deref());
-        self.session_id = id
+        let id = options
+            .and_then(|o| o.id.as_deref())
             .map(|s| s.to_string())
             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-        let timestamp = chrono::Utc::now().to_rfc3339();
-        self.session_header = Some(SessionHeader {
-            type_: "session".to_string(),
-            version: Some(CURRENT_SESSION_VERSION),
-            id: self.session_id.clone(),
-            timestamp: timestamp.clone(),
+        let created_at = chrono::Utc::now().to_rfc3339();
+
+        // Always create in-memory initially (lazy write).
+        // ensure_flushed() will create the file on first assistant message.
+        let meta = crate::agent::session_storage::SessionMetadata {
+            id,
+            created_at,
             cwd: self.cwd.to_string_lossy().to_string(),
-            parent_session: options.and_then(|o| o.parent_session.clone()),
-        });
-        self.file_entries = Vec::new();
-        self.by_id.clear();
-        self.labels_by_id.clear();
-        self.label_timestamps_by_id.clear();
-        self.leaf_id = None;
+            path: None,
+            parent_session_path: options.and_then(|o| o.parent_session.clone()),
+        };
+        let storage = InMemorySessionStorage::new(meta);
+        self.session = Session::new(Box::new(storage));
         self.flushed = false;
-
-        if self.persist {
-            let file_ts = timestamp.replace([':', '.'], "-");
-            let path = self
-                .session_dir
-                .join(format!("{}_{}.jsonl", file_ts, self.session_id));
-            self.session_file = Some(path.clone());
-            // Update storage to point to the new file
-            self.storage = Box::new(JsonlSessionStorage::new(path));
-        }
-        // Do NOT write header immediately. Wait for first assistant message.
     }
 
-    fn _build_index(&mut self) {
-        self.by_id.clear();
-        self.labels_by_id.clear();
-        self.label_timestamps_by_id.clear();
-        self.leaf_id = None;
-        for entry in &self.file_entries {
-            self.by_id.insert(entry.id().to_string(), entry.clone());
-            self.leaf_id = Some(entry.id().to_string());
-            if let SessionEntry::Label(e) = entry {
-                if let Some(label) = &e.label {
-                    self.labels_by_id.insert(e.target_id.clone(), label.clone());
-                    self.label_timestamps_by_id
-                        .insert(e.target_id.clone(), e.timestamp.clone());
-                } else {
-                    self.labels_by_id.remove(&e.target_id);
-                    self.label_timestamps_by_id.remove(&e.target_id);
+    /// Ensure the session file has been written (lazy write).
+    /// Migrates from in-memory to file-backed storage, writing header + all entries.
+    /// Called before first assistant message.
+    pub fn ensure_flushed(&mut self) {
+        if self.flushed || !self.persist {
+            return;
+        }
+
+        let id = self.session.metadata().id;
+        let created_at = self.session.metadata().created_at.clone();
+        let cwd_str = self.cwd.to_string_lossy().to_string();
+        let parent_session = self.session.metadata().parent_session_path.clone();
+        let file_ts = created_at.replace([':', '.'], "-");
+        let file_path = self.session_dir.join(format!("{}_{}.jsonl", file_ts, id));
+
+        // Get existing entries before replacing storage
+        let existing_entries = self.session.get_entries();
+
+        // Create file-backed storage and copy entries
+        match JsonlSessionStorage::create(file_path.clone(), &cwd_str, &id, parent_session) {
+            Ok(mut file_storage) => {
+                // Write all existing entries to file
+                for entry in &existing_entries {
+                    if let Err(e) = file_storage.append_entry(entry.clone()) {
+                        eprintln!("Warning: failed to write entry to session file: {}", e);
+                    }
                 }
+                self.session = Session::new(Box::new(file_storage));
+                self.flushed = true;
             }
-        }
-    }
-
-    fn _persist(&mut self) {
-        if !self.persist || self.session_file.is_none() {
-            return;
-        }
-
-        let has_assistant = self
-            .file_entries
-            .iter()
-            .any(|e| matches!(e, SessionEntry::Message(m) if crate::agent::types::message_is_assistant(&m.message)));
-
-        if !has_assistant && !self.flushed {
-            // No file on disk yet and no assistant — defer until first assistant message.
-            // This matches pi's behavior: no file writes for user-only new sessions.
-            self.flushed = false;
-            return;
-        }
-
-        if !self.flushed {
-            // First write with assistant: write header + all entries atomically.
-            if let Some(parent) = self.storage.path().and_then(|p| p.parent())
-                && let Err(e) = std::fs::create_dir_all(parent)
-            {
-                eprintln!("Warning: failed to create session directory: {}", e);
+            Err(e) => {
+                eprintln!("Warning: failed to create session file: {}", e);
+                // Stay in-memory but mark as "flushed" to avoid repeated attempts
+                self.flushed = true;
             }
-            let default_header = SessionHeader {
-                type_: "session".to_string(),
-                version: Some(CURRENT_SESSION_VERSION),
-                id: self.session_id.clone(),
-                timestamp: chrono::Utc::now().to_rfc3339(),
-                cwd: self.cwd.to_string_lossy().to_string(),
-                parent_session: None,
-            };
-            let header = self.session_header.as_ref().unwrap_or(&default_header);
-            if let Err(e) = self.storage.write_full(header, &self.file_entries) {
-                eprintln!("Warning: failed to write session file: {}", e);
-            }
-            self.flushed = true;
-        } else if let Some(entry) = self.file_entries.last() {
-            // Append mode: file already exists.
-            if let Err(e) = self.storage.append(entry) {
-                eprintln!(
-                    "Warning: failed to append session entry {}: {}",
-                    entry.id(),
-                    e
-                );
-            }
-        }
-    }
-
-    fn _append_entry(&mut self, entry: SessionEntry) -> String {
-        let id = entry.id().to_string();
-        self.leaf_id = Some(id.clone());
-        self.by_id.insert(id.clone(), entry);
-        self.file_entries
-            .push(self.by_id.get(&id).expect("just inserted").clone());
-        self._persist();
-        id
-    }
-
-    /// Update the session header version to the current version.
-    fn migrate_to_current(&mut self) {
-        if let Some(ref mut h) = self.session_header {
-            h.version = Some(CURRENT_SESSION_VERSION);
         }
     }
 
@@ -721,66 +1121,68 @@ impl SessionManager {
         self.session_dir == get_default_session_dir(&self.cwd)
     }
 
-    pub fn session_id(&self) -> &str {
-        &self.session_id
+    pub fn session_id(&self) -> String {
+        self.session.metadata().id
     }
 
-    pub fn session_file(&self) -> Option<&Path> {
-        self.session_file.as_deref()
+    pub fn session_file(&self) -> Option<PathBuf> {
+        self.session.metadata().path
     }
 
-    pub fn leaf_id(&self) -> Option<&str> {
-        self.leaf_id.as_deref()
+    pub fn leaf_id(&self) -> Option<String> {
+        self.session.get_leaf_id()
     }
 
-    /// Get the current session name from the latest session_info entry.
-    pub fn session_name(&self) -> Option<&str> {
-        for entry in self.file_entries.iter().rev() {
-            if let SessionEntry::SessionInfo(e) = entry {
-                let name = e.name.trim();
-                if name.is_empty() {
-                    return None;
-                }
-                return Some(name);
-            }
-        }
-        None
+    /// Get the current session name.
+    pub fn session_name(&self) -> Option<String> {
+        self.session.get_session_name()
     }
 
-    // ── Public: Info (new pi-compatible methods) ──────────────────
+    /// Get the underlying Session reference.
+    pub fn session(&self) -> &Session {
+        &self.session
+    }
+
+    /// Get the underlying Session mutable reference.
+    pub fn session_mut(&mut self) -> &mut Session {
+        &mut self.session
+    }
+
+    /// Consume and return the inner Session.
+    pub fn into_session(self) -> Session {
+        self.session
+    }
+
+    // ── Public: Info (pi-compatible methods) ──────────────────────
 
     /// Get the current leaf entry (pi-compatible).
-    pub fn get_leaf_entry(&self) -> Option<&SessionEntry> {
-        self.leaf_id.as_ref().and_then(|id| self.by_id.get(id))
+    pub fn get_leaf_entry(&self) -> Option<SessionEntry> {
+        self.leaf_id().and_then(|id| self.entry(&id))
     }
 
     /// Get the session as a tree structure with resolved children and labels (pi-compatible).
     pub fn get_tree(&self) -> Vec<SessionTreeNode> {
-        let entries: Vec<SessionEntry> = self.file_entries.clone();
+        let entries = self.session.get_entries();
         let mut node_map: HashMap<String, SessionTreeNode> = HashMap::new();
 
-        // Create nodes with resolved labels
         for entry in &entries {
-            let label = self.labels_by_id.get(entry.id()).cloned();
-            let label_timestamp = self.label_timestamps_by_id.get(entry.id()).cloned();
+            let label = self.session.get_label(entry.id());
             node_map.insert(
                 entry.id().to_string(),
                 SessionTreeNode {
                     entry: entry.clone(),
                     children: Vec::new(),
                     label,
-                    label_timestamp,
+                    label_timestamp: None,
                 },
             );
         }
 
-        // Build tree using entry IDs to avoid borrow conflicts
         let child_edges: Vec<(Option<String>, String)> = entries
             .iter()
             .map(|e| (e.parent_id().map(|s| s.to_string()), e.id().to_string()))
             .collect();
 
-        // Build tree - collect child additions first to avoid borrow conflicts
         let mut child_additions: Vec<(String, SessionTreeNode)> = Vec::new();
         let mut roots: Vec<String> = Vec::new();
         for (parent_id, child_id) in &child_edges {
@@ -800,7 +1202,6 @@ impl SessionManager {
             }
         }
 
-        // Sort children by timestamp
         fn sort_tree(node: &mut SessionTreeNode) {
             node.children
                 .sort_by_key(|c| c.entry.timestamp().to_string());
@@ -818,70 +1219,33 @@ impl SessionManager {
         result
     }
 
-    /// Get the session header (pi-compatible).
-    pub fn get_header(&self) -> Option<&SessionHeader> {
-        self.session_header.as_ref()
-    }
-
-    /// Get the label timestamp for an entry, if any.
-    pub fn label_timestamp(&self, id: &str) -> Option<&str> {
-        self.label_timestamps_by_id.get(id).map(|s| s.as_str())
-    }
-
     /// Get all session entries (excludes header). Pi-compatible.
     pub fn get_entries(&self) -> Vec<SessionEntry> {
-        self.file_entries.clone()
+        self.session.get_entries()
     }
 
-    // ── Public: Appending ─────────────────────────────────────────
+    // ── Public: Appending (delegated to Session) ──────────────────
 
-    /// Append a message as child of current leaf, then advance leaf.
-    /// Returns the entry id.
-    pub fn append_message(&mut self, message: &AgentMessage) -> String {
-        let entry = SessionEntry::Message(MessageEntry {
-            id: generate_entry_id(&self.by_id),
-            parent_id: self.leaf_id.clone(),
-            timestamp: chrono::Utc::now().to_rfc3339(),
-            message: message.clone(),
-        });
-        self._append_entry(entry)
+    pub fn append_message(&mut self, message: &yoagent::types::AgentMessage) -> String {
+        // Flush before first assistant message (lazy write)
+        if !self.flushed && self.persist && crate::agent::types::message_is_assistant(message) {
+            self.ensure_flushed();
+        }
+        self.session.append_message(message)
     }
 
-    /// Append a thinking level change.
     pub fn append_thinking_level_change(&mut self, thinking_level: &str) -> String {
-        let entry = SessionEntry::ThinkingLevelChange(ThinkingLevelChangeEntry {
-            id: generate_entry_id(&self.by_id),
-            parent_id: self.leaf_id.clone(),
-            timestamp: chrono::Utc::now().to_rfc3339(),
-            thinking_level: thinking_level.to_string(),
-        });
-        self._append_entry(entry)
+        self.session.append_thinking_level_change(thinking_level)
     }
 
-    /// Append a model change.
     pub fn append_model_change(&mut self, provider: &str, model_id: &str) -> String {
-        let entry = SessionEntry::ModelChange(ModelChangeEntry {
-            id: generate_entry_id(&self.by_id),
-            parent_id: self.leaf_id.clone(),
-            timestamp: chrono::Utc::now().to_rfc3339(),
-            provider: provider.to_string(),
-            model_id: model_id.to_string(),
-        });
-        self._append_entry(entry)
+        self.session.append_model_change(provider, model_id)
     }
 
-    /// Append a session info entry (display name).
     pub fn append_session_info(&mut self, name: &str) -> String {
-        let entry = SessionEntry::SessionInfo(SessionInfoEntry {
-            id: generate_entry_id(&self.by_id),
-            parent_id: self.leaf_id.clone(),
-            timestamp: chrono::Utc::now().to_rfc3339(),
-            name: name.trim().to_string(),
-        });
-        self._append_entry(entry)
+        self.session.append_session_info(name)
     }
 
-    /// Append a compaction summary.
     pub fn append_compaction(
         &mut self,
         summary: &str,
@@ -890,20 +1254,15 @@ impl SessionManager {
         details: Option<serde_json::Value>,
         from_hook: Option<bool>,
     ) -> String {
-        let entry = SessionEntry::Compaction(CompactionEntry {
-            id: generate_entry_id(&self.by_id),
-            parent_id: self.leaf_id.clone(),
-            timestamp: chrono::Utc::now().to_rfc3339(),
-            summary: summary.to_string(),
-            first_kept_entry_id: first_kept_entry_id.to_string(),
+        self.session.append_compaction(
+            summary,
+            first_kept_entry_id,
             tokens_before,
             details,
             from_hook,
-        });
-        self._append_entry(entry)
+        )
     }
 
-    /// Append a branch summary.
     pub fn append_branch_summary(
         &mut self,
         from_id: &str,
@@ -911,67 +1270,22 @@ impl SessionManager {
         details: Option<serde_json::Value>,
         from_hook: Option<bool>,
     ) -> String {
-        let entry = SessionEntry::BranchSummary(BranchSummaryEntry {
-            id: generate_entry_id(&self.by_id),
-            parent_id: self.leaf_id.clone(),
-            timestamp: chrono::Utc::now().to_rfc3339(),
-            from_id: from_id.to_string(),
-            summary: summary.to_string(),
-            details,
-            from_hook,
-        });
-        self._append_entry(entry)
+        self.session
+            .append_branch_summary(from_id, summary, details, from_hook)
     }
 
-    /// Append a label change (bookmark/unbookmark).
     pub fn append_label_change(&mut self, target_id: &str, label: Option<&str>) -> String {
-        let entry = SessionEntry::Label(LabelEntry {
-            id: generate_entry_id(&self.by_id),
-            parent_id: self.leaf_id.clone(),
-            timestamp: chrono::Utc::now().to_rfc3339(),
-            target_id: target_id.to_string(),
-            label: label.map(|s| s.to_string()),
-        });
-        let id = self._append_entry(entry);
-
-        // Update label maps
-        let now = chrono::Utc::now().to_rfc3339();
-        if let Some(l) = label {
-            self.labels_by_id
-                .insert(target_id.to_string(), l.to_string());
-            self.label_timestamps_by_id
-                .insert(target_id.to_string(), now);
-        } else {
-            self.labels_by_id.remove(target_id);
-            self.label_timestamps_by_id.remove(target_id);
-        }
-        id
+        self.session.append_label_change(target_id, label)
     }
 
-    /// Append a custom entry (extension data).
     pub fn append_custom_entry(&mut self, custom_type: &str, data: serde_json::Value) -> String {
-        let entry = SessionEntry::Custom(CustomEntry {
-            id: generate_entry_id(&self.by_id),
-            parent_id: self.leaf_id.clone(),
-            timestamp: chrono::Utc::now().to_rfc3339(),
-            custom_type: custom_type.to_string(),
-            data,
-        });
-        self._append_entry(entry)
+        self.session.append_custom_entry(custom_type, data)
     }
 
-    /// Append an active tools change entry (pi-compatible).
     pub fn append_active_tools_change(&mut self, active_tool_names: &[String]) -> String {
-        let entry = SessionEntry::ActiveToolsChange(ActiveToolsChangeEntry {
-            id: generate_entry_id(&self.by_id),
-            parent_id: self.leaf_id.clone(),
-            timestamp: chrono::Utc::now().to_rfc3339(),
-            active_tool_names: active_tool_names.to_vec(),
-        });
-        self._append_entry(entry)
+        self.session.append_active_tools_change(active_tool_names)
     }
 
-    /// Append a custom message entry (pi-compatible extension message).
     pub fn append_custom_message_entry(
         &mut self,
         custom_type: &str,
@@ -979,219 +1293,77 @@ impl SessionManager {
         display: bool,
         details: Option<serde_json::Value>,
     ) -> String {
-        let entry = SessionEntry::CustomMessage(CustomMessageEntry {
-            id: generate_entry_id(&self.by_id),
-            parent_id: self.leaf_id.clone(),
-            timestamp: chrono::Utc::now().to_rfc3339(),
-            custom_type: custom_type.to_string(),
-            content,
-            display,
-            details,
-        });
-        self._append_entry(entry)
+        self.session
+            .append_custom_message_entry(custom_type, content, display, details)
     }
 
-    // ── Public: Querying ────────────────────────────────────────
+    // ── Public: Querying (delegated to Session) ──────────────────
 
-    /// Find all entries of a given type (pi-compatible: generic type filter).
-    pub fn find_entries_by_type(&self, type_name: &str) -> Vec<&SessionEntry> {
-        self.file_entries
-            .iter()
-            .filter(|e| {
-                let name = match e {
-                    SessionEntry::Message(_) => "message",
-                    SessionEntry::ThinkingLevelChange(_) => "thinking_level_change",
-                    SessionEntry::ModelChange(_) => "model_change",
-                    SessionEntry::ActiveToolsChange(_) => "active_tools_change",
-                    SessionEntry::Compaction(_) => "compaction",
-                    SessionEntry::BranchSummary(_) => "branch_summary",
-                    SessionEntry::SessionInfo(_) => "session_info",
-                    SessionEntry::Label(_) => "label",
-                    SessionEntry::Custom(_) => "custom",
-                    SessionEntry::CustomMessage(_) => "custom_message",
-                    SessionEntry::Leaf(_) => "leaf",
-                };
-                name == type_name
-            })
-            .collect()
+    /// Find all entries of a given type (pi-compatible).
+    pub fn find_entries_by_type(&self, type_name: &str) -> Vec<SessionEntry> {
+        self.session.find_entries(type_name)
     }
-
-    // ── Public: Tree navigation ───────────────────────────────────
 
     /// Get all entries (excludes header).
-    pub fn entries(&self) -> &[SessionEntry] {
-        &self.file_entries
+    pub fn entries(&self) -> Vec<SessionEntry> {
+        self.session.get_entries()
     }
 
     /// Look up an entry by id.
-    pub fn entry(&self, id: &str) -> Option<&SessionEntry> {
-        self.by_id.get(id)
+    pub fn entry(&self, id: &str) -> Option<SessionEntry> {
+        self.session.get_entry(id)
     }
 
     /// Get all direct children of an entry.
-    pub fn children(&self, parent_id: &str) -> Vec<&SessionEntry> {
-        self.file_entries
-            .iter()
+    pub fn children(&self, parent_id: &str) -> Vec<SessionEntry> {
+        self.session
+            .get_entries()
+            .into_iter()
             .filter(|e| e.parent_id() == Some(parent_id))
             .collect()
     }
 
     /// Walk from entry to root, returning all entries in path order.
-    pub fn branch(&self, from_id: Option<&str>) -> Vec<&SessionEntry> {
-        let start_id = from_id.or(self.leaf_id.as_deref());
-        let mut path = Vec::new();
-        let mut current = start_id.and_then(|id| self.by_id.get(id));
-        while let Some(entry) = current {
-            path.push(entry);
-            current = entry.parent_id().and_then(|pid| self.by_id.get(pid));
-        }
-        path.reverse();
-        path
+    pub fn branch(&self, from_id: Option<&str>) -> Vec<SessionEntry> {
+        self.session.get_branch(from_id).unwrap_or_default()
     }
 
     /// Build the session context (messages for LLM with compaction handling).
-    /// Pi-compatible: resolves thinking level, model, active tool names from path,
-    /// and handles compaction by replacing compacted entries with a summary message.
+    /// Pi-compatible: delegates to Session::build_context.
     pub fn build_session_context(&self) -> SessionContext {
-        let path = self.branch(None);
-
-        // Walk path to find latest values for metadata and compaction
-        let mut thinking_level = "off".to_string();
-        let mut model: Option<(String, String)> = None;
-        let mut active_tool_names: Option<Vec<String>> = None;
-        let mut compaction_entry: Option<&CompactionEntry> = None;
-
-        for entry in &path {
-            match entry {
-                SessionEntry::ThinkingLevelChange(e) => {
-                    thinking_level = e.thinking_level.clone();
-                }
-                SessionEntry::ModelChange(e) => {
-                    model = Some((e.provider.clone(), e.model_id.clone()));
-                }
-                // Pi-compatible: model is also extractable from assistant messages
-                // (requires provider/model fields on AgentMessage which are not yet present in rab)
-                SessionEntry::Message(_) => {}
-                SessionEntry::ActiveToolsChange(e) => {
-                    active_tool_names = Some(e.active_tool_names.clone());
-                }
-                SessionEntry::Compaction(e) => {
-                    compaction_entry = Some(e);
-                }
-                _ => {}
-            }
-        }
-
-        // Build message list with compaction handling
-        let messages = if let Some(compaction) = compaction_entry {
-            let mut msgs: Vec<AgentMessage> = Vec::new();
-
-            // 1. Compaction summary message
-            msgs.push(AgentMessage::Llm(yoagent::types::Message::Assistant {
-                content: vec![yoagent::types::Content::Text {
-                    text: format!(
-                        "[Compaction: {} tokens → summary] {}",
-                        compaction.tokens_before, compaction.summary
-                    ),
-                }],
-                stop_reason: yoagent::types::StopReason::Stop,
-                model: String::new(),
-                provider: String::new(),
-                usage: yoagent::types::Usage::default(),
-                timestamp: chrono::Utc::now().timestamp_millis() as u64,
-                error_message: None,
-            }));
-
-            // 2. Find compaction entry index
-            let compaction_idx = path
-                .iter()
-                .position(|e| matches!(e, SessionEntry::Compaction(ce) if ce.id == compaction.id));
-
-            if let Some(cidx) = compaction_idx {
-                // Entries BEFORE the compaction: only those at/after firstKeptEntryId
-                let mut found_first_kept = false;
-                for entry in path.iter().take(cidx) {
-                    if entry.id() == compaction.first_kept_entry_id {
-                        found_first_kept = true;
-                    }
-                    if found_first_kept {
-                        append_entry_to_message_list(entry, &mut msgs);
-                    }
-                }
-
-                // Entries AFTER the compaction: include all
-                for entry in path.iter().skip(cidx + 1) {
-                    append_entry_to_message_list(entry, &mut msgs);
-                }
-            } else {
-                // Fallback: include all entries (compaction entry not found in path)
-                for entry in &path {
-                    append_entry_to_message_list(entry, &mut msgs);
-                }
-            }
-
-            msgs
-        } else {
-            // No compaction: include all entries that can be converted to messages
-            let mut msgs: Vec<AgentMessage> = Vec::new();
-            for entry in &path {
-                append_entry_to_message_list(entry, &mut msgs);
-            }
-            msgs
-        };
-
-        SessionContext {
-            messages,
-            thinking_level,
-            model,
-            active_tool_names,
-        }
+        self.session.build_context()
     }
 
     /// Get the label for an entry, if any.
-    pub fn label(&self, id: &str) -> Option<&str> {
-        self.labels_by_id.get(id).map(|s| s.as_str())
+    pub fn label(&self, id: &str) -> Option<String> {
+        self.session.get_label(id)
     }
 
     // ── Public: Branching ─────────────────────────────────────────
 
     /// Move leaf pointer to an earlier entry (starts a new branch).
-    /// Pi-compatible: leaf is purely in-memory, no persistent entry written.
+    /// Pi-compatible: delegates to Session::set_leaf_id.
     pub fn set_branch(&mut self, branch_from_id: &str) -> Result<(), String> {
-        if !self.by_id.contains_key(branch_from_id) {
-            return Err(format!("Entry {} not found", branch_from_id));
-        }
-        self.leaf_id = Some(branch_from_id.to_string());
-        Ok(())
+        self.session.set_leaf_id(Some(branch_from_id))
     }
 
     /// Reset leaf pointer to null (before any entries).
-    /// Pi-compatible: leaf is purely in-memory, no persistent entry written.
     pub fn reset_leaf(&mut self) {
-        self.leaf_id = None;
+        let _ = self.session.reset_leaf();
     }
 
     /// Move leaf pointer with a branch summary entry.
-    /// Pi-compatible: atomically moves leaf and appends a BranchSummaryEntry.
+    /// Pi-compatible: delegates to Session::move_to.
     pub fn branch_with_summary(
         &mut self,
         branch_from_id: Option<&str>,
         summary: &str,
         details: Option<serde_json::Value>,
         from_hook: Option<bool>,
-    ) -> String {
-        let leaf = branch_from_id.map(|s| s.to_string());
-        self.leaf_id = leaf.clone();
-        let entry = SessionEntry::BranchSummary(BranchSummaryEntry {
-            id: generate_entry_id(&self.by_id),
-            parent_id: leaf,
-            timestamp: chrono::Utc::now().to_rfc3339(),
-            from_id: branch_from_id.unwrap_or("root").to_string(),
-            summary: summary.to_string(),
-            details,
-            from_hook,
-        });
-        self._append_entry(entry)
+    ) -> Result<String, String> {
+        let summary_tuple = Some((summary.to_string(), details, from_hook));
+        self.session.move_to(branch_from_id, summary_tuple)
+            .map(|opt| opt.unwrap_or_default())
     }
 
     // ── Static factories ──────────────────────────────────────────
@@ -1201,7 +1373,7 @@ impl SessionManager {
         let dir = session_dir
             .map(|p| p.to_path_buf())
             .unwrap_or_else(|| get_default_session_dir(cwd));
-        Self::new(cwd, &dir, None, true, true, None)
+        Self::create_persisted(cwd, &dir, None)
     }
 
     /// Create a new session with options (pi-compatible).
@@ -1213,31 +1385,23 @@ impl SessionManager {
         let dir = session_dir
             .map(|p| p.to_path_buf())
             .unwrap_or_else(|| get_default_session_dir(cwd));
-        Self::new(cwd, &dir, None, true, true, options)
+        Self::create_persisted(cwd, &dir, options)
     }
 
     /// Open a specific session file.
     pub fn open(path: &Path, session_dir: Option<&Path>, cwd_override: Option<&Path>) -> Self {
-        let cwd = if let Some(cwd_path) = cwd_override {
-            cwd_path.to_path_buf()
-        } else {
-            // Extract cwd from header
-            read_session_header(path)
-                .map(|h| PathBuf::from(h.cwd))
-                .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")))
-        };
         let dir = session_dir.map(|p| p.to_path_buf()).unwrap_or_else(|| {
             path.parent()
                 .map(|p| p.to_path_buf())
-                .unwrap_or_else(|| get_default_session_dir(&cwd))
+                .unwrap_or_else(|| get_default_session_dir(&PathBuf::from("/")))
         });
-        Self::new(&cwd, &dir, Some(path.to_path_buf()), true, false, None)
+        Self::open_session(path, &dir, cwd_override)
     }
 
     /// Create an in-memory session (no file persistence).
     pub fn in_memory(cwd: &Path) -> Self {
         let dir = get_default_session_dir(cwd);
-        Self::new(cwd, &dir, None, false, true, None)
+        Self::create_in_memory(cwd, &dir)
     }
 
     /// Continue the most recent session, or create new if none.
@@ -1248,9 +1412,9 @@ impl SessionManager {
         let filter_cwd = session_dir.is_some_and(|sd| sd != get_default_session_dir(cwd));
         let most_recent = find_most_recent_session(&dir, if filter_cwd { Some(cwd) } else { None });
         if let Some(path) = most_recent {
-            Self::new(cwd, &dir, Some(path), true, false, None)
+            Self::open_session(&path, &dir, Some(cwd))
         } else {
-            Self::new(cwd, &dir, None, true, true, None)
+            Self::create_persisted(cwd, &dir, None)
         }
     }
 
@@ -1292,45 +1456,24 @@ impl SessionManager {
         let file_name = format!("{}_{}.jsonl", file_ts, id);
         let target_path = dir.join(&file_name);
 
-        let new_header = SessionHeader {
-            type_: "session".to_string(),
-            version: Some(CURRENT_SESSION_VERSION),
-            id: id.clone(),
-            timestamp: timestamp.clone(),
-            cwd: resolved_target.to_string_lossy().to_string(),
-            parent_session: Some(resolved_source.to_string_lossy().to_string()),
-        };
+        // Create storage and write immediately
+        let mut storage = JsonlSessionStorage::create(
+            target_path.clone(),
+            &resolved_target.to_string_lossy(),
+            &id,
+            Some(resolved_source.to_string_lossy().to_string()),
+        )
+        .map_err(std::io::Error::other)?;
 
-        let mut sm = Self::new(&resolved_target, &dir, Some(target_path), true, true, None);
-
-        // Copy all entries from source, re-chaining parentIds
-        if let Some(header) = &mut sm.session_header {
-            *header = new_header;
-        }
-        sm.session_id = id;
-        sm.file_entries = source_entries;
-        sm._build_index();
-
-        // Write file immediately (fork is an explicit action)
-        if sm.persist
-            && let Some(ref path) = sm.session_file
-        {
-            if let Some(parent) = path.parent() {
-                let _ = std::fs::create_dir_all(parent);
-            }
-            let header_json =
-                serde_json::to_string(sm.session_header.as_ref().unwrap()).unwrap_or_default();
-            let mut content = header_json + "\n";
-            for entry in &sm.file_entries {
-                let line = serde_json::to_string(entry).unwrap_or_default();
-                content.push_str(&line);
-                content.push('\n');
-            }
-            let _ = std::fs::write(path, &content);
-            sm.flushed = true;
+        // Push all source entries (re-chaining through append_entry)
+        for entry in &source_entries {
+            storage
+                .append_entry(entry.clone())
+                .map_err(std::io::Error::other)?;
         }
 
-        Ok(sm)
+        let session = Session::new(Box::new(storage));
+        Ok(Self::with_session(session, dir, resolved_target, true))
     }
 
     /// Create a branched session from a specific leaf path.
@@ -1342,15 +1485,14 @@ impl SessionManager {
             return None;
         }
 
-        // Filter out label entries and re-chain parentIds
+        // Filter out label entries and leaf entries, re-chain parentIds
         let mut path_clean: Vec<SessionEntry> = Vec::new();
         let mut path_parent_id: Option<String> = None;
         for entry in &path {
-            if matches!(entry, SessionEntry::Label(_)) {
+            if matches!(entry, SessionEntry::Label(_) | SessionEntry::Leaf(_)) {
                 continue;
             }
-            let mut e = (*entry).clone();
-            // Re-chain parentId (match on &mut e, so patterns implicitly borrow mutably)
+            let mut e = entry.clone();
             match &mut e {
                 SessionEntry::Message(m) => m.parent_id = path_parent_id.clone(),
                 SessionEntry::ThinkingLevelChange(m) => m.parent_id = path_parent_id.clone(),
@@ -1359,10 +1501,9 @@ impl SessionManager {
                 SessionEntry::Compaction(m) => m.parent_id = path_parent_id.clone(),
                 SessionEntry::BranchSummary(m) => m.parent_id = path_parent_id.clone(),
                 SessionEntry::SessionInfo(m) => m.parent_id = path_parent_id.clone(),
-                SessionEntry::Label(m) => m.parent_id = path_parent_id.clone(),
                 SessionEntry::Custom(m) => m.parent_id = path_parent_id.clone(),
                 SessionEntry::CustomMessage(m) => m.parent_id = path_parent_id.clone(),
-                SessionEntry::Leaf(_) => {} // stripped below
+                _ => {}
             }
             path_parent_id = Some(e.id().to_string());
             path_clean.push(e);
@@ -1371,12 +1512,10 @@ impl SessionManager {
         // Collect labels for entries in the path
         let path_entry_ids: std::collections::HashSet<String> =
             path_clean.iter().map(|e| e.id().to_string()).collect();
-        let mut labels_to_write: Vec<(String, String, String)> = Vec::new();
-        for (target_id, label) in &self.labels_by_id {
-            if path_entry_ids.contains(target_id.as_str())
-                && let Some(ts) = self.label_timestamps_by_id.get(target_id)
-            {
-                labels_to_write.push((target_id.clone(), label.clone(), ts.clone()));
+        let mut labels_to_write: Vec<(String, String)> = Vec::new();
+        for id in &path_entry_ids {
+            if let Some(label) = self.session.get_label(id) {
+                labels_to_write.push((id.clone(), label));
             }
         }
 
@@ -1387,45 +1526,42 @@ impl SessionManager {
             .session_dir
             .join(format!("{}_{}.jsonl", file_ts, new_session_id));
 
-        let header = SessionHeader {
-            type_: "session".to_string(),
-            version: Some(CURRENT_SESSION_VERSION),
-            id: new_session_id,
-            timestamp,
-            cwd: self.cwd.to_string_lossy().to_string(),
-            parent_session: self
-                .session_file
-                .as_ref()
-                .map(|p| p.to_string_lossy().to_string()),
-        };
+        let cwd_str = self.cwd.to_string_lossy().to_string();
 
-        // Create label entries for labels on path entries
-        let mut label_entries: Vec<SessionEntry> = Vec::new();
-        let mut last_entry_id = path_clean.last().map(|e| e.id().to_string());
-        for (target_id, label, ts) in &labels_to_write {
-            let entry = SessionEntry::Label(LabelEntry {
-                id: generate_entry_id(&self.by_id),
-                parent_id: last_entry_id,
-                timestamp: ts.clone(),
-                target_id: target_id.clone(),
-                label: Some(label.clone()),
-            });
-            last_entry_id = Some(entry.id().to_string());
-            label_entries.push(entry);
-        }
-
-        // Build file entries: header + cleaned path + label entries
-        let mut all_entries = path_clean;
-        all_entries.extend(label_entries);
-
+        // Write header + cleaned path + label entries to file
         if self.persist {
+            let header = SessionHeader {
+                type_: "session".to_string(),
+                version: Some(CURRENT_SESSION_VERSION),
+                id: new_session_id,
+                timestamp,
+                cwd: cwd_str,
+                parent_session: self
+                    .session
+                    .metadata()
+                    .path
+                    .map(|p| p.to_string_lossy().to_string()),
+            };
+
             if let Some(parent) = new_session_file.parent() {
                 let _ = std::fs::create_dir_all(parent);
             }
             let mut content = serde_json::to_string(&header).unwrap_or_default();
             content.push('\n');
-            for entry in &all_entries {
+            for entry in &path_clean {
                 let line = serde_json::to_string(entry).unwrap_or_default();
+                content.push_str(&line);
+                content.push('\n');
+            }
+            for (target_id, label) in &labels_to_write {
+                let label_entry = SessionEntry::Label(LabelEntry {
+                    id: uuid::Uuid::new_v4().to_string()[..8].to_string(),
+                    parent_id: path_parent_id.clone(),
+                    timestamp: chrono::Utc::now().to_rfc3339(),
+                    target_id: target_id.clone(),
+                    label: Some(label.clone()),
+                });
+                let line = serde_json::to_string(&label_entry).unwrap_or_default();
                 content.push_str(&line);
                 content.push('\n');
             }
@@ -1497,49 +1633,6 @@ pub fn find_most_recent_session(session_dir: &Path, filter_cwd: Option<&Path>) -
 
     files.sort_by_key(|b| std::cmp::Reverse(b.1));
     files.into_iter().next().map(|(path, _)| path)
-}
-
-// ── append_entry_to_message_list helper ─────────────────────────────
-
-/// Convert a session tree entry to an `AgentMessage` and append to the list.
-/// Pi-compatible: handles `message`, `custom_message`, and `branch_summary` entries.
-/// Skips provider/diagnostic error messages — their empty (or error-text-only)
-/// content would cause the provider to reject subsequent requests.
-fn append_entry_to_message_list(entry: &SessionEntry, msgs: &mut Vec<AgentMessage>) {
-    match entry {
-        SessionEntry::Message(e) => {
-            // Skip provider/diagnostic error messages
-            if crate::agent::types::message_error(&e.message).is_some() {
-                return;
-            }
-            msgs.push(e.message.clone());
-        }
-        SessionEntry::CustomMessage(e) => {
-            msgs.push(AgentMessage::Extension(
-                yoagent::types::ExtensionMessage::new(
-                    &e.custom_type,
-                    serde_json::json!({
-                        "text": e.content.get("text").and_then(|v| v.as_str()).unwrap_or(""),
-                        "display": e.display,
-                    }),
-                ),
-            ));
-        }
-        SessionEntry::BranchSummary(e) if !e.summary.is_empty() => {
-            msgs.push(AgentMessage::Llm(yoagent::types::Message::Assistant {
-                content: vec![yoagent::types::Content::Text {
-                    text: format!("[Branch: from {}] {}", e.from_id, e.summary),
-                }],
-                stop_reason: yoagent::types::StopReason::Stop,
-                model: String::new(),
-                provider: String::new(),
-                usage: yoagent::types::Usage::default(),
-                timestamp: chrono::Utc::now().timestamp_millis() as u64,
-                error_message: None,
-            }));
-        }
-        _ => {}
-    }
 }
 
 // ── Session repository (list / delete / fork) ───────────────────────
@@ -2191,12 +2284,12 @@ mod tests {
         let sm = SessionManager::create(&cwd, Some(&sessions_dir));
         assert!(sm.is_persisted());
         assert!(!sm.session_id().is_empty());
-        // File should NOT exist yet (lazy write: written on first assistant)
-        assert!(sm.session_file().is_some());
+        // File should NOT exist yet (lazy write: no file path until first assistant)
         assert!(
-            !sm.session_file().unwrap().exists(),
-            "session file should NOT be created until first assistant message (lazy write)"
+            sm.session_file().is_none(),
+            "session file should not be created until first assistant message (lazy write)"
         );
+        assert!(!sm.flushed);
     }
 
     #[test]
@@ -2210,7 +2303,7 @@ mod tests {
 
         let user_msg = make_user_msg("hello");
         let user_id = sm.append_message(&user_msg);
-        assert!(sm.leaf_id() == Some(&user_id));
+        assert_eq!(sm.leaf_id().as_deref(), Some(user_id.as_str()));
 
         // In-memory entries exist even before flush
         assert_eq!(sm.entries().len(), 1);
@@ -2255,7 +2348,7 @@ mod tests {
 
         // Open it
         let sm2 = SessionManager::open(&file_path, Some(&sessions_dir), None);
-        assert_eq!(sm2.session_id(), &session_id);
+        assert_eq!(sm2.session_id(), session_id);
         let context = sm2.build_session_context();
         assert_eq!(context.messages.len(), 2);
         assert_eq!(
@@ -2294,7 +2387,7 @@ mod tests {
 
         // Continue recent - should get the new one
         let sm3 = SessionManager::continue_recent(&cwd, Some(&sessions_dir));
-        assert_eq!(sm3.session_id(), &new_id);
+        assert_eq!(sm3.session_id(), new_id);
         let context = sm3.build_session_context();
         assert_eq!(
             crate::agent::types::message_text(&context.messages[0]),
@@ -2329,7 +2422,7 @@ mod tests {
         sm.append_session_info("My Task");
         sm.append_message(&make_user_msg("hello"));
         sm.append_message(&make_asst_msg("hi"));
-        assert_eq!(sm.session_name(), Some("My Task"));
+        assert_eq!(sm.session_name().as_deref(), Some("My Task"));
 
         // Setting empty name clears it
         sm.append_session_info("");
@@ -2408,7 +2501,7 @@ mod tests {
 
         // Set label
         sm.append_label_change(&msg_id, Some("important"));
-        assert_eq!(sm.label(&msg_id), Some("important"));
+        assert_eq!(sm.label(&msg_id).as_deref(), Some("important"));
 
         // Clear label
         sm.append_label_change(&msg_id, None);
@@ -2431,15 +2524,15 @@ mod tests {
         // Current leaf is after last message
         assert_eq!(sm.entries().len(), 4);
 
-        // Branch back to first user message (in-memory, no persistent entry)
+        // Branch back to first user message (writes a persistent LeafEntry, pi-compatible)
         sm.set_branch(&m1).unwrap();
-        assert_eq!(sm.entries().len(), 4); // No new entry
-        assert_eq!(sm.leaf_id(), Some(m1.as_str()));
+        assert_eq!(sm.entries().len(), 5); // 4 original + 1 leaf entry
+        assert_eq!(sm.leaf_id().as_deref(), Some(m1.as_str()));
 
         // Append a new branch
         sm.append_message(&make_asst_msg("alternate response"));
-        // Now 5 entries (original 4 + 1 new message)
-        assert_eq!(sm.entries().len(), 5);
+        // Now 6 entries (original 4 + leaf + 1 new message)
+        assert_eq!(sm.entries().len(), 6);
 
         // Build context from current leaf - should have 2 messages (m1, branch asst)
         let context = sm.build_session_context();
@@ -2462,16 +2555,17 @@ mod tests {
         sm.append_message(&make_asst_msg("response"));
         assert_eq!(sm.entries().len(), 2);
 
-        // Reset leaf (in-memory, no persistent entry)
+        // Reset leaf (persistent leaf entry, pi-compatible)
         sm.reset_leaf();
-        assert_eq!(sm.entries().len(), 2); // No new entry
+        // Leaf entry was written (type: "leaf", targetId: null)
+        assert_eq!(sm.entries().len(), 3);
         assert!(sm.leaf_id().is_none());
 
         // Append from reset state (parentId should be None since leaf is None)
         sm.append_message(&make_user_msg("fresh start"));
-        assert_eq!(sm.entries().len(), 3);
+        assert_eq!(sm.entries().len(), 4);
         // Verify fresh start has no parent
-        match &sm.entries()[2] {
+        match &sm.entries()[3] {
             SessionEntry::Message(m) => {
                 assert!(m.parent_id.is_none());
             }
@@ -2632,7 +2726,7 @@ mod tests {
 
         // Open - should keep the session (header exists, just no entries)
         let sm = SessionManager::open(&file_path, Some(&sessions_dir), None);
-        assert_eq!(sm.session_id(), &original_id);
+        assert_eq!(sm.session_id(), original_id);
         assert!(sm.entries().is_empty());
     }
 

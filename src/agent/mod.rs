@@ -15,9 +15,11 @@ pub mod ui;
 pub use agent_session::{AgentSession, CompactionEvent, CompactionEventCallback};
 pub use context_files::{ContextFile, load_context_files};
 pub use extension::{CommandHandler, CommandResult, Extension, SlashCommand, ToolDefinition};
-pub use session::SessionManager;
+pub use session::{Session, SessionContext, SessionManager};
 pub use session_repo::{DefaultSessionRepo, SessionRepo};
-pub use session_storage::{InMemorySessionStorage, JsonlSessionStorage, SessionStorage};
+pub use session_storage::{
+    InMemorySessionStorage, JsonlSessionStorage, SessionMetadata, SessionStorage,
+};
 pub use settings::Settings;
 
 pub use system_prompt::{SystemPromptBuilder, ToolSnippet};

@@ -1,4 +1,5 @@
 use crate::agent::branch_summary::{collect_entries_for_branch_summary, generate_branch_summary};
+use crate::agent::session_storage::{InMemorySessionStorage, SessionMetadata, SessionStorage};
 use crate::agent::compaction::{
     self, CompactionReason, CompactionResult, CompactionSettings, compact, prepare_compaction,
 };
@@ -48,7 +49,16 @@ pub type CompactionEventCallback = Box<dyn Fn(&CompactionEvent) + Send + Sync>;
 /// agent_session.on_thinking_level_change("high");
 /// ```
 pub struct AgentSession {
-    session: SessionManager,
+    /// The core session (wraps SessionStorage).
+    session: crate::agent::session::Session,
+    /// Session storage directory on disk.
+    session_dir: std::path::PathBuf,
+    /// Working directory for this session.
+    cwd: std::path::PathBuf,
+    /// Whether session persistence is enabled.
+    persist: bool,
+    /// Whether the session file has been written at least once (lazy write).
+    flushed: bool,
     /// Last known model for change detection.
     last_model: Option<(String, String)>,
     /// Last known thinking level for change detection.
@@ -81,18 +91,21 @@ pub struct AgentSession {
 }
 
 impl AgentSession {
-    /// Create a new AgentSession wrapping an existing SessionManager.
-    pub fn new(session: SessionManager) -> Self {
+    /// Create a new AgentSession from a SessionManager (extracts inner Session + config).
+    pub fn new(mgr: SessionManager) -> Self {
         // Snapshot current metadata from the session context for change detection.
-        let ctx = session.build_session_context();
+        let ctx = mgr.build_session_context();
+
+        // Extract config before consuming mgr
+        let cwd = mgr.cwd().to_path_buf();
+        let session_dir = mgr.session_dir().to_path_buf();
+        let persist = mgr.is_persisted();
+        let session = mgr.into_session();
 
         // If the session has no thinking level change entries, set last_thinking_level
         // to empty so the first on_thinking_level_change always detects a change.
-        // Pi-compatible: the initial thinking level comes from settings default, not from
-        // the session context default ("off"). An empty sentinel ensures the first user
-        // cycle is always recorded in the session.
         let has_thinking_entries = !session
-            .find_entries_by_type("thinking_level_change")
+            .find_entries("thinking_level_change")
             .is_empty();
         let last_thinking_level = if has_thinking_entries {
             ctx.thinking_level
@@ -102,6 +115,10 @@ impl AgentSession {
 
         Self {
             session,
+            session_dir,
+            cwd,
+            persist,
+            flushed: false,
             last_model: ctx.model,
             last_thinking_level,
             last_active_tools: ctx.active_tool_names,
@@ -117,6 +134,43 @@ impl AgentSession {
             event_listeners: Vec::new(),
             overflow_recovery_attempted: false,
         }
+    }
+
+    // ── Static factory methods ─────────────────────────────────
+
+    /// Create a new persisted session.
+    pub fn create(cwd: &std::path::Path, session_dir: Option<&std::path::Path>) -> Self {
+        Self::new(SessionManager::create(cwd, session_dir))
+    }
+
+    /// Open a specific session file.
+    pub fn open(
+        path: &std::path::Path,
+        session_dir: Option<&std::path::Path>,
+        cwd_override: Option<&std::path::Path>,
+    ) -> Self {
+        Self::new(SessionManager::open(path, session_dir, cwd_override))
+    }
+
+    /// Create an in-memory session (no persistence).
+    pub fn in_memory(cwd: &std::path::Path) -> Self {
+        Self::new(SessionManager::in_memory(cwd))
+    }
+
+    /// Continue most recent session or create new.
+    pub fn continue_recent(cwd: &std::path::Path, session_dir: Option<&std::path::Path>) -> Self {
+        Self::new(SessionManager::continue_recent(cwd, session_dir))
+    }
+
+    /// Fork a session from another project directory.
+    pub fn fork_from(
+        source_path: &std::path::Path,
+        target_cwd: &std::path::Path,
+        session_dir: Option<&std::path::Path>,
+        options: Option<&crate::agent::session::NewSessionOptions>,
+    ) -> std::io::Result<Self> {
+        SessionManager::fork_from(source_path, target_cwd, session_dir, options)
+            .map(Self::new)
     }
 
     /// Configure compaction with API key, model, context window, and model config.
@@ -204,18 +258,82 @@ impl AgentSession {
     // ── Accessors ─────────────────────────────────────────────────
 
     /// Borrow the underlying session manager.
-    pub fn session(&self) -> &SessionManager {
+    /// Borrow the underlying Session.
+    pub fn session(&self) -> &crate::agent::session::Session {
         &self.session
     }
 
-    /// Mutably borrow the underlying session manager.
-    pub fn session_mut(&mut self) -> &mut SessionManager {
+    /// Mutably borrow the underlying Session.
+    pub fn session_mut(&mut self) -> &mut crate::agent::session::Session {
         &mut self.session
     }
 
-    /// Consume the AgentSession and return the inner SessionManager.
-    pub fn into_session(self) -> SessionManager {
+    /// Consume and return the inner Session.
+    pub fn into_session(self) -> crate::agent::session::Session {
         self.session
+    }
+
+    /// Ensure the session file has been written (lazy write on first assistant message).
+    pub fn ensure_flushed(&mut self) {
+        if self.flushed || !self.persist {
+            return;
+        }
+        let id = self.session.session_id();
+        let cwd_str = self.cwd.to_string_lossy().to_string();
+        let parent_session = self.session.metadata().parent_session_path.clone();
+        let created_at = self.session.metadata().created_at.clone();
+        let file_ts = created_at.replace([':', '.'], "-");
+        let file_path = self.session_dir.join(format!("{}_{}.jsonl", file_ts, id));
+
+        let existing_entries = self.session.get_entries();
+
+        match crate::agent::session_storage::JsonlSessionStorage::create(
+            file_path,
+            &cwd_str,
+            &id,
+            parent_session,
+        ) {
+            Ok(mut file_storage) => {
+                for entry in &existing_entries {
+                    if let Err(e) = file_storage.append_entry(entry.clone()) {
+                        eprintln!("Warning: failed to write entry to session file: {}", e);
+                    }
+                }
+                self.session =
+                    crate::agent::session::Session::new(Box::new(file_storage));
+                self.flushed = true;
+            }
+            Err(e) => {
+                eprintln!("Warning: failed to create session file: {}", e);
+                self.flushed = true;
+            }
+        }
+    }
+
+    // ── App-level accessors ────────────────────────────────────
+
+    pub fn cwd(&self) -> &std::path::Path {
+        &self.cwd
+    }
+
+    pub fn session_dir(&self) -> &std::path::Path {
+        &self.session_dir
+    }
+
+    pub fn is_persisted(&self) -> bool {
+        self.persist
+    }
+
+    pub fn session_id(&self) -> String {
+        self.session.session_id()
+    }
+
+    pub fn session_file(&self) -> Option<std::path::PathBuf> {
+        self.session.session_file()
+    }
+
+    pub fn session_name(&self) -> Option<String> {
+        self.session.session_name()
     }
 
     // ── Model / thinking / tool change tracking ─────────────────
@@ -263,7 +381,17 @@ impl AgentSession {
     /// Reset the session (creates a new empty session) and clear
     /// all tracked state so the new session starts fresh.
     pub fn new_session(&mut self) {
-        self.session.new_session(None);
+        // Create a fresh in-memory session
+        let meta = SessionMetadata {
+            id: uuid::Uuid::new_v4().to_string(),
+            created_at: chrono::Utc::now().to_rfc3339(),
+            cwd: self.cwd.to_string_lossy().to_string(),
+            path: None,
+            parent_session_path: None,
+        };
+        let storage = Box::new(InMemorySessionStorage::new(meta));
+        self.session = crate::agent::session::Session::new(storage);
+        self.flushed = false;
         self.persisted_message_ids.clear();
         self.persisted_tool_call_ids.clear();
         self.last_model = None;
@@ -418,7 +546,7 @@ impl AgentSession {
         // Emit compaction_start
         self.emit_compaction_event(&CompactionEvent::Start { reason });
 
-        let entries = self.session.entries();
+        let entries = self.session.get_entries();
 
         // Check threshold for auto-compact
         if reason == CompactionReason::Threshold {
@@ -433,7 +561,7 @@ impl AgentSession {
             }
         }
 
-        let Some(prep) = prepare_compaction(entries, &self.compaction_settings) else {
+        let Some(prep) = prepare_compaction(&entries, &self.compaction_settings) else {
             return Ok(None);
         };
 
@@ -580,7 +708,7 @@ impl AgentSession {
     /// Optionally summarizes the abandoned path if a provider is configured.
     /// Returns the branch summary text if summarization was performed.
     pub async fn set_branch(&mut self, branch_from_id: &str) -> Result<Option<String>, String> {
-        let old_leaf = self.session.leaf_id().map(|s| s.to_string());
+        let old_leaf = self.session.get_leaf_id();
 
         let summary = if self.compaction_api_key.is_some()
             && !self.model_name.is_empty()
@@ -604,7 +732,7 @@ impl AgentSession {
         };
 
         self.session
-            .set_branch(branch_from_id)
+            .set_leaf_id(Some(branch_from_id))
             .map_err(|e| format!("Failed to set branch: {}", e))?;
 
         Ok(summary)

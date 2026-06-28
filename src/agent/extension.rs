@@ -888,9 +888,9 @@ mod tests {
 
     #[test]
     fn test_coerce_number_from_string() {
-        let mut v = serde_json::json!("3.14");
+        let mut v = serde_json::json!("42.5");
         coerce_primitive_by_type("number", &mut v);
-        assert_eq!(v, serde_json::json!(3.14));
+        assert_eq!(v, serde_json::json!(42.5));
     }
 
     #[test]

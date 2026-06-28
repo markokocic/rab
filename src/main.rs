@@ -1,5 +1,4 @@
 use rab::agent::extension::Extension;
-use rab::agent::session::SessionManager;
 use rab::agent::settings::Settings;
 use rab::agent::ui;
 use rab::builtin::{
@@ -267,7 +266,7 @@ async fn main() -> anyhow::Result<()> {
                 id: Some(id.clone()),
                 parent_session: None,
             });
-        match SessionManager::fork_from(
+        match rab::agent::session::SessionManager::fork_from(
             resolved.path(),
             &cwd,
             session_dir.as_deref(),
@@ -275,7 +274,7 @@ async fn main() -> anyhow::Result<()> {
         ) {
             Ok(sm) => {
                 eprintln!("Forked session {}", sm.session_id());
-                sm
+                rab::agent::AgentSession::new(sm)
             }
             Err(e) => {
                 eprintln!("Error: fork failed: {}", e);
@@ -283,7 +282,7 @@ async fn main() -> anyhow::Result<()> {
             }
         }
     } else if no_session {
-        SessionManager::in_memory(&cwd)
+        rab::agent::AgentSession::in_memory(&cwd)
     } else if let Some(ref path_or_id) = session_path {
         // Pi-compatible: resolve path or partial UUID
         match resolve_session_arg(path_or_id, &cwd, session_dir.as_deref()) {
@@ -297,7 +296,7 @@ async fn main() -> anyhow::Result<()> {
                     }
                 }
                 let path = resolved.path().to_path_buf();
-                SessionManager::open(&path, session_dir.as_deref(), None)
+                rab::agent::AgentSession::open(&path, session_dir.as_deref(), None)
             }
             Err(e) => {
                 eprintln!("Error: {}", e);
@@ -307,9 +306,9 @@ async fn main() -> anyhow::Result<()> {
     } else if resume_session {
         // Pi-compatible: --resume opens interactive session picker
         // For now, fall back to continue_recent
-        SessionManager::continue_recent(&cwd, session_dir.as_deref())
+        rab::agent::AgentSession::continue_recent(&cwd, session_dir.as_deref())
     } else if continue_session {
-        SessionManager::continue_recent(&cwd, session_dir.as_deref())
+        rab::agent::AgentSession::continue_recent(&cwd, session_dir.as_deref())
     } else if let Some(ref sid) = session_id {
         // Use explicit session ID, creating it if missing
         let sessions_dir = session_dir
@@ -318,19 +317,19 @@ async fn main() -> anyhow::Result<()> {
         let sessions = rab::agent::session::list_sessions(&sessions_dir);
         let existing = sessions.iter().find(|s| s.id == *sid);
         if let Some(s) = existing {
-            SessionManager::open(&s.path, session_dir.as_deref(), None)
+            rab::agent::AgentSession::open(&s.path, session_dir.as_deref(), None)
         } else {
-            SessionManager::create_with_options(
+            rab::agent::AgentSession::new(rab::agent::session::SessionManager::create_with_options(
                 &cwd,
                 session_dir.as_deref(),
                 Some(&rab::agent::session::NewSessionOptions {
                     id: Some(sid.clone()),
                     parent_session: None,
                 }),
-            )
+            ))
         }
     } else {
-        SessionManager::create(&cwd, session_dir.as_deref())
+        rab::agent::AgentSession::create(&cwd, session_dir.as_deref())
     };
 
     let mut session = session; // make mutable for appending
@@ -339,11 +338,11 @@ async fn main() -> anyhow::Result<()> {
     if let Some(ref name) = session_name
         && !name.trim().is_empty()
     {
-        session.append_session_info(name);
+        session.session_mut().append_session_info(name);
     }
 
     // Load history from session
-    let context = session.build_session_context();
+    let context = session.session().build_session_context();
 
     // Available models
     let available_models = vec![
@@ -493,7 +492,8 @@ async fn main() -> anyhow::Result<()> {
     // Pi-compatible: if the session has thinking level change entries, use the resolved level
     // from the current path. Otherwise fall back to settings default.
     let has_thinking_entries = !session
-        .find_entries_by_type("thinking_level_change")
+        .session()
+        .find_entries("thinking_level_change")
         .is_empty();
     let thinking_level = if has_thinking_entries {
         Some(context.thinking_level.clone())
@@ -523,7 +523,7 @@ async fn main() -> anyhow::Result<()> {
         ui::run(config, session).await
     } else {
         let message = message_parts.join(" ");
-        let mut agent_session = rab::agent::AgentSession::new(session);
+        let mut agent_session = session;
         let api_key = auth.api_key("opencode-go").unwrap_or_default();
         let mut mc = yoagent::provider::model::ModelConfig::openai_compat(
             "https://opencode.ai/zen/go/v1",

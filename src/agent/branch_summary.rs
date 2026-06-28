@@ -1,6 +1,6 @@
 use crate::agent::compaction;
 use crate::agent::compaction::{CompactionSettings, estimate_tokens};
-use crate::agent::session::{SessionEntry, SessionManager};
+use crate::agent::session::{Session, SessionEntry};
 use crate::agent::types::{
     assistant_message, message_is_assistant, message_is_tool_result, message_is_user, message_text,
     user_message,
@@ -15,7 +15,7 @@ use yoagent::types::AgentMessage;
 ///
 /// Returns the entries to summarize (chronological order) and the common ancestor id.
 pub fn collect_entries_for_branch_summary(
-    session: &SessionManager,
+    session: &Session,
     old_leaf_id: Option<&str>,
     target_id: &str,
 ) -> (Vec<SessionEntry>, Option<String>) {
@@ -24,14 +24,14 @@ pub fn collect_entries_for_branch_summary(
     };
 
     // Build set of ids on the path from old leaf to root
-    let old_path: HashSet<&str> = session
-        .branch(Some(old_leaf))
+    let old_path: HashSet<String> = session
+        .get_branch(Some(old_leaf)).unwrap_or_default()
         .iter()
-        .map(|e| e.id())
+        .map(|e| e.id().to_string())
         .collect();
 
     // Walk target path from root to leaf, find deepest common ancestor
-    let target_path = session.branch(Some(target_id));
+    let target_path = session.get_branch(Some(target_id)).unwrap_or_default();
     let mut common_ancestor_id: Option<String> = None;
     for entry in target_path.iter().rev() {
         if old_path.contains(entry.id()) {
@@ -48,9 +48,10 @@ pub fn collect_entries_for_branch_summary(
         if Some(cur_id.as_str()) == common_ancestor_id.as_deref() {
             break;
         }
-        if let Some(entry) = session.entry(cur_id) {
-            entries.push(entry.clone());
-            current = entry.parent_id().map(|s| s.to_string());
+        if let Some(entry) = session.get_entry(cur_id) {
+            let parent = entry.parent_id().map(|s| s.to_string());
+            entries.push(entry);
+            current = parent;
         } else {
             break;
         }
@@ -124,7 +125,7 @@ pub fn prepare_branch_entries(
 /// The summary is appended to the session as a `BranchSummaryEntry`.
 /// Returns the summary text, or an error message.
 pub async fn generate_branch_summary(
-    session: &mut SessionManager,
+    session: &mut Session,
     entries: &[SessionEntry],
     target_id: &str,
     api_key: &str,
@@ -279,16 +280,17 @@ fn extract_branch_file_ops(entries: &[SessionEntry]) -> Option<serde_json::Value
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::session::{BranchSummaryEntry, MessageEntry, SessionEntry};
+    use crate::agent::session::{BranchSummaryEntry, MessageEntry, SessionEntry, SessionManager};
     use crate::agent::types::{assistant_message, user_message};
     use std::path::Path;
 
-    /// Push an entry into the SessionManager, populating by_id and setting leaf_id.
+    /// Push an entry into the SessionManager via the storage layer.
     fn push_entry(sm: &mut SessionManager, entry: SessionEntry) -> String {
         let id = entry.id().to_string();
-        sm.by_id.insert(id.clone(), entry.clone());
-        sm.file_entries.push(entry);
-        sm.leaf_id = Some(id.clone());
+        sm.session_mut()
+            .get_storage_mut()
+            .append_entry(entry)
+            .unwrap();
         id
     }
 
@@ -344,7 +346,7 @@ mod tests {
     fn test_collect_entries_no_old_leaf() {
         let (sm, _ids) = linear_chain(3);
         let target_id = sm.entries().last().unwrap().id().to_string();
-        let (entries, ancestor) = collect_entries_for_branch_summary(&sm, None, &target_id);
+        let (entries, ancestor) = collect_entries_for_branch_summary(sm.session(), None, &target_id);
         assert!(entries.is_empty());
         assert!(ancestor.is_none());
     }
@@ -355,7 +357,7 @@ mod tests {
         let old_leaf = ids.last().unwrap();
         let target_id = ids.last().unwrap();
         let (entries, ancestor) =
-            collect_entries_for_branch_summary(&sm, Some(old_leaf), target_id);
+            collect_entries_for_branch_summary(sm.session(), Some(old_leaf), target_id);
         assert!(entries.is_empty());
         assert!(ancestor.is_some());
     }
@@ -380,7 +382,7 @@ mod tests {
         let entry_e = msg_entry(Some(&id_d));
         let id_e = push_entry(&mut sm, entry_e);
 
-        let (entries, ancestor) = collect_entries_for_branch_summary(&sm, Some(&id_e), &id_c);
+        let (entries, ancestor) = collect_entries_for_branch_summary(sm.session(), Some(&id_e), &id_c);
 
         assert_eq!(ancestor.as_deref(), Some(id_a.as_str()));
         assert_eq!(entries.len(), 2, "should collect E and D");
@@ -408,7 +410,7 @@ mod tests {
         let entry_c = msg_entry(Some(&id_bs));
         let id_c = push_entry(&mut sm, entry_c);
 
-        let (entries, ancestor) = collect_entries_for_branch_summary(&sm, Some(&id_c), &id_b);
+        let (entries, ancestor) = collect_entries_for_branch_summary(sm.session(), Some(&id_c), &id_b);
 
         assert_eq!(ancestor.as_deref(), Some(id_bs.as_str()));
         assert_eq!(entries.len(), 1);
