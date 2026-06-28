@@ -138,13 +138,6 @@ pub fn join_stdin_reader() {
 }
 
 /// Drain all pending events from the stdin reader channel.
-pub fn drain_stdin_events() {
-    let rx_guard = EVENT_RX.lock().unwrap();
-    if let Some(rx) = rx_guard.as_ref() {
-        while rx.try_recv().is_ok() {}
-    }
-}
-
 /// Non-blocking read from the background stdin reader channel.
 ///
 /// The receiver is taken out of the mutex before the call so `EVENT_RX`
