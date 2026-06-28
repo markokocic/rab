@@ -53,9 +53,7 @@ pub struct AppConfig {
     pub settings: crate::agent::settings::Settings,
     /// Context files (AGENTS.md / CLAUDE.md) loaded for the session.
     pub context_files: Vec<String>,
-    /// Tool execution strategy (parallel by default).
-    #[allow(dead_code)]
-    pub tool_execution: yoagent::types::ToolExecutionStrategy,
+
     /// Skills loaded for the session (used for /skill:name expansion).
     pub skills: Vec<yoagent::skills::Skill>,
     /// Whether the current model supports reasoning (for showing thinking level in footer).
@@ -85,8 +83,6 @@ pub struct App {
     pub chat_container: std::rc::Rc<std::cell::RefCell<crate::tui::Container>>,
 
     // ── Section components for the UI layout (written by compose_ui) ──
-    /// Pending streaming text section.
-    pub pending_section: std::rc::Rc<std::cell::RefCell<crate::tui::components::DynamicLines>>,
     /// Status text section (transient, dim).
     pub status_section: std::rc::Rc<std::cell::RefCell<crate::tui::components::DynamicLines>>,
     /// Working indicator section.
@@ -105,10 +101,9 @@ pub struct App {
     pending_submit: Option<String>,
     /// The reused Agent (accumulates messages across turns, supports mid-turn steering).
     agent: Option<yoagent::agent::Agent>,
-    /// Lightweight forwarding task: agent's event receiver → app.event_tx.
+    /// Handle for the forwarding task that relays events from the agent's event
+    /// receiver to the UI channel. The Agent stays in `app.agent` during streaming.
     forward_handle: Option<tokio::task::JoinHandle<()>>,
-    pending_text: Option<String>,
-    pending_thinking: Option<String>,
 
     /// Display settings.
     hide_thinking: bool,
@@ -178,9 +173,6 @@ pub struct App {
     extensions: Arc<Vec<Box<dyn Extension>>>,
     /// Steering queue: messages delivered after current turn's tool calls finish,
     /// before the next LLM call. Shared with the agent loop.
-    /// Tool execution mode (parallel by default).
-    #[allow(dead_code)]
-    tool_execution: yoagent::types::ToolExecutionStrategy,
 
     /// Skills loaded for the session (/skill:name expansion).
     skills: Vec<yoagent::skills::Skill>,
@@ -341,9 +333,7 @@ impl App {
             tool_call_start_times: HashMap::new(),
             invalidate_rxs: Vec::new(),
             streaming_component: None,
-            pending_section: std::rc::Rc::new(std::cell::RefCell::new(
-                crate::tui::components::DynamicLines::new(),
-            )),
+
             status_section: std::rc::Rc::new(std::cell::RefCell::new(
                 crate::tui::components::DynamicLines::new(),
             )),
@@ -357,9 +347,7 @@ impl App {
             pending_submit: None,
             agent: None,
             forward_handle: None,
-            pending_text: None,
             pending_command_result: None,
-            pending_thinking: None,
             hide_thinking: config.hide_thinking,
             collapse_tool_output: config.collapse_tool_output,
             tools_expanded: !config.collapse_tool_output,
@@ -375,7 +363,7 @@ impl App {
             footer_provider,
             working: WorkingIndicator::new(),
             extensions: Arc::new(config.extensions),
-            tool_execution: config.tool_execution,
+
             skills: config.skills,
             session_info: config.session_info,
             api_key: config.api_key,
@@ -448,10 +436,6 @@ pub async fn run(config: AppConfig, session: SessionManager) -> anyhow::Result<(
     ));
     tui.root.add_child(std::boxed::Box::new(
         crate::tui::components::RcRefCellComponent(app.chat_container.clone()
-            as std::rc::Rc<std::cell::RefCell<dyn crate::tui::Component>>),
-    ));
-    tui.root.add_child(std::boxed::Box::new(
-        crate::tui::components::RcRefCellComponent(app.pending_section.clone()
             as std::rc::Rc<std::cell::RefCell<dyn crate::tui::Component>>),
     ));
     tui.root.add_child(std::boxed::Box::new(
@@ -529,14 +513,13 @@ pub async fn run(config: AppConfig, session: SessionManager) -> anyhow::Result<(
             dirty = true;
         }
 
-        // Recover Agent state after a completed turn
-        if let Some(handle) = app.forward_handle.as_ref()
-            && handle.is_finished()
-        {
+        // Recover Agent state after a completed turn.
+        // agent.finish() awaits the spawned loop task to restore tools.
+        // Since prompt() auto-calls finish() at the start of the next
+        // prompt(), this is only needed for immediate message access.
+        if app.forward_handle.as_ref().is_some_and(|h| h.is_finished()) {
             app.forward_handle.take();
             if let Some(ref mut agent) = app.agent {
-                // agent.prompt() already updated agent.messages internally;
-                // finish() awaits the spawned task to restore tools.
                 // The JoinHandle is resolved, so this returns instantly.
                 agent.finish().await;
             }
@@ -705,58 +688,13 @@ pub async fn run(config: AppConfig, session: SessionManager) -> anyhow::Result<(
 fn compose_ui(app: &mut App, width: usize) {
     // ── Session picker ──
     if let Some(ref picker) = app.session_picker {
-        let (lines, _cursor_y) = picker.render(width, &app.theme as &dyn crate::tui::Theme);
-        app.pending_section.borrow_mut().set_lines(lines);
+        let (_lines, _cursor_y) = picker.render(width, &app.theme as &dyn crate::tui::Theme);
         // Clear chat container when picker is active
         app.chat_container.borrow_mut().clear();
         app.status_section.borrow_mut().set_lines(vec![]);
         app.working_section.borrow_mut().set_lines(vec![]);
         return;
     }
-
-    // ── Pending (streaming) text ──
-    let mut pending_lines = Vec::new();
-    if let Some(ref text) = app.pending_text
-        && !text.is_empty()
-    {
-        let inner = width.saturating_sub(2);
-        for line in text.lines() {
-            if line.is_empty() {
-                pending_lines.push(String::new());
-            } else {
-                let wrapped = crate::tui::util::wrap_text_with_ansi(line, inner);
-                for w in wrapped {
-                    let line = format!(" {}", w);
-                    pending_lines.push(crate::agent::ui::render_utils::pad_to_width(&line, width));
-                }
-            }
-        }
-    }
-    if let Some(ref text) = app.pending_thinking
-        && !text.is_empty()
-    {
-        if app.hide_thinking {
-            let content = format!(
-                " {} ",
-                app.theme
-                    .italic(&app.theme.fg("thinking_text", "Thinking..."))
-            );
-            let padded = crate::agent::ui::render_utils::pad_to_width(&content, width);
-            pending_lines.push(app.theme.bg("thinking_bg", &padded));
-        } else {
-            let level_color = app
-                .thinking_level
-                .as_deref()
-                .and_then(crate::agent::ui::render_utils::thinking_level_color)
-                .unwrap_or("thinking_text");
-            for line in text.lines() {
-                let content = format!(" {}", app.theme.italic(&app.theme.fg(level_color, line)));
-                let padded = crate::agent::ui::render_utils::pad_to_width(&content, width);
-                pending_lines.push(app.theme.bg("thinking_bg", &padded));
-            }
-        }
-    }
-    app.pending_section.borrow_mut().set_lines(pending_lines);
 
     // ── Transient status text (pi-style: replaces previous status, not added to chat) ──
     let mut status_lines = Vec::new();
@@ -1280,11 +1218,7 @@ fn build_fresh_agent(
         .with_thinking(thinking_level)
         .with_messages(messages)
         .with_tools(tools)
-        .with_execution_limits(yoagent::context::ExecutionLimits {
-            max_total_tokens: usize::MAX,
-            max_turns: usize::MAX,
-            max_duration: std::time::Duration::from_secs(u64::MAX),
-        })
+        .without_context_management()
 }
 
 /// Map rab's thinking level string to yoagent's ThinkingLevel enum.
@@ -1299,11 +1233,9 @@ fn map_thinking_level(level: Option<&str>) -> yoagent::types::ThinkingLevel {
 }
 
 /// Start an agent turn asynchronously. Called from the main loop.
-/// Uses the reused Agent (pi-compatible pattern):
-/// 1. Creates the Agent once, keeps it alive across turns
-/// 2. `agent.prompt()` spawns the loop internally, returns a receiver
-/// 3. Agent stays accessible for mid-turn `agent.steer()` calls
-/// 4. Forwarding task relays events from the receiver to app.event_tx
+/// Uses `agent.prompt()` which spawns the loop internally and returns a
+/// receiver immediately. A forwarding task relays events to the UI channel.
+/// The Agent stays in `app.agent` during streaming, enabling mid-turn steer().
 async fn start_agent_loop(app: &mut App, message: String) {
     if app.session.is_none() {
         return;
@@ -1312,8 +1244,6 @@ async fn start_agent_loop(app: &mut App, message: String) {
     app.is_streaming = true;
     app.working.start();
     app.footer.borrow_mut().set_streaming(true);
-    app.pending_text = None;
-    app.pending_thinking = None;
     app.last_streaming_event = std::time::Instant::now();
 
     let thinking = map_thinking_level(app.thinking_level.as_deref());
@@ -1348,8 +1278,8 @@ async fn start_agent_loop(app: &mut App, message: String) {
         session.on_thinking_level_change(app.thinking_level.as_deref().unwrap_or("off"));
     }
 
-    // Start the turn: agent.prompt() spawns the loop internally,
-    // keeps the Agent in scope, and returns a receiver.
+    // Start the turn: agent.prompt() spawns the loop internally, keeps the
+    // Agent in scope, and returns a receiver for streaming events.
     let mut rx = agent.prompt(message).await;
 
     // Forward events from the agent's receiver to the UI channel.
@@ -1387,8 +1317,6 @@ fn handle_session_picker_input(app: &mut App, key: &crossterm::event::KeyEvent) 
                 let ctx = new_session.session().build_session_context();
                 app.chat_container.borrow_mut().clear();
                 app.streaming_component = None;
-                app.pending_text = None;
-                app.pending_thinking = None;
                 app.pending_tools.clear();
                 app.tool_call_start_times.clear();
                 rebuild_chat_from_messages(
@@ -1560,8 +1488,6 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
             app.agent = None;
             app.chat_container.borrow_mut().clear();
             app.streaming_component = None;
-            app.pending_text = None;
-            app.pending_thinking = None;
             app.pending_tools.clear();
             app.tool_call_start_times.clear();
 
@@ -1576,8 +1502,6 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
             let ctx = new_session.session().build_session_context();
             app.chat_container.borrow_mut().clear();
             app.streaming_component = None;
-            app.pending_text = None;
-            app.pending_thinking = None;
             app.pending_tools.clear();
             app.tool_call_start_times.clear();
             rebuild_chat_from_messages(
@@ -1846,8 +1770,6 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
                                     let ctx = new_session.session().build_session_context();
                                     app.chat_container.borrow_mut().clear();
                                     app.streaming_component = None;
-                                    app.pending_text = None;
-                                    app.pending_thinking = None;
                                     app.pending_tools.clear();
                                     app.tool_call_start_times.clear();
                                     rebuild_chat_from_messages(
@@ -2277,8 +2199,6 @@ fn handle_agent_event(app: &mut App, event: yoagent::types::AgentEvent) {
         E::AgentStart => {
             app.is_streaming = true;
             app.working.start();
-            app.pending_text = None;
-            app.pending_thinking = None;
             app.last_streaming_event = std::time::Instant::now();
             app.refresh_git_branch();
         }
@@ -2338,7 +2258,6 @@ fn handle_agent_event(app: &mut App, event: yoagent::types::AgentEvent) {
         } => {
             app.last_streaming_event = std::time::Instant::now();
             app.pending_tool_executions += 1;
-            flush_all(app);
             app.streaming_component = None;
             let name = tool_name;
             let renderer = find_tool_renderer(&app.extensions, &name);
@@ -2367,6 +2286,32 @@ fn handle_agent_event(app: &mut App, event: yoagent::types::AgentEvent) {
                 app,
                 std::boxed::Box::new(crate::agent::ui::components::RcToolExec(comp)),
             );
+        }
+        E::ToolExecutionUpdate {
+            tool_call_id,
+            partial_result,
+            ..
+        } => {
+            app.last_streaming_event = std::time::Instant::now();
+            // Forward partial results to the pending tool component (live streaming).
+            let partial_text: String = partial_result
+                .content
+                .iter()
+                .filter_map(|c| {
+                    if let yoagent::types::Content::Text { text } = c {
+                        Some(text.clone())
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("");
+            if !partial_text.is_empty()
+                && let Some(weak) = app.pending_tools.get(&tool_call_id)
+                && let Some(comp) = weak.upgrade()
+            {
+                comp.borrow_mut().append_output(&partial_text);
+            }
         }
         E::ToolExecutionEnd {
             tool_call_id,
@@ -2419,11 +2364,10 @@ fn handle_agent_event(app: &mut App, event: yoagent::types::AgentEvent) {
         }
         E::TurnEnd { .. } => {
             app.last_streaming_event = std::time::Instant::now();
-            flush_all(app);
             app.streaming_component = None;
         }
         E::AgentEnd { messages } => {
-            flush_all(app);
+            app.streaming_component = None;
             app.is_streaming = false;
             app.working.stop();
             app.footer.borrow_mut().set_streaming(false);
@@ -2435,70 +2379,34 @@ fn handle_agent_event(app: &mut App, event: yoagent::types::AgentEvent) {
             if let Some(ref s) = app.session {
                 app.footer.borrow_mut().refresh_from_session(s.session());
             }
-            // Check for errors in messages — display if found.
-            let mut displayed_error = false;
-            for msg in &messages {
-                if let Some(err) = crate::agent::types::message_error(msg) {
-                    let error_text = if err.is_empty() {
-                        "Provider error: The agent encountered an issue and stopped.".to_string()
-                    } else {
-                        format!("Provider error: {}", err)
-                    };
-                    chat_add(
-                        app,
-                        std::boxed::Box::new(InfoMessageComponent::new(error_text)),
-                    );
-                    displayed_error = true;
-                    break;
-                }
-            }
             // Detect silent stops: if the last assistant message was empty
             // (no text, no tool calls) with stop_reason=Stop, the agent returned
-            // without producing any visible output. Show an indicator so the
-            // user understands what happened instead of seeing nothing.
-            // Also check for system stop messages that weren't displayed in
-            // MessageEnd (in case they arrived between MessageEnd and AgentEnd).
-            if !displayed_error {
-                for msg in messages.iter().rev() {
-                    if crate::agent::types::message_is_system_stop(msg) {
-                        let text = crate::agent::types::message_text(msg);
-                        chat_add(
-                            app,
-                            std::boxed::Box::new(InfoMessageComponent::new(text.clone())),
-                        );
-                        // Persist as Extension if not already done
-                        if let Some(ref mut s) = app.session {
-                            let ext =
-                                crate::agent::types::extension_message("system_stop", text, true);
-                            s.persist_extension_message(&ext);
-                        }
-                        break;
-                    }
-                    if let Some(yoagent::types::Message::Assistant {
-                        content,
-                        stop_reason,
-                        error_message,
-                        ..
-                    }) = msg.as_llm()
-                        && error_message.is_none()
-                        && stop_reason != &yoagent::types::StopReason::ToolUse
-                        && (content.is_empty()
-                            || content.iter().all(|c| {
-                                matches!(c, yoagent::types::Content::Text { text } if text.trim().is_empty())
-                            }))
-                    {
-                        chat_add(
-                            app,
-                            std::boxed::Box::new(InfoMessageComponent::new(
-                                "The agent returned an empty response. \
-                                 This can happen when the provider's context \
-                                 limit is exceeded or the model declined to \
-                                 respond. Try sending a new message."
-                                    .to_string(),
-                            )),
-                        );
-                        break;
-                    }
+            // without producing any visible output.
+            for msg in messages.iter().rev() {
+                if let Some(yoagent::types::Message::Assistant {
+                    content,
+                    stop_reason,
+                    error_message,
+                    ..
+                }) = msg.as_llm()
+                    && error_message.is_none()
+                    && stop_reason != &yoagent::types::StopReason::ToolUse
+                    && (content.is_empty()
+                        || content.iter().all(|c| {
+                            matches!(c, yoagent::types::Content::Text { text } if text.trim().is_empty())
+                        }))
+                {
+                    chat_add(
+                        app,
+                        std::boxed::Box::new(InfoMessageComponent::new(
+                            "The agent returned an empty response. \
+                             This can happen when the provider's context \
+                             limit is exceeded or the model declined to \
+                             respond. Try sending a new message."
+                                .to_string(),
+                        )),
+                    );
+                    break;
                 }
             }
         }
@@ -2554,40 +2462,7 @@ fn handle_agent_event(app: &mut App, event: yoagent::types::AgentEvent) {
                 std::boxed::Box::new(InfoMessageComponent::new(msg.clone())),
             );
         }
-        _ => {}
     }
-}
-
-fn flush_text(app: &mut App) {
-    if let Some(text) = app.pending_text.take()
-        && !text.is_empty()
-    {
-        // Add Component to chat_container with spacer
-        let mut comp = crate::agent::ui::components::AssistantMessageComponent::new(&text);
-        if app.hide_thinking {
-            comp.set_hide_thinking(true);
-        }
-        chat_add(app, std::boxed::Box::new(comp));
-    }
-}
-
-fn flush_thinking(app: &mut App) {
-    if let Some(text) = app.pending_thinking.take()
-        && !text.is_empty()
-    {
-        // Add Component to chat_container with spacer
-        let mut thinking = crate::agent::ui::components::AssistantMessageComponent::new("");
-        thinking.add_thinking(&text, app.thinking_level.clone());
-        if app.hide_thinking {
-            thinking.set_hide_thinking(true);
-        }
-        chat_add(app, std::boxed::Box::new(thinking));
-    }
-}
-
-fn flush_all(app: &mut App) {
-    flush_text(app);
-    flush_thinking(app);
 }
 
 /// Parse a ! or !! bang command from input.
@@ -2611,8 +2486,6 @@ fn parse_bang_command(input: &str) -> Option<(String, bool)> {
     }
 }
 
-/// Extract the exit code from a bash error result content.
-/// Looks for patterns like "Command exited with code N".
 /// Format a number with locale-style thousands separators (e.g. 1234 -> "1,234").
 fn format_number(n: u64) -> String {
     let s = n.to_string();
@@ -2630,9 +2503,6 @@ fn format_number(n: u64) -> String {
 fn fmt_time_short(dt: &chrono::DateTime<chrono::Utc>) -> String {
     dt.format("%Y-%m-%d %H:%M").to_string()
 }
-
-#[cfg(test)]
-mod tests {}
 
 // ── Skills utilities (moved inline from skills.rs) ─────────────────
 
