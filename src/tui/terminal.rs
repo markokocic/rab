@@ -145,44 +145,11 @@ pub fn drain_stdin_events() {
     }
 }
 
-/// Poll for any terminal event (key, paste, resize) with a timeout.
-/// Blocks the calling thread until either an event arrives or the timeout
-/// expires. Uses `recv_timeout` internally so zero CPU is consumed while
-/// waiting.
+/// Non-blocking read from the background stdin reader channel.
 ///
-/// The receiver is taken out of the mutex before the blocking call so
-/// `EVENT_RX` is never held during the wait — other code (e.g.
-/// `stop_stdin_reader`) can always lock it without contention.
-pub fn poll_terminal_event(timeout: Option<Duration>) -> io::Result<Option<TerminalEvent>> {
-    use mpsc::RecvTimeoutError;
-    // Take the receiver out so we can block without holding EVENT_RX.
-    let rx_opt = EVENT_RX.lock().unwrap().take();
-    let rx = match rx_opt.as_ref() {
-        Some(rx) => rx,
-        None => return Ok(None),
-    };
-    let (event, keep) = match timeout {
-        Some(dur) => match rx.recv_timeout(dur) {
-            Ok(event) => (Some(event), true),
-            Err(RecvTimeoutError::Timeout) => (None, true),
-            Err(RecvTimeoutError::Disconnected) => (None, false),
-        },
-        None => match rx.recv() {
-            Ok(event) => (Some(event), true),
-            Err(_) => (None, false),
-        },
-    };
-    // Drop the reference so we can move rx_opt
-    let _ = rx;
-    if keep {
-        // Channel still alive — put receiver back
-        *EVENT_RX.lock().unwrap() = rx_opt;
-    }
-    Ok(event)
-}
-
-/// Non-blocking version of `poll_terminal_event`. Returns `None` if no event
-/// is available or the channel is disconnected. Never blocks.
+/// The receiver is taken out of the mutex before the call so `EVENT_RX`
+/// is never held during the operation — other code (e.g. `stop_stdin_reader`)
+/// can always lock it without contention.
 pub fn try_recv_terminal_event() -> Option<TerminalEvent> {
     use std::sync::mpsc::TryRecvError;
     let rx_opt = EVENT_RX.lock().unwrap().take();
@@ -197,33 +164,6 @@ pub fn try_recv_terminal_event() -> Option<TerminalEvent> {
         *EVENT_RX.lock().unwrap() = rx_opt;
     }
     event
-}
-
-pub fn poll_key_event(timeout: Option<Duration>) -> io::Result<Option<KeyEvent>> {
-    match poll_terminal_event(timeout)? {
-        Some(TerminalEvent::Key(key)) => Ok(Some(key)),
-        _ => Ok(None),
-    }
-}
-
-pub fn read_key_event() -> io::Result<KeyEvent> {
-    loop {
-        let rx_guard = EVENT_RX.lock().unwrap();
-        if let Some(rx) = rx_guard.as_ref() {
-            match rx.recv() {
-                Ok(TerminalEvent::Key(key)) => return Ok(key),
-                Ok(_) => continue,
-                Err(_) => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::BrokenPipe,
-                        "stdin reader died",
-                    ));
-                }
-            }
-        }
-        drop(rx_guard);
-        std::thread::sleep(Duration::from_millis(10));
-    }
 }
 
 // =============================================================================
