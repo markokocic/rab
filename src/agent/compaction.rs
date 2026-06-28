@@ -1071,58 +1071,69 @@ pub async fn summarize_text(
         mc
     });
 
-    let config = StreamConfig {
-        model: model.to_string(),
-        system_prompt: system_prompt.to_string(),
-        messages: yoagent_messages,
-        tools: vec![],
-        thinking_level,
-        api_key: api_key.to_string(),
-        max_tokens: Some(2048),
-        temperature: Some(0.3),
-        model_config: Some(model_config),
-        cache_config: yoagent::types::CacheConfig::default(),
-    };
+    let retry_config = yoagent::RetryConfig::default();
 
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    let cancel = tokio_util::sync::CancellationToken::new();
+    for attempt in 0..=retry_config.max_retries {
+        let config = StreamConfig {
+            model: model.to_string(),
+            system_prompt: system_prompt.to_string(),
+            messages: yoagent_messages.clone(),
+            tools: vec![],
+            thinking_level,
+            api_key: api_key.to_string(),
+            max_tokens: Some(2048),
+            temperature: Some(0.3),
+            model_config: Some(model_config.clone()),
+            cache_config: yoagent::types::CacheConfig::default(),
+        };
 
-    tokio::spawn(async move {
-        let _ = yoagent::provider::OpenAiCompatProvider
-            .stream(config, tx, cancel)
-            .await;
-    });
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let cancel = tokio_util::sync::CancellationToken::new();
 
-    let mut text = String::new();
-    let mut last_error: Option<String> = None;
+        tokio::spawn(async move {
+            let _ = yoagent::provider::OpenAiCompatProvider
+                .stream(config, tx, cancel)
+                .await;
+        });
 
-    while let Some(event) = rx.recv().await {
-        match event {
-            yoagent::provider::traits::StreamEvent::TextDelta { delta, .. } => {
-                text.push_str(&delta);
-            }
-            yoagent::provider::traits::StreamEvent::Done { message } => {
-                if let yoagent::types::Message::Assistant { content, .. } = &message {
-                    for c in content {
-                        if let yoagent::types::Content::Text { text: t } = c
-                            && text.is_empty()
-                        {
-                            text = t.clone();
+        let mut text = String::new();
+        let mut last_error: Option<String> = None;
+
+        while let Some(event) = rx.recv().await {
+            match event {
+                yoagent::provider::traits::StreamEvent::TextDelta { delta, .. } => {
+                    text.push_str(&delta);
+                }
+                yoagent::provider::traits::StreamEvent::Done { message } => {
+                    if let yoagent::types::Message::Assistant { content, .. } = &message {
+                        for c in content {
+                            if let yoagent::types::Content::Text { text: t } = c
+                                && text.is_empty()
+                            {
+                                text = t.clone();
+                            }
                         }
                     }
+                    break;
                 }
-                break;
+                yoagent::provider::traits::StreamEvent::Error { .. } => {
+                    last_error = Some("Provider returned error".to_string());
+                    break;
+                }
+                _ => {}
             }
-            yoagent::provider::traits::StreamEvent::Error { .. } => {
-                last_error = Some("Provider returned error".to_string());
-                break;
-            }
-            _ => {}
         }
+
+        if let Some(err) = last_error {
+            if attempt < retry_config.max_retries {
+                let delay = retry_config.delay_for_attempt(attempt + 1);
+                tokio::time::sleep(delay).await;
+                continue;
+            }
+            return Err(err);
+        }
+        return Ok(text);
     }
 
-    if let Some(err) = last_error {
-        return Err(err);
-    }
-    Ok(text)
+    unreachable!()
 }
