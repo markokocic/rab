@@ -811,24 +811,34 @@ pub fn build_session_context(path: &[SessionEntry]) -> SessionContext {
         }
     }
 
+    // Pi-compatible: fallback — extract model from assistant messages if no explicit model_change
+    if model.is_none() {
+        for entry in path {
+            if let SessionEntry::Message(e) = entry {
+                if let yoagent::types::AgentMessage::Llm(yoagent::types::Message::Assistant {
+                    model: ref m, provider: ref p, ..
+                }) = e.message {
+                    if !m.is_empty() && !p.is_empty() {
+                        model = Some((p.clone(), m.clone()));
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
     let messages = if let Some(compaction) = compaction_entry {
         let mut msgs: Vec<yoagent::types::AgentMessage> = Vec::new();
 
-        // 1. Compaction summary message
+        // 1. Compaction summary message (pi-compatible: user role with XML wrapping)
+        let comp_text = format!(
+            "The conversation history before this point was compacted into the following summary:\n\n<summary>\n{}\n</summary>",
+            compaction.summary
+        );
         msgs.push(yoagent::types::AgentMessage::Llm(
-            yoagent::types::Message::Assistant {
-                content: vec![yoagent::types::Content::Text {
-                    text: format!(
-                        "[Compaction: {} tokens → summary] {}",
-                        compaction.tokens_before, compaction.summary
-                    ),
-                }],
-                stop_reason: yoagent::types::StopReason::Stop,
-                model: String::new(),
-                provider: String::new(),
-                usage: yoagent::types::Usage::default(),
+            yoagent::types::Message::User {
+                content: vec![yoagent::types::Content::Text { text: comp_text }],
                 timestamp: chrono::Utc::now().timestamp_millis() as u64,
-                error_message: None,
             },
         ));
 
@@ -903,17 +913,15 @@ fn append_entry_to_message_list(
             ));
         }
         SessionEntry::BranchSummary(e) if !e.summary.is_empty() => {
+            // Pi-compatible: user role with XML summary wrapping
+            let bs_text = format!(
+                "The following is a summary of a branch that this conversation came back from:\n\n<summary>\n{}\n</summary>",
+                e.summary
+            );
             msgs.push(yoagent::types::AgentMessage::Llm(
-                yoagent::types::Message::Assistant {
-                    content: vec![yoagent::types::Content::Text {
-                        text: format!("[Branch: from {}] {}", e.from_id, e.summary),
-                    }],
-                    stop_reason: yoagent::types::StopReason::Stop,
-                    model: String::new(),
-                    provider: String::new(),
-                    usage: yoagent::types::Usage::default(),
+                yoagent::types::Message::User {
+                    content: vec![yoagent::types::Content::Text { text: bs_text }],
                     timestamp: chrono::Utc::now().timestamp_millis() as u64,
-                    error_message: None,
                 },
             ));
         }

@@ -31,6 +31,21 @@ pub enum CompactionEvent {
 /// Callback for compaction lifecycle events.
 pub type CompactionEventCallback = Box<dyn Fn(&CompactionEvent) + Send + Sync>;
 
+/// A deferred session write, queued during an agent run.
+/// Pi-compatible: batched and flushed at turn boundaries.
+enum PendingSessionWrite {
+    Message(yoagent::types::AgentMessage),
+    ModelChange { provider: String, model_id: String },
+    ThinkingLevelChange(String),
+    ActiveToolsChange(Vec<String>),
+    CustomMessageEntry {
+        custom_type: String,
+        content: serde_json::Value,
+        display: bool,
+        details: Option<serde_json::Value>,
+    },
+}
+
 /// Bridges the agent loop events and session persistence.
 ///
 /// Handles:
@@ -88,6 +103,8 @@ pub struct AgentSession {
     event_listeners: Vec<CompactionEventCallback>,
     /// Whether overflow recovery has already been attempted (prevents loops).
     overflow_recovery_attempted: bool,
+    /// Queued session writes, flushed at turn boundaries (pi-compatible).
+    pending_writes: Vec<PendingSessionWrite>,
 }
 
 impl AgentSession {
@@ -133,6 +150,7 @@ impl AgentSession {
             extensions: Vec::new(),
             event_listeners: Vec::new(),
             overflow_recovery_attempted: false,
+            pending_writes: Vec::new(),
         }
     }
 
@@ -336,14 +354,55 @@ impl AgentSession {
         self.session.session_name()
     }
 
+    // ── Pending writes (pi-compatible batching) ─────────────────
+
+    /// Queue a session write for batching. Pi-compatible: flushes at turn boundaries.
+    pub fn publish_session_write(&mut self, write: PendingSessionWrite) {
+        self.pending_writes.push(write);
+    }
+
+    /// Flush all queued writes to the underlying session storage.
+    /// Called at the end of `handle_yo_event` and `on_agent_end`.
+    pub fn flush_pending_writes(&mut self) {
+        for write in self.pending_writes.drain(..) {
+            match write {
+                PendingSessionWrite::Message(msg) => {
+                    self.session.append_message(&msg);
+                }
+                PendingSessionWrite::ModelChange { provider, model_id } => {
+                    self.session.append_model_change(&provider, &model_id);
+                }
+                PendingSessionWrite::ThinkingLevelChange(level) => {
+                    self.session.append_thinking_level_change(&level);
+                }
+                PendingSessionWrite::ActiveToolsChange(tools) => {
+                    self.session.append_active_tools_change(&tools);
+                }
+                PendingSessionWrite::CustomMessageEntry {
+                    custom_type,
+                    content,
+                    display,
+                    details,
+                } => {
+                    self.session.append_custom_message_entry(
+                        &custom_type, content, display, details,
+                    );
+                }
+            }
+        }
+    }
+
     // ── Model / thinking / tool change tracking ─────────────────
 
     /// Persist a model change if it differs from the last known model.
-    /// Returns true if a change entry was appended.
+    /// Returns true if a change entry was enqueued.
     pub fn on_model_change(&mut self, provider: &str, model_id: &str) -> bool {
         let new = (provider.to_string(), model_id.to_string());
         if self.last_model.as_ref() != Some(&new) {
-            self.session.append_model_change(provider, model_id);
+            self.publish_session_write(PendingSessionWrite::ModelChange {
+                provider: provider.to_string(),
+                model_id: model_id.to_string(),
+            });
             self.last_model = Some(new);
             true
         } else {
@@ -352,10 +411,12 @@ impl AgentSession {
     }
 
     /// Persist a thinking level change if it differs from the last known level.
-    /// Returns true if a change entry was appended.
+    /// Returns true if a change entry was enqueued.
     pub fn on_thinking_level_change(&mut self, level: &str) -> bool {
         if self.last_thinking_level != level {
-            self.session.append_thinking_level_change(level);
+            self.publish_session_write(PendingSessionWrite::ThinkingLevelChange(
+                level.to_string(),
+            ));
             self.last_thinking_level = level.to_string();
             true
         } else {
@@ -364,11 +425,13 @@ impl AgentSession {
     }
 
     /// Persist an active tools change if it differs from the last known set.
-    /// Returns true if a change entry was appended.
+    /// Returns true if a change entry was enqueued.
     pub fn on_active_tools_change(&mut self, tools: &[String]) -> bool {
         let tools_vec = tools.to_vec();
         if self.last_active_tools.as_ref() != Some(&tools_vec) {
-            self.session.append_active_tools_change(&tools_vec);
+            self.publish_session_write(PendingSessionWrite::ActiveToolsChange(
+                tools_vec.clone(),
+            ));
             self.last_active_tools = Some(tools_vec);
             true
         } else {
@@ -448,6 +511,8 @@ impl AgentSession {
                     .join("");
                 let msg = tool_result_message(tool_call_id, content, *is_error);
                 self.persist_message(&msg);
+                // Pi-compatible: flush tool result writes immediately (crash-safe)
+                self.flush_pending_writes();
             }
             YoEvent::AgentEnd { messages } => {
                 self.on_agent_end(messages);
@@ -486,6 +551,8 @@ impl AgentSession {
                 self.persisted_message_ids.insert(message_text(msg));
             }
         }
+        // Pi-compatible: flush queued metadata writes at turn end
+        self.flush_pending_writes();
     }
 
     // ── Compaction ────────────────────────────────────────────────
@@ -781,6 +848,7 @@ impl AgentSession {
 
     /// Persist a single message, skipping if already persisted (dedup).
     /// Tool results are deduped by tool_call_id; other messages by text.
+    /// Persist a message directly (pi-compatible: messages are written immediately, not queued).
     fn persist_message(&mut self, msg: &AgentMessage) {
         // Dedup tool results by tool_call_id
         if crate::agent::types::message_is_tool_result(msg)
