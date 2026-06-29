@@ -1264,20 +1264,33 @@ fn format_model_display(registry: &ProviderRegistry, model_id: &str) -> String {
 /// Handle a login command result. If `api_key` is provided, stores it immediately.
 /// Otherwise shows a usage message.
 fn handle_login(app: &mut App, provider: &str, api_key: Option<&str>) {
-    let provider = if provider.is_empty() { "opencode-go" } else { provider };
+    let provider = if provider.is_empty() {
+        "opencode-go"
+    } else {
+        provider
+    };
     if let Some(key) = api_key {
         match auth::login(provider, key) {
-            Ok(_) => chat_add(app, std::boxed::Box::new(InfoMessageComponent::new(
-                format!("Logged in to {}", provider)
-            ))),
-            Err(e) => chat_add(app, std::boxed::Box::new(InfoMessageComponent::new(
-                format!("Login failed: {}", e)
-            ))),
+            Ok(_) => chat_add(
+                app,
+                std::boxed::Box::new(InfoMessageComponent::new(format!(
+                    "Logged in to {}",
+                    provider
+                ))),
+            ),
+            Err(e) => chat_add(
+                app,
+                std::boxed::Box::new(InfoMessageComponent::new(format!("Login failed: {}", e))),
+            ),
         }
     } else {
-        chat_add(app, std::boxed::Box::new(InfoMessageComponent::new(
-            format!("Usage: /login {} <api-key>", provider)
-        )));
+        chat_add(
+            app,
+            std::boxed::Box::new(InfoMessageComponent::new(format!(
+                "Usage: /login {} <api-key>",
+                provider
+            ))),
+        );
     }
 }
 
@@ -1297,9 +1310,10 @@ fn handle_logout(app: &mut App, provider: Option<&str>) {
             chat_add(app, std::boxed::Box::new(InfoMessageComponent::new(msg)));
         }
         Err(e) => {
-            chat_add(app, std::boxed::Box::new(InfoMessageComponent::new(
-                format!("Logout failed: {}", e)
-            )));
+            chat_add(
+                app,
+                std::boxed::Box::new(InfoMessageComponent::new(format!("Logout failed: {}", e))),
+            );
         }
     }
 }
@@ -2150,7 +2164,7 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
         }
         CommandResult::Logout { provider } => {
             handle_logout(app, provider.as_deref());
-        },
+        }
         CommandResult::CompactSession(custom_instructions) => {
             // If streaming, interrupt first
             if app.is_streaming {

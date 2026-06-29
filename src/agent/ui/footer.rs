@@ -93,7 +93,7 @@ pub struct Footer {
     auto_compact: bool,
     experimental_enabled: bool,
 
-    // ── Data provider (pull-based: git branch, extension statuses) ──
+    // ── Data provider (pull-based: git branch, extension statuses, model/provider) ──
     provider: Rc<RefCell<FooterDataProvider>>,
 
     theme: RabTheme,
@@ -189,6 +189,9 @@ impl Footer {
 
         // Update session name from session
         self.session_name = session.session_name().map(|s| s.to_string());
+
+        // Pull model/provider from the latest session model change
+        self.provider.borrow_mut().refresh_from_session(session);
     }
 
     // ── Direct setters (model / settings state) ────────────────
@@ -358,10 +361,16 @@ impl crate::tui::Component for Footer {
         };
 
         // Prepend provider in parentheses if multiple providers (pi-style)
-        let available_provider_count = self.provider.borrow().get_available_provider_count();
+        let (available_provider_count, pname) = {
+            let prov = self.provider.borrow();
+            (
+                prov.get_available_provider_count(),
+                prov.get_model_provider().map(|s| s.to_string()),
+            )
+        };
         let right_side = if available_provider_count > 1 && !self.model.is_empty() {
-            let model_with_provider = format!("(?) {}", right_side_without_provider);
-            model_with_provider
+            let pname = pname.as_deref().unwrap_or("?");
+            format!("({}) {}", pname, right_side_without_provider)
         } else {
             right_side_without_provider.clone()
         };
@@ -856,12 +865,15 @@ mod tests {
             "/home/user/project".into(),
         )));
         provider.borrow_mut().set_available_provider_count(2);
+        provider
+            .borrow_mut()
+            .set_test_model_provider(Some("opencode-go"));
         let mut footer = Footer::new("/home/user/project", provider);
         footer.set_model("test-model");
         let lines = footer.render(80);
         assert!(
-            lines[1].contains("(?)"),
-            "Should show provider count-based prefix"
+            lines[1].contains("(opencode-go)"),
+            "Should show provider name in parentheses"
         );
     }
 

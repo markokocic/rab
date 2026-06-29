@@ -20,6 +20,10 @@ pub struct FooterDataProvider {
     git_branch: Option<String>,
     extension_statuses: BTreeMap<String, String>,
     available_provider_count: usize,
+    /// Latest model provider pulled from the session.
+    model_provider: Option<String>,
+    /// Latest model ID pulled from the session.
+    model_id: Option<String>,
 }
 
 impl FooterDataProvider {
@@ -29,6 +33,8 @@ impl FooterDataProvider {
             git_branch: None,
             extension_statuses: BTreeMap::new(),
             available_provider_count: 1,
+            model_provider: None,
+            model_id: None,
         };
         provider.refresh_git_branch();
         provider
@@ -69,7 +75,44 @@ impl FooterDataProvider {
         self.extension_statuses.clear();
     }
 
-    // ── Provider count (for multi-provider display) ──
+    // ── Model / provider (pulled from session via refresh_from_session) ──
+
+    pub fn get_model_provider(&self) -> Option<&str> {
+        self.model_provider.as_deref()
+    }
+
+    pub fn get_model_id(&self) -> Option<&str> {
+        self.model_id.as_deref()
+    }
+
+    /// Scan session entries for the latest `ModelChangeEntry` and cache
+    /// the provider + model_id. Called from Footer::refresh_from_session.
+    pub fn refresh_from_session(&mut self, session: &crate::agent::session::Session) {
+        let mut latest_provider: Option<String> = None;
+        let mut latest_model_id: Option<String> = None;
+
+        for entry in session.get_entries() {
+            if let crate::agent::session::SessionEntry::ModelChange(e) = entry {
+                latest_provider = Some(e.provider.clone());
+                latest_model_id = Some(e.model_id.clone());
+            }
+        }
+
+        self.model_provider = latest_provider;
+        self.model_id = latest_model_id;
+    }
+
+    /// Test-only: set model provider directly.
+    #[cfg(test)]
+    pub fn set_test_model_provider(&mut self, provider: Option<&str>) {
+        self.model_provider = provider.map(|s| s.to_string());
+    }
+
+    /// Test-only: set model ID directly.
+    #[cfg(test)]
+    pub fn set_test_model_id(&mut self, model_id: Option<&str>) {
+        self.model_id = model_id.map(|s| s.to_string());
+    }
 
     pub fn get_available_provider_count(&self) -> usize {
         self.available_provider_count
@@ -163,6 +206,85 @@ mod tests {
         // Changing cwd to a non-git dir should clear the branch
         provider.set_cwd(PathBuf::from("/nonexistent"));
         assert!(provider.get_git_branch().is_none());
+    }
+
+    // ── Model / provider tests ──
+
+    #[test]
+    fn test_model_provider_defaults() {
+        let provider = FooterDataProvider::new(PathBuf::from("/tmp"));
+        assert!(provider.get_model_provider().is_none());
+        assert!(provider.get_model_id().is_none());
+    }
+
+    #[test]
+    fn test_set_test_model_provider() {
+        let mut provider = FooterDataProvider::new(PathBuf::from("/tmp"));
+        provider.set_test_model_provider(Some("opencode-go"));
+        assert_eq!(provider.get_model_provider(), Some("opencode-go"));
+        provider.set_test_model_provider(None);
+        assert!(provider.get_model_provider().is_none());
+    }
+
+    #[test]
+    fn test_set_test_model_id() {
+        let mut provider = FooterDataProvider::new(PathBuf::from("/tmp"));
+        provider.set_test_model_id(Some("deepseek-v4-flash"));
+        assert_eq!(provider.get_model_id(), Some("deepseek-v4-flash"));
+        provider.set_test_model_id(None);
+        assert!(provider.get_model_id().is_none());
+    }
+
+    #[test]
+    fn test_refresh_from_session_extracts_latest_model_change() {
+        use crate::agent::SessionMetadata;
+        use crate::agent::session::*;
+        use crate::agent::session_storage::InMemorySessionStorage;
+
+        let meta = SessionMetadata {
+            id: "test".into(),
+            created_at: String::new(),
+            cwd: "/tmp".into(),
+            path: None,
+            parent_session_path: None,
+        };
+        let storage = InMemorySessionStorage::new(meta);
+        let mut session = Session::new(Box::new(storage));
+        session.append_model_change("provider-a", "model-a");
+        session.append_model_change("provider-b", "model-b");
+
+        let mut provider = FooterDataProvider::new(PathBuf::from("/tmp"));
+        provider.refresh_from_session(&session);
+
+        assert_eq!(provider.get_model_provider(), Some("provider-b"));
+        assert_eq!(provider.get_model_id(), Some("model-b"));
+    }
+
+    #[test]
+    fn test_refresh_from_session_no_model_change() {
+        use crate::agent::SessionMetadata;
+        use crate::agent::session::*;
+        use crate::agent::session_storage::InMemorySessionStorage;
+
+        let meta = SessionMetadata {
+            id: "test".into(),
+            created_at: String::new(),
+            cwd: "/tmp".into(),
+            path: None,
+            parent_session_path: None,
+        };
+        let storage = InMemorySessionStorage::new(meta);
+        let session = Session::new(Box::new(storage));
+
+        let mut provider = FooterDataProvider::new(PathBuf::from("/tmp"));
+        // Set some values first
+        provider.set_test_model_provider(Some("old"));
+        provider.set_test_model_id(Some("old-model"));
+        // Refreshing from a session with no model changes should clear them
+        provider.refresh_from_session(&session);
+
+        assert!(provider.get_model_provider().is_none());
+        assert!(provider.get_model_id().is_none());
     }
 
     // ── Git resolution helpers ──────────────────────────────────────
