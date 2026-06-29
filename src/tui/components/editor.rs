@@ -348,8 +348,8 @@ impl Editor {
             .map(|l| l.as_str())
             .unwrap_or("");
         let before = &line[..self.cursor_col.min(line.len())];
-        // Check @/# is at token start
-        if before.contains('@') || before.contains('#') {
+        // Check @/#/~ is at token start
+        if before.contains('@') || before.contains('#') || before.contains('~') {
             self.try_trigger_autocomplete();
         }
     }
@@ -500,8 +500,31 @@ impl Editor {
             return;
         }
 
+        // / as file path trigger (not slash command) – after @/#/~ or space
+        if ch == "/" && !self.is_at_start_of_message() {
+            let before_char = text_before.chars().nth_back(1);
+            if text_before.len() >= 2
+                && before_char
+                    .is_some_and(|c| c == '~' || c == '@' || c == '#' || c.is_whitespace())
+            {
+                self.try_trigger_autocomplete();
+                return;
+            }
+        }
+
         // @ and # at token boundaries
         if ch == "@" || ch == "#" {
+            let before_char = text_before.chars().nth_back(1);
+            if text_before.len() == 1
+                || before_char.is_none_or(|c| c.is_whitespace() || c == ' ' || c == '\t')
+            {
+                self.try_trigger_autocomplete();
+                return;
+            }
+        }
+
+        // ~ at token boundary → file path completion
+        if ch == "~" {
             let before_char = text_before.chars().nth_back(1);
             if text_before.len() == 1
                 || before_char.is_none_or(|c| c.is_whitespace() || c == ' ' || c == '\t')
@@ -539,8 +562,8 @@ impl Editor {
                 self.try_trigger_autocomplete();
                 return;
             }
-            // Also trigger for @ and # contexts
-            if text_before.contains('@') || text_before.contains('#') {
+            // Also trigger for @, #, and ~ contexts
+            if text_before.contains('@') || text_before.contains('#') || text_before.contains('~') {
                 self.try_trigger_autocomplete();
             }
         }

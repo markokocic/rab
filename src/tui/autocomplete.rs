@@ -701,8 +701,23 @@ impl AutocompleteProvider for CombinedAutocompleteProvider {
             .map(|l| &l[..cursor_col.min(l.len())]);
         match current_line {
             Some(text) => {
-                if text.starts_with('/') && !text.contains(' ') {
-                    return false;
+                // Only block Tab completion for known slash commands on line 0.
+                // Absolute paths like /usr/share/ should still get file completion.
+                if text.starts_with('/') && !text.contains(' ') && cursor_line == 0 {
+                    let cmd_input = text[1..].trim();
+                    if cmd_input.is_empty() {
+                        // Just "/" — don't trigger file completion yet
+                        return false;
+                    }
+                    // If text matches a known slash command, don't trigger file completion
+                    if self
+                        .slash_commands
+                        .iter()
+                        .any(|c| c.name.starts_with(cmd_input))
+                    {
+                        return false;
+                    }
+                    // Otherwise it's an absolute path — allow file completion
                 }
                 true
             }
