@@ -112,15 +112,15 @@ impl LsOperations for DefaultLsOperations {
     }
 }
 
-/// Combined filesystem extension providing grep, find, and ls tools.
-pub struct FilesystemExtension {
+/// Extension providing grep, find, and ls tools.
+pub struct FileSearchExtension {
     cwd: PathBuf,
     grep_operations: Arc<dyn GrepOperations>,
     find_operations: Arc<dyn FindOperations>,
     ls_operations: Arc<dyn LsOperations>,
 }
 
-impl FilesystemExtension {
+impl FileSearchExtension {
     pub fn new(cwd: PathBuf) -> Self {
         Self {
             cwd,
@@ -149,9 +149,9 @@ impl FilesystemExtension {
     }
 }
 
-impl Extension for FilesystemExtension {
+impl Extension for FileSearchExtension {
     fn name(&self) -> Cow<'static, str> {
-        "filesystem".into()
+        "file_search".into()
     }
 
     fn tools(&self) -> Vec<ToolDefinition> {

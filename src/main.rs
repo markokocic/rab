@@ -398,7 +398,7 @@ async fn main() -> anyhow::Result<()> {
         || is_extension_active("ls", &settings)
     {
         extensions.push(Box::new(
-            rab::extensions::filesystem::FilesystemExtension::new(cwd.clone()),
+            rab::extensions::file_search::FileSearchExtension::new(cwd.clone()),
         ));
     }
     if is_extension_active("mcp", &settings) {

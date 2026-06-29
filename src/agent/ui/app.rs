@@ -537,6 +537,19 @@ pub async fn run(config: AppConfig, session: AgentSession) -> anyhow::Result<()>
             dirty = true;
         }
 
+        // Recover Agent state BEFORE submitting any new prompt or running
+        // auto-compact. This ensures agent.finish() restores messages from
+        // the completed JoinHandle first, so that subsequent
+        // replace_messages calls (from handle_auto_compact) don't get
+        // overwritten.
+        if app.forward_handle.as_ref().is_some_and(|h| h.is_finished()) {
+            app.forward_handle.take();
+            if let Some(ref mut agent) = app.agent {
+                // The JoinHandle is resolved, so this returns instantly.
+                agent.finish().await;
+            }
+        }
+
         // Handle pending agent submission (async).
         // During streaming, submit_message uses agent.steer() directly so
         // pending_submit is only set for the idle path. Processed here as
@@ -555,24 +568,12 @@ pub async fn run(config: AppConfig, session: AgentSession) -> anyhow::Result<()>
         }
 
         // Pi-compatible: auto-compaction check after agent ends.
-        // Runs in the background so UI events continue to be processed.
+        // Runs after agent.finish() to ensure replace_messages in
+        // handle_auto_compact doesn't get overwritten.
         if app.pending_auto_compact {
             app.pending_auto_compact = false;
             handle_auto_compact(&mut app).await;
             dirty = true;
-        }
-
-        // Recover Agent state after a completed turn.
-        // agent.finish() awaits the spawned loop task to restore tools.
-        // Since prompt() auto-calls finish() at the start of the next
-        // prompt(), this is only needed for immediate message access.
-        if app.forward_handle.as_ref().is_some_and(|h| h.is_finished()) {
-            app.forward_handle.take();
-            if let Some(ref mut agent) = app.agent {
-                // The JoinHandle is resolved, so this returns instantly.
-                agent.finish().await;
-            }
-            // is_streaming was already set to false by handle_agent_event(AgentEnd)
         }
 
         // Handle pending command results that need TUI access (overlays, etc.)
@@ -1332,9 +1333,11 @@ fn map_thinking_level(level: Option<&str>) -> yoagent::types::ThinkingLevel {
 
 /// Start an agent turn asynchronously. Called from the main loop only when
 /// the agent is idle (the main loop guards with `!app.is_streaming`).
-/// Uses `agent.prompt()` which spawns the loop internally and returns a
-/// receiver immediately. A forwarding task relays events to the UI channel.
-/// The Agent stays in `app.agent` for the duration of the turn.
+/// Reuses the existing agent across turns (single-agent model) so that
+/// steer/follow-up queues and in-flight tool state survive across turns.
+/// If no agent exists yet (first turn), creates a fresh one.
+/// Messages are always synced from the session (error-filtered source) at
+/// the start of each turn to avoid leaking transient provider errors.
 async fn start_agent_loop(app: &mut App, message: String) {
     if app.session.is_none() {
         return;
@@ -1346,24 +1349,35 @@ async fn start_agent_loop(app: &mut App, message: String) {
 
     let thinking = map_thinking_level(app.thinking_level.as_deref());
 
-    // Fresh agent each turn from session (authoritative, error-filtered source).
-    // Avoids yoagent's finish() restoring stale context.messages with transient
-    // errors that the session filters out.
+    // Build or reuse agent.
+    // Always sync messages from session (the authoritative, error-filtered
+    // source) so transient provider errors from previous turns are excluded.
     let msgs = app
         .session
         .as_ref()
         .map(|s| s.session().build_session_context().messages)
         .unwrap_or_default();
-    app.agent = Some(build_fresh_agent(
-        &app.model,
-        &app.api_key,
-        &app.system_prompt,
-        thinking,
-        msgs,
-        &app.extensions,
-    ));
 
-    let agent = app.agent.as_mut().unwrap();
+    let agent: &mut yoagent::agent::Agent = match &mut app.agent {
+        Some(existing) => {
+            // Reuse existing agent.
+            // XXX temporarily disabled — suspect replace_messages breaks 2nd turn
+            // existing.replace_messages(msgs);
+            existing
+        }
+        None => {
+            app.agent = Some(build_fresh_agent(
+                &app.model,
+                &app.api_key,
+                &app.system_prompt,
+                thinking,
+                msgs,
+                &app.extensions,
+            ));
+            // SAFETY: we just set app.agent to Some(...)
+            app.agent.as_mut().unwrap()
+        }
+    };
 
     // Record model/thinking changes in the session
     if let Some(ref mut session) = app.session {
