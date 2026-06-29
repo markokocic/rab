@@ -210,7 +210,7 @@ impl Extension for CommandsExtension {
             SlashCommand {
                 name: "logout".to_string(),
                 description: "Remove provider authentication".to_string(),
-                handler: Box::new(command_not_implemented_handler("logout")),
+                handler: Box::new(LogoutCommand),
             },
             SlashCommand {
                 name: "new".to_string(),
@@ -446,8 +446,32 @@ struct LoginCommand;
 
 impl CommandHandler for LoginCommand {
     fn execute(&self, args: &str) -> anyhow::Result<CommandResult> {
-        let provider = args.trim();
+        let args = args.trim();
+        if args.is_empty() {
+            return Ok(CommandResult::Info(
+                "Usage: /login <provider> [api-key]\n  Provide the API key as argument to store it.\n  If omitted, you'll be prompted.".into()
+            ));
+        }
+        // Split on first space: provider [api-key]
+        let (provider, api_key) = match args.split_once(' ') {
+            Some((p, key)) => (p.trim().to_string(), Some(key.trim().to_string())),
+            None => (args.to_string(), None),
+        };
         Ok(CommandResult::Login {
+            provider: Some(provider),
+            api_key,
+        })
+    }
+}
+
+// ── /logout ───────────────────────────────────────────────────────
+
+struct LogoutCommand;
+
+impl CommandHandler for LogoutCommand {
+    fn execute(&self, args: &str) -> anyhow::Result<CommandResult> {
+        let provider = args.trim();
+        Ok(CommandResult::Logout {
             provider: if provider.is_empty() {
                 None
             } else {

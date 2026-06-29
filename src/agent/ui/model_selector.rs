@@ -10,19 +10,19 @@ pub struct ModelSelector {
 }
 
 impl ModelSelector {
-    pub fn new(models: Vec<String>, current_model: &str, theme: &RabTheme) -> Self {
+    pub fn new(
+        models: Vec<String>,
+        display_names: Vec<String>,
+        current_model: &str,
+        theme: &RabTheme,
+    ) -> Self {
         let items: Vec<SelectItem> = models
             .iter()
-            .map(|m| {
-                let display = m.strip_prefix("opencode_go::").unwrap_or(m);
-                SelectItem::new(m.clone(), display.to_string())
-            })
+            .enumerate()
+            .map(|(i, m)| SelectItem::new(m.clone(), display_names[i].clone()))
             .collect();
 
-        let current_index = models
-            .iter()
-            .position(|m| m == current_model || format!("opencode_go::{}", m) == current_model)
-            .unwrap_or(0);
+        let current_index = models.iter().position(|m| m == current_model).unwrap_or(0);
 
         let list_theme = SelectListTheme {
             selected_prefix: Box::new(|s| format!("\x1b[38;2;138;190;183m\x1b[1m> {}\x1b[0m", s)),

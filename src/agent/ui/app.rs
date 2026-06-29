@@ -12,6 +12,9 @@ use yoagent::types::AgentTool;
 use crate::agent::AgentSession;
 use crate::agent::extension::{CommandResult, Extension};
 use crate::agent::footer_data_provider::FooterDataProvider;
+use crate::auth;
+use crate::provider;
+use crate::provider::ProviderRegistry;
 
 use crate::agent::ui::chat_editor::{ChatEditor, InputAction};
 use crate::agent::ui::components::EditorComponent;
@@ -33,10 +36,38 @@ use crate::tui::terminal::{self, ProcessTerminal, TerminalTrait};
 use crossterm::event::KeyEvent;
 use tokio::sync::mpsc;
 
-/// Thinking level cycle order (matching pi's thinking level enum).
-/// Thinking level cycle order. Cycles from highest to lowest so the first
-/// press from the default (xhigh) goes to "high" (a step down), not to "off".
-const THINKING_LEVELS: &[&str] = &["xhigh", "high", "medium", "low", "off"];
+/// Thinking level cycle order (matching pi's thinking level enum). Cycles from
+/// highest to lowest so the first press from the default (xhigh) goes to "high"
+/// (a step down), not to "off".
+const ALL_THINKING_LEVELS: &[&str] = &["xhigh", "high", "medium", "low", "off"];
+
+/// Get the available thinking levels for the current model, filtered by
+/// the model's `thinkingLevelMap`. Levels mapped to `null` are unsupported.
+fn available_thinking_levels(app: &App) -> Vec<&'static str> {
+    // Try to read thinkingLevelMap from the resolved model
+    let thinking_map: Option<std::collections::HashMap<String, Option<serde_json::Value>>> =
+        app.registry.resolve(&app.model).ok().and_then(|r| {
+            r.model_config
+                .headers
+                .get("_rab_thinking_map")
+                .and_then(|json| serde_json::from_str(json).ok())
+        });
+
+    match thinking_map {
+        Some(map) => ALL_THINKING_LEVELS
+            .iter()
+            .filter(|level| {
+                if **level == "off" {
+                    return true; // off is always available
+                }
+                // If the level is in the map and maps to null, it's unsupported
+                !matches!(map.get(**level), Some(None))
+            })
+            .copied()
+            .collect(),
+        None => ALL_THINKING_LEVELS.to_vec(),
+    }
+}
 
 /// Configuration for the UI app.
 pub struct AppConfig {
@@ -61,6 +92,8 @@ pub struct AppConfig {
     pub session_info: Option<std::sync::Arc<std::sync::Mutex<Option<SessionInfoInternal>>>>,
     /// API key for yoagent provider.
     pub api_key: String,
+    /// Provider registry for model resolution and provider dispatch.
+    pub registry: Arc<ProviderRegistry>,
 }
 
 /// Main application state.
@@ -76,6 +109,8 @@ pub struct App {
 
     /// Available models for the model selector.
     available_models: Vec<String>,
+    /// Provider registry for model resolution and provider dispatch.
+    registry: Arc<ProviderRegistry>,
 
     /// Component-based chat area - mirrors pi's `this.chatContainer`.
     /// Components are added here in handle_agent_event instead of pushing to messages.
@@ -205,9 +240,17 @@ pub struct App {
 impl App {
     fn new(config: AppConfig, session: AgentSession) -> Self {
         let mut agent_session = session;
-        let mut model_config = crate::agent::base_model_config(&config.model);
-        model_config.context_window =
-            crate::agent::compaction::get_model_context_window(&config.model) as u32;
+        let model_config = config
+            .registry
+            .resolve(&config.model)
+            .ok()
+            .map(|r| r.model_config.clone())
+            .unwrap_or_else(|| {
+                let mut mc = crate::agent::base_model_config(&config.model);
+                mc.context_window =
+                    crate::agent::compaction::get_model_context_window(&config.model) as u32;
+                mc
+            });
         agent_session.set_compaction_config(
             config.api_key.clone(),
             &config.model,
@@ -329,6 +372,7 @@ impl App {
             theme,
             commands,
             available_models: config.available_models,
+            registry: config.registry.clone(),
             chat_container,
             pending_tools: HashMap::new(),
             tool_call_start_times: HashMap::new(),
@@ -644,13 +688,12 @@ pub async fn run(config: AppConfig, session: AgentSession) -> anyhow::Result<()>
                         )),
                     );
                 }
-                CommandResult::Login { .. } => {
-                    chat_add(
-                        &mut app,
-                        std::boxed::Box::new(InfoMessageComponent::new(
-                            "Login dialog - not yet implemented.",
-                        )),
-                    );
+                CommandResult::Login { provider, api_key } => {
+                    let p = provider.as_deref().unwrap_or("opencode-go");
+                    handle_login(&mut app, p, api_key.as_deref());
+                }
+                CommandResult::Logout { provider } => {
+                    handle_logout(&mut app, provider.as_deref());
                 }
                 _ => {}
             }
@@ -927,16 +970,21 @@ fn handle_clear(app: &mut App) {
     }
 }
 
-/// Cycle thinking level: off → low → medium → high → xhigh → off
+/// Cycle thinking level through the levels available for the current model.
 fn handle_thinking_cycle(app: &mut App) {
     if app.available_models.is_empty() && app.model.is_empty() {
         app.status_text = Some("No model selected".into());
         return;
     }
 
+    let levels = available_thinking_levels(app);
+    if levels.is_empty() {
+        return;
+    }
+
     let current = app.thinking_level.as_deref().unwrap_or("off");
-    let next = match THINKING_LEVELS.iter().position(|&l| l == current) {
-        Some(pos) => THINKING_LEVELS[(pos + 1) % THINKING_LEVELS.len()],
+    let next = match levels.iter().position(|&l| l == current) {
+        Some(pos) => levels[(pos + 1) % levels.len()],
         None => "off",
     };
 
@@ -975,12 +1023,24 @@ fn handle_model_cycle(app: &mut App, dir: isize) {
     };
 
     app.model = app.available_models[next_idx].clone();
-    app.footer.borrow_mut().set_model(&app.model);
-    // All rab models support reasoning (deepseek-v4-flash, deepseek-v4-pro).
-    app.footer.borrow_mut().set_model_supports_reasoning(true);
+    app.footer
+        .borrow_mut()
+        .set_model(format_model_display(&app.registry, &app.model));
+    let reasoning = app
+        .registry
+        .resolve(&app.model)
+        .map(|r| r.model_config.reasoning)
+        .unwrap_or(true);
+    app.footer
+        .borrow_mut()
+        .set_model_supports_reasoning(reasoning);
     // Record the change in the session and update the persistent agent
     if let Some(ref mut agent_session) = app.session {
-        agent_session.on_model_change("opencode-go", &app.model);
+        let provider = app
+            .registry
+            .provider_for_model(&app.model)
+            .unwrap_or_else(|| "opencode-go".to_string());
+        agent_session.on_model_change(&provider, &app.model);
     }
     app.status_text = Some(format!("Model: {}", app.model));
 }
@@ -1191,11 +1251,75 @@ fn interrupt_streaming(app: &mut App) {
     app.status_text = Some("Interrupted".into());
 }
 
+/// Format a model ID for display: "provider/model_id" or just "model_id" if provider is unknown.
+fn format_model_display(registry: &ProviderRegistry, model_id: &str) -> String {
+    match registry.provider_for_model(model_id) {
+        Some(p) => format!("{}/{}", p, model_id),
+        None => model_id.to_string(),
+    }
+}
+
+// ── Auth helpers ─────────────────────────────────────
+
+/// Handle a login command result. If `api_key` is provided, stores it immediately.
+/// Otherwise shows a usage message.
+fn handle_login(app: &mut App, provider: &str, api_key: Option<&str>) {
+    let provider = if provider.is_empty() { "opencode-go" } else { provider };
+    if let Some(key) = api_key {
+        match auth::login(provider, key) {
+            Ok(_) => chat_add(app, std::boxed::Box::new(InfoMessageComponent::new(
+                format!("Logged in to {}", provider)
+            ))),
+            Err(e) => chat_add(app, std::boxed::Box::new(InfoMessageComponent::new(
+                format!("Login failed: {}", e)
+            ))),
+        }
+    } else {
+        chat_add(app, std::boxed::Box::new(InfoMessageComponent::new(
+            format!("Usage: /login {} <api-key>", provider)
+        )));
+    }
+}
+
+/// Handle a logout command result.
+fn handle_logout(app: &mut App, provider: Option<&str>) {
+    match auth::logout(provider) {
+        Ok(true) => {
+            let msg = provider
+                .map(|p| format!("Logged out from {}", p))
+                .unwrap_or_else(|| "Logged out from all providers".into());
+            chat_add(app, std::boxed::Box::new(InfoMessageComponent::new(msg)));
+        }
+        Ok(false) => {
+            let msg = provider
+                .map(|p| format!("No credentials for {}", p))
+                .unwrap_or_else(|| "No credentials found".into());
+            chat_add(app, std::boxed::Box::new(InfoMessageComponent::new(msg)));
+        }
+        Err(e) => {
+            chat_add(app, std::boxed::Box::new(InfoMessageComponent::new(
+                format!("Logout failed: {}", e)
+            )));
+        }
+    }
+}
+
 /// Open the model selector overlay.
 fn open_model_selector(app: &mut App, tui: &mut TUI) {
     let models = app.available_models.clone();
     let current = app.model.clone();
-    let selector = ModelSelector::new(models, &current, &app.theme);
+    // Format as provider/model_id for display
+    let display_names: Vec<String> = models
+        .iter()
+        .map(|m| {
+            let provider = app.registry.provider_for_model(m);
+            match provider {
+                Some(p) => format!("{}/{}", p, m),
+                None => m.clone(),
+            }
+        })
+        .collect();
+    let selector = ModelSelector::new(models, display_names, &current, &app.theme);
     tui.show_overlay(Box::new(selector), Default::default());
 }
 
@@ -1285,10 +1409,10 @@ fn submit_message(app: &mut App, message: String) {
     app.pending_submit = Some(trimmed);
 }
 
-/// Actually start an agent loop (not queued).
-/// Uses the persistent Agent on AgentSession (pi-compatible).
 /// Build a fresh Agent with the given messages and app configuration.
+/// Uses the provider registry to resolve the model and dispatch to the right provider.
 fn build_fresh_agent(
+    registry: &ProviderRegistry,
     model: &str,
     api_key: &str,
     system_prompt: &str,
@@ -1296,7 +1420,17 @@ fn build_fresh_agent(
     messages: Vec<yoagent::types::AgentMessage>,
     extensions: &[Box<dyn Extension>],
 ) -> yoagent::agent::Agent {
-    let mc = crate::agent::base_model_config(model);
+    use yoagent::provider::model::ApiProtocol;
+
+    let resolved = registry.resolve(model).ok();
+    let mc = resolved
+        .as_ref()
+        .map(|r| r.model_config.clone())
+        .unwrap_or_else(|| crate::agent::base_model_config(model));
+    let api_key = resolved
+        .as_ref()
+        .map(|r| r.api_key.as_str())
+        .unwrap_or(api_key);
 
     let tools: Vec<Box<dyn yoagent::types::AgentTool>> = extensions
         .iter()
@@ -1304,7 +1438,23 @@ fn build_fresh_agent(
         .map(|twm| Box::new(twm) as Box<dyn yoagent::types::AgentTool>)
         .collect();
 
-    yoagent::agent::Agent::new(yoagent::provider::OpenAiCompatProvider)
+    let agent = match mc.api {
+        ApiProtocol::OpenAiCompletions => {
+            yoagent::agent::Agent::new(crate::provider::openai_compat::RabOpenAiCompatProvider)
+        }
+        ApiProtocol::AnthropicMessages => {
+            yoagent::agent::Agent::new(yoagent::provider::AnthropicProvider)
+        }
+        ApiProtocol::OpenAiResponses => {
+            yoagent::agent::Agent::new(yoagent::provider::OpenAiResponsesProvider)
+        }
+        ApiProtocol::GoogleGenerativeAi => {
+            yoagent::agent::Agent::new(yoagent::provider::GoogleProvider)
+        }
+        _ => yoagent::agent::Agent::new(yoagent::provider::OpenAiCompatProvider),
+    };
+
+    agent
         .with_model(model)
         .with_api_key(api_key)
         .with_model_config(mc)
@@ -1362,6 +1512,7 @@ async fn start_agent_loop(app: &mut App, message: String) {
         }
         None => {
             app.agent = Some(build_fresh_agent(
+                &app.registry,
                 &app.model,
                 &app.api_key,
                 &app.system_prompt,
@@ -1376,7 +1527,11 @@ async fn start_agent_loop(app: &mut App, message: String) {
 
     // Record model/thinking changes in the session
     if let Some(ref mut session) = app.session {
-        session.on_model_change("opencode-go", &app.model);
+        let provider = app
+            .registry
+            .provider_for_model(&app.model)
+            .unwrap_or_else(|| "opencode-go".to_string());
+        session.on_model_change(&provider, &app.model);
         session.on_thinking_level_change(app.thinking_level.as_deref().unwrap_or("off"));
     }
 
@@ -1585,7 +1740,20 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
             app.pending_command_result = Some(result);
         }
         CommandResult::Reloaded => {
-            // Actually reload settings from disk (pi-compatible)
+            // Reload registry
+            // Reload registry: create a fresh one and replace via Arc::get_mut
+            if let Some(reg) = Arc::get_mut(&mut app.registry) {
+                if let Err(e) = reg.reload(&provider::get_agent_dir()) {
+                    app.status_text = Some(format!("Failed to reload models: {}", e));
+                }
+            } else {
+                // Arc is shared — create fresh and replace
+                match provider::ProviderRegistry::load(&provider::get_agent_dir()) {
+                    Ok(new_reg) => app.registry = Arc::new(new_reg),
+                    Err(e) => app.status_text = Some(format!("Failed to reload models: {}", e)),
+                }
+            }
+            // Reload settings from disk (pi-compatible)
             if let Err(e) = app.settings.reload(&app.cwd) {
                 app.status_text = Some(format!("Failed to reload settings: {}", e));
             } else {
@@ -1969,18 +2137,20 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
                 std::boxed::Box::new(InfoMessageComponent::new(msg.clone())),
             );
         }
-        CommandResult::Login { provider: _ } => {
-            // Needs TUI overlay - defer
-            app.pending_command_result = Some(result);
+        CommandResult::Login {
+            ref provider,
+            ref api_key,
+        } => {
+            if let (Some(provider), Some(key)) = (provider, api_key) {
+                handle_login(app, provider, Some(key));
+            } else {
+                // Needs prompt — defer
+                app.pending_command_result = Some(result);
+            }
         }
         CommandResult::Logout { provider } => {
-            let prov = provider.as_deref().unwrap_or("all providers");
-            let msg = format!("Logged out from {} - not yet implemented.", prov);
-            chat_add(
-                app,
-                std::boxed::Box::new(InfoMessageComponent::new(msg.clone())),
-            );
-        }
+            handle_logout(app, provider.as_deref());
+        },
         CommandResult::CompactSession(custom_instructions) => {
             // If streaming, interrupt first
             if app.is_streaming {

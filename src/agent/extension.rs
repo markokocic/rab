@@ -568,7 +568,10 @@ pub enum CommandResult {
     /// Save project trust decision.
     TrustDecision { decision: String },
     /// Configure provider authentication.
-    Login { provider: Option<String> },
+    Login {
+        provider: Option<String>,
+        api_key: Option<String>,
+    },
     /// Remove provider authentication.
     Logout { provider: Option<String> },
     /// Manually compact the session context.

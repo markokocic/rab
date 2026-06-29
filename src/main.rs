@@ -7,16 +7,23 @@ use rab::builtin::{
 };
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use yoagent::types::AgentTool as _;
 
 use rab::tui::keybindings::{Keybindings, init_keybindings};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let args: Vec<String> = std::env::args().collect();
+
+    // Subcommand: rab update-models
+    if args.get(1).map(|s| s.as_str()) == Some("update-models") {
+        return rab::provider::update::run_update_models().await;
+    }
+
     let cwd = std::env::current_dir()?;
 
     // Parse CLI flags
-    let args: Vec<String> = std::env::args().collect();
     let mut model_override: Option<String> = None;
     let mut message_parts: Vec<String> = Vec::new();
     let mut continue_session: bool = false;
@@ -155,6 +162,14 @@ async fn main() -> anyhow::Result<()> {
     let settings = Settings::load(&cwd)?;
     let model = model_override.unwrap_or_else(|| settings.model().to_string());
     let auth = rab::auth::AuthStorage::load()?;
+
+    // Load provider registry (built-in + ~/.rab/agent/models.json)
+    let agent_dir = get_agent_dir();
+    let registry = rab::provider::ProviderRegistry::load(&agent_dir)?;
+    let resolved = registry.resolve(&model).ok();
+
+    // Available models from registry
+    let available_models: Vec<String> = registry.list_models();
 
     // Load custom keybindings from ~/.rab/keybindings.json, merging with defaults
     let mut keybindings = Keybindings::with_defaults();
@@ -344,12 +359,6 @@ async fn main() -> anyhow::Result<()> {
     // Load history from session
     let context = session.session().build_session_context();
 
-    // Available models
-    let available_models = vec![
-        "deepseek-v4-flash".to_string(),
-        "deepseek-v4-pro".to_string(),
-    ];
-
     // Build extensions with session info for /session command
     let commands_ext = CommandsExtension::new(available_models.clone());
     let session_info = commands_ext.session_info.clone();
@@ -409,8 +418,6 @@ async fn main() -> anyhow::Result<()> {
         mcp_ext.bootstrap_direct_tools().await;
         extensions.push(Box::new(mcp_ext));
     }
-
-    let agent_dir = get_agent_dir();
 
     // Load context files (AGENTS.md / CLAUDE.md)
     let context_files = if no_context_files {
@@ -503,6 +510,11 @@ async fn main() -> anyhow::Result<()> {
     let thinking_level_str = thinking_level.as_deref().or(Some("xhigh"));
 
     if message_parts.is_empty() {
+        let api_key = resolved
+            .as_ref()
+            .map(|r| r.api_key.clone())
+            .or_else(|| auth.api_key("opencode-go"))
+            .unwrap_or_default();
         let config = ui::AppConfig {
             model,
             system_prompt,
@@ -516,22 +528,36 @@ async fn main() -> anyhow::Result<()> {
             settings,
             context_files: context_file_names,
             skills,
-            model_supports_reasoning: true,
+            model_supports_reasoning: resolved
+                .as_ref()
+                .map(|r| r.model_config.reasoning)
+                .unwrap_or(true),
             session_info: Some(session_info),
-            api_key: auth.api_key("opencode-go").unwrap_or_default(),
+            api_key,
+            registry: Arc::new(registry),
         };
         ui::run(config, session).await
     } else {
         let message = message_parts.join(" ");
         let mut agent_session = session;
-        let api_key = auth.api_key("opencode-go").unwrap_or_default();
-        let mut mc = rab::agent::base_model_config(&model);
-        mc.context_window = rab::agent::compaction::get_model_context_window(&model) as u32;
+        let api_key = resolved
+            .as_ref()
+            .map(|r| r.api_key.clone())
+            .or_else(|| auth.api_key("opencode-go"))
+            .unwrap_or_default();
+        let mc = resolved
+            .as_ref()
+            .map(|r| r.model_config.clone())
+            .unwrap_or_else(|| {
+                let mut mc = rab::agent::base_model_config(&model);
+                mc.context_window = rab::agent::compaction::get_model_context_window(&model) as u32;
+                mc
+            });
         agent_session.set_compaction_config(
             api_key.clone(),
             &model,
             rab::agent::compaction::get_model_context_window(&model),
-            Some(mc),
+            Some(mc.clone()),
         );
 
         // Populate session info for /session command
@@ -540,12 +566,11 @@ async fn main() -> anyhow::Result<()> {
             *guard = Some(si);
         }
 
-        // Get API key for yoagent
-        let api_key = auth.api_key("opencode-go").unwrap_or_default();
         run_print_mode(
             message,
             model,
             api_key,
+            mc,
             system_prompt,
             agent_tools,
             &mut agent_session,
@@ -558,12 +583,29 @@ async fn run_print_mode(
     message: String,
     model: String,
     api_key: String,
+    mc: yoagent::provider::model::ModelConfig,
     system_prompt: String,
     agent_tools: Vec<Box<dyn yoagent::types::AgentTool>>,
     agent_session: &mut rab::agent::AgentSession,
 ) -> anyhow::Result<()> {
-    let mc = rab::agent::base_model_config(&model);
-    let mut agent = yoagent::agent::Agent::new(yoagent::provider::OpenAiCompatProvider)
+    use yoagent::provider::model::ApiProtocol;
+
+    let agent = match mc.api {
+        ApiProtocol::OpenAiCompletions => {
+            yoagent::agent::Agent::new(rab::provider::openai_compat::RabOpenAiCompatProvider)
+        }
+        ApiProtocol::AnthropicMessages => {
+            yoagent::agent::Agent::new(yoagent::provider::AnthropicProvider)
+        }
+        ApiProtocol::OpenAiResponses => {
+            yoagent::agent::Agent::new(yoagent::provider::OpenAiResponsesProvider)
+        }
+        ApiProtocol::GoogleGenerativeAi => {
+            yoagent::agent::Agent::new(yoagent::provider::GoogleProvider)
+        }
+        _ => yoagent::agent::Agent::new(yoagent::provider::OpenAiCompatProvider),
+    };
+    let mut agent = agent
         .with_model(&model)
         .with_api_key(&api_key)
         .with_model_config(mc)

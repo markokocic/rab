@@ -344,10 +344,7 @@ impl crate::tui::Component for Footer {
         let model_name = if self.model.is_empty() {
             "no-model".to_string()
         } else {
-            self.model
-                .strip_prefix("opencode_go::")
-                .unwrap_or(&self.model)
-                .to_string()
+            self.model.clone()
         };
 
         // Pi-style right side with thinking level indicator
@@ -840,20 +837,16 @@ mod tests {
     }
 
     #[test]
-    fn test_footer_model_strip_prefix() {
+    fn test_footer_model_with_provider_prefix() {
         let provider = Rc::new(RefCell::new(FooterDataProvider::new(
             "/home/user/project".into(),
         )));
         let mut footer = Footer::new("/home/user/project", provider);
-        footer.set_model("opencode_go::claude-opus");
+        footer.set_model("opencode-go/deepseek-v4-flash");
         let lines = footer.render(80);
         assert!(
-            !lines[1].contains("opencode_go::"),
-            "Should strip opencode_go:: prefix"
-        );
-        assert!(
-            lines[1].contains("claude-opus"),
-            "Should show model after prefix"
+            lines[1].contains("opencode-go/deepseek-v4-flash"),
+            "Should show provider/model format"
         );
     }
 
