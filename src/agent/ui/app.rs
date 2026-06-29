@@ -1462,18 +1462,12 @@ fn handle_logout(app: &mut App, provider: Option<&str>) {
 fn open_model_selector(app: &mut App, tui: &mut TUI) {
     let current = app.model.clone();
 
-    // Build provider/id tuples from available models.
-    let all_models: Vec<(String, String, String)> = app
-        .available_models
-        .iter()
-        .map(|m| {
-            let provider = app
-                .registry
-                .provider_for_model(m, app.settings.default_provider.as_deref())
-                .unwrap_or_else(|| "unknown".to_string());
-            (provider.clone(), m.clone(), m.clone()) // name = id for now
-        })
-        .collect();
+    // Build (provider, model_id, name) tuples directly from registry entries.
+    // This preserves provider distinction — same model ID can appear under
+    // different providers (e.g. deepseek-v4-flash under both "opencode-go"
+    // and "deepseek"). Do NOT use provider_for_model here since it resolves
+    // to the preferred provider for ALL entries, collapsing duplicates.
+    let all_models: Vec<(String, String, String)> = app.registry.list_model_provider_tuples();
 
     let scoped_ids = app.scoped_model_ids.clone().unwrap_or_default();
 
@@ -1517,18 +1511,8 @@ fn open_scoped_models_selector(app: &mut App, tui: &mut TUI) {
         ModelsCallbacks, ModelsConfig, ScopedModelsSelector,
     };
 
-    // Build provider/id/name tuples from available models.
-    let all_models: Vec<(String, String, String)> = app
-        .available_models
-        .iter()
-        .map(|m| {
-            let provider = app
-                .registry
-                .provider_for_model(m, app.settings.default_provider.as_deref())
-                .unwrap_or_else(|| "unknown".to_string());
-            (provider, m.clone(), m.clone())
-        })
-        .collect();
+    // Build (provider, model_id, name) tuples directly from registry entries.
+    let all_models: Vec<(String, String, String)> = app.registry.list_model_provider_tuples();
 
     let current_enabled = app.scoped_model_ids.clone();
     let change_signal = app.pending_scoped_ids.clone();

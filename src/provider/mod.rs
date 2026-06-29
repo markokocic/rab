@@ -119,6 +119,8 @@ impl ProviderRegistry {
     }
 
     /// List all available model IDs (for UI selector and /model command).
+    /// Deduplicated: each model ID appears only once even if registered
+    /// under multiple providers.
     pub fn list_models(&self) -> Vec<String> {
         let mut model_set = std::collections::BTreeSet::new();
         for entry in &self.entries {
@@ -127,6 +129,19 @@ impl ProviderRegistry {
             }
         }
         model_set.into_iter().collect()
+    }
+
+    /// List all (provider, model_id, model_name) tuples, one per provider entry.
+    /// Unlike `list_models()`, the same model ID can appear under multiple
+    /// providers. Used by the model selector to show provider-prefixed entries.
+    pub fn list_model_provider_tuples(&self) -> Vec<(String, String, String)> {
+        let mut result = Vec::new();
+        for entry in &self.entries {
+            for m in &entry.models {
+                result.push((entry.id.clone(), m.id.clone(), m.name.clone()));
+            }
+        }
+        result
     }
 
     /// Get the provider name for a model ID.
