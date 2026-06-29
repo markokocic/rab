@@ -457,7 +457,7 @@ impl CombinedAutocompleteProvider {
         if let Ok(entries) = std::fs::read_dir(dir_path) {
             for entry in entries.flatten() {
                 let name = entry.file_name().to_string_lossy().to_string();
-                if name == ".git" || name.starts_with('.') {
+                if name == ".git" || (name.starts_with('.') && !file_prefix.starts_with('.')) {
                     continue;
                 }
                 if !name.to_lowercase().starts_with(&lower_prefix) {
@@ -557,7 +557,10 @@ impl AutocompleteProvider for CombinedAutocompleteProvider {
         // ── Slash command completion ──
         if text_before.starts_with('/') && !text_before.contains(' ') {
             let cmd = &text_before[1..];
-            return self.get_slash_suggestions(cmd);
+            if let Some(suggestions) = self.get_slash_suggestions(cmd) {
+                return Some(suggestions);
+            }
+            // No slash command match – fall through to file completion for absolute paths like /tmp
         }
 
         // ── Slash command argument completion ──
@@ -640,6 +643,22 @@ impl AutocompleteProvider for CombinedAutocompleteProvider {
             }
         }
 
+        // ── ~ path completion (tilde expansion) ──
+        if let Some(pos) = text_before.rfind('~') {
+            let is_token_start =
+                pos == 0 || text_before[..pos].ends_with(' ') || text_before[..pos].ends_with('\t');
+            if is_token_start {
+                let path = &text_before[pos..];
+                return self.get_file_suggestions(path);
+            }
+        }
+
+        // ── Absolute path completion (/) – automatic (non-force) fallback for paths
+        //     that didn't match any slash command ──
+        if text_before.starts_with('/') && !text_before.contains(' ') && text_before.len() > 1 {
+            return self.get_file_suggestions(text_before);
+        }
+
         // ── Forced completion (Tab) ──
         if force && self.should_trigger_file_completion(lines, cursor_line, cursor_col) {
             let last_space = text_before.rfind(|c: char| c.is_whitespace());
@@ -669,7 +688,15 @@ impl AutocompleteProvider for CombinedAutocompleteProvider {
         let before = &current_line[..prefix_start];
         let after = &current_line[cursor_col..];
 
-        let (new_line, new_col) = if prefix.starts_with('/') {
+        // Determine if this is a slash command completion or a file path completion.
+        // Slash commands have item.value = "help" (no leading /, ~, or . path chars).
+        // File paths have item.value = "/tmp/", "~/.rab/agent/", or "src/main.rs".
+        let is_slash_command = prefix.starts_with('/')
+            && !item.value.starts_with('/')
+            && !item.value.starts_with('~')
+            && !item.value.starts_with('.');
+
+        let (new_line, new_col) = if is_slash_command {
             // Slash command: insert with trailing space
             (
                 format!("{}/{} {}", before, item.value, after),
@@ -886,5 +913,167 @@ mod tests {
         assert!(s > 0, "Should score positive for matching name");
         let s = score_entry("src/main.rs", "nomatch", false);
         assert_eq!(s, 0, "Should score zero for no match");
+    }
+
+    // ── Tests for fixed bugs ──
+
+    #[test]
+    fn test_apply_completion_absolute_path_no_double_slash() {
+        // Bug 1: completing / → tmp/ should give /tmp/ not //tmp/
+        let provider = CombinedAutocompleteProvider::new(vec![], "/tmp".into());
+        // Absolute path file completion (item.value starts with /)
+        let item = AutocompleteItem {
+            value: "/tmp/".into(),
+            label: "tmp/".into(),
+            description: None,
+        };
+        let lines = vec!["/".into()];
+        let (new_lines, _new_line, _new_col) = provider.apply_completion(&lines, 0, 1, &item, "/");
+        // Should NOT produce //tmp/
+        assert_eq!(
+            new_lines[0], "/tmp/",
+            "Absolute path completion must not add extra slash"
+        );
+    }
+
+    #[test]
+    fn test_apply_completion_slash_command_still_works() {
+        // Slash commands should still produce /cmd (with one slash)
+        let provider = CombinedAutocompleteProvider::new(vec![], "/tmp".into());
+        let item = AutocompleteItem {
+            value: "help".into(),
+            label: "/help".into(),
+            description: None,
+        };
+        let lines = vec!["/".into()];
+        let (new_lines, _new_line, new_col) = provider.apply_completion(&lines, 0, 1, &item, "/");
+        assert_eq!(new_lines[0], "/help ");
+        assert_eq!(new_col, 6);
+    }
+
+    #[test]
+    fn test_get_file_suggestions_absolute_path() {
+        // Bug 1: get_suggestions for absolute paths like /tmp should work
+        let provider = CombinedAutocompleteProvider::new(vec![], "/tmp".into());
+        let lines = vec!["/tmp".into()];
+        let result = provider.get_suggestions(&lines, 0, 4, false);
+        // /tmp is a directory, should show its contents
+        assert!(
+            result.is_some(),
+            "Absolute path /tmp should produce suggestions"
+        );
+        let suggestions = result.unwrap();
+        assert!(
+            !suggestions.items.is_empty(),
+            "Should have entries from /tmp"
+        );
+        assert_eq!(suggestions.prefix, "/tmp");
+    }
+
+    #[test]
+    fn test_get_suggestions_slash_falls_through_to_file_completion() {
+        // When no slash command matches, absolute paths should get file completion
+        let provider = CombinedAutocompleteProvider::new(
+            vec![SlashCommand {
+                name: "help".into(),
+                description: None,
+                argument_hint: None,
+                argument_completions: None,
+                get_argument_completions: None,
+            }],
+            "/tmp".into(),
+        );
+        let lines = vec!["/tmp".into()];
+        // /tmp doesn't match any slash command, should fall through to file completion
+        let result = provider.get_suggestions(&lines, 0, 4, false);
+        assert!(
+            result.is_some(),
+            "/tmp should fall through to file completion"
+        );
+    }
+
+    #[test]
+    fn test_get_suggestions_tilde_path() {
+        // Bug 2: ~ paths should trigger file completion (non-force)
+        let home = std::env::var("HOME").unwrap_or_default();
+        if home.is_empty() || !std::path::Path::new(&home).is_dir() {
+            // Skip if HOME is not set or not a directory
+            return;
+        }
+        let provider = CombinedAutocompleteProvider::new(vec![], "/tmp".into());
+        let lines = vec!["~/".into()];
+        let result = provider.get_suggestions(&lines, 0, 2, false);
+        assert!(result.is_some(), "~ path should produce file suggestions");
+    }
+
+    #[test]
+    fn test_hidden_file_filter_with_dot_prefix() {
+        // Bug 2: when query starts with '.', hidden files should be shown
+        let tmp = std::env::temp_dir();
+        // Create a temp dir with a hidden file
+        let dir = tmp.join("autocomplete_test_dot");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(".hidden_file"), "").unwrap();
+        std::fs::write(dir.join("visible_file"), "").unwrap();
+        std::fs::create_dir(dir.join(".hidden_dir")).unwrap();
+        std::fs::create_dir(dir.join("visible_dir")).unwrap();
+
+        let provider = CombinedAutocompleteProvider::new(vec![], dir.to_string_lossy().to_string());
+        let dir_str = dir.to_string_lossy();
+
+        // Query with dot prefix should show hidden files
+        let result = provider.get_file_suggestions(&format!("{}/.h", dir_str));
+        assert!(
+            result.is_some(),
+            "Dot prefix query should find hidden files"
+        );
+        if let Some(suggestions) = result {
+            let values: Vec<&str> = suggestions.items.iter().map(|i| i.value.as_str()).collect();
+            assert!(
+                values.iter().any(|v| v.contains(".hidden")),
+                "Should find .hidden_file or .hidden_dir, got: {:?}",
+                values
+            );
+        }
+
+        // Query without dot prefix should NOT show hidden files
+        let result2 = provider.get_file_suggestions(&format!("{}/v", dir_str));
+        assert!(result2.is_some(), "Non-dot prefix query should find files");
+        if let Some(suggestions) = result2 {
+            let values: Vec<&str> = suggestions.items.iter().map(|i| i.value.as_str()).collect();
+            assert!(
+                values.iter().any(|v| v.contains("visible")),
+                "Should find visible_file or visible_dir"
+            );
+            assert!(
+                !values.iter().any(|v| v.contains(".hidden")),
+                "Should NOT find hidden files with non-dot prefix"
+            );
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_get_suggestions_slash_command_still_works() {
+        // Existing slash command completion should not be broken
+        let provider = CombinedAutocompleteProvider::new(
+            vec![SlashCommand {
+                name: "help".into(),
+                description: Some("Show help".into()),
+                argument_hint: None,
+                argument_completions: None,
+                get_argument_completions: None,
+            }],
+            "/tmp".into(),
+        );
+
+        let lines = vec!["/he".into()];
+        let result = provider.get_suggestions(&lines, 0, 3, false);
+        assert!(result.is_some());
+        let suggestions = result.unwrap();
+        assert_eq!(suggestions.items.len(), 1);
+        assert_eq!(suggestions.items[0].value, "help");
     }
 }
