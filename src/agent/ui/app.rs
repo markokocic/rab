@@ -2527,8 +2527,20 @@ fn handle_agent_event(app: &mut App, event: yoagent::types::AgentEvent) {
                 app.status_text = Some(text.trim().to_string());
             }
         }
-        E::TurnEnd { .. } => {
+        E::TurnEnd { message, .. } => {
             app.streaming_component = None;
+            // Surface provider errors carried by the turn's final message.
+            // This catches cases where the provider returns an error without
+            // streaming any text, so no MessageEnd is emitted for the error.
+            if let Some(err) = crate::agent::types::message_error(&message) {
+                chat_add(
+                    app,
+                    std::boxed::Box::new(InfoMessageComponent::new(format!(
+                        "Provider error: {}",
+                        err
+                    ))),
+                );
+            }
         }
         E::AgentEnd { messages } => {
             app.streaming_component = None;
