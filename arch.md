@@ -2,7 +2,7 @@
 
 A lightweight, extensible Rust coding agent inspired by [pi-coding-agent](https://pi.dev).
 rab delegates the core agent loop, types, and provider layer to the **yoagent** crate,
-providing the session layer, TUI, built-in tools, slash commands, filesystem tools (grep/find/ls),
+providing the session layer, TUI, built-in tools, slash commands, file search tools (grep/find/ls),
 file mutation queue, and lifecycle management.
 
 ---
@@ -48,7 +48,7 @@ file mutation queue, and lifecycle management.
 │  │builtin│ │  tui/  │ │commands│ │extens-│ │settings│ │ auth  │      │
 │  │read   │ │ agent/ │ │.rs     │ │ions/  │ │.rs     │ │.rs    │      │
 │  │write  │ │ ui/    │ │22 slash│ ┌──────────────┐ │~/.rab/ │ │API    │
-│  │edit   │ │screen  │ │commands│ │filesystem (3) │ │settings│ │keys,  │
+│  │edit   │ │screen  │ │commands│ │file_search (3)│ │settings│ │keys,  │
 │  │bash   │ │editor  │ │        │ │mcp/ (6 mods,  │ │AGENTS  │ │OAuth  │
 │  │file_  │ │list    │ │        │ │ 2K lines)     │ │.md     │ │       │
 │  │mutation│ └───────┘ │        │ │AGENTS.md       │ │skills  │ │       │
@@ -106,7 +106,7 @@ file mutation queue, and lifecycle management.
 │  └──────────────────────────────────────────────────────────────┘   │
 │                                                                      │
 │  ┌──────────────────────────────────────────────────────────────┐   │
-│  │  TUI (src/tui/ + src/agent/ui/) — 50+ modules, ~600 tests   │   │
+│  │  TUI (src/tui/ + src/agent/ui/) — 50+ modules, ~630 tests   │   │
 │  │  Direct Rust port on crossterm 0.29                          │   │
 │  └──────────────────────────────────────────────────────────────┘   │
 └──────────────────────────────────────────────────────────────────────┘
@@ -116,7 +116,7 @@ file mutation queue, and lifecycle management.
 
 - **yoagent is the core dependency**, not genai. rab delegates the agent loop,
   provider layer, and message types to yoagent. rab provides the session layer,
-  TUI, built-in tools, filesystem tools, slash commands, and lifecycle
+  TUI, built-in tools, file search tools, slash commands, and lifecycle
   management on top.
 
 - **One extension mechanism** — built-in tools and user extensions use the same
@@ -131,8 +131,8 @@ file mutation queue, and lifecycle management.
 
 - **Pluggable operations** — every built-in tool (read, write, edit, bash,
   grep, find, ls) delegates filesystem/shell operations through a trait
-  (e.g. `ReadOperations`, `BashOperations`, `GrepOperations`), making it
-  possible to replace local execution with remote (SSH) execution.
+  (e.g. `ReadOperations`, `BashOperations`, `GrepOperations`, `FindOperations`,
+  `LsOperations`), making it possible to replace local execution with remote (SSH) execution.
 
 - **Provider layer lives in yoagent** — rab has no `adapter.rs` or `provider.rs`.
   yoagent's `Provider` trait and `OpenAiCompatProvider` handle all LLM
@@ -141,7 +141,10 @@ file mutation queue, and lifecycle management.
 
 - **Agent loop lives in yoagent** — rab has no `loop.rs`. yoagent's `Agent`
   struct handles streaming, tool execution, and event emission. rab subscribes
-  to events via `AgentEvent` for persistence and UI updates.
+  to events via `AgentEvent` for persistence and UI updates. A fresh `Agent`
+  is created per turn (new agent loop per user message), using yoagent's
+  native `follow_up()` for mid-turn message queuing and `steer()` for
+  turn-level message injection.
 
 - **Types from yoagent** — `AgentMessage`, `Message`, `Content`, `AgentTool`
   are all re-exported from `yoagent::types`. rab's `types.rs` is a thin shim
@@ -155,11 +158,11 @@ file mutation queue, and lifecycle management.
 
 | pi component | rab equivalent | Status |
 |---|---|---|
-| `pi-tui` (terminal UI, components, editor) | `src/tui/` + `src/agent/ui/` | ✅ Complete — 50+ modules, ~600 tests. Direct Rust port on crossterm 0.29. |
-| `pi-agent-core` (agent loop, session, compaction, skills) | Delegated to **yoagent** (agent loop, types, provider, skills) + rab's `AgentSession` (session lifecycle, compaction, branching) | ✅ Agent loop in yoagent (`yoagent::agent::Agent`). ✅ Session in `session.rs` (~2800 lines). ✅ SessionStorage in `session_storage.rs` (~400 lines). ✅ Compaction in `compaction.rs` (~680 lines). ✅ Branch summarization in `branch_summary.rs` (~270 lines). ✅ Skills loaded via `yoagent::skills::SkillSet`. |
+| `pi-tui` (terminal UI, components, editor) | `src/tui/` + `src/agent/ui/` | ✅ Complete — 50+ modules, ~630 tests. Direct Rust port on crossterm 0.29. |
+| `pi-agent-core` (agent loop, session, compaction, skills) | Delegated to **yoagent** (agent loop, types, provider, skills) + rab's `AgentSession` (session lifecycle, compaction, branching) | ✅ Agent loop in yoagent (`yoagent::agent::Agent`). ✅ Session in `session.rs` (~2865 lines). ✅ SessionStorage in `session_storage.rs` (~630 lines). ✅ Compaction in `compaction.rs` (~1140 lines). ✅ Branch summarization in `branch_summary.rs` (~440 lines). ✅ Skills loaded via `yoagent::skills::SkillSet`. |
 | `coding-agent` (CLI, extensions, tools, settings, commands) | `main.rs`, `builtin/`, `extensions/`, `settings.rs`, `auth.rs`, `commands.rs` | ✅ Tools (read/write/edit/bash/grep/find/ls), settings, auth, CLI done. ✅ 22 slash commands implemented. ✅ Extension trait with tools, commands, renderers, skills, hooks. |
-| `GrepTool`, `FindTool`, `LsTool` (pi agent tools) | `src/extensions/filesystem.rs` | ✅ grep (ripgrep/grep fallback), find (fd/find fallback), ls — all with pluggable operations. |
-| MCP adapter (pi-mcp-adapter) | `src/extensions/mcp/` (6 modules, ~2K lines) | ✅ Proxy `mcp` tool, direct tool adapters, SSE-aware HTTP transport, config loading (global+project merge), server lifecycle (lazy connect, idle timeout), persistent metadata cache, tool renderers. |
+| `GrepTool`, `FindTool`, `LsTool` (pi agent tools) | `src/extensions/file_search.rs` | ✅ grep (ripgrep/grep fallback), find (fd/find fallback), ls — all with pluggable operations. |
+| MCP adapter (pi-mcp-adapter) | `src/extensions/mcp/` (6 modules, ~2040 lines) | ✅ Proxy `mcp` tool, direct tool adapters, SSE-aware HTTP transport, config loading (global+project merge), server lifecycle (lazy connect, idle timeout), persistent metadata cache, tool renderers. |
 | provider | `yoagent::provider::OpenAiCompatProvider` | ✅ OpenCode Go default. Auto-detection by model prefix (claude → Anthropic, gpt → OpenAI, ollama → Ollama). |
 | `beforeToolCall` / `afterToolCall` | `ToolDefinition.before_tool_call` / `.after_tool_call` | ✅ Per-tool hooks for blocking/preprocessing/postprocessing |
 | `validateToolArguments` | `extension::validate_tool_arguments()` | ✅ Full JSON Schema validation with pi-compatible error paths |
@@ -304,7 +307,7 @@ agent_session.check_auto_compact().await;
 
 ---
 
-## Session layer (`src/agent/session.rs`) — ~2800 lines
+## Session layer (`src/agent/session.rs`) — ~2865 lines
 
 Pi-compatible three-layer architecture:
 
@@ -380,7 +383,7 @@ Current session version: **3**. Each entry has a unique `id` and optional
 
 ---
 
-## Session storage (`src/agent/session_storage.rs`) — ~400 lines
+## Session storage (`src/agent/session_storage.rs`) — ~630 lines
 
 Pi-compatible `SessionStorage` trait with full CRUD operations.
 Both implementations fully own their state (entries, by_id, labels, leaf_id).
@@ -440,7 +443,7 @@ cwd filtering for the session picker UI.
 
 ---
 
-## Compaction (`src/agent/compaction.rs`) — ~680 lines ✅ IMPLEMENTED
+## Compaction (`src/agent/compaction.rs`) — ~1140 lines ✅ IMPLEMENTED
 
 When the conversation approaches the model's context window, older messages
 are summarized to free space. Ported from pi's compaction algorithm.
@@ -489,7 +492,7 @@ low temperature) to generate summaries.
 
 ---
 
-## Branch summarization (`src/agent/branch_summary.rs`) — ~270 lines ✅ IMPLEMENTED
+## Branch summarization (`src/agent/branch_summary.rs`) — ~440 lines ✅ IMPLEMENTED
 
 When the user navigates to a different branch in the session tree, the
 abandoned branch is summarized so context is preserved.
@@ -608,7 +611,7 @@ Every tool call goes through `ToolDefinition::execute()`:
 5. **Execute** — call inner `AgentTool::execute()`
 6. **`after_tool_call`** — optional hook that can modify the result
 
-At startup, extensions are collected from builtins + filesystem:
+At startup, extensions are collected from builtins + file_search:
 
 ```rust
 let extensions: Vec<Box<dyn Extension>> = vec![
@@ -617,14 +620,16 @@ let extensions: Vec<Box<dyn Extension>> = vec![
     Box::new(WriteExtension::new(cwd)),
     Box::new(EditExtension::new(cwd)),
     Box::new(BashExtension::new(cwd)),
-    Box::new(FilesystemExtension::new(cwd)),  // grep, find, ls
+    Box::new(FileSearchExtension::new(cwd)),  // grep, find, ls
 ];
 ```
 
 Extension gating is done via `is_extension_active()` which checks
 `settings.tools` (whitelist) and `settings.exclude_tools` (blacklist).
-Core extensions (commands, read, write, edit, bash) are always active
-when no whitelist is set. Grep/find/ls are opt-in via settings.
+Core extensions (commands, read, write, edit, bash, mcp) are always active
+when no whitelist is set. Grep/find/ls are opt-in and bundled as a single
+`FileSearchExtension`, activated if any of `"grep"`, `"find"`, or `"ls"`
+is whitelisted in `settings.tools`.
 
 ---
 
@@ -666,13 +671,13 @@ when no whitelist is set. Grep/find/ls are opt-in via settings.
 | **edit** | Exact-match search/replace, error on zero/multiple matches. Diff rendering with intra-line character-level inverse. Pluggable `EditOperations` trait. File mutation queue for serialized concurrent edits. |
 | **bash** | `sh -c <command>`, configurable timeout, streaming via ToolProgress. Last 2000 lines / 50KB truncation. Pluggable `BashOperations` trait, command prefix, custom shell path. |
 
-### Filesystem extension (`src/extensions/filesystem.rs`)
+### File search extension (`src/extensions/file_search.rs`)
 
 | Tool | Key features |
 |------|-------------|
-| **grep** | Uses ripgrep (`rg`) with `--json` output, falls back to `grep`. Respects .gitignore. Options: pattern, path, glob, ignoreCase, literal, context, limit (default 100). Pluggable `GrepOperations`. |
-| **find** | Uses `fd` (rust rewrite of find) with glob matching and .gitignore awareness, falls back to `find -name`. Options: pattern, path, limit (default 1000). Pluggable `FindOperations`. |
-| **ls** | Directory listing with `/` suffix for directories, dotfiles included. Options: path, limit (default 500). Pluggable `LsOperations`. |
+| **grep** | Uses ripgrep (`rg`) with `--json` output, falls back to `grep`. Respects .gitignore. Options: pattern, path, glob, ignoreCase, literal, context, limit (default 100). Pluggable `GrepOperations`. Shared `run_shell_command()` helper. |
+| **find** | Uses `fd` (rust rewrite of find) with glob matching and .gitignore awareness, falls back to `find -name`. Options: pattern, path, limit (default 1000). Pluggable `FindOperations`. Shared `run_shell_command()` helper. |
+| **ls** | Directory listing with `/` suffix for directories, dotfiles included. Options: path, limit (default 500). Pluggable `LsOperations`. Pure Rust via `std::fs::read_dir`. |
 
 ### File mutation queue (`src/builtin/file_mutation_queue.rs`)
 
@@ -836,8 +841,9 @@ with `openai_compat()` model config pointing to `opencode.ai/zen/go/v1`).
 Models: `deepseek-v4-flash` (default), `deepseek-v4-pro`.
 
 Extension gating: `is_extension_active()` checks `settings.tools` whitelist
-and `settings.exclude_tools` blacklist. Core extensions are always active
-when no whitelist is set. Filesystem tools (grep, find, ls) are opt-in.
+and `settings.exclude_tools` blacklist. Core extensions (commands, read,
+write, edit, bash, mcp) are always active when no whitelist is set. File
+search tools (grep, find, ls) are opt-in via the bundled `FileSearchExtension`.
 
 ---
 
@@ -868,7 +874,7 @@ stdout. Uses `yoagent::agent::Agent::prompt_with_sender()` with event channels.
 
 ---
 
-## TUI (`src/tui/` + `src/agent/ui/`) — 50+ modules, ~600 tests
+## TUI (`src/tui/` + `src/agent/ui/`) — 50+ modules, ~630 tests
 
 The TUI library is a direct Rust port of pi's `@earendil-works/pi-tui`.
 
@@ -882,9 +888,9 @@ The TUI library is a direct Rust port of pi's `@earendil-works/pi-tui`.
 | `focusable.rs` | Focus management — `Focusable` trait, focus ring |
 | `screen.rs` | Screen diff renderer — line-by-line comparison with cursor markers |
 | `overlay.rs` | Overlay system — show/hide/composite, anchor-based positioning |
-| `terminal.rs` | Terminal abstraction — `TerminalTrait`, `ProcessTerminal`, raw mode, cursor hide/show, synchronized output |
-| `keys.rs` | Key event handling — `key_event_to_id()`, 27+ action IDs |
-| `keybindings.rs` | JSON keybinding loading from `~/.rab/keybindings.json`, merge, resolution |
+| `terminal.rs` | Terminal abstraction — `TerminalTrait`, `ProcessTerminal`, raw mode, cursor hide/show, synchronized output, `TerminalEvent::Key`/`Paste`/`Resize` |
+| `keys.rs` | Key event handling — `key_event_to_id()`, 30+ action IDs, kitty protocol key encoding |
+| `keybindings.rs` | JSON keybinding loading from `~/.rab/keybindings.json`, merge, resolution, 50+ action constants |
 | `theme.rs` | Theme trait + default JSON theme loader |
 | `fuzzy.rs` | Fuzzy matching for autocomplete |
 | `autocomplete.rs` | Editor autocomplete popup — completions, rendering, keyboard navigation |
@@ -914,7 +920,7 @@ The TUI library is a direct Rust port of pi's `@earendil-works/pi-tui`.
 | Module | Description |
 |--------|-------------|
 | `app.rs` | Main `App` struct — event handler, agent loop management, message queuing, compose_ui, bang commands (!/!!), skills expansion |
-| `chat_editor.rs` | `ChatEditor` wrapper — input processing, slash command dispatch, /skill:name expansion |
+| `chat_editor.rs` | `ChatEditor` wrapper — input processing, slash command dispatch, /skill:name expansion. `InputAction` enum with `Handled`, `Escape`, `Clear`, `Exit`, `ThinkingCycle`, `ModelSelector`, `ModelCycleForward`, `ModelCycleBackward`, `ToggleThinking`, `ToolsExpand`, `EditorExternal`, `Help`, `Submit`, `FollowUp`, `Dequeue`, `CompactToggle` |
 | `theme.rs` | `RabTheme` — JSON theme resolution, fallback, color detection, 130+ theme keys |
 | `working.rs` | `WorkingIndicator` — timer-based working animation |
 | `model_selector.rs` | `ModelSelector` — Ctrl+P model cycling with scoped-models support |
@@ -926,8 +932,7 @@ The TUI library is a direct Rust port of pi's `@earendil-works/pi-tui`.
 | `components/editor_component.rs` | Editor component with border_color |
 | `components/user_message.rs` | User message component (box + markdown) |
 | `components/assistant_message.rs` | Streaming assistant message with thinking blocks |
-| `components/tool_messages.rs` | Tool execution components (read, write, edit, bash, grep, find, ls) |
-| `components/bash_execution.rs` | Bash execution component with streaming, duration, borders |
+| `components/tool_messages.rs` | Tool execution components (read, write, edit, bash, grep, find, ls) with dedicated renderers |
 | `components/info_message.rs` | Info message component (dim text) |
 | `components/session_picker.rs` | Session selector overlay |
 | `components/mod.rs` | Component re-exports |
@@ -942,7 +947,6 @@ TUI.root (Container):
   │   ├── UserMessageComponent
   │   ├── ToolExecComponent (read/write/edit/bash/grep/find/ls)
   │   ├── RcRefCellComponent → AssistantMessageComponent
-  │   ├── BashExecutionComponent
   │   ├── InfoMessageComponent
   │   └── Spacer(1) between each
   ├── pending_section (DynamicLines — streaming text/thinking)
@@ -953,12 +957,55 @@ TUI.root (Container):
   └── FooterComponent (cwd, git branch, token usage, model, auto-compact)
 ```
 
-### Message queuing
+### Message queuing and follow-up
 
-When the user submits a message while streaming, it is queued (not sent to
-a new concurrent agent loop). Queued messages appear between chat and editor.
-On `AgentEnd`, the next queued message is auto-submitted. Ctrl+C during
-streaming restores queued messages to the editor.
+When the user submits a message while streaming, it is queued via yoagent's
+native `follow_up()` method. The agent loop's outer loop picks it up when the
+current turn finishes — no concurrent agent loops. Queued messages appear
+between chat and editor. On `AgentEnd`, the next queued message is
+auto-submitted.
+
+- **Follow-up** (`app.message.followUp`, default Alt+Enter) — queues a message
+  during streaming without aborting the current turn.
+- **Dequeue** (`app.message.dequeue`, default Alt+Up) — restores the queued
+  message back to the editor.
+- **Interrupt** (`app.interrupt`, default Ctrl+C) — aborts streaming and
+  restores any queued messages to the editor.
+
+### Keybinding actions
+
+Keybinding actions are defined as constants in `src/tui/keybindings.rs`:
+
+| Action constant | ID string | Default binding |
+|-----------------|-----------|----------------|
+| `ACTION_APP_ESCAPE` | `app.escape` | Escape |
+| `ACTION_APP_CLEAR` | `app.clear` | Ctrl+C |
+| `ACTION_APP_INTERRUPT` | `app.interrupt` | Ctrl+C (when streaming) |
+| `ACTION_APP_EXIT` | `app.exit` | Ctrl+D |
+| `ACTION_APP_SUSPEND` | `app.suspend` | Ctrl+Z |
+| `ACTION_APP_THINKING_CYCLE` | `app.thinking.cycle` | Shift+Tab |
+| `ACTION_APP_MODEL_SELECTOR` | `app.model.select` | Ctrl+L |
+| `ACTION_APP_MODEL_CYCLE_FORWARD` | `app.model.cycleForward` | Ctrl+P |
+| `ACTION_APP_MODEL_CYCLE_BACKWARD` | `app.model.cycleBackward` | Shift+Ctrl+P |
+| `ACTION_APP_TOGGLE_THINKING` | `app.thinking.toggle` | Ctrl+T |
+| `ACTION_APP_TOOLS_EXPAND` | `app.tools.expand` | Ctrl+O |
+| `ACTION_APP_EDITOR_EXTERNAL` | `app.editor.external` | Ctrl+E |
+| `ACTION_APP_HELP` | `app.help` | Ctrl+H |
+| `ACTION_APP_HISTORY_UP` | `app.historyUp` | Ctrl+Up |
+| `ACTION_APP_HISTORY_DOWN` | `app.historyDown` | Ctrl+Down |
+| `ACTION_APP_MESSAGE_FOLLOW_UP` | `app.message.followUp` | Alt+Enter |
+| `ACTION_APP_MESSAGE_DEQUEUE` | `app.message.dequeue` | Alt+Up |
+| `ACTION_APP_COMPACT_TOGGLE` | `app.compact.toggle` | Shift+Ctrl+C |
+| `ACTION_APP_SESSION_NEW` | `app.session.new` | Ctrl+N |
+| `ACTION_APP_SESSION_TREE` | `app.session.tree` | Ctrl+G |
+| `ACTION_APP_SESSION_FORK` | `app.session.fork` | Ctrl+F |
+| `ACTION_APP_SESSION_RESUME` | `app.session.resume` | Ctrl+R |
+| `ACTION_INPUT_SUBMIT` | `tui.input.submit` | Enter |
+| `ACTION_INPUT_TAB` | `tui.input.tab` | Tab |
+| `ACTION_INPUT_NEW_LINE` | `tui.input.newLine` | Alt+Enter (when idle) |
+| `ACTION_INPUT_COPY` | `tui.input.copy` | Ctrl+Shift+C |
+
+All bindings are customizable via `~/.rab/keybindings.json`.
 
 ### Transient status
 
@@ -1055,7 +1102,7 @@ plugin author experience (design deferred to Phase 2).
 
 ### MCP adapter — ✅ IMPLEMENTED
 
-The `src/extensions/mcp/` module (6 modules, ~2K lines) provides a full MCP
+The `src/extensions/mcp/` module (6 modules, ~2040 lines) provides a full MCP
 adapter matching pi-mcp-adapter's architecture. Configured via `~/.rab/agent/mcp.json`
 (global) and `.rab/mcp.json` (project-local overrides).
 
