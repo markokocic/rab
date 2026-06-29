@@ -198,14 +198,6 @@ pub struct App {
     /// Used by `show_status()` to replace consecutive status messages in-place
     /// instead of appending indefinitely.
     last_status_len: Option<usize>,
-
-    /// Number of queued steering messages (for status display).
-    /// Incremented on steer(), reset on AgentEnd.
-    queued_steering_count: usize,
-    /// Follow-up messages queued via Alt+Enter during streaming.
-    /// Stored in App state (not yoagent's private queue) so they survive
-    /// agent replacement. Re-submitted as new prompts at AgentEnd.
-    pending_follow_ups: Vec<String>,
     // ── Message rendering cache (avoids re-rendering messages every frame) ──
     // Cache fields removed - messages now rendered via Components in chat_container.
 }
@@ -390,8 +382,6 @@ impl App {
             )),
             session_picker: None,
             last_status_len: None,
-            queued_steering_count: 0,
-            pending_follow_ups: Vec::new(),
         };
 
         // Initial session info for /session command
@@ -430,8 +420,6 @@ impl App {
         self.pending_tools.clear();
         self.tool_call_start_times.clear();
         self.pending_submit = None;
-        self.pending_follow_ups.clear();
-        self.queued_steering_count = 0;
     }
 
     /// Rebuild chat and agent messages from the current session context.
@@ -784,21 +772,6 @@ fn compose_ui(app: &mut App, width: usize) {
             let line = app
                 .theme
                 .fg_key(ThemeKey::Dim, &format!(" 📝 queued: {}", preview));
-            status_lines.push(crate::agent::ui::render_utils::pad_to_width(&line, width));
-        }
-        // Show queued message counts
-        let mut queued_parts: Vec<String> = Vec::new();
-        if app.queued_steering_count > 0 {
-            queued_parts.push(format!("{} steering", app.queued_steering_count));
-        }
-        if !app.pending_follow_ups.is_empty() {
-            queued_parts.push(format!("{} follow-up", app.pending_follow_ups.len()));
-        }
-        if !queued_parts.is_empty() {
-            let line = app.theme.fg_key(
-                ThemeKey::Dim,
-                &format!(" 📝 queued: {} ", queued_parts.join(", ")),
-            );
             status_lines.push(crate::agent::ui::render_utils::pad_to_width(&line, width));
         }
     }
@@ -1163,8 +1136,8 @@ fn handle_compact_toggle(app: &mut App) {
 }
 
 /// Queue a follow-up message (Alt+Enter) during streaming.
-/// Saved in app.pending_follow_ups (not yoagent's private queue) so it
-/// survives agent replacement. Re-submitted as a new prompt at AgentEnd.
+/// Uses yoagent's native `follow_up()` — the agent loop's outer loop
+/// picks it up naturally after the current inner loop finishes.
 pub fn handle_follow_up(app: &mut App, text: String) {
     let trimmed = text.trim().to_string();
     if trimmed.is_empty() {
@@ -1172,14 +1145,11 @@ pub fn handle_follow_up(app: &mut App, text: String) {
     }
 
     if app.is_streaming && app.agent.as_ref().is_some_and(|a| a.is_streaming()) {
-        chat_add(
-            app,
-            std::boxed::Box::new(crate::agent::ui::components::UserMessageComponent::new(
-                &trimmed,
-            )),
-        );
-        app.pending_follow_ups.push(trimmed);
-        app.status_text = Some("Follow-up queued — will send when agent finishes".into());
+        let follow_msg = user_agent_message(&trimmed);
+        if let Some(ref agent) = app.agent {
+            agent.follow_up(follow_msg);
+            app.status_text = Some("Follow-up queued — will send when agent finishes".into());
+        }
     } else {
         // Not streaming — submit directly
         if app.is_streaming {
@@ -1208,9 +1178,6 @@ fn interrupt_streaming(app: &mut App) {
     app.is_streaming = false;
     app.working.stop();
     app.footer.borrow_mut().set_streaming(false);
-    // Reset queue tracking on abort
-    app.queued_steering_count = 0;
-    app.pending_follow_ups.clear();
 
     // Rebuild chat from session (authoritative store after abort)
     if let Some(ref s) = app.session {
@@ -1259,17 +1226,10 @@ fn submit_message(app: &mut App, message: String) {
     // Handle /skill:name [args] expansion (pi-style: before command dispatch)
     if trimmed.starts_with("/skill:") {
         let expanded = expand_skill_command(&trimmed, &app.skills);
-        chat_add(
-            app,
-            std::boxed::Box::new(crate::agent::ui::components::UserMessageComponent::new(
-                &expanded,
-            )),
-        );
         if app.is_streaming && app.agent.as_ref().is_some_and(|a| a.is_streaming()) {
             let steer_msg = user_agent_message(&expanded);
             if let Some(ref agent) = app.agent {
                 agent.steer(steer_msg);
-                app.queued_steering_count += 1;
                 app.status_text = Some("Skill steering message sent".into());
             }
             return;
@@ -1296,24 +1256,16 @@ fn submit_message(app: &mut App, message: String) {
         return;
     }
 
-    // Normal message submission to LLM
-    chat_add(
-        app,
-        std::boxed::Box::new(crate::agent::ui::components::UserMessageComponent::new(
-            &trimmed,
-        )),
-    );
-
     if app.is_streaming {
-        // When streaming, use steer() to deliver the message mid-turn.
-        // The agent loop picks it up between tool calls or after the
-        // current assistant turn, then continues processing.
+        // When streaming, queue via steer(). The agent loop picks it up
+        // between tool calls or after the current assistant turn, then
+        // continues processing. Do NOT add to chat here — MessageStart
+        // handler adds it when the agent loop processes the queued message.
         if app.agent.as_ref().is_some_and(|a| a.is_streaming()) {
             let steer_msg = user_agent_message(&trimmed);
             if let Some(ref agent) = app.agent {
                 agent.steer(steer_msg);
-                app.queued_steering_count += 1;
-                app.status_text = Some("Steering message sent - interrupting current turn".into());
+                app.status_text = Some("Steering message sent — will be processed next".into());
             }
             // Reset overflow recovery for the steer'd message
             if let Some(ref mut s) = app.session {
@@ -2417,7 +2369,22 @@ fn handle_agent_event(app: &mut App, event: yoagent::types::AgentEvent) {
             app.refresh_git_branch();
         }
         E::TurnStart => {}
-        E::MessageStart { .. } => {}
+        E::MessageStart { message } => {
+            // Add user messages to chat when the agent loop processes them.
+            // Covers both the initial prompt (non-streaming) and
+            // steered/follow-up messages queued during streaming.
+            if crate::agent::types::message_is_user(&message) {
+                let text = crate::agent::types::message_text(&message);
+                if !text.is_empty() {
+                    chat_add(
+                        app,
+                        std::boxed::Box::new(
+                            crate::agent::ui::components::UserMessageComponent::new(&text),
+                        ),
+                    );
+                }
+            }
+        }
         E::MessageUpdate { delta, .. } => {
             use yoagent::types::StreamDelta;
             match delta {
@@ -2568,22 +2535,6 @@ fn handle_agent_event(app: &mut App, event: yoagent::types::AgentEvent) {
             app.is_streaming = false;
             app.working.stop();
             app.footer.borrow_mut().set_streaming(false);
-            // Reset steering count (queue drained by loop at turn end).
-            app.queued_steering_count = 0;
-            // Re-submit any unconsumed follow-ups as new prompts.
-            // Saved in app.pending_follow_ups (not yoagent's private queue)
-            // so they survive agent replacement.
-            if !app.pending_follow_ups.is_empty() {
-                let follow_text = app.pending_follow_ups.join("\n");
-                app.pending_follow_ups.clear();
-                chat_add(
-                    app,
-                    std::boxed::Box::new(crate::agent::ui::components::UserMessageComponent::new(
-                        &follow_text,
-                    )),
-                );
-                app.pending_submit = Some(follow_text);
-            }
             // Refresh footer cached stats from session at turn end (pull-based)
             if let Some(ref s) = app.session {
                 app.footer.borrow_mut().refresh_from_session(s.session());
