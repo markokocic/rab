@@ -320,7 +320,7 @@ impl App {
             .set_available_provider_count(config.registry.count_providers());
 
         // Record initial model/thinking in session if not already present
-        // so refresh_from_session can pick them up (no setters on footer).
+        // so refresh_from_session can pick them up.
         {
             let has_model_entry = !agent_session
                 .session()
@@ -387,7 +387,7 @@ impl App {
             );
         }
 
-        let result = Self {
+        let mut result = Self {
             cwd: config.cwd,
             model: config.model,
             thinking_level: config.thinking_level,
@@ -450,7 +450,8 @@ impl App {
         result.update_session_info();
 
         // Initialize footer stats and session name from session
-        if let Some(ref s) = result.session {
+        if let Some(ref mut s) = result.session {
+            s.flush_pending_writes();
             result.footer.borrow_mut().refresh_from_session(s.session());
         }
 
