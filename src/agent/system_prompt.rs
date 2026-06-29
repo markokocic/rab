@@ -24,19 +24,6 @@ pub struct ToolSnippet {
 impl ToolSnippet {}
 
 /// Builder for constructing the full system prompt.
-///
-/// Usage:
-/// ```ignore
-/// let prompt = SystemPromptBuilder::new()
-///     .tool_snippets(tool_snippets)
-///     .guidelines(guidelines)
-///     .context_files(context_files)
-///     .skills(skills)
-///     .custom_prompt(custom_system_md)
-///     .append_prompt(append_system_md)
-///     .cwd(&cwd)
-///     .build();
-/// ```
 #[derive(Debug, Default)]
 pub struct SystemPromptBuilder {
     /// Tool one-liners for "Available tools" section.

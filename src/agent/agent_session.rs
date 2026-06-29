@@ -45,18 +45,6 @@ pub(crate) enum PendingSessionWrite {
 /// Handles:
 /// - Event-driven message persistence (persist tool results as they arrive)
 /// - Automatic model/thinking/tool change detection and persistence
-///
-/// Usage:
-/// ```ignore
-/// let mut agent_session = AgentSession::new(session);
-///
-/// // In your agent event handler:
-/// agent_session.handle_event(&event);
-///
-/// // For model/thinking/tool changes at runtime:
-/// agent_session.on_model_change("opencode_go", "deepseek-v4-pro");
-/// agent_session.on_thinking_level_change("high");
-/// ```
 pub struct AgentSession {
     /// The core session (wraps SessionStorage).
     session: crate::agent::session::Session,
@@ -383,7 +371,8 @@ impl AgentSession {
     // ── Model / thinking / tool change tracking ─────────────────
 
     /// Persist a model change if it differs from the last known model.
-    /// Returns true if a change entry was enqueued.
+    /// Flushes pending writes immediately so callers can read the change
+    /// from session.get_entries() without an extra flush step.
     pub fn on_model_change(&mut self, provider: &str, model_id: &str) -> bool {
         let new = (provider.to_string(), model_id.to_string());
         if self.last_model.as_ref() != Some(&new) {
@@ -392,6 +381,7 @@ impl AgentSession {
                 model_id: model_id.to_string(),
             });
             self.last_model = Some(new);
+            self.flush_pending_writes();
             true
         } else {
             false
@@ -399,11 +389,13 @@ impl AgentSession {
     }
 
     /// Persist a thinking level change if it differs from the last known level.
-    /// Returns true if a change entry was enqueued.
+    /// Flushes pending writes immediately so callers can read the change
+    /// from session.get_entries() without an extra flush step.
     pub fn on_thinking_level_change(&mut self, level: &str) -> bool {
         if self.last_thinking_level != level {
             self.publish_session_write(PendingSessionWrite::ThinkingLevelChange(level.to_string()));
             self.last_thinking_level = level.to_string();
+            self.flush_pending_writes();
             true
         } else {
             false
