@@ -422,6 +422,61 @@ impl App {
     fn refresh_git_branch(&self) {
         self.footer_provider.borrow_mut().refresh_git_branch();
     }
+
+    /// Clear all transient session state when switching to a new session.
+    fn clear_session_state(&mut self) {
+        self.chat_container.borrow_mut().clear();
+        self.streaming_component = None;
+        self.pending_tools.clear();
+        self.tool_call_start_times.clear();
+        self.pending_submit = None;
+        self.pending_follow_ups.clear();
+        self.queued_steering_count = 0;
+    }
+
+    /// Rebuild chat and agent messages from the current session context.
+    /// Used after compaction to update the UI and keep the agent in sync.
+    fn rebuild_from_session_context(&mut self) {
+        if let Some(ref agent_session) = self.session {
+            let context = agent_session.session().build_session_context();
+            {
+                let mut chat = self.chat_container.borrow_mut();
+                rebuild_chat_from_messages(
+                    &mut chat,
+                    &context.messages,
+                    &self.cwd.to_string_lossy(),
+                    self.hide_thinking,
+                    self.collapse_tool_output,
+                    &self.extensions,
+                );
+            }
+            if let Some(ref mut agent) = self.agent {
+                agent.replace_messages(context.messages);
+            }
+        }
+    }
+
+    /// Switch to a different session: open the file, clear state, rebuild chat.
+    fn switch_to_session(&mut self, new_session: AgentSession) {
+        let ctx = new_session.session().build_session_context();
+        self.clear_session_state();
+        rebuild_chat_from_messages(
+            &mut self.chat_container.borrow_mut(),
+            &ctx.messages,
+            &self.cwd.to_string_lossy(),
+            self.hide_thinking,
+            self.collapse_tool_output,
+            &self.extensions,
+        );
+        // Refresh footer cached stats for the switched-to session
+        self.footer
+            .borrow_mut()
+            .refresh_from_session(new_session.session());
+
+        self.session = Some(new_session);
+        self.agent = None;
+        self.update_session_info();
+    }
 }
 
 /// Run the interactive UI.
@@ -1108,7 +1163,6 @@ fn handle_compact_toggle(app: &mut App) {
 }
 
 /// Queue a follow-up message (Alt+Enter) during streaming.
-/// Queue a follow-up message (Alt+Enter) during streaming.
 /// Saved in app.pending_follow_ups (not yoagent's private queue) so it
 /// survives agent replacement. Re-submitted as a new prompt at AgentEnd.
 pub fn handle_follow_up(app: &mut App, text: String) {
@@ -1426,26 +1480,7 @@ async fn handle_compact_command(app: &mut App, custom_instructions: Option<Strin
         Ok(_summary) => {
             app.working.stop();
             app.status_text = None;
-
-            // Rebuild chat from the updated session context
-            let context = agent_session.session().build_session_context();
-            {
-                let mut chat = app.chat_container.borrow_mut();
-                rebuild_chat_from_messages(
-                    &mut chat,
-                    &context.messages,
-                    &app.cwd.to_string_lossy(),
-                    app.hide_thinking,
-                    app.collapse_tool_output,
-                    &app.extensions,
-                );
-            }
-
-            // Update agent messages if agent exists
-            if let Some(ref mut agent) = app.agent {
-                agent.replace_messages(context.messages);
-            }
-
+            app.rebuild_from_session_context();
             show_status(app, "Compaction completed".to_string());
         }
         Err(e) => {
@@ -1474,23 +1509,7 @@ async fn handle_auto_compact(app: &mut App) {
 
     match agent_session.check_auto_compact().await {
         Ok(true) => {
-            // Rebuild chat from the updated session context
-            let context = agent_session.session().build_session_context();
-            {
-                let mut chat = app.chat_container.borrow_mut();
-                rebuild_chat_from_messages(
-                    &mut chat,
-                    &context.messages,
-                    &app.cwd.to_string_lossy(),
-                    app.hide_thinking,
-                    app.collapse_tool_output,
-                    &app.extensions,
-                );
-            }
-            // Update agent messages if agent exists
-            if let Some(ref mut agent) = app.agent {
-                agent.replace_messages(context.messages);
-            }
+            app.rebuild_from_session_context();
             // Refresh footer stats (token counts may have changed)
             if let Some(ref s) = app.session {
                 app.footer.borrow_mut().refresh_from_session(s.session());
@@ -1682,10 +1701,7 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
 
             // Clear everything (matching pi's renderCurrentSessionState)
             app.agent = None;
-            app.chat_container.borrow_mut().clear();
-            app.streaming_component = None;
-            app.pending_tools.clear();
-            app.tool_call_start_times.clear();
+            app.clear_session_state();
 
             // Refresh footer cached stats from the now-empty session
             if let Some(ref s) = app.session {
@@ -1699,27 +1715,7 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
         }
         CommandResult::SessionSwitched { path } => {
             let new_session = crate::agent::AgentSession::open(&path, None, Some(&app.cwd));
-            let ctx = new_session.session().build_session_context();
-            app.chat_container.borrow_mut().clear();
-            app.streaming_component = None;
-            app.pending_tools.clear();
-            app.tool_call_start_times.clear();
-            rebuild_chat_from_messages(
-                &mut app.chat_container.borrow_mut(),
-                &ctx.messages,
-                &app.cwd.to_string_lossy(),
-                app.hide_thinking,
-                app.collapse_tool_output,
-                &app.extensions,
-            );
-            // Refresh footer cached stats for the switched-to session
-            app.footer
-                .borrow_mut()
-                .refresh_from_session(new_session.session());
-
-            app.session = Some(new_session);
-            app.agent = None;
-            app.update_session_info();
+            app.switch_to_session(new_session);
             app.status_text = Some(format!("Switched to session: {}", path.display()));
         }
         CommandResult::SessionInfo {
@@ -1972,22 +1968,7 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
                                     // Open the new session and replace the current one
                                     let new_session =
                                         crate::agent::AgentSession::open(path, None, Some(&cwd));
-
-                                    let ctx = new_session.session().build_session_context();
-                                    app.chat_container.borrow_mut().clear();
-                                    app.streaming_component = None;
-                                    app.pending_tools.clear();
-                                    app.tool_call_start_times.clear();
-                                    rebuild_chat_from_messages(
-                                        &mut app.chat_container.borrow_mut(),
-                                        &ctx.messages,
-                                        &app.cwd.to_string_lossy(),
-                                        app.hide_thinking,
-                                        app.collapse_tool_output,
-                                        &app.extensions,
-                                    );
-                                    app.session = Some(new_session);
-                                    app.agent = None;
+                                    app.switch_to_session(new_session);
 
                                     let styled = app.theme.fg(
                                         "accent",
