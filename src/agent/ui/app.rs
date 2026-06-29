@@ -692,6 +692,7 @@ pub async fn run(config: AppConfig, session: AgentSession) -> anyhow::Result<()>
                                 )
                                 .unwrap_or_else(|| "opencode-go".to_string());
                             agent_session.on_model_change(&provider, &model_id);
+                            agent_session.flush_pending_writes();
                         }
                         if let Some(ref session) = app.session {
                             app.footer
@@ -1972,6 +1973,7 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
                     .provider_for_model(&model, app.settings.default_provider.as_deref())
                     .unwrap_or_else(|| "opencode-go".to_string());
                 s.on_model_change(&provider, &model);
+                s.flush_pending_writes();
             }
             if let Some(ref s) = app.session {
                 app.footer.borrow_mut().refresh_from_session(s.session());
