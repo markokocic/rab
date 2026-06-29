@@ -1035,7 +1035,10 @@ impl SessionManager {
             .map(|p| p.to_path_buf())
             .unwrap_or_else(|| PathBuf::from(storage.metadata().cwd));
         let session = Session::new(storage);
-        Self::with_session(session, session_dir.to_path_buf(), cwd, true)
+        let mut sm = Self::with_session(session, session_dir.to_path_buf(), cwd, true);
+        // File already exists (opened or recovered), mark flushed
+        sm.flushed = true;
+        sm
     }
 
     /// Create an in-memory (non-persisted) session.
