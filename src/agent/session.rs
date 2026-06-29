@@ -1238,8 +1238,9 @@ impl SessionManager {
     // ── Public: Appending (delegated to Session) ──────────────────
 
     pub fn append_message(&mut self, message: &yoagent::types::AgentMessage) -> String {
-        // Flush before first assistant message (lazy write)
-        if !self.flushed && self.persist && crate::agent::types::message_is_assistant(message) {
+        // Flush on first message (lazy write) to ensure session is persisted
+        // even if the agent never produces an assistant message (e.g. provider error).
+        if !self.flushed && self.persist {
             self.ensure_flushed();
         }
         self.session.append_message(message)

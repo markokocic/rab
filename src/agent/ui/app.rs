@@ -2542,9 +2542,11 @@ fn handle_agent_event(app: &mut App, event: yoagent::types::AgentEvent) {
             // Pi-compatible: schedule auto-compaction check after agent ends.
             // check_auto_compact() is called asynchronously in the main loop.
             app.pending_auto_compact = app.auto_compact;
-            // Detect silent stops: if the last assistant message was empty
-            // (and not a provider error, which is handled in MessageEnd above),
-            // surface a clear message.
+            // Detect silent stops / provider errors: surface any assistant message
+            // that ended without visible output (empty content or provider error).
+            // Provider errors with error_message set were never forwarded as
+            // MessageEnd events (the provider returned Err() without streaming),
+            // so they must be surfaced here.
             for msg in messages.iter().rev() {
                 if let Some(yoagent::types::Message::Assistant {
                     content,
@@ -2553,8 +2555,17 @@ fn handle_agent_event(app: &mut App, event: yoagent::types::AgentEvent) {
                     ..
                 }) = msg.as_llm()
                     && stop_reason != &yoagent::types::StopReason::ToolUse
-                    && error_message.is_none()
                 {
+                    if let Some(err) = error_message {
+                        chat_add(
+                            app,
+                            std::boxed::Box::new(InfoMessageComponent::new(format!(
+                                "Provider error: {}",
+                                err
+                            ))),
+                        );
+                        break;
+                    }
                     let is_empty = content.is_empty()
                         || content.iter().all(|c| {
                             matches!(c, yoagent::types::Content::Text { text } if text.trim().is_empty())
