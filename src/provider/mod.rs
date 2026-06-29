@@ -113,6 +113,11 @@ impl ProviderRegistry {
     pub fn api_key_for_provider(&self, provider_id: &str) -> Option<String> {
         self.auth_storage.api_key(provider_id)
     }
+
+    /// Count the number of distinct providers in the registry.
+    pub fn count_providers(&self) -> usize {
+        self.entries.len()
+    }
 }
 
 /// Get the agent config directory (~/.rab/agent).

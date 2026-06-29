@@ -86,8 +86,6 @@ pub struct AppConfig {
 
     /// Skills loaded for the session (used for /skill:name expansion).
     pub skills: Vec<yoagent::skills::Skill>,
-    /// Whether the current model supports reasoning (for showing thinking level in footer).
-    pub model_supports_reasoning: bool,
     /// Session info Arc for /session command (shared with CommandsExtension).
     pub session_info: Option<std::sync::Arc<std::sync::Mutex<Option<SessionInfoInternal>>>>,
     /// API key for yoagent provider.
@@ -312,12 +310,37 @@ impl App {
             config.cwd.to_string_lossy().to_string(),
             footer_provider.clone(),
         );
-        footer.set_model(&config.model);
-        footer.set_model_supports_reasoning(config.model_supports_reasoning);
-        footer.set_thinking_level(config.thinking_level.clone());
         footer.set_context_window(crate::agent::compaction::get_model_context_window(
             &config.model,
         ));
+
+        // Set available provider count for footer display
+        footer_provider
+            .borrow_mut()
+            .set_available_provider_count(config.registry.count_providers());
+
+        // Record initial model/thinking in session if not already present
+        // so refresh_from_session can pick them up (no setters on footer).
+        {
+            let has_model_entry = !agent_session
+                .session()
+                .find_entries("model_change")
+                .is_empty();
+            if !has_model_entry {
+                let provider = config
+                    .registry
+                    .provider_for_model(&config.model)
+                    .unwrap_or_else(|| "opencode-go".to_string());
+                agent_session.on_model_change(&provider, &config.model);
+            }
+            let has_thinking_entry = !agent_session
+                .session()
+                .find_entries("thinking_level_change")
+                .is_empty();
+            if !has_thinking_entry && let Some(ref level) = config.thinking_level {
+                agent_session.on_thinking_level_change(level);
+            }
+        }
 
         let footer = Rc::new(RefCell::new(footer));
 
@@ -989,9 +1012,6 @@ fn handle_thinking_cycle(app: &mut App) {
     };
 
     app.thinking_level = Some(next.to_string());
-    app.footer
-        .borrow_mut()
-        .set_thinking_level(Some(next.to_string()));
     app.editor
         .borrow_mut()
         .update_border_color(Some(next), &app.theme as &dyn crate::tui::Theme);
@@ -1000,9 +1020,12 @@ fn handle_thinking_cycle(app: &mut App) {
     if let Err(e) = app.settings.save() {
         app.status_text = Some(format!("Failed to save thinking level: {}", e));
     }
-    // Record the change in the session and update the persistent agent
+    // Record the change in the session and refresh footer
     if let Some(ref mut agent_session) = app.session {
         agent_session.on_thinking_level_change(next);
+    }
+    if let Some(ref s) = app.session {
+        app.footer.borrow_mut().refresh_from_session(s.session());
     }
     app.status_text = Some(format!("Thinking level: {}", next));
 }
@@ -1023,24 +1046,19 @@ fn handle_model_cycle(app: &mut App, dir: isize) {
     };
 
     app.model = app.available_models[next_idx].clone();
-    app.footer
-        .borrow_mut()
-        .set_model(format_model_display(&app.registry, &app.model));
-    let reasoning = app
-        .registry
-        .resolve(&app.model)
-        .map(|r| r.model_config.reasoning)
-        .unwrap_or(true);
-    app.footer
-        .borrow_mut()
-        .set_model_supports_reasoning(reasoning);
-    // Record the change in the session and update the persistent agent
+    // Record the change in the session
     if let Some(ref mut agent_session) = app.session {
         let provider = app
             .registry
             .provider_for_model(&app.model)
             .unwrap_or_else(|| "opencode-go".to_string());
         agent_session.on_model_change(&provider, &app.model);
+    }
+    // Refresh footer from session to pick up model/provider/thinking
+    if let Some(ref session) = app.session {
+        app.footer
+            .borrow_mut()
+            .refresh_from_session(session.session());
     }
     app.status_text = Some(format!("Model: {}", app.model));
 }
@@ -1249,14 +1267,6 @@ fn interrupt_streaming(app: &mut App) {
     }
 
     app.status_text = Some("Interrupted".into());
-}
-
-/// Format a model ID for display: "provider/model_id" or just "model_id" if provider is unknown.
-fn format_model_display(registry: &ProviderRegistry, model_id: &str) -> String {
-    match registry.provider_for_model(model_id) {
-        Some(p) => format!("{}/{}", p, model_id),
-        None => model_id.to_string(),
-    }
 }
 
 // ── Auth helpers ─────────────────────────────────────
@@ -1746,7 +1756,17 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
         }
         CommandResult::ModelChanged(model) => {
             app.model = model.clone();
-            app.footer.borrow_mut().set_model(&model);
+            // Record model in session and refresh footer (no direct setters)
+            if let Some(ref mut s) = app.session {
+                let provider = app
+                    .registry
+                    .provider_for_model(&model)
+                    .unwrap_or_else(|| "opencode-go".to_string());
+                s.on_model_change(&provider, &model);
+            }
+            if let Some(ref s) = app.session {
+                app.footer.borrow_mut().refresh_from_session(s.session());
+            }
             app.status_text = Some(format!("Model: {}", model));
         }
         CommandResult::ShowHelp => {
@@ -1774,9 +1794,12 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
                 // Apply reloaded settings to runtime state
                 if let Some(level) = app.settings.default_thinking_level.clone() {
                     app.thinking_level = Some(level.clone());
-                    app.footer
-                        .borrow_mut()
-                        .set_thinking_level(Some(level.clone()));
+                    if let Some(ref mut s) = app.session {
+                        s.on_thinking_level_change(&level);
+                    }
+                    if let Some(ref s) = app.session {
+                        app.footer.borrow_mut().refresh_from_session(s.session());
+                    }
                     // yoagent hardcodes ThinkingLevel::High
                 }
                 app.hide_thinking = app.settings.hide_thinking.unwrap_or(true);

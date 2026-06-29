@@ -88,7 +88,6 @@ pub struct Footer {
 
     // ── Model / settings state (set directly by App) ──
     model: String,
-    model_supports_reasoning: bool,
     thinking_level: Option<String>,
     auto_compact: bool,
     experimental_enabled: bool,
@@ -114,7 +113,6 @@ impl Footer {
             context_window: 0,
             auto_compact: true,
             model: String::new(),
-            model_supports_reasoning: false,
             thinking_level: None,
             experimental_enabled: false,
             provider,
@@ -190,8 +188,23 @@ impl Footer {
         // Update session name from session
         self.session_name = session.session_name().map(|s| s.to_string());
 
-        // Pull model/provider from the latest session model change
+        // Pull model/provider/thinking from the latest session changes
         self.provider.borrow_mut().refresh_from_session(session);
+
+        // Update footer fields from provider (round-trip through session)
+        {
+            let prov = self.provider.borrow();
+            if let Some(mid) = prov.get_model_id() {
+                self.model = mid.to_string();
+            }
+        }
+
+        // Extract latest thinking level from session
+        for entry in session.get_entries() {
+            if let crate::agent::session::SessionEntry::ThinkingLevelChange(e) = entry {
+                self.thinking_level = Some(e.thinking_level.clone());
+            }
+        }
     }
 
     // ── Direct setters (model / settings state) ────────────────
@@ -202,10 +215,6 @@ impl Footer {
 
     pub fn set_model(&mut self, model: impl Into<String>) {
         self.model = model.into();
-    }
-
-    pub fn set_model_supports_reasoning(&mut self, supports: bool) {
-        self.model_supports_reasoning = supports;
     }
 
     pub fn set_thinking_level(&mut self, level: Option<String>) {
@@ -350,26 +359,20 @@ impl crate::tui::Component for Footer {
             self.model.clone()
         };
 
-        // Pi-style right side with thinking level indicator
-        let right_side_without_provider = if self.model_supports_reasoning {
-            match &self.thinking_level {
-                Some(level) if level != "off" => format!("{} • {}", model_name, level),
-                _ => format!("{} • thinking off", model_name),
-            }
-        } else {
-            model_name.clone()
+        // Always show thinking level if available
+        let right_side_without_provider = match &self.thinking_level {
+            Some(level) if level != "off" => format!("{} • {}", model_name, level),
+            Some(_) => format!("{} • thinking off", model_name),
+            None => model_name.clone(),
         };
 
-        // Prepend provider in parentheses if multiple providers (pi-style)
-        let (available_provider_count, pname) = {
-            let prov = self.provider.borrow();
-            (
-                prov.get_available_provider_count(),
-                prov.get_model_provider().map(|s| s.to_string()),
-            )
-        };
-        let right_side = if available_provider_count > 1 && !self.model.is_empty() {
-            let pname = pname.as_deref().unwrap_or("?");
+        // Always prepend provider in parentheses if available
+        let pname = self
+            .provider
+            .borrow()
+            .get_model_provider()
+            .map(|s| s.to_string());
+        let right_side = if let Some(ref pname) = pname {
             format!("({}) {}", pname, right_side_without_provider)
         } else {
             right_side_without_provider.clone()
@@ -387,18 +390,17 @@ impl crate::tui::Component for Footer {
         let right_side_width = visible_width(&right_side);
         let min_padding: usize = 2;
 
-        let (stats_line, extra_model_line) =
-            if stats_left_width + min_padding + right_side_width <= w {
-                // Both fit on one line
-                let padding = " ".repeat(w - stats_left_width - right_side_width);
-                (format!("{}{}{}", stats_left, padding, right_side), None)
-            } else if !self.model.is_empty()
-                && available_provider_count > 1
-                && stats_left_width + min_padding + visible_width(&right_side_without_provider) <= w
-            {
-                // Try without provider prefix
-                let padding =
-                    " ".repeat(w - stats_left_width - visible_width(&right_side_without_provider));
+        let (stats_line, extra_model_line) = if stats_left_width + min_padding + right_side_width
+            <= w
+        {
+            // Both fit on one line
+            let padding = " ".repeat(w - stats_left_width - right_side_width);
+            (format!("{}{}{}", stats_left, padding, right_side), None)
+        } else if pname.is_some() {
+            // Try without provider prefix
+            let without_provider_width = visible_width(&right_side_without_provider);
+            if stats_left_width + min_padding + without_provider_width <= w {
+                let padding = " ".repeat(w - stats_left_width - without_provider_width);
                 (
                     format!("{}{}{}", stats_left, padding, right_side_without_provider),
                     None,
@@ -411,7 +413,16 @@ impl crate::tui::Component for Footer {
                     right_side.clone()
                 };
                 (stats_left.clone(), Some(model_for_line))
+            }
+        } else {
+            // Don't fit on one line — put on separate lines
+            let model_for_line = if right_side_width > w {
+                truncate_to_width(&right_side, w, &theme.fg_key(ThemeKey::Dim, "..."), false)
+            } else {
+                right_side.clone()
             };
+            (stats_left.clone(), Some(model_for_line))
+        };
 
         // Pi-style: dim statsLeft and remainder separately
         let dim_stats_left = theme.fg_key(ThemeKey::Dim, &stats_left);
@@ -562,7 +573,6 @@ mod tests {
         )));
         let mut footer = Footer::new("/home/user/project", provider);
         footer.set_model("test-model");
-        footer.set_model_supports_reasoning(true);
         footer.set_thinking_level(Some("high".into()));
         let lines = footer.render(80);
         assert!(lines[1].contains("high"), "Should show thinking level");
@@ -575,7 +585,6 @@ mod tests {
         )));
         let mut footer = Footer::new("/home/user/project", provider);
         footer.set_model("test-model");
-        footer.set_model_supports_reasoning(true);
         footer.set_thinking_level(Some("off".into()));
         let lines = footer.render(80);
         assert!(
@@ -787,7 +796,6 @@ mod tests {
         )));
         let mut footer = Footer::new("/home/user/project", provider);
         footer.set_model("test-model");
-        footer.set_model_supports_reasoning(true);
         footer.set_thinking_level(Some("high".into()));
         footer.total_input = 100000;
         footer.total_output = 50000;

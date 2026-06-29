@@ -528,10 +528,6 @@ async fn main() -> anyhow::Result<()> {
             settings,
             context_files: context_file_names,
             skills,
-            model_supports_reasoning: resolved
-                .as_ref()
-                .map(|r| r.model_config.reasoning)
-                .unwrap_or(true),
             session_info: Some(session_info),
             api_key,
             registry: Arc::new(registry),
