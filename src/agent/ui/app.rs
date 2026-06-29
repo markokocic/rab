@@ -1308,6 +1308,9 @@ fn build_fresh_agent(
         yoagent::provider::model::OpenAiCompat::deepseek(),
     );
     mc.context_window = 1_000_000;
+    // Match max output tokens to context window so the model
+    // isn't cut off mid-response (default was 8192 in ModelConfig).
+    mc.max_tokens = 1_000_000;
 
     let tools: Vec<Box<dyn yoagent::types::AgentTool>> = extensions
         .iter()
@@ -2389,9 +2392,15 @@ fn handle_agent_event(app: &mut App, event: yoagent::types::AgentEvent) {
             use yoagent::types::StreamDelta;
             match delta {
                 StreamDelta::Text { delta } => {
+                    eprintln!(
+                        "[rab-debug] TextDelta: len={}, first_text={:?}",
+                        delta.len(),
+                        &delta[..delta.len().min(50)]
+                    );
                     if let Some(weak) = app.streaming_component.as_ref().and_then(|w| w.upgrade()) {
                         weak.borrow_mut().append_text(&delta);
                     } else {
+                        eprintln!("[rab-debug] TextDelta: creating AssistantMessageComponent");
                         use crate::tui::components::rc_ref_cell_component::RcRefCellComponent;
                         let comp = Rc::new(RefCell::new(
                             crate::agent::ui::components::AssistantMessageComponent::new(&delta),
@@ -2529,10 +2538,15 @@ fn handle_agent_event(app: &mut App, event: yoagent::types::AgentEvent) {
         }
         E::TurnEnd { message, .. } => {
             app.streaming_component = None;
+            eprintln!(
+                "[rab-debug] TurnEnd: role={}, error={:?}, text_len={}",
+                message.role(),
+                crate::agent::types::message_error(&message),
+                crate::agent::types::message_text(&message).len()
+            );
             // Surface provider errors carried by the turn's final message.
-            // This catches cases where the provider returns an error without
-            // streaming any text, so no MessageEnd is emitted for the error.
             if let Some(err) = crate::agent::types::message_error(&message) {
+                eprintln!("[rab-debug] TurnEnd: showing provider error");
                 chat_add(
                     app,
                     std::boxed::Box::new(InfoMessageComponent::new(format!(
@@ -2559,6 +2573,7 @@ fn handle_agent_event(app: &mut App, event: yoagent::types::AgentEvent) {
             // Provider errors with error_message set were never forwarded as
             // MessageEnd events (the provider returned Err() without streaming),
             // so they must be surfaced here.
+            let mut found_assistant = false;
             for msg in messages.iter().rev() {
                 if let Some(yoagent::types::Message::Assistant {
                     content,
@@ -2568,7 +2583,9 @@ fn handle_agent_event(app: &mut App, event: yoagent::types::AgentEvent) {
                 }) = msg.as_llm()
                     && stop_reason != &yoagent::types::StopReason::ToolUse
                 {
+                    found_assistant = true;
                     if let Some(err) = error_message {
+                        eprintln!("[rab-debug] AgentEnd: provider error: {}", err);
                         chat_add(
                             app,
                             std::boxed::Box::new(InfoMessageComponent::new(format!(
@@ -2578,11 +2595,19 @@ fn handle_agent_event(app: &mut App, event: yoagent::types::AgentEvent) {
                         );
                         break;
                     }
-                    let is_empty = content.is_empty()
-                        || content.iter().all(|c| {
-                            matches!(c, yoagent::types::Content::Text { text } if text.trim().is_empty())
-                        });
-                    if is_empty {
+                    // Check for any visible content: non-empty text or tool calls.
+                    // Thinking blocks alone don't count as visible output
+                    // (they may be hidden or just cut-off thoughts).
+                    let has_visible = content.iter().any(|c| match c {
+                        yoagent::types::Content::Text { text } => !text.trim().is_empty(),
+                        yoagent::types::Content::ToolCall { .. } => true,
+                        _ => false,
+                    });
+                    if !has_visible {
+                        eprintln!(
+                            "[rab-debug] AgentEnd: empty/no visible assistant response, stop_reason={:?}",
+                            stop_reason
+                        );
                         chat_add(
                             app,
                             std::boxed::Box::new(InfoMessageComponent::new(
@@ -2595,6 +2620,15 @@ fn handle_agent_event(app: &mut App, event: yoagent::types::AgentEvent) {
                         );
                         break;
                     }
+                }
+            }
+            if !found_assistant {
+                eprintln!(
+                    "[rab-debug] AgentEnd: no assistant messages in AgentEnd.messages ({} total messages)",
+                    messages.len()
+                );
+                for (i, m) in messages.iter().enumerate() {
+                    eprintln!("  [{}] role={}", i, m.role());
                 }
             }
         }
