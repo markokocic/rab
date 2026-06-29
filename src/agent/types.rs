@@ -90,9 +90,15 @@ pub fn message_dedup_key(msg: &AgentMessage) -> String {
             Message::ToolResult {
                 tool_call_id,
                 content,
+                is_error,
                 ..
             } => {
-                format!("tool:{}:{}", tool_call_id, content_text(content))
+                format!(
+                    "tool:{}:{}:{}",
+                    tool_call_id,
+                    content_text(content),
+                    is_error
+                )
             }
         },
         AgentMessage::Extension(ext) => {

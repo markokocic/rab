@@ -360,7 +360,7 @@ async fn run_rg_with_ops(
     }
     if let Some(g) = glob {
         cmd_parts.push("--glob".into());
-        cmd_parts.push(g.to_string());
+        cmd_parts.push(shell_escape(g));
     }
     if context > 0 {
         cmd_parts.push("-C".into());
@@ -369,8 +369,8 @@ async fn run_rg_with_ops(
     cmd_parts.push("--max-count".into());
     cmd_parts.push(limit.to_string());
     cmd_parts.push("--".into());
-    cmd_parts.push(pattern.to_string());
-    cmd_parts.push(search_path.to_string_lossy().to_string());
+    cmd_parts.push(shell_escape(pattern));
+    cmd_parts.push(shell_escape(&search_path.to_string_lossy()));
 
     let command = cmd_parts.join(" ");
     let exec_output = ops
@@ -459,8 +459,8 @@ async fn run_grep_with_ops(
     cmd_parts.push(limit.to_string());
     cmd_parts.push("-r".into());
     cmd_parts.push("--".into());
-    cmd_parts.push(pattern.to_string());
-    cmd_parts.push(search_path.to_string_lossy().to_string());
+    cmd_parts.push(shell_escape(pattern));
+    cmd_parts.push(shell_escape(&search_path.to_string_lossy()));
 
     let command = cmd_parts.join(" ");
     let exec_output = ops
@@ -622,8 +622,8 @@ async fn run_fd_with_ops(
         cmd_parts.push("--full-path".into());
     }
     cmd_parts.push("--".into());
-    cmd_parts.push(effective_pattern);
-    cmd_parts.push(search_path.to_string_lossy().to_string());
+    cmd_parts.push(shell_escape(&effective_pattern));
+    cmd_parts.push(shell_escape(&search_path.to_string_lossy()));
 
     let command = cmd_parts.join(" ");
     let exec_output = ops
@@ -678,9 +678,9 @@ async fn run_find_with_ops(
 
     let cmd_parts: Vec<String> = vec![
         "find".into(),
-        search_path.to_string_lossy().to_string(),
+        shell_escape(&search_path.to_string_lossy()),
         "-name".into(),
-        name_pattern.to_string(),
+        shell_escape(name_pattern),
         "-not".into(),
         "-path".into(),
         "*/node_modules/*".into(),
@@ -853,6 +853,25 @@ impl yoagent::types::AgentTool for LsTool {
 // =====================================================================
 // Helpers
 // =====================================================================
+
+/// Shell-escape a string for safe use in `sh -c`.
+/// Wraps in single quotes and handles embedded single quotes
+/// (POSIX shell: everything inside '' is literal except ',
+/// which is written as '\'' to end the quote, add an escaped
+/// quote, and restart the quote).
+fn shell_escape(s: &str) -> String {
+    let mut result = String::with_capacity(s.len() + 2);
+    result.push('\'');
+    for c in s.chars() {
+        if c == '\'' {
+            result.push_str("'\\''");
+        } else {
+            result.push(c);
+        }
+    }
+    result.push('\'');
+    result
+}
 
 fn which(name: &str) -> Option<PathBuf> {
     std::process::Command::new("which")
