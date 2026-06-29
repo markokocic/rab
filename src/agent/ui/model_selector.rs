@@ -111,13 +111,14 @@ impl ModelSelector {
         };
 
         let active = if has_scoped {
-            let scoped_set: std::collections::HashSet<&str> =
-                scoped_model_ids.iter().map(|s| s.as_str()).collect();
-            items
-                .iter()
-                .filter(|item| scoped_set.contains(item.full_id.as_str()))
-                .cloned()
-                .collect()
+            // Respect scoped model order: iterate scoped_model_ids, find matching item.
+            let mut active: Vec<ModelItem> = Vec::new();
+            for full_id in &scoped_model_ids {
+                if let Some(item) = items.iter().find(|i| &i.full_id == full_id) {
+                    active.push(item.clone());
+                }
+            }
+            active
         } else {
             items.clone()
         };
@@ -150,13 +151,14 @@ impl ModelSelector {
         self.active_items = match scope {
             ModelScope::All => self.all_models.clone(),
             ModelScope::Scoped => {
-                let scoped_set: std::collections::HashSet<&str> =
-                    self.scoped_model_ids.iter().map(|s| s.as_str()).collect();
-                self.all_models
-                    .iter()
-                    .filter(|item| scoped_set.contains(item.full_id.as_str()))
-                    .cloned()
-                    .collect()
+                // Respect scoped model order
+                let mut active: Vec<ModelItem> = Vec::new();
+                for full_id in &self.scoped_model_ids {
+                    if let Some(item) = self.all_models.iter().find(|i| &i.full_id == full_id) {
+                        active.push(item.clone());
+                    }
+                }
+                active
             }
         };
         let current_idx = self
