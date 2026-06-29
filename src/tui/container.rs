@@ -173,15 +173,19 @@ impl Default for Container {
 
 impl Container {
     /// Composite all visible overlays into the content lines.
+    /// Matches pi's compositeOverlays 1/1.
     fn composite_overlays(
         &mut self,
         base_lines: &[String],
         term_width: usize,
         term_height: usize,
     ) -> Vec<String> {
+        if self.overlay_stack.is_empty() {
+            return base_lines.to_vec();
+        }
         let mut result = base_lines.to_vec();
 
-        // Collect visible overlay indices sorted by focus order
+        // Collect visible overlay indices sorted by focusOrder (higher = on top)
         let mut indices: Vec<usize> = self
             .overlay_stack
             .iter()
@@ -191,61 +195,75 @@ impl Container {
             .collect();
         indices.sort_by_key(|&i| self.overlay_stack[i].focus_order);
 
-        let mut min_lines_needed = result.len();
-
+        // Pre-render all visible overlays and calculate positions
         struct RenderedOverlay {
             overlay_lines: Vec<String>,
-            layout: OverlayLayout,
+            row: usize,
+            col: usize,
+            w: usize,
         }
 
         let mut rendered: Vec<RenderedOverlay> = Vec::new();
+        let mut min_lines_needed = result.len();
+
         for &idx in &indices {
             let options = self.overlay_stack[idx].options.clone();
-            let layout = self.resolve_overlay_layout(&options, 0, term_width, term_height);
 
-            let mut overlay_lines = self.overlay_stack[idx].component.render(layout.width);
+            // Get layout with height=0 first to determine width and maxHeight
+            // (width and maxHeight don't depend on overlay height)
+            let first_layout = self.resolve_overlay_layout(&options, 0, term_width, term_height);
+            let width = first_layout.width;
+            let max_height = first_layout.max_height;
 
-            let overlay_height = if let Some(max_h) = layout.max_height {
-                overlay_lines.truncate(max_h);
-                overlay_lines.len()
-            } else {
-                overlay_lines.len()
-            };
+            // Render component at calculated width (separate borrow)
+            let mut overlay_lines = self.overlay_stack[idx].component.render(width);
 
+            // Apply maxHeight if specified
+            if let Some(mh) = max_height {
+                overlay_lines.truncate(mh);
+            }
+
+            let overlay_len = overlay_lines.len();
+
+            // Get final row/col with actual overlay height
             let layout =
-                self.resolve_overlay_layout(&options, overlay_height, term_width, term_height);
+                self.resolve_overlay_layout(&options, overlay_len, term_width, term_height);
 
-            min_lines_needed = min_lines_needed.max(layout.row + overlay_lines.len());
+            min_lines_needed = min_lines_needed.max(layout.row + overlay_len);
 
             rendered.push(RenderedOverlay {
                 overlay_lines,
-                layout,
+                row: layout.row,
+                col: layout.col,
+                w: width,
             });
         }
 
+        // Pad to at least terminal height so overlays have screen-relative positions.
+        // Excludes maxLinesRendered: the historical high-water mark caused self-reinforcing
+        // inflation that pushed content into scrollback on terminal widen.
         let working_height = result.len().max(term_height).max(min_lines_needed);
+
+        // Extend result with empty lines if content is too short for overlay placement
         while result.len() < working_height {
             result.push(String::new());
         }
 
         let viewport_start = working_height.saturating_sub(term_height);
 
+        // Composite each overlay
         for ro in &rendered {
             for (i, overlay_line) in ro.overlay_lines.iter().enumerate() {
-                let idx = viewport_start + ro.layout.row + i;
+                let idx = viewport_start + ro.row + i;
                 if idx < result.len() {
-                    let truncated = if visible_width(overlay_line) > ro.layout.width {
-                        slice_by_column(overlay_line, 0, ro.layout.width)
+                    // Defensive: truncate overlay line to declared width before compositing
+                    let truncated = if visible_width(overlay_line) > ro.w {
+                        slice_by_column(overlay_line, 0, ro.w)
                     } else {
                         overlay_line.clone()
                     };
-                    result[idx] = self.composite_line_at(
-                        &result[idx],
-                        &truncated,
-                        ro.layout.col,
-                        ro.layout.width,
-                        term_width,
-                    );
+                    result[idx] =
+                        self.composite_line_at(&result[idx], &truncated, ro.col, ro.w, term_width);
                 }
             }
         }

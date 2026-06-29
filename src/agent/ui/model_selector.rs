@@ -188,7 +188,7 @@ impl Component for ModelSelector {
         let mut lines: Vec<String> = Vec::new();
 
         // Top border (matches pi's DynamicBorder)
-        lines.push(theme.dim(&"─".repeat(width.saturating_sub(2))));
+        lines.push(theme.dim(&"─".repeat(width)));
         lines.push(String::new());
 
         // Scope / hint (matches pi's scopeText + scopeHintText layout)
@@ -283,7 +283,7 @@ impl Component for ModelSelector {
         }
 
         // Bottom border
-        lines.push(theme.dim(&"─".repeat(width.saturating_sub(2))));
+        lines.push(theme.dim(&"─".repeat(width)));
 
         lines
     }

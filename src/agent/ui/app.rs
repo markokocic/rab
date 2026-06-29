@@ -1500,7 +1500,15 @@ fn open_model_selector(app: &mut App, tui: &mut TUI) {
         current_full_id,
         callbacks,
     );
-    tui.show_overlay(Box::new(selector), Default::default());
+    use crate::tui::overlay::{OverlayAnchor, OverlayOptions, SizeValue};
+    tui.show_overlay(
+        Box::new(selector),
+        OverlayOptions {
+            width: Some(SizeValue::Percent(100.0)),
+            anchor: Some(OverlayAnchor::TopLeft),
+            ..Default::default()
+        },
+    );
 }
 
 /// Open the scoped-models selector overlay.
@@ -1548,7 +1556,15 @@ fn open_scoped_models_selector(app: &mut App, tui: &mut TUI) {
     };
 
     let selector = ScopedModelsSelector::new(config, callbacks);
-    tui.show_overlay(Box::new(selector), Default::default());
+    use crate::tui::overlay::{OverlayAnchor, OverlayOptions, SizeValue};
+    tui.show_overlay(
+        Box::new(selector),
+        OverlayOptions {
+            width: Some(SizeValue::Percent(100.0)),
+            anchor: Some(OverlayAnchor::TopLeft),
+            ..Default::default()
+        },
+    );
 }
 
 fn show_help_overlay(app: &mut App, tui: &mut TUI) {
