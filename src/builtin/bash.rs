@@ -104,7 +104,10 @@ struct BashTool {
 
 const DEFAULT_MAX_LINES: usize = 2000;
 const DEFAULT_MAX_BYTES: usize = 50 * 1024; // 50KB
-const BASH_TEMP_FILE_PREFIX: &str = "pi-bash";
+const BASH_TEMP_FILE_PREFIX: &str = "rab-bash";
+
+/// Maximum age before stale temp files are cleaned up (24 hours).
+const TEMP_FILE_MAX_AGE_SECS: u64 = 24 * 60 * 60;
 
 /// Grace period after child exit (ms) — matching pi's EXIT_STDIO_GRACE_MS.
 /// Detached descendants may keep stdout/stderr pipes open; we poll until idle.
@@ -356,10 +359,13 @@ fn finish_bash_execution(
 
     // Save full output to temp file if truncated
     let full_output_path = if trunc.truncated {
-        let tmp_dir = std::env::temp_dir().join(BASH_TEMP_FILE_PREFIX);
+        let tmp_dir = temp_output_dir();
         let _ = std::fs::create_dir_all(&tmp_dir);
         let tmp_path = tmp_dir.join(format!("{}.log", uuid::Uuid::new_v4()));
-        let saved = std::fs::write(&tmp_path, combined).ok().map(|_| tmp_path);
+        let saved = std::fs::write(&tmp_path, combined).ok().map(|_| {
+            cleanup_stale_temp_files();
+            tmp_path
+        });
 
         let start_line = trunc.total_lines - trunc.output_lines + 1;
         let end_line = trunc.total_lines;
@@ -414,50 +420,23 @@ fn finish_bash_execution(
     };
 
     let final_output = if cancelled {
-        if result_text.is_empty() || result_text == "(no output)" {
-            "Command aborted".to_string()
-        } else {
-            format!("{}\n\nCommand aborted", result_text)
-        }
+        format_status_output(&result_text, "Command aborted")
     } else if let Some(secs) = timed_out {
-        if result_text.is_empty() || result_text == "(no output)" {
-            format!("Command timed out after {} seconds", secs)
-        } else {
-            format!(
-                "{}\n\nCommand timed out after {} seconds",
-                result_text, secs
-            )
-        }
+        format_status_output(
+            &result_text,
+            &format!("Command timed out after {} seconds", secs),
+        )
     } else if exit_code != 0 {
-        if result_text.is_empty() || result_text == "(no output)" {
-            format!("Command exited with code {}", exit_code)
-        } else {
-            format!("{}\n\nCommand exited with code {}", result_text, exit_code)
-        }
+        format_status_output(
+            &result_text,
+            &format!("Command exited with code {}", exit_code),
+        )
     } else {
-        if let Some(ref on_update) = ctx.on_update {
-            on_update(yoagent::types::ToolResult {
-                content: vec![yoagent::types::Content::Text {
-                    text: result_text.clone(),
-                }],
-                details: details.clone().unwrap_or(serde_json::Value::Null),
-            });
-        }
-        return Ok(yoagent::types::ToolResult {
-            content: vec![yoagent::types::Content::Text { text: result_text }],
-            details: details.unwrap_or(serde_json::Value::Null),
-        });
+        emit_update(ctx, result_text.clone(), details.clone());
+        return Ok(into_tool_result(result_text, details));
     };
 
-    if let Some(ref on_update) = ctx.on_update {
-        on_update(yoagent::types::ToolResult {
-            content: vec![yoagent::types::Content::Text {
-                text: final_output.clone(),
-            }],
-            details: details.clone().unwrap_or(serde_json::Value::Null),
-        });
-    }
-
+    emit_update(ctx, final_output.clone(), details.clone());
     Err(yoagent::types::ToolError::Failed(final_output))
 }
 
@@ -684,14 +663,7 @@ impl yoagent::types::AgentTool for BashTool {
             let mut combined = String::new();
             while let Some(chunk) = output_rx.recv().await {
                 combined.push_str(&chunk);
-                if let Some(ref on_update) = ctx.on_update {
-                    on_update(yoagent::types::ToolResult {
-                        content: vec![yoagent::types::Content::Text {
-                            text: combined.clone(),
-                        }],
-                        details: serde_json::Value::Null,
-                    });
-                }
+                emit_update(&ctx, combined.clone(), None);
             }
 
             let exit_code = ops_handle.await.unwrap_or(Ok(None)).unwrap_or(None);
@@ -806,16 +778,11 @@ impl yoagent::types::AgentTool for BashTool {
                 return finish_bash_execution(&combined_str, -1, false, timeout, &ctx);
             }
 
-            if let Some(ref on_update) = ctx.on_update
-                && last_update_at.elapsed().as_millis() as u64 >= throttle_ms
-            {
+            if last_update_at.elapsed().as_millis() as u64 >= throttle_ms {
                 let out = combined.lock().await.clone();
                 if !out.is_empty() {
                     last_update_at = Instant::now();
-                    on_update(yoagent::types::ToolResult {
-                        content: vec![yoagent::types::Content::Text { text: out }],
-                        details: serde_json::Value::Null,
-                    });
+                    emit_update(&ctx, out, None);
                 }
             }
 
@@ -848,18 +815,74 @@ impl yoagent::types::AgentTool for BashTool {
         }
 
         let combined_str = combined.lock().await.clone();
-        if let Some(ref on_update) = ctx.on_update
-            && !combined_str.is_empty()
-        {
-            on_update(yoagent::types::ToolResult {
-                content: vec![yoagent::types::Content::Text {
-                    text: combined_str.clone(),
-                }],
-                details: serde_json::Value::Null,
-            });
+        if !combined_str.is_empty() {
+            emit_update(&ctx, combined_str.clone(), None);
         }
 
         finish_bash_execution(&combined_str, exit_code, false, None, &ctx)
+    }
+}
+
+/// Remove temp files in the bash output directory that are older than the max age.
+/// This is best-effort — failures are silently ignored.
+fn cleanup_stale_temp_files() {
+    let dir = temp_output_dir();
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return;
+    };
+    let Ok(cutoff) = std::time::SystemTime::now()
+        .checked_sub(std::time::Duration::from_secs(TEMP_FILE_MAX_AGE_SECS))
+        .ok_or(())
+    else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().is_none_or(|e| e != "log") {
+            continue;
+        }
+        if let Ok(metadata) = path.metadata()
+            && let Ok(modified) = metadata.modified()
+            && modified < cutoff
+        {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+}
+
+/// Return the directory where truncated bash output is saved.
+fn temp_output_dir() -> PathBuf {
+    std::env::temp_dir().join(BASH_TEMP_FILE_PREFIX)
+}
+
+/// Format a status message (cancelled/timeout/exit code) with optional preceding output.
+fn format_status_output(result_text: &str, status_msg: &str) -> String {
+    if result_text.is_empty() || result_text == "(no output)" {
+        status_msg.to_string()
+    } else {
+        format!("{}\n\n{}", result_text, status_msg)
+    }
+}
+
+/// Build a ToolResult with text content and optional details.
+fn into_tool_result(
+    text: String,
+    details: Option<serde_json::Value>,
+) -> yoagent::types::ToolResult {
+    yoagent::types::ToolResult {
+        content: vec![yoagent::types::Content::Text { text }],
+        details: details.unwrap_or(serde_json::Value::Null),
+    }
+}
+
+/// Send an update to the context callback.
+fn emit_update(
+    ctx: &yoagent::types::ToolContext,
+    text: String,
+    details: Option<serde_json::Value>,
+) {
+    if let Some(ref on_update) = ctx.on_update {
+        on_update(into_tool_result(text, details));
     }
 }
 
@@ -1307,10 +1330,16 @@ mod tests {
             .await
             .unwrap();
         assert!(
-            yo_msg_text(&output.content).contains("/pi-bash/"),
-            "expected temp file path with /pi-bash/, got: {}",
+            yo_msg_text(&output.content).contains("/rab-bash/"),
+            "expected temp file path with /rab-bash/, got: {}",
             yo_msg_text(&output.content)
         );
+    }
+
+    #[test]
+    fn test_cleanup_stale_temp_files_nonexistent_dir() {
+        // Should not panic on missing directory
+        cleanup_stale_temp_files();
     }
 
     #[test]
