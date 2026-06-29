@@ -53,6 +53,54 @@ pub fn message_text(msg: &AgentMessage) -> String {
     }
 }
 
+/// Compute a dedup key for a message, distinguishing messages that
+/// `message_text()` alone would conflate (e.g. two assistant messages
+/// with empty text but different tool calls).
+pub fn message_dedup_key(msg: &AgentMessage) -> String {
+    match msg {
+        AgentMessage::Llm(m) => match m {
+            Message::User { content, .. } => {
+                format!("user:{}", content_text(content))
+            }
+            Message::Assistant {
+                content,
+                stop_reason,
+                ..
+            } => {
+                // Include tool call IDs and stop_reason so two assistant
+                // messages with empty text but different tool calls get
+                // distinct keys.
+                let tc_ids: Vec<&str> = content
+                    .iter()
+                    .filter_map(|c| {
+                        if let Content::ToolCall { id, .. } = c {
+                            Some(id.as_str())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                format!(
+                    "assistant:{}:{:?}:{:?}",
+                    content_text(content),
+                    tc_ids,
+                    stop_reason
+                )
+            }
+            Message::ToolResult {
+                tool_call_id,
+                content,
+                ..
+            } => {
+                format!("tool:{}:{}", tool_call_id, content_text(content))
+            }
+        },
+        AgentMessage::Extension(ext) => {
+            format!("ext:{}:{}", ext.kind, ext.data)
+        }
+    }
+}
+
 /// Check if an AgentMessage is a tool result with an error.
 pub fn message_is_error(msg: &AgentMessage) -> bool {
     matches!(
@@ -138,12 +186,13 @@ pub fn assistant_message(text: impl Into<String>) -> AgentMessage {
 /// Create a ToolResult AgentMessage.
 pub fn tool_result_message(
     tool_call_id: impl Into<String>,
+    tool_name: impl Into<String>,
     text: impl Into<String>,
     is_error: bool,
 ) -> AgentMessage {
     AgentMessage::Llm(Message::ToolResult {
         tool_call_id: tool_call_id.into(),
-        tool_name: String::new(),
+        tool_name: tool_name.into(),
         content: vec![Content::Text { text: text.into() }],
         is_error,
         timestamp: yoagent::types::now_ms(),

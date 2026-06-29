@@ -1026,7 +1026,7 @@ mod tests {
 
     #[test]
     fn test_format_tool_result_message() {
-        let msg = tool_result_message("call-1", "command output", false);
+        let msg = tool_result_message("call-1", "bash", "command output", false);
         let formatted = format_message_for_summary(&msg);
         assert!(formatted.contains("Tool Result"));
         assert!(formatted.contains("command output"));

@@ -5,7 +5,7 @@ use crate::agent::compaction::{
 use crate::agent::extension::Extension;
 use crate::agent::session::SessionManager;
 use crate::agent::session_storage::{InMemorySessionStorage, SessionMetadata, SessionStorage};
-use crate::agent::types::{message_text, tool_result_message, user_message};
+use crate::agent::types::{message_dedup_key, message_text, tool_result_message, user_message};
 use std::collections::HashSet;
 use yoagent::types::AgentMessage;
 use yoagent::types::Content;
@@ -452,7 +452,7 @@ impl AgentSession {
     pub fn send_user_message(&mut self, content: &str) -> String {
         let msg = user_message(content);
         let id = self.session.append_message(&msg);
-        self.persisted_message_ids.insert(message_text(&msg));
+        self.persisted_message_ids.insert(message_dedup_key(&msg));
         id
     }
 
@@ -460,7 +460,7 @@ impl AgentSession {
     /// Returns the entry id.
     pub fn send_user_message_obj(&mut self, msg: &AgentMessage) -> String {
         let id = self.session.append_message(msg);
-        self.persisted_message_ids.insert(message_text(msg));
+        self.persisted_message_ids.insert(message_dedup_key(msg));
         id
     }
 
@@ -479,6 +479,7 @@ impl AgentSession {
         match event {
             YoEvent::ToolExecutionEnd {
                 tool_call_id,
+                tool_name,
                 result,
                 is_error,
                 ..
@@ -495,7 +496,7 @@ impl AgentSession {
                     })
                     .collect::<Vec<_>>()
                     .join("");
-                let msg = tool_result_message(tool_call_id, content, *is_error);
+                let msg = tool_result_message(tool_call_id, tool_name, content, *is_error);
                 self.persist_message(&msg);
                 // Pi-compatible: flush tool result writes immediately (crash-safe)
                 self.flush_pending_writes();
@@ -547,9 +548,9 @@ impl AgentSession {
             {
                 continue;
             }
-            if !self.persisted_message_ids.contains(&message_text(msg)) {
+            if !self.persisted_message_ids.contains(&message_dedup_key(msg)) {
                 self.session.append_message(msg);
-                self.persisted_message_ids.insert(message_text(msg));
+                self.persisted_message_ids.insert(message_dedup_key(msg));
             }
         }
         // Pi-compatible: flush queued metadata writes at turn end
@@ -826,8 +827,14 @@ impl AgentSession {
 
     /// Persist a tool result message (public so the agent loop can persist crash-safely).
     /// Deduplicates by tool_call_id.
-    pub fn persist_tool_result(&mut self, tool_call_id: &str, content: String, is_error: bool) {
-        let msg = tool_result_message(tool_call_id, content, is_error);
+    pub fn persist_tool_result(
+        &mut self,
+        tool_call_id: &str,
+        tool_name: &str,
+        content: String,
+        is_error: bool,
+    ) {
+        let msg = tool_result_message(tool_call_id, tool_name, content, is_error);
         self.persist_message(&msg);
     }
 
@@ -878,14 +885,14 @@ impl AgentSession {
             }
             self.session.append_message(msg);
             self.persisted_tool_call_ids.insert(tcid.to_string());
-            self.persisted_message_ids.insert(message_text(msg));
+            self.persisted_message_ids.insert(message_dedup_key(msg));
             return;
         }
-        // Dedup other messages by text
-        if self.persisted_message_ids.contains(&message_text(msg)) {
+        // Dedup other messages by dedup key (role + content signature)
+        if self.persisted_message_ids.contains(&message_dedup_key(msg)) {
             return;
         }
         self.session.append_message(msg);
-        self.persisted_message_ids.insert(message_text(msg));
+        self.persisted_message_ids.insert(message_dedup_key(msg));
     }
 }

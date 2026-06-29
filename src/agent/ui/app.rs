@@ -1349,9 +1349,9 @@ async fn start_agent_loop(app: &mut App, message: String) {
 
     let thinking = map_thinking_level(app.thinking_level.as_deref());
 
-    // Build or reuse agent.
-    // Always sync messages from session (the authoritative, error-filtered
-    // source) so transient provider errors from previous turns are excluded.
+    // Build or reuse agent. On the first turn the session has no messages;
+    // on subsequent turns the reused agent already has messages restored
+    // by agent.finish() — no need to sync from session here.
     let msgs = app
         .session
         .as_ref()
@@ -1360,9 +1360,9 @@ async fn start_agent_loop(app: &mut App, message: String) {
 
     let agent: &mut yoagent::agent::Agent = match &mut app.agent {
         Some(existing) => {
-            // Reuse existing agent.
-            // XXX temporarily disabled — suspect replace_messages breaks 2nd turn
-            // existing.replace_messages(msgs);
+            // Reuse existing agent — messages are already correct from
+            // agent.finish(). Compaction sync is handled separately by
+            // handle_auto_compact / handle_compact_command.
             existing
         }
         None => {
