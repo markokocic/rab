@@ -84,6 +84,12 @@ impl ModelSelector {
             .map(|(p, id, name)| ModelItem::new(p, id, name))
             .collect();
 
+        // Deduplicate by full_id (provider/id) — the model registry may list
+        // the same model ID under multiple providers, but provider_for_model
+        // can resolve all of them to the same provider, creating true duplicates.
+        let mut seen = std::collections::HashSet::new();
+        items.retain(|item| seen.insert(item.full_id.clone()));
+
         // Sort: current model first, then by provider (matches pi's sortModels)
         items.sort_by(|a, b| {
             let a_is_current = a.full_id == current_model;

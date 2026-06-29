@@ -120,14 +120,13 @@ impl ProviderRegistry {
 
     /// List all available model IDs (for UI selector and /model command).
     pub fn list_models(&self) -> Vec<String> {
-        let mut models: Vec<String> = Vec::new();
+        let mut model_set = std::collections::BTreeSet::new();
         for entry in &self.entries {
             for m in &entry.models {
-                models.push(m.id.clone());
+                model_set.insert(m.id.clone());
             }
         }
-        models.sort();
-        models
+        model_set.into_iter().collect()
     }
 
     /// Get the provider name for a model ID.
