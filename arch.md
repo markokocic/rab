@@ -1,9 +1,10 @@
 # rab Architecture
 
 A lightweight, extensible Rust coding agent inspired by [pi-coding-agent](https://pi.dev).
-rab delegates the core agent loop, types, and provider layer to the **yoagent** crate,
+rab delegates the core agent loop, types, and provider abstraction to the **yoagent** crate,
 providing the session layer, TUI, built-in tools, slash commands, file search tools (grep/find/ls),
-file mutation queue, and lifecycle management.
+file mutation queue, lifecycle management, and a **custom provider layer** with a model registry
+and rich OpenAI-compatible streaming support.
 
 ---
 
@@ -14,10 +15,11 @@ file mutation queue, and lifecycle management.
 │                          rab (EPL-2.0)                               │
 │                                                                      │
 │  ┌──────────────────────────────────────────────────────────────┐   │
-│  │                    main.rs (manual arg parsing)                │   │
-│  │  arg parsing, env reading, session init,                      │   │
-│  │  mode dispatch (print / interactive), extension gating,       │   │
-│  │  context file loading, skills, auth                            │   │
+│  │               main.rs (manual arg parsing)                    │   │
+│  │  arg parsing, env reading, session init,                     │   │
+│  │  mode dispatch (print / interactive), extension gating,      │   │
+│  │  context file loading, skills, auth, provider resolution     │   │
+│  │  subcommand: rab update-models                               │   │
 │  └────────────────────┬─────────────────────────────────────────┘   │
 │                       │                                              │
 │  ┌────────────────────▼─────────────────────────────────────────┐   │
@@ -68,9 +70,56 @@ file mutation queue, and lifecycle management.
 │  │  }                                                           │   │
 │  │  ToolDefinition wraps AgentTool with: snippet, guidelines,   │   │
 │  │  prepare_arguments, before_tool_call hook, after_tool_call   │   │
-│  │  hook, and bundled ToolRenderer.                             │   │
+│  │  hook, before_compact hook, and bundled ToolRenderer.        │   │
 │  │  validate_tool_arguments() + coerce_with_json_schema()       │   │
 │  │  Builtin + user extensions share this trait                  │   │
+│  └──────────────────────────────────────────────────────────────┘   │
+│                       │                                              │
+│  ┌────────────────────▼─────────────────────────────────────────┐   │
+│  │              rab Provider Layer (src/provider/)               │   │
+│  │                                                              │   │
+│  │  ┌──────────────────────────────────────────────────────┐   │   │
+│  │  │           ProviderRegistry (mod.rs)                   │   │   │
+│  │  │  Loads built-in + user models.json → ProviderEntry[]  │   │   │
+│  │  │  resolve(model_id, preferred_provider) → ResolvedModel│   │   │
+│  │  │  list_models(), provider_for_model(), count_providers │   │   │
+│  │  └──────────────────────────────────────────────────────┘   │   │
+│  │  ┌──────────────────────────────────────────────────────┐   │   │
+│  │  │           models.rs (models.json parsing)             │   │   │
+│  │  │  ProviderEntry, ModelDef parsing                     │   │   │
+│  │  │  load_builtin() / load_user() / merge()              │   │   │
+│  │  │  ApiProtocol conversion, CostConfig, compat          │   │   │
+│  │  └──────────────────────────────────────────────────────┘   │   │
+│  │  ┌──────────────────────────────────────────────────────┐   │   │
+│  │  │           openai_compat.rs (RabOpenAiCompatProvider)  │   │   │
+│  │  │  Custom streaming provider replacing yoagent's       │   │   │
+│  │  │  OpenAiCompatProvider with richer compat handling:   │   │   │
+│  │  │  - DeepSeek thinking: { type } format                │   │   │
+│  │  │  - reasoning_content on replayed assistant messages  │   │   │
+│  │  │  - Configurable max_tokens field name                │   │   │
+│  │  │  - All pi OpenAICompletionsCompat flags              │   │   │
+│  │  │  - Thinking Level → reasoning_effort mapping         │   │   │
+│  │  └──────────────────────────────────────────────────────┘   │   │
+│  │  ┌──────────────────────────────────────────────────────┐   │   │
+│  │  │           compat.rs (RabOpenAiCompat)                │   │   │
+│  │  │  Rich compat flags stored as JSON in model headers:  │   │   │
+│  │  │  supports_store, supports_developer_role,            │   │   │
+│  │  │  supports_reasoning_effort, supports_thinking_control│   │   │
+│  │  │  supports_usage_in_streaming, max_tokens_field,      │   │   │
+│  │  │  requires_tool_result_name,                          │   │   │
+│  │  │  requires_assistant_after_tool_result,               │   │   │
+│  │  │  requires_thinking_as_text,                          │   │   │
+│  │  │  requires_reasoning_content_on_assistant_messages,   │   │   │
+│  │  │  thinking_format (OpenAi/OpenRouter/DeepSeek/...,    │   │   │
+│  │  │  supports_strict_mode, supports_long_cache_retention │   │   │
+│  │  └──────────────────────────────────────────────────────┘   │   │
+│  │  ┌──────────────────────────────────────────────────────┐   │   │
+│  │  │           update.rs (rab update-models subcommand)    │   │   │
+│  │  │  Fetches https://models.dev/api.json                │   │   │
+│  │  │  Applies pi-style corrections (DeepSeek, Qwen, etc) │   │   │
+│  │  │  Writes src/provider/models.json                    │   │   │
+│  │  └──────────────────────────────────────────────────────┘   │   │
+│  │                                                              │   │
 │  └──────────────────────────────────────────────────────────────┘   │
 │                       │                                              │
 │  ┌────────────────────▼─────────────────────────────────────────┐   │
@@ -83,9 +132,10 @@ file mutation queue, and lifecycle management.
 │  │  └──────────────────────────────────────────────────────┘   │   │
 │  │  ┌──────────────────────────────────────────────────────┐   │   │
 │  │  │           yoagent::provider                          │   │   │
-│  │  │  Provider trait + OpenAiCompatProvider               │   │   │
-│  │  │  Streaming LLM calls, thinking, tool calls            │   │   │
-│  │  │  Provider auto-detection by model prefix              │   │   │
+│  │  │  Provider trait + StreamProvider trait               │   │   │
+│  │  │  OpenAiCompatProvider (fallback), AnthropicProvider,  │   │   │
+│  │  │  OpenAiResponsesProvider, GoogleProvider             │   │   │
+│  │  │  ModelConfig, CostConfig, ApiProtocol, ThinkingFormat│   │   │
 │  │  └──────────────────────────────────────────────────────┘   │   │
 │  │  ┌──────────────────────────────────────────────────────┐   │   │
 │  │  │           yoagent::agent                             │   │   │
@@ -100,9 +150,12 @@ file mutation queue, and lifecycle management.
 │  └──────────────────────────────────────────────────────────────┘   │
 │                       │                                              │
 │  ┌────────────────────▼─────────────────────────────────────────┐   │
-│  │  Provider backends (in yoagent, not rab)                     │   │
+│  │  Provider backends                                           │   │
 │  │  OpenCode Go (opencode.ai/zen/go/v1) — default               │   │
-│  │  OpenAI, Anthropic, Ollama — auto-detected by model prefix   │   │
+│  │  OpenCode (opencode.ai/zen/v1)                               │   │
+│  │  Anthropic — auto-detected by model API config               │   │
+│  │  OpenAI — auto-detected by model API config                  │   │
+│  │  Google / Ollama — auto-detected by model API config         │   │
 │  └──────────────────────────────────────────────────────────────┘   │
 │                                                                      │
 │  ┌──────────────────────────────────────────────────────────────┐   │
@@ -115,9 +168,29 @@ file mutation queue, and lifecycle management.
 ## Key architectural decisions
 
 - **yoagent is the core dependency**, not genai. rab delegates the agent loop,
-  provider layer, and message types to yoagent. rab provides the session layer,
-  TUI, built-in tools, file search tools, slash commands, and lifecycle
-  management on top.
+  provider abstraction, and message types to yoagent. rab provides the session layer,
+  TUI, built-in tools, file search tools, slash commands, lifecycle management,
+  and a custom provider layer on top.
+
+- **Custom provider layer over yoagent** — rab has its own `ProviderRegistry` that
+  loads a built-in model catalog (`src/provider/models.json`) merged with user
+  overrides (`~/.rab/agent/models.json`). On top of yoagent's providers, rab also
+  provides `RabOpenAiCompatProvider` — a custom streaming provider that handles
+  DeepSeek thinking format, `reasoning_content`, configurable `max_tokens_field`,
+  and all pi `OpenAICompletionsCompat` flags stored in model config headers.
+
+- **`rab update-models` subcommand** — fetches `https://models.dev/api.json`,
+  applies pi-style corrections (DeepSeek, Qwen, Grok, Kimi), and writes
+  `src/provider/models.json`. All-or-nothing: any error aborts before writing.
+
+- **Multi-protocol agent selection** — `main.rs` resolves the model via
+  `ProviderRegistry`, then selects the appropriate yoagent provider based on
+  `ApiProtocol`:
+  - `OpenAiCompletions` → `RabOpenAiCompatProvider` (rich compat)
+  - `AnthropicMessages` → `yoagent::provider::AnthropicProvider`
+  - `OpenAiResponses` → `yoagent::provider::OpenAiResponsesProvider`
+  - `GoogleGenerativeAi` → `yoagent::provider::GoogleProvider`
+  - Fallback → `yoagent::provider::OpenAiCompatProvider`
 
 - **One extension mechanism** — built-in tools and user extensions use the same
   `Extension` trait. No separate tool registration path. All tools, commands,
@@ -126,18 +199,13 @@ file mutation queue, and lifecycle management.
 - **ToolDefinition wraps every tool** — each `AgentTool` is wrapped in a
   `ToolDefinition` that carries prompt snippet metadata, guidelines, argument
   preparation hooks (`prepare_arguments`), `before_tool_call` and
-  `after_tool_call` hooks (pi-compatible), and automatic JSON Schema argument
-  coercion + validation.
+  `after_tool_call` hooks (pi-compatible), `before_compact` hook, and automatic
+  JSON Schema argument coercion + validation.
 
 - **Pluggable operations** — every built-in tool (read, write, edit, bash,
   grep, find, ls) delegates filesystem/shell operations through a trait
   (e.g. `ReadOperations`, `BashOperations`, `GrepOperations`, `FindOperations`,
   `LsOperations`), making it possible to replace local execution with remote (SSH) execution.
-
-- **Provider layer lives in yoagent** — rab has no `adapter.rs` or `provider.rs`.
-  yoagent's `Provider` trait and `OpenAiCompatProvider` handle all LLM
-  communication. OpenCode Go is the default backend; OpenAI, Anthropic, and
-  Ollama are auto-detected by model name prefix.
 
 - **Agent loop lives in yoagent** — rab has no `loop.rs`. yoagent's `Agent`
   struct handles streaming, tool execution, and event emission. rab subscribes
@@ -159,11 +227,12 @@ file mutation queue, and lifecycle management.
 | pi component | rab equivalent | Status |
 |---|---|---|
 | `pi-tui` (terminal UI, components, editor) | `src/tui/` + `src/agent/ui/` | ✅ Complete — 50+ modules, ~630 tests. Direct Rust port on crossterm 0.29. |
-| `pi-agent-core` (agent loop, session, compaction, skills) | Delegated to **yoagent** (agent loop, types, provider, skills) + rab's `AgentSession` (session lifecycle, compaction, branching) | ✅ Agent loop in yoagent (`yoagent::agent::Agent`). ✅ Session in `session.rs` (~2865 lines). ✅ SessionStorage in `session_storage.rs` (~630 lines). ✅ Compaction in `compaction.rs` (~1140 lines). ✅ Branch summarization in `branch_summary.rs` (~440 lines). ✅ Skills loaded via `yoagent::skills::SkillSet`. |
+| `pi-agent-core` (agent loop, session, compaction, skills) | Delegated to **yoagent** (agent loop, types, provider, skills) + rab's `AgentSession` (session lifecycle, compaction, branching) | ✅ Agent loop in yoagent (`yoagent::agent::Agent`). ✅ Session in `session.rs` (~2770 lines). ✅ SessionStorage in `session_storage.rs` (~550 lines). ✅ Compaction in `compaction.rs` (~1140 lines). ✅ Branch summarization in `branch_summary.rs` (~440 lines). ✅ Skills loaded via `yoagent::skills::SkillSet`. |
 | `coding-agent` (CLI, extensions, tools, settings, commands) | `main.rs`, `builtin/`, `extensions/`, `settings.rs`, `auth.rs`, `commands.rs` | ✅ Tools (read/write/edit/bash/grep/find/ls), settings, auth, CLI done. ✅ 22 slash commands implemented. ✅ Extension trait with tools, commands, renderers, skills, hooks. |
 | `GrepTool`, `FindTool`, `LsTool` (pi agent tools) | `src/extensions/file_search.rs` | ✅ grep (ripgrep/grep fallback), find (fd/find fallback), ls — all with pluggable operations. |
+| provider registry + model catalog | `src/provider/` | ✅ `ProviderRegistry` loading built-in + user models.json. ✅ `RabOpenAiCompatProvider` for rich OpenAI-compatible streaming. ✅ `rab update-models` subcommand. |
 | MCP adapter (pi-mcp-adapter) | `src/extensions/mcp/` (6 modules, ~2040 lines) | ✅ Proxy `mcp` tool, direct tool adapters, SSE-aware HTTP transport, config loading (global+project merge), server lifecycle (lazy connect, idle timeout), persistent metadata cache, tool renderers. |
-| provider | `yoagent::provider::OpenAiCompatProvider` | ✅ OpenCode Go default. Auto-detection by model prefix (claude → Anthropic, gpt → OpenAI, ollama → Ollama). |
+| provider | `yoagent::provider::*` + `rab::provider::openai_compat::RabOpenAiCompatProvider` | ✅ Multi-protocol: RabOpenAiCompatProvider (OpenAiCompletions), AnthropicProvider, OpenAiResponsesProvider, GoogleProvider. Auto-detection by model config's `ApiProtocol`. |
 | `beforeToolCall` / `afterToolCall` | `ToolDefinition.before_tool_call` / `.after_tool_call` | ✅ Per-tool hooks for blocking/preprocessing/postprocessing |
 | `validateToolArguments` | `extension::validate_tool_arguments()` | ✅ Full JSON Schema validation with pi-compatible error paths |
 | Argument coercion | `extension::coerce_with_json_schema()` | ✅ Type coercion matching pi's `Value.Convert` + `coerceWithJsonSchema` |
@@ -229,7 +298,7 @@ Factory methods (`create`, `open`, `in_memory`, etc.) replace the
 
 ```rust
 pub struct AgentSession {
-    session: Session,
+    session: crate::agent::session::Session,
     session_dir: PathBuf,
     cwd: PathBuf,
     persist: bool,
@@ -280,16 +349,17 @@ pub struct AgentSession {
 
 ```rust
 let mut agent_session = AgentSession::create(&cwd, session_dir.as_deref());
-agent_session.set_compaction_config(api_key, &model, context_window);
+agent_session.set_compaction_config(api_key, &model, context_window, Some(model_config));
 
 // Submit user message
 let msg = user_message("list .rs files");
 agent_session.send_user_message_obj(&msg);
 
 // Spawn yoagent agent loop
-let agent = yoagent::agent::Agent::new(OpenAiCompatProvider)
+let agent = yoagent::agent::Agent::new(RabOpenAiCompatProvider)  // or AnthropicProvider, etc.
     .with_model(&model)
     .with_api_key(&api_key)
+    .with_model_config(model_config)
     .with_system_prompt(&system_prompt)
     .with_tools(agent_tools);
 
@@ -297,7 +367,7 @@ agent.prompt_with_sender(msg_text, tx).await;
 
 // Process events — AgentSession persists tool results immediately
 while let Some(event) = rx.recv().await {
-    agent_session.handle_yo_event(&event);
+    agent_session.on_agent_event(&event);
     // Update UI ...
 }
 
@@ -307,7 +377,7 @@ agent_session.check_auto_compact().await;
 
 ---
 
-## Session layer (`src/agent/session.rs`) — ~2865 lines
+## Session layer (`src/agent/session.rs`) — ~2770 lines
 
 Pi-compatible three-layer architecture:
 
@@ -383,7 +453,7 @@ Current session version: **3**. Each entry has a unique `id` and optional
 
 ---
 
-## Session storage (`src/agent/session_storage.rs`) — ~630 lines
+## Session storage (`src/agent/session_storage.rs`) — ~550 lines
 
 Pi-compatible `SessionStorage` trait with full CRUD operations.
 Both implementations fully own their state (entries, by_id, labels, leaf_id).
@@ -486,9 +556,9 @@ Via `/compact` slash command → `AgentSession::run_manual_compact()` →
 
 ### Shared summarization helper
 
-`summarize_text()` (shared with `branch_summary.rs`) calls yoagent's
-`OpenAiCompatProvider` with a non-streaming text completion (no tools,
-low temperature) to generate summaries.
+`summarize_text()` (shared with `branch_summary.rs`) calls the provider
+with a non-streaming text completion (no tools, low temperature) to
+generate summaries.
 
 ---
 
@@ -514,24 +584,158 @@ abandoned branch is summarized so context is preserved.
 
 ---
 
-## Extension trait (`src/agent/extension.rs`)
+## Provider layer (`src/provider/`)
+
+### ProviderRegistry (`mod.rs`)
+
+The provider registry loads a built-in model catalog from `src/provider/models.json`
+and overlays user overrides from `~/.rab/agent/models.json`. It resolves model IDs
+to `ResolvedModel` structs containing the `ModelConfig` (base URL, API protocol,
+compat flags, pricing, context window) and the API key.
+
+```rust
+pub struct ProviderRegistry {
+    entries: Vec<ProviderEntry>,
+    auth_storage: crate::auth::AuthStorage,
+}
+
+impl ProviderRegistry {
+    pub fn load(agent_dir: &Path) -> anyhow::Result<Self>;
+    pub fn reload(&mut self, agent_dir: &Path) -> anyhow::Result<()>;
+    pub fn resolve(&self, model_id: &str, preferred_provider: Option<&str>)
+        -> anyhow::Result<ResolvedModel>;
+    pub fn list_models(&self) -> Vec<String>;
+    pub fn provider_for_model(&self, model_id: &str, preferred_provider: Option<&str>)
+        -> Option<String>;
+    pub fn api_key_for_provider(&self, provider_id: &str) -> Option<String>;
+    pub fn count_providers(&self) -> usize;
+}
+```
+
+### Model resolution
+
+Resolution order:
+1. If `preferred_provider` is set, that provider is checked first
+2. Otherwise returns the first provider that has the given model ID
+3. API key resolved from: `auth.json` → environment variable → empty string
+
+### models.rs — models.json parsing
+
+Parses the built-in and user `models.json` files. Each provider entry contains:
+
+```json
+{
+  "providers": {
+    "opencode-go": {
+      "name": "OpenCode Zen Go",
+      "baseUrl": "https://opencode.ai/zen/go",
+      "api": "openai-completions",
+      "env": { "apiKey": "OPENCODE_API_KEY" },
+      "models": [
+        {
+          "id": "deepseek-v4-flash",
+          "name": "DeepSeek V4 Flash",
+          "api": "openai-completions",
+          "reasoning": true,
+          "input": ["text"],
+          "cost": { "input": 0.15, "output": 0.6, "cacheRead": 0.0, "cacheWrite": 0.0 },
+          "contextWindow": 128000,
+          "maxTokens": 16384,
+          "compat": {
+            "supportsStore": false,
+            "supportsDeveloperRole": false,
+            "maxTokensField": "max_tokens",
+            "requiresReasoningContentOnAssistantMessages": true,
+            "thinkingFormat": "deepseek"
+          }
+        }
+      ]
+    }
+  }
+}
+```
+
+Supported `api` types: `openai-completions`, `anthropic-messages`,
+`openai-responses`, `google-generative-ai`, `google-vertex`,
+`bedrock-converse-stream`, `azure-openai-responses`.
+
+User-provided providers with the same `id` replace built-in entries entirely (merge semantics).
+
+### RabOpenAiCompatProvider (`openai_compat.rs`)
+
+Custom streaming provider implementing `yoagent::provider::traits::StreamProvider`.
+Replaces yoagent's `OpenAiCompatProvider` with richer compat handling:
+
+- **Thinking format**: supports `reasoning_content` in delta chunks for DeepSeek,
+  OpenRouter, Together, ZAI, Qwen, and other providers
+- **Thinking control**: DeepSeek uses `thinking: { type: "enabled" | "disabled" }`
+  instead of `reasoning_effort`
+- **`requires_reasoning_content_on_assistant_messages`**: for providers like DeepSeek
+  that need `reasoning_content` on replayed assistant messages
+- **Configurable `max_tokens_field`**: `max_tokens` vs `max_completion_tokens`
+- **`requires_assistant_after_tool_result`**: inserts empty assistant message after
+  tool results for providers that require it
+- **`requires_tool_result_name`**: includes `name` field in tool result messages
+- **Full SSE streaming**: parses OpenAI-compatible SSE chunks, handles
+  `reasoning_content` delta, tool call deltas, usage info
+
+Request body construction accounts for all compat flags:
+- `developer` vs `system` role
+- `thinking: { type }` vs `reasoning_effort`
+- `max_tokens` vs `max_completion_tokens`
+- Tool definition format with `strict` mode (default: true)
+
+### RabOpenAiCompat (`compat.rs`)
+
+Rich compatibility flags matching pi's `OpenAICompletionsCompat` schema,
+stored as JSON in `ModelConfig::headers["_rab_compat"]`:
+
+```rust
+pub struct RabOpenAiCompat {
+    pub supports_store: bool,
+    pub supports_developer_role: bool,
+    pub supports_reasoning_effort: bool,
+    pub supports_thinking_control: bool,
+    pub supports_usage_in_streaming: bool,
+    pub max_tokens_field: RabMaxTokensField,         // MaxTokens | MaxCompletionTokens
+    pub requires_tool_result_name: bool,
+    pub requires_assistant_after_tool_result: bool,
+    pub requires_thinking_as_text: bool,
+    pub requires_reasoning_content_on_assistant_messages: bool,
+    pub thinking_format: RabThinkingFormat,          // OpenAi | OpenRouter | DeepSeek | Together | Zai | Qwen | ChatTemplate | QwenChatTemplate | StringThinking | AntLing
+    pub supports_strict_mode: bool,
+    pub supports_long_cache_retention: bool,
+}
+```
+
+### update.rs — `rab update-models` subcommand
+
+Fetches `https://models.dev/api.json`, processes target providers
+(currently `opencode` and `opencode-go`), applies pi-style corrections:
+
+| Model | Correction |
+|-------|-----------|
+| `deepseek-v4*` | `requiresReasoningContentOnAssistantMessages: true`, `thinkingFormat: deepseek`, `supportsReasoningEffort: false`, `thinkingLevelMap` with `high`/`max` mapping |
+| `kimi-k2.6` | `thinkingFormat: deepseek`, `supportsReasoningEffort: false` |
+| `kimi-k2.5` | `supportsLongCacheRetention: false` |
+| `minimax-m2.7` | `supportsLongCacheRetention: false` |
+| `grok-build-0.1` | `supportsReasoningEffort: false`, `thinkingLevelMap` limiting levels |
+| `qwen3*` (opencode-go) | `thinkingFormat: qwen` |
+
+---
+
+## Extension trait (`src/agent/extension.rs`) — ~1100 lines
 
 All capability — built-in or user-provided — comes through the same trait.
-Supports pi-compatible `beforeToolCall` / `afterToolCall` hooks, argument
-type coercion via JSON Schema, and full schema validation.
+Supports pi-compatible `beforeToolCall` / `afterToolCall` hooks, `before_compact` hook,
+argument type coercion via JSON Schema, and full schema validation.
 
 ```rust
 #[async_trait]
 pub trait Extension: Send + Sync {
     fn name(&self) -> Cow<'static, str>;
-
-    /// Tools this extension provides (LLM-callable), each with prompt metadata.
     fn tools(&self) -> Vec<ToolDefinition> { vec![] }
-
-    /// Slash commands (e.g. `/quit`, `/model`).
     fn commands(&self) -> Vec<SlashCommand> { vec![] }
-
-    /// Skills this extension provides.
     fn skills(&self) -> yoagent::skills::SkillSet { yoagent::skills::SkillSet::empty() }
 }
 ```
@@ -539,21 +743,18 @@ pub trait Extension: Send + Sync {
 ### Supporting types
 
 ```rust
-/// A tool bundled with its prompt metadata.
 pub struct ToolDefinition {
     pub tool: Box<dyn yoagent::types::AgentTool>,
     pub snippet: &'static str,
     pub guidelines: &'static [&'static str],
-    /// Optional pre-processing of raw LLM arguments (type coercion).
     pub prepare_arguments: Option<fn(serde_json::Value) -> Result<serde_json::Value, String>>,
-    /// Called before tool execution (pi's beforeToolCall).
     pub before_tool_call: Option<fn(&serde_json::Value) -> Option<BeforeToolCallResult>>,
-    /// Called after tool execution (pi's afterToolCall).
     pub after_tool_call: Option<fn(&yoagent::types::ToolResult, bool) -> Option<AfterToolCallResult>>,
 }
 
 pub struct BeforeToolCallResult { pub block: bool, pub reason: String }
 pub struct AfterToolCallResult { pub content: Option<Vec<Content>>, pub details: Option<Value>, pub is_error: Option<bool> }
+pub struct BeforeCompactResult { pub cancel: bool, pub summary: Option<String>, pub details: Option<Value> }
 
 pub struct AutocompleteItem { pub value: String, pub label: String, pub description: Option<String> }
 
@@ -570,7 +771,6 @@ pub enum CommandResult { Info(String), Quit, ModelChanged(String), ShowHelp, Rel
 
 pub struct SlashCommand { pub name: String, pub description: String, pub handler: Box<dyn CommandHandler> }
 
-/// Tool-specific rendering interface.
 pub trait ToolRenderer: Send + Sync {
     fn render_call(&self, args: &Value, width: usize, theme: &dyn Theme, ctx: &ToolRenderContext) -> Vec<String>;
     fn render_result(&self, content: &str, width: usize, theme: &dyn Theme, ctx: &ToolRenderContext) -> Vec<String>;
@@ -578,7 +778,6 @@ pub trait ToolRenderer: Send + Sync {
     fn render_bg_key(&self) -> Option<&'static str>;
 }
 
-/// Context passed to ToolRenderer methods (pi-compatible).
 pub struct ToolRenderContext {
     pub expanded: bool,
     pub args_complete: bool,
@@ -592,8 +791,8 @@ pub struct ToolRenderContext {
     pub full_output_path: Option<String>,
     pub file_path: Option<String>,
     pub expand_key: String,
-    pub details: Option<serde_json::Value>,       // structured rendering data
-    pub invalidate: Option<UnboundedSender<()>>,  // re-render request callback
+    pub details: Option<serde_json::Value>,
+    pub invalidate: Option<UnboundedSender<()>>,
 }
 ```
 
@@ -601,17 +800,14 @@ pub struct ToolRenderContext {
 
 Every tool call goes through `ToolDefinition::execute()`:
 
-1. **`prepare_arguments`** — custom per-tool pre-processing (e.g., write tool
-   coerces `path`/`content` to strings)
-2. **`coerce_with_json_schema()`** — recursive type coercion for common LLM
-   mistakes (numbers as strings, booleans as strings, null handling, etc.)
-3. **`validate_tool_arguments()`** — full JSON Schema validation with
-   pi-compatible error paths (Required, additionalProperties, type mismatch)
+1. **`prepare_arguments`** — custom per-tool pre-processing
+2. **`coerce_with_json_schema()`** — recursive type coercion for common LLM mistakes
+3. **`validate_tool_arguments()`** — full JSON Schema validation with pi-compatible error paths
 4. **`before_tool_call`** — optional hook that can block execution
 5. **Execute** — call inner `AgentTool::execute()`
 6. **`after_tool_call`** — optional hook that can modify the result
 
-At startup, extensions are collected from builtins + file_search:
+At startup, extensions are collected from builtins + file_search + mcp:
 
 ```rust
 let extensions: Vec<Box<dyn Extension>> = vec![
@@ -621,6 +817,7 @@ let extensions: Vec<Box<dyn Extension>> = vec![
     Box::new(EditExtension::new(cwd)),
     Box::new(BashExtension::new(cwd)),
     Box::new(FileSearchExtension::new(cwd)),  // grep, find, ls
+    Box::new(McpExtension::from_cwd(&cwd)),   // MCP tools
 ];
 ```
 
@@ -752,7 +949,7 @@ Same file names and format as pi, under `~/.rab/agent/`.
 | `~/.pi/agent/settings.json` | `~/.rab/agent/settings.json` | ✅ |
 | `.pi/settings.json` | `.rab/settings.json` | ✅ (project-local overrides) |
 | `~/.pi/agent/auth.json` | `~/.rab/agent/auth.json` | ✅ |
-| `~/.pi/agent/models.json` | `~/.rab/models.json` | ⬜ Not implemented |
+| `~/.pi/agent/models.json` | `~/.rab/agent/models.json` | ✅ (user overrides, merged with built-in) |
 | `~/.pi/agent/AGENTS.md` | `~/.rab/agent/AGENTS.md` | ✅ |
 | `AGENTS.md` / `CLAUDE.md` | `AGENTS.md` / `CLAUDE.md` | ✅ (project + ancestor walk) |
 | `~/.pi/agent/keybindings.json` | `~/.rab/keybindings.json` | ✅ |
@@ -810,6 +1007,9 @@ Skills from extensions are merged via `skill_set.merge(ext.skills())`.
 ```
 rab [MESSAGE]...
 
+Subcommands:
+  rab update-models          Fetch and update built-in model catalog
+
 Session:
   -c, --continue             Continue most recent session in cwd
   -r, --resume               Open interactive session picker
@@ -836,10 +1036,6 @@ Session resolution supports both paths and partial UUID prefixes.
 `--fork` resolves the session file, validates no conflicts with `--session-id`,
 and calls `AgentSession::fork_from()`.
 
-**Currently only OpenCode Go is configured** (via `yoagent::provider::OpenAiCompatProvider`
-with `openai_compat()` model config pointing to `opencode.ai/zen/go/v1`).
-Models: `deepseek-v4-flash` (default), `deepseek-v4-pro`.
-
 Extension gating: `is_extension_active()` checks `settings.tools` whitelist
 and `settings.exclude_tools` blacklist. Core extensions (commands, read,
 write, edit, bash, mcp) are always active when no whitelist is set. File
@@ -864,7 +1060,25 @@ Streams the response to stdout. Thinking blocks shown dimmed on stderr.
 Tool calls and results shown prefixed with colored indicators. Has a 120s
 timeout to prevent hanging on stuck providers. Uses a simple event loop:
 `yoagent::agent::Agent::prompt_with_sender()` → process `AgentEvent` stream →
-`agent_session.handle_yo_event()` for persistence.
+`agent_session.on_agent_event()` for persistence.
+
+Provider selection in print mode matches interactive mode — the model is
+resolved through `ProviderRegistry`, then the appropriate provider is chosen
+based on `ApiProtocol`:
+
+```rust
+let agent = match mc.api {
+    ApiProtocol::OpenAiCompletions =>
+        yoagent::agent::Agent::new(RabOpenAiCompatProvider),
+    ApiProtocol::AnthropicMessages =>
+        yoagent::agent::Agent::new(yoagent::provider::AnthropicProvider),
+    ApiProtocol::OpenAiResponses =>
+        yoagent::agent::Agent::new(yoagent::provider::OpenAiResponsesProvider),
+    ApiProtocol::GoogleGenerativeAi =>
+        yoagent::agent::Agent::new(yoagent::provider::GoogleProvider),
+    _ => yoagent::agent::Agent::new(yoagent::provider::OpenAiCompatProvider),
+};
+```
 
 ### Interactive (TUI) mode
 
@@ -1026,10 +1240,11 @@ use `status_section` that appears for one frame then clears.
 ├── agent/
 │   ├── settings.json          # global settings
 │   ├── auth.json              # API keys and OAuth credentials
+│   ├── models.json            # user provider/model overrides (merged with built-in)
 │   ├── SYSTEM.md              # custom system prompt (full override)
 │   ├── APPEND_SYSTEM.md       # appended to system prompt
 │   └── AGENTS.md              # global context file
-├── models.json                # ⬜ custom provider/model definitions (not implemented)
+├── models.json                # ⬜ deprecated, use agent/models.json
 ├── keybindings.json           # custom keybindings
 ├── extensions/                # ⬜ WASM plugins (Phase 2)
 ├── skills/                    # agent skills (SKILL.md files)
@@ -1076,6 +1291,8 @@ rab (EPL-2.0)
 ├── async-stream 0.3      (MIT)        - async stream generation
 ├── regex 1.12            (MIT)        - regex
 ├── reqwest 0.12          (MIT/Apache 2.0) - HTTP client (rustls-tls, socks)
+├── reqwest-eventsource 0.6 (Apache 2.0) - SSE streaming for OpenAI API
+├── tracing 0.1           (MIT)        - diagnostic logging
 ├── openssl-sys 0.9       (MIT)        - vendored OpenSSL
 ├── libc 0.2              (MIT)        - system calls
 # wasmtime 26+ (Phase 2, Apache 2.0)
@@ -1096,9 +1313,6 @@ gated behind Cargo features: `plugins` and `mcp`. MVP compiles without them.
 Planned: WASM components via wasmtime, loaded from `~/.rab/extensions/`.
 Same `Extension` trait used by builtins — plugins implement it via WIT
 bindings. Hot reload via file watcher.
-
-See the old architecture doc for the detailed WIT interface and
-plugin author experience (design deferred to Phase 2).
 
 ### MCP adapter — ✅ IMPLEMENTED
 
@@ -1126,10 +1340,13 @@ adapter matching pi-mcp-adapter's architecture. Configured via `~/.rab/agent/mcp
 - `eager` — connects at agent startup
 - `keep-alive` — never disconnects
 
-### models.json — ⬜ NOT IMPLEMENTED
+### models.json — ✅ IMPLEMENTED
 
-Custom provider/model definitions. Currently OpenCode Go is the only
-configured backend.
+Custom provider/model definitions are now supported via `~/.rab/agent/models.json`,
+merged with the built-in catalog (`src/provider/models.json`, ~1300 lines).
+User entries with the same provider ID replace built-in entries entirely.
+The `rab update-models` subcommand fetches the latest models from `models.dev`
+and updates the built-in catalog.
 
 ### User extensions (compile-time)
 
