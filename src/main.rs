@@ -525,12 +525,7 @@ async fn main() -> anyhow::Result<()> {
         let message = message_parts.join(" ");
         let mut agent_session = session;
         let api_key = auth.api_key("opencode-go").unwrap_or_default();
-        let mut mc = yoagent::provider::model::ModelConfig::openai_compat(
-            "https://opencode.ai/zen/go/v1",
-            &model,
-            "opencode-go",
-            yoagent::provider::model::OpenAiCompat::deepseek(),
-        );
+        let mut mc = rab::agent::base_model_config(&model);
         mc.context_window = rab::agent::compaction::get_model_context_window(&model) as u32;
         agent_session.set_compaction_config(
             api_key.clone(),
@@ -567,12 +562,7 @@ async fn run_print_mode(
     agent_tools: Vec<Box<dyn yoagent::types::AgentTool>>,
     agent_session: &mut rab::agent::AgentSession,
 ) -> anyhow::Result<()> {
-    let mut mc = yoagent::provider::model::ModelConfig::openai_compat(
-        "https://opencode.ai/zen/go/v1",
-        "deepseek-v4-flash",
-        "opencode-go",
-        yoagent::provider::model::OpenAiCompat::deepseek(),
-    );
+    let mut mc = rab::agent::base_model_config(&model);
     mc.context_window = 1_000_000;
     mc.max_tokens = 393_216;
     let mut agent = yoagent::agent::Agent::new(yoagent::provider::OpenAiCompatProvider)

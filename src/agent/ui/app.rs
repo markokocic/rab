@@ -205,12 +205,7 @@ pub struct App {
 impl App {
     fn new(config: AppConfig, session: AgentSession) -> Self {
         let mut agent_session = session;
-        let mut model_config = yoagent::provider::model::ModelConfig::openai_compat(
-            "https://opencode.ai/zen/go/v1",
-            &config.model,
-            "opencode-go",
-            yoagent::provider::model::OpenAiCompat::deepseek(),
-        );
+        let mut model_config = crate::agent::base_model_config(&config.model);
         model_config.context_window =
             crate::agent::compaction::get_model_context_window(&config.model) as u32;
         agent_session.set_compaction_config(
@@ -1301,18 +1296,8 @@ fn build_fresh_agent(
     messages: Vec<yoagent::types::AgentMessage>,
     extensions: &[Box<dyn Extension>],
 ) -> yoagent::agent::Agent {
-    let mut mc = yoagent::provider::model::ModelConfig::openai_compat(
-        "https://opencode.ai/zen/go/v1",
-        model,
-        "opencode-go",
-        yoagent::provider::model::OpenAiCompat::deepseek(),
-    );
+    let mut mc = crate::agent::base_model_config(model);
     mc.context_window = 1_000_000;
-    // Set max output tokens to the API's per-model limit (393216 for
-    // DeepSeek v4). This is separate from context_window (total
-    // context) — max_tokens limits only the response length.
-    // Default in ModelConfig was 8192 which caused the model to hit
-    // the output limit mid-response (stop_reason=Length).
     mc.max_tokens = 393_216;
 
     let tools: Vec<Box<dyn yoagent::types::AgentTool>> = extensions

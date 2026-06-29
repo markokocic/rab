@@ -23,3 +23,4 @@ pub use session_storage::{
 pub use settings::Settings;
 
 pub use system_prompt::{SystemPromptBuilder, ToolSnippet};
+pub use types::base_model_config;

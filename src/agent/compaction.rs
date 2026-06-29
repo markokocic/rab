@@ -1061,12 +1061,7 @@ pub async fn summarize_text(
 
     // Use provided model config, or fall back to hardcoded OpenCode Go for backward compat
     let model_config = model_config.unwrap_or_else(|| {
-        let mut mc = yoagent::provider::model::ModelConfig::openai_compat(
-            "https://opencode.ai/zen/go/v1",
-            model,
-            "opencode-go",
-            yoagent::provider::model::OpenAiCompat::deepseek(),
-        );
+        let mut mc = crate::agent::base_model_config(model);
         mc.context_window = 1_000_000;
         mc
     });
