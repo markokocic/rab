@@ -1131,6 +1131,7 @@ fn handle_thinking_cycle(app: &mut App) {
     // Record the change in the session and refresh footer
     if let Some(ref mut agent_session) = app.session {
         agent_session.on_thinking_level_change(next);
+        agent_session.flush_pending_writes();
     }
     if let Some(ref s) = app.session {
         app.footer.borrow_mut().refresh_from_session(s.session());
@@ -1183,6 +1184,7 @@ fn handle_model_cycle(app: &mut App, dir: isize) {
             .provider_for_model(&app.model, app.settings.default_provider.as_deref())
             .unwrap_or_else(|| "opencode-go".to_string());
         agent_session.on_model_change(&provider, &app.model);
+        agent_session.flush_pending_writes();
     }
     // Refresh footer from session to pick up model/provider/thinking
     if let Some(ref session) = app.session {
