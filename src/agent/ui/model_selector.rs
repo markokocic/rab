@@ -187,17 +187,11 @@ impl Component for ModelSelector {
         let theme = current_theme();
         let mut lines: Vec<String> = Vec::new();
 
-        // Top border
+        // Top border (matches pi's DynamicBorder)
         lines.push(theme.dim(&"─".repeat(width.saturating_sub(2))));
         lines.push(String::new());
 
-        // Title
-        lines.push(format!(
-            "  {}",
-            theme.bold(&theme.fg_key(ThemeKey::Accent, "Select Model"))
-        ));
-
-        // Scope toggle (all | scoped)
+        // Scope / hint (matches pi's scopeText + scopeHintText layout)
         let has_scoped = !self.scoped_model_ids.is_empty();
         if has_scoped {
             let all_text = match self.scope {
@@ -209,27 +203,30 @@ impl Component for ModelSelector {
                 ModelScope::All => theme.dim("scoped"),
             };
             lines.push(format!(
-                "  {} {} | {}",
+                " {} {} | {}",
                 theme.dim("Scope:"),
                 all_text,
                 scoped_text,
             ));
-            lines.push(theme.dim("  (Tab to toggle)"));
+            lines.push(format!(" {}", theme.dim("Tab scope (all/scoped)")));
         } else {
-            lines.push(theme.dim(
-                "  Only showing models from configured providers. Use /login to add providers.",
+            lines.push(format!(
+                " {}",
+                theme.fg_key(
+                    ThemeKey::Warning,
+                    "Only showing models from configured providers. Use /login to add providers."
+                )
             ));
         }
         lines.push(String::new());
 
-        // Search input line
-        let search_label = theme.dim("  Search: ");
+        // Search input line (matches pi's Input widget — displayed as single line)
         let search_value = if self.search_query.is_empty() {
-            theme.dim("(type to filter)")
+            String::new()
         } else {
             self.search_query.clone()
         };
-        lines.push(format!("{}{}", search_label, search_value));
+        lines.push(format!(" {}{}", theme.dim("Search: "), search_value));
         lines.push(String::new());
 
         // Model list

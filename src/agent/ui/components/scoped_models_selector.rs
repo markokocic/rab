@@ -285,46 +285,30 @@ impl Component for ScopedModelsSelector {
         let theme = current_theme();
         let mut lines: Vec<String> = Vec::new();
 
-        // Top border
+        // Top border (matches pi's DynamicBorder)
         lines.push(theme.dim(&"─".repeat(width.saturating_sub(2))));
         lines.push(String::new());
 
-        // Title
+        // Title (matches pi's theme.fg("accent", theme.bold("Model Configuration")))
         lines.push(format!(
             "  {}",
             theme.bold(&theme.fg_key(ThemeKey::Accent, "Model Configuration"))
         ));
 
-        // Status / hint
-        let enabled_count = match &self.enabled_ids {
-            None => self.all_ids.len(),
-            Some(ids) => ids.len(),
-        };
-        let _all_enabled = self.enabled_ids.is_none();
-        let dirty_mark = if self.is_dirty {
-            theme.fg_key(ThemeKey::Warning, " (unsaved)")
-        } else {
-            String::new()
-        };
+        // Session-only hint (matches pi's "Session-only. <key> to save to settings.")
         lines.push(format!(
             "  {}",
-            theme.dim(&format!(
-                "Session-only. Ctrl+S to save to settings. {}/{} enabled{}",
-                enabled_count,
-                self.all_ids.len(),
-                dirty_mark,
-            ))
+            theme.dim("Session-only. Ctrl+S to save to settings.")
         ));
         lines.push(String::new());
 
-        // Search input line
-        let search_label = theme.dim("  Search: ");
+        // Search input line (matches pi's Input — displayed as a single line)
         let search_value = if self.search_query.is_empty() {
-            theme.dim("(type to filter)")
+            String::new()
         } else {
             self.search_query.clone()
         };
-        lines.push(format!("{}{}", search_label, search_value));
+        lines.push(format!(" {}{}", theme.dim("Search: "), search_value));
         lines.push(String::new());
 
         // Model list
@@ -352,8 +336,11 @@ impl Component for ScopedModelsSelector {
                     item.model_id.clone()
                 };
                 let provider_badge = theme.dim(&format!(" [{}]", item.provider));
-                let enabled = is_enabled(&self.enabled_ids, &item.full_id);
-                let status = if enabled {
+                let all_enabled = self.enabled_ids.is_none();
+                let status = if all_enabled {
+                    // All enabled: no ✓/✗ needed
+                    String::new()
+                } else if item.enabled {
                     theme.fg_key(ThemeKey::Success, " ✓")
                 } else {
                     theme.dim(" ✗")
@@ -378,8 +365,17 @@ impl Component for ScopedModelsSelector {
             }
         }
 
-        // Footer hints
-        lines.push(String::new());
+        // Footer hint (matches pi's footerText with count + dirty indicator)
+        let enabled_count = match &self.enabled_ids {
+            None => self.all_ids.len(),
+            Some(ids) => ids.len(),
+        };
+        let all_enabled = self.enabled_ids.is_none();
+        let count_text = if all_enabled {
+            "all enabled".to_string()
+        } else {
+            format!("{}/{} enabled", enabled_count, self.all_ids.len())
+        };
         let hints = [
             "Enter: toggle",
             "Ctrl+A: all",
@@ -388,7 +384,22 @@ impl Component for ScopedModelsSelector {
             "Ctrl+\u{2191}/\u{2193}: reorder",
             "Ctrl+S: save",
         ];
-        lines.push(theme.dim(&format!("  {}", hints.join(" · "))));
+        let footer = if self.is_dirty {
+            format!(
+                "{} {} {}",
+                theme.dim(&format!("  {}", hints.join(" · "))),
+                count_text,
+                theme.fg_key(ThemeKey::Warning, "(unsaved)"),
+            )
+        } else {
+            format!(
+                "{} {}",
+                theme.dim(&format!("  {}", hints.join(" · "))),
+                count_text,
+            )
+        };
+        lines.push(String::new());
+        lines.push(footer);
 
         // Bottom border
         lines.push(theme.dim(&"─".repeat(width.saturating_sub(2))));
