@@ -45,8 +45,11 @@ const ALL_THINKING_LEVELS: &[&str] = &["xhigh", "high", "medium", "low", "off"];
 /// the model's `thinkingLevelMap`. Levels mapped to `null` are unsupported.
 fn available_thinking_levels(app: &App) -> Vec<&'static str> {
     // Try to read thinkingLevelMap from the resolved model
-    let thinking_map: Option<std::collections::HashMap<String, Option<serde_json::Value>>> =
-        app.registry.resolve(&app.model).ok().and_then(|r| {
+    let thinking_map: Option<std::collections::HashMap<String, Option<serde_json::Value>>> = app
+        .registry
+        .resolve(&app.model, app.settings.default_provider.as_deref())
+        .ok()
+        .and_then(|r| {
             r.model_config
                 .headers
                 .get("_rab_thinking_map")
@@ -240,7 +243,7 @@ impl App {
         let mut agent_session = session;
         let model_config = config
             .registry
-            .resolve(&config.model)
+            .resolve(&config.model, config.settings.default_provider.as_deref())
             .ok()
             .map(|r| r.model_config.clone())
             .unwrap_or_else(|| {
@@ -329,7 +332,7 @@ impl App {
             if !has_model_entry {
                 let provider = config
                     .registry
-                    .provider_for_model(&config.model)
+                    .provider_for_model(&config.model, config.settings.default_provider.as_deref())
                     .unwrap_or_else(|| "opencode-go".to_string());
                 agent_session.on_model_change(&provider, &config.model);
             }
@@ -1051,7 +1054,7 @@ fn handle_model_cycle(app: &mut App, dir: isize) {
     if let Some(ref mut agent_session) = app.session {
         let provider = app
             .registry
-            .provider_for_model(&app.model)
+            .provider_for_model(&app.model, app.settings.default_provider.as_deref())
             .unwrap_or_else(|| "opencode-go".to_string());
         agent_session.on_model_change(&provider, &app.model);
     }
@@ -1337,7 +1340,9 @@ fn open_model_selector(app: &mut App, tui: &mut TUI) {
     let display_names: Vec<String> = models
         .iter()
         .map(|m| {
-            let provider = app.registry.provider_for_model(m);
+            let provider = app
+                .registry
+                .provider_for_model(m, app.settings.default_provider.as_deref());
             match provider {
                 Some(p) => format!("{}/{}", p, m),
                 None => m.clone(),
@@ -1436,6 +1441,7 @@ fn submit_message(app: &mut App, message: String) {
 
 /// Build a fresh Agent with the given messages and app configuration.
 /// Uses the provider registry to resolve the model and dispatch to the right provider.
+#[allow(clippy::too_many_arguments)]
 fn build_fresh_agent(
     registry: &ProviderRegistry,
     model: &str,
@@ -1444,10 +1450,11 @@ fn build_fresh_agent(
     thinking_level: yoagent::types::ThinkingLevel,
     messages: Vec<yoagent::types::AgentMessage>,
     extensions: &[Box<dyn Extension>],
+    default_provider: Option<&str>,
 ) -> yoagent::agent::Agent {
     use yoagent::provider::model::ApiProtocol;
 
-    let resolved = registry.resolve(model).ok();
+    let resolved = registry.resolve(model, default_provider).ok();
     let mc = resolved
         .as_ref()
         .map(|r| r.model_config.clone())
@@ -1544,6 +1551,7 @@ async fn start_agent_loop(app: &mut App, message: String) {
                 thinking,
                 msgs,
                 &app.extensions,
+                app.settings.default_provider.as_deref(),
             ));
             // SAFETY: we just set app.agent to Some(...)
             app.agent.as_mut().unwrap()
@@ -1554,7 +1562,7 @@ async fn start_agent_loop(app: &mut App, message: String) {
     if let Some(ref mut session) = app.session {
         let provider = app
             .registry
-            .provider_for_model(&app.model)
+            .provider_for_model(&app.model, app.settings.default_provider.as_deref())
             .unwrap_or_else(|| "opencode-go".to_string());
         session.on_model_change(&provider, &app.model);
         session.on_thinking_level_change(app.thinking_level.as_deref().unwrap_or("off"));
@@ -1761,7 +1769,7 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
             if let Some(ref mut s) = app.session {
                 let provider = app
                     .registry
-                    .provider_for_model(&model)
+                    .provider_for_model(&model, app.settings.default_provider.as_deref())
                     .unwrap_or_else(|| "opencode-go".to_string());
                 s.on_model_change(&provider, &model);
             }

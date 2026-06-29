@@ -166,7 +166,9 @@ async fn main() -> anyhow::Result<()> {
     // Load provider registry (built-in + ~/.rab/agent/models.json)
     let agent_dir = get_agent_dir();
     let registry = rab::provider::ProviderRegistry::load(&agent_dir)?;
-    let resolved = registry.resolve(&model).ok();
+    let resolved = registry
+        .resolve(&model, settings.default_provider.as_deref())
+        .ok();
 
     // Available models from registry
     let available_models: Vec<String> = registry.list_models();

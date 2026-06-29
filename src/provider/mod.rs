@@ -58,9 +58,21 @@ impl ProviderRegistry {
 
     /// Resolve a model ID (e.g. "deepseek-v4-flash") to a `ResolvedModel`.
     ///
-    /// Scans all providers for a matching model ID. Returns the first match.
+    /// Scans all providers for a matching model ID. If `preferred_provider` is
+    /// set, that provider is checked first; otherwise returns the first match.
     /// Also resolves the API key for that provider.
-    pub fn resolve(&self, model_id: &str) -> anyhow::Result<ResolvedModel> {
+    pub fn resolve(
+        &self,
+        model_id: &str,
+        preferred_provider: Option<&str>,
+    ) -> anyhow::Result<ResolvedModel> {
+        // Try preferred provider first when specified.
+        if let Some(preferred) = preferred_provider
+            && let Some(result) = self.resolve_from_provider(model_id, preferred)
+        {
+            return Ok(result);
+        }
+
         for entry in &self.entries {
             if let Some(model_config) = entry.models.iter().find(|m| m.id == model_id) {
                 let api_key = self
@@ -87,6 +99,25 @@ impl ProviderRegistry {
         );
     }
 
+    /// Resolve from a specific provider. Returns `None` if the provider doesn't
+    /// exist or doesn't have the given model.
+    fn resolve_from_provider(&self, model_id: &str, provider_id: &str) -> Option<ResolvedModel> {
+        let entry = self.entries.iter().find(|e| e.id == provider_id)?;
+        let model_config = entry.models.iter().find(|m| m.id == model_id)?.clone();
+        let api_key = self
+            .auth_storage
+            .api_key(provider_id)
+            .or_else(|| {
+                let env_var = entry.env_var_name();
+                std::env::var(env_var).ok()
+            })
+            .unwrap_or_default();
+        Some(ResolvedModel {
+            model_config,
+            api_key,
+        })
+    }
+
     /// List all available model IDs (for UI selector and /model command).
     pub fn list_models(&self) -> Vec<String> {
         let mut models: Vec<String> = Vec::new();
@@ -100,7 +131,24 @@ impl ProviderRegistry {
     }
 
     /// Get the provider name for a model ID.
-    pub fn provider_for_model(&self, model_id: &str) -> Option<String> {
+    ///
+    /// When `preferred_provider` is set and that provider has the model,
+    /// returns the preferred provider. Otherwise returns the first match.
+    pub fn provider_for_model(
+        &self,
+        model_id: &str,
+        preferred_provider: Option<&str>,
+    ) -> Option<String> {
+        // Try preferred provider first.
+        if let Some(preferred) = preferred_provider
+            && self
+                .entries
+                .iter()
+                .any(|e| e.id == preferred && e.models.iter().any(|m| m.id == model_id))
+        {
+            return Some(preferred.to_string());
+        }
+
         for entry in &self.entries {
             if entry.models.iter().any(|m| m.id == model_id) {
                 return Some(entry.id.clone());
