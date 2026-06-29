@@ -1308,9 +1308,12 @@ fn build_fresh_agent(
         yoagent::provider::model::OpenAiCompat::deepseek(),
     );
     mc.context_window = 1_000_000;
-    // Match max output tokens to context window so the model
-    // isn't cut off mid-response (default was 8192 in ModelConfig).
-    mc.max_tokens = 1_000_000;
+    // Set max output tokens to the API's per-model limit (393216 for
+    // DeepSeek v4). This is separate from context_window (total
+    // context) — max_tokens limits only the response length.
+    // Default in ModelConfig was 8192 which caused the model to hit
+    // the output limit mid-response (stop_reason=Length).
+    mc.max_tokens = 393_216;
 
     let tools: Vec<Box<dyn yoagent::types::AgentTool>> = extensions
         .iter()

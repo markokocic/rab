@@ -574,6 +574,7 @@ async fn run_print_mode(
         yoagent::provider::model::OpenAiCompat::deepseek(),
     );
     mc.context_window = 1_000_000;
+    mc.max_tokens = 393_216;
     let mut agent = yoagent::agent::Agent::new(yoagent::provider::OpenAiCompatProvider)
         .with_model(&model)
         .with_api_key(&api_key)
