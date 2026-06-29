@@ -2378,15 +2378,9 @@ fn handle_agent_event(app: &mut App, event: yoagent::types::AgentEvent) {
             use yoagent::types::StreamDelta;
             match delta {
                 StreamDelta::Text { delta } => {
-                    eprintln!(
-                        "[rab-debug] TextDelta: len={}, first_text={:?}",
-                        delta.len(),
-                        &delta[..delta.len().min(50)]
-                    );
                     if let Some(weak) = app.streaming_component.as_ref().and_then(|w| w.upgrade()) {
                         weak.borrow_mut().append_text(&delta);
                     } else {
-                        eprintln!("[rab-debug] TextDelta: creating AssistantMessageComponent");
                         use crate::tui::components::rc_ref_cell_component::RcRefCellComponent;
                         let comp = Rc::new(RefCell::new(
                             crate::agent::ui::components::AssistantMessageComponent::new(&delta),
@@ -2524,15 +2518,8 @@ fn handle_agent_event(app: &mut App, event: yoagent::types::AgentEvent) {
         }
         E::TurnEnd { message, .. } => {
             app.streaming_component = None;
-            eprintln!(
-                "[rab-debug] TurnEnd: role={}, error={:?}, text_len={}",
-                message.role(),
-                crate::agent::types::message_error(&message),
-                crate::agent::types::message_text(&message).len()
-            );
             // Surface provider errors carried by the turn's final message.
             if let Some(err) = crate::agent::types::message_error(&message) {
-                eprintln!("[rab-debug] TurnEnd: showing provider error");
                 chat_add(
                     app,
                     std::boxed::Box::new(InfoMessageComponent::new(format!(
@@ -2559,7 +2546,6 @@ fn handle_agent_event(app: &mut App, event: yoagent::types::AgentEvent) {
             // Provider errors with error_message set were never forwarded as
             // MessageEnd events (the provider returned Err() without streaming),
             // so they must be surfaced here.
-            let mut found_assistant = false;
             for msg in messages.iter().rev() {
                 if let Some(yoagent::types::Message::Assistant {
                     content,
@@ -2569,9 +2555,7 @@ fn handle_agent_event(app: &mut App, event: yoagent::types::AgentEvent) {
                 }) = msg.as_llm()
                     && stop_reason != &yoagent::types::StopReason::ToolUse
                 {
-                    found_assistant = true;
                     if let Some(err) = error_message {
-                        eprintln!("[rab-debug] AgentEnd: provider error: {}", err);
                         chat_add(
                             app,
                             std::boxed::Box::new(InfoMessageComponent::new(format!(
@@ -2590,10 +2574,6 @@ fn handle_agent_event(app: &mut App, event: yoagent::types::AgentEvent) {
                         _ => false,
                     });
                     if !has_visible {
-                        eprintln!(
-                            "[rab-debug] AgentEnd: empty/no visible assistant response, stop_reason={:?}",
-                            stop_reason
-                        );
                         chat_add(
                             app,
                             std::boxed::Box::new(InfoMessageComponent::new(
@@ -2606,15 +2586,6 @@ fn handle_agent_event(app: &mut App, event: yoagent::types::AgentEvent) {
                         );
                         break;
                     }
-                }
-            }
-            if !found_assistant {
-                eprintln!(
-                    "[rab-debug] AgentEnd: no assistant messages in AgentEnd.messages ({} total messages)",
-                    messages.len()
-                );
-                for (i, m) in messages.iter().enumerate() {
-                    eprintln!("  [{}] role={}", i, m.role());
                 }
             }
         }
