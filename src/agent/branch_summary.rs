@@ -302,6 +302,7 @@ mod tests {
             parent_id: parent_id.map(|s| s.to_string()),
             timestamp: String::new(),
             message: user_message("test"),
+            cost: 0.0,
         })
     }
 
@@ -311,6 +312,7 @@ mod tests {
             parent_id: parent_id.map(|s| s.to_string()),
             timestamp: String::new(),
             message: assistant_message("response"),
+            cost: 0.0,
         })
     }
 

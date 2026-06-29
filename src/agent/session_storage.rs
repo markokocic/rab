@@ -465,6 +465,7 @@ mod tests {
             parent_id: parent.map(|s| s.to_string()),
             timestamp: chrono::Utc::now().to_rfc3339(),
             message: user_message(text),
+            cost: 0.0,
         })
     }
 

@@ -278,6 +278,7 @@ impl App {
             crate::agent::compaction::get_model_context_window(&config.model),
             Some(model_config),
         );
+        agent_session.set_registry(config.registry.clone());
         agent_session.set_auto_compact(config.settings.auto_compact.unwrap_or(true));
         let (tx, rx) = mpsc::unbounded_channel();
         use crate::agent::ui::theme::current_theme;
@@ -692,6 +693,7 @@ pub async fn run(config: AppConfig, session: AgentSession) -> anyhow::Result<()>
                                 .unwrap_or_else(|| "opencode-go".to_string());
                             agent_session.on_model_change(&provider, &model_id);
                         }
+                        // Refresh footer from session to pick up model/provider/thinking
                         if let Some(ref session) = app.session {
                             app.footer
                                 .borrow_mut()

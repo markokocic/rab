@@ -7,6 +7,9 @@ use crate::agent::session::SessionManager;
 use crate::agent::session_storage::{InMemorySessionStorage, SessionMetadata, SessionStorage};
 use crate::agent::types::{message_dedup_key, message_text, tool_result_message, user_message};
 use std::collections::HashSet;
+use std::sync::Arc;
+
+use crate::provider::ProviderRegistry;
 use yoagent::types::AgentMessage;
 use yoagent::types::Content;
 
@@ -89,6 +92,8 @@ pub struct AgentSession {
     compaction_cancel: crate::agent::extension::Cancel,
     /// Queued session writes, flushed at turn boundaries (pi-compatible).
     pending_writes: Vec<PendingSessionWrite>,
+    /// Provider registry for resolving model cost configs per message (pi-style).
+    registry: Option<Arc<ProviderRegistry>>,
 }
 
 impl AgentSession {
@@ -134,6 +139,7 @@ impl AgentSession {
             overflow_recovery_attempted: false,
             compaction_cancel: crate::agent::extension::Cancel::new(),
             pending_writes: Vec::new(),
+            registry: None,
         }
     }
 
@@ -190,6 +196,42 @@ impl AgentSession {
     /// Enable or disable auto-compaction.
     pub fn set_auto_compact(&mut self, enabled: bool) {
         self.compaction_settings.enabled = enabled;
+    }
+
+    /// Set the provider registry for per-message cost computation (pi-style).
+    pub fn set_registry(&mut self, registry: Arc<ProviderRegistry>) {
+        self.registry = Some(registry);
+    }
+
+    /// Compute the cost of a message in USD using its model's cost config.
+    /// Returns 0.0 if the message is not an assistant message or if the model
+    /// can't be resolved.
+    fn message_cost(&self, msg: &AgentMessage) -> f64 {
+        let Some(yoagent::types::Message::Assistant {
+            usage,
+            model,
+            provider,
+            ..
+        }) = msg.as_llm()
+        else {
+            return 0.0;
+        };
+
+        let Some(ref registry) = self.registry else {
+            return 0.0;
+        };
+
+        match registry.resolve(model, Some(provider)) {
+            Ok(resolved) => {
+                let cost = &resolved.model_config.cost;
+                (usage.input as f64 * cost.input_per_million
+                    + usage.output as f64 * cost.output_per_million
+                    + usage.cache_read as f64 * cost.cache_read_per_million
+                    + usage.cache_write as f64 * cost.cache_write_per_million)
+                    / 1_000_000.0
+            }
+            Err(_) => 0.0,
+        }
     }
 
     /// Sync the thinking level from the session context.
@@ -541,7 +583,8 @@ impl AgentSession {
                 continue;
             }
             if !self.persisted_message_ids.contains(&message_dedup_key(msg)) {
-                self.session.append_message(msg);
+                let cost = self.message_cost(msg);
+                self.session.append_message_with_cost(msg, cost);
                 self.persisted_message_ids.insert(message_dedup_key(msg));
             }
         }
@@ -884,7 +927,10 @@ impl AgentSession {
         if self.persisted_message_ids.contains(&message_dedup_key(msg)) {
             return;
         }
-        self.session.append_message(msg);
+        // Compute cost for assistant messages using the message's own model
+        // (pi-style: cost is pre-computed and stored per message).
+        let cost = self.message_cost(msg);
+        self.session.append_message_with_cost(msg, cost);
         self.persisted_message_ids.insert(message_dedup_key(msg));
     }
 }

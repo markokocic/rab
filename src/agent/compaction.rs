@@ -849,6 +849,7 @@ mod tests {
             parent_id: None,
             timestamp: String::new(),
             message: user_message(content),
+            cost: 0.0,
         })
     }
 
@@ -858,6 +859,7 @@ mod tests {
             parent_id: None,
             timestamp: String::new(),
             message: assistant_message(content),
+            cost: 0.0,
         })
     }
 

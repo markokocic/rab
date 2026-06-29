@@ -82,6 +82,7 @@ pub struct Footer {
     total_cache_read: u64,
     total_cache_write: u64,
     latest_cache_hit_rate: Option<f64>,
+    total_cost: f64,
 
     context_percent: Option<f64>,
     context_window: u64,
@@ -109,6 +110,7 @@ impl Footer {
             total_cache_read: 0,
             total_cache_write: 0,
             latest_cache_hit_rate: None,
+            total_cost: 0.0,
             context_percent: None,
             context_window: 0,
             auto_compact: true,
@@ -132,6 +134,7 @@ impl Footer {
         let mut total_output = 0u64;
         let mut total_cache_read = 0u64;
         let mut total_cache_write = 0u64;
+        let mut total_cost: f64 = 0.0;
         let mut latest_cache_hit_rate: Option<f64> = None;
         // Track the last assistant message's total tokens for context %.
         // usage.input represents the FULL context sent in that request
@@ -139,7 +142,9 @@ impl Footer {
         // summing all historical usage values (which would overcount).
         let mut last_context_tokens: Option<u64> = None;
 
-        // Walk session entries summing usage from all assistant messages
+        // Walk session entries summing usage and cost from all assistant messages.
+        // Cost is pre-computed per message and stored in the session (pi-style),
+        // so we just sum the stored values — no need to re-resolve models.
         for entry in session.get_entries() {
             if let crate::agent::session::SessionEntry::Message(msg_entry) = entry
                 && let Some(yoagent::types::Message::Assistant { usage, .. }) =
@@ -157,6 +162,9 @@ impl Footer {
                     latest_cache_hit_rate =
                         Some((usage.cache_read as f64 / total_prompt as f64) * 100.0);
                 }
+
+                // Sum pre-computed cost (pi-style: stored per message at creation time)
+                total_cost += msg_entry.cost;
             }
         }
 
@@ -164,6 +172,7 @@ impl Footer {
         self.total_output = total_output;
         self.total_cache_read = total_cache_read;
         self.total_cache_write = total_cache_write;
+        self.total_cost = total_cost;
         self.latest_cache_hit_rate = latest_cache_hit_rate;
 
         // Compute context percentage from the LAST assistant message's
@@ -304,6 +313,11 @@ impl crate::tui::Component for Footer {
             && let Some(hit_rate) = self.latest_cache_hit_rate
         {
             stats_parts.push(format!("CH{:.1}%", hit_rate));
+        }
+
+        // Cost display (pi-style: $X.XXX or $X.XXX (sub))
+        if self.total_cost > 0.0 {
+            stats_parts.push(format!("${:.3}", self.total_cost));
         }
 
         // Context percentage with color (pi-style: red > 90, yellow > 70)

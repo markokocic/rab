@@ -119,6 +119,30 @@ pub struct MessageEntry {
     pub parent_id: Option<String>,
     pub timestamp: String,
     pub message: AgentMessage,
+    /// Cost of this message in USD, pre-computed at creation time (pi-style).
+    /// Stored per-message so model switches within a session are accurately
+    /// reflected. `#[serde(default)]` for backward compat with existing sessions.
+    #[serde(default)]
+    pub cost: f64,
+}
+
+impl MessageEntry {
+    /// Create a new `MessageEntry`.
+    pub fn new(
+        id: String,
+        parent_id: Option<String>,
+        timestamp: String,
+        message: AgentMessage,
+        cost: f64,
+    ) -> Self {
+        Self {
+            id,
+            parent_id,
+            timestamp,
+            message,
+            cost,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -552,12 +576,23 @@ impl Session {
 
     /// Append a conversation message. Returns the entry id.
     pub fn append_message(&mut self, message: &yoagent::types::AgentMessage) -> String {
-        let entry = SessionEntry::Message(MessageEntry {
-            id: self.storage.create_entry_id(),
-            parent_id: self.storage.get_leaf_id(),
-            timestamp: chrono::Utc::now().to_rfc3339(),
-            message: message.clone(),
-        });
+        self.append_message_with_cost(message, 0.0)
+    }
+
+    /// Append a conversation message with a pre-computed cost (pi-style).
+    /// Returns the entry id.
+    pub fn append_message_with_cost(
+        &mut self,
+        message: &yoagent::types::AgentMessage,
+        cost: f64,
+    ) -> String {
+        let entry = SessionEntry::Message(MessageEntry::new(
+            self.storage.create_entry_id(),
+            self.storage.get_leaf_id(),
+            chrono::Utc::now().to_rfc3339(),
+            message.clone(),
+            cost,
+        ));
         let id = entry.id().to_string();
         self.storage.append_entry(entry).unwrap_or_else(|e| {
             eprintln!("Warning: failed to append message: {}", e);
@@ -2024,13 +2059,15 @@ mod tests {
         };
 
         let entries: Vec<SessionEntry> = vec![
+            SessionEntry::Message(MessageEntry::new(
+                "msg1".to_string(),
+                None,
+                "2026-06-19T12:00:01Z".to_string(),
+                make_user_msg("hello"),
+                0.0,
+            )),
             SessionEntry::Message(MessageEntry {
-                id: "msg1".to_string(),
-                parent_id: None,
-                timestamp: "2026-06-19T12:00:01Z".to_string(),
-                message: make_user_msg("hello"),
-            }),
-            SessionEntry::Message(MessageEntry {
+                cost: 0.0,
                 id: "msg2".to_string(),
                 parent_id: Some("msg1".to_string()),
                 timestamp: "2026-06-19T12:00:02Z".to_string(),
@@ -2151,34 +2188,37 @@ mod tests {
 
     #[test]
     fn test_entry_id_accessor() {
-        let entry = SessionEntry::Message(MessageEntry {
-            id: "myid".to_string(),
-            parent_id: None,
-            timestamp: "2026-06-19T12:00:00Z".to_string(),
-            message: make_user_msg("hello"),
-        });
+        let entry = SessionEntry::Message(MessageEntry::new(
+            "myid".to_string(),
+            None,
+            "2026-06-19T12:00:00Z".to_string(),
+            make_user_msg("hello"),
+            0.0,
+        ));
         assert_eq!(entry.id(), "myid");
     }
 
     #[test]
     fn test_entry_parent_id_accessor() {
-        let entry = SessionEntry::Message(MessageEntry {
-            id: "myid".to_string(),
-            parent_id: Some("parent".to_string()),
-            timestamp: "2026-06-19T12:00:00Z".to_string(),
-            message: make_user_msg("hello"),
-        });
+        let entry = SessionEntry::Message(MessageEntry::new(
+            "myid".to_string(),
+            Some("parent".to_string()),
+            "2026-06-19T12:00:00Z".to_string(),
+            make_user_msg("hello"),
+            0.0,
+        ));
         assert_eq!(entry.parent_id(), Some("parent"));
     }
 
     #[test]
     fn test_entry_timestamp_accessor() {
-        let entry = SessionEntry::Message(MessageEntry {
-            id: "myid".to_string(),
-            parent_id: None,
-            timestamp: "2026-06-19T12:00:00Z".to_string(),
-            message: make_user_msg("hello"),
-        });
+        let entry = SessionEntry::Message(MessageEntry::new(
+            "myid".to_string(),
+            None,
+            "2026-06-19T12:00:00Z".to_string(),
+            make_user_msg("hello"),
+            0.0,
+        ));
         assert_eq!(entry.timestamp(), "2026-06-19T12:00:00Z");
     }
 
@@ -2791,12 +2831,13 @@ mod tests {
         std::fs::create_dir_all(&cwd).unwrap();
 
         // Write only valid entries but no session header
-        let entry = SessionEntry::Message(MessageEntry {
-            id: "msg1".to_string(),
-            parent_id: None,
-            timestamp: "2026-01-01T00:00:00Z".to_string(),
-            message: make_user_msg("orphan message"),
-        });
+        let entry = SessionEntry::Message(MessageEntry::new(
+            "msg1".to_string(),
+            None,
+            "2026-01-01T00:00:00Z".to_string(),
+            make_user_msg("orphan message"),
+            0.0,
+        ));
         let json = serde_json::to_string(&entry).unwrap();
         let file_path = sessions_dir.join("no_header.jsonl");
         std::fs::write(&file_path, format!("{}\n", json)).unwrap();
