@@ -278,12 +278,16 @@ pub fn extension_message_with_details(
 }
 
 /// Create a base ModelConfig for the opencode-go provider.
-/// Callers override `context_window` and `max_tokens` as needed.
+/// Sets the standard context_window (1M) and max_tokens (393216)
+/// for DeepSeek v4 models. Callers override if needed.
 pub fn base_model_config(model: &str) -> yoagent::provider::model::ModelConfig {
-    yoagent::provider::model::ModelConfig::openai_compat(
+    let mut mc = yoagent::provider::model::ModelConfig::openai_compat(
         "https://opencode.ai/zen/go/v1",
         model,
         "opencode-go",
         yoagent::provider::model::OpenAiCompat::deepseek(),
-    )
+    );
+    mc.context_window = 1_000_000;
+    mc.max_tokens = 393_216;
+    mc
 }

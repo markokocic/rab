@@ -1296,9 +1296,7 @@ fn build_fresh_agent(
     messages: Vec<yoagent::types::AgentMessage>,
     extensions: &[Box<dyn Extension>],
 ) -> yoagent::agent::Agent {
-    let mut mc = crate::agent::base_model_config(model);
-    mc.context_window = 1_000_000;
-    mc.max_tokens = 393_216;
+    let mc = crate::agent::base_model_config(model);
 
     let tools: Vec<Box<dyn yoagent::types::AgentTool>> = extensions
         .iter()

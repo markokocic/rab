@@ -1060,11 +1060,7 @@ pub async fn summarize_text(
         .collect();
 
     // Use provided model config, or fall back to hardcoded OpenCode Go for backward compat
-    let model_config = model_config.unwrap_or_else(|| {
-        let mut mc = crate::agent::base_model_config(model);
-        mc.context_window = 1_000_000;
-        mc
-    });
+    let model_config = model_config.unwrap_or_else(|| crate::agent::base_model_config(model));
 
     let retry_config = yoagent::RetryConfig::default();
 

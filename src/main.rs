@@ -562,9 +562,7 @@ async fn run_print_mode(
     agent_tools: Vec<Box<dyn yoagent::types::AgentTool>>,
     agent_session: &mut rab::agent::AgentSession,
 ) -> anyhow::Result<()> {
-    let mut mc = rab::agent::base_model_config(&model);
-    mc.context_window = 1_000_000;
-    mc.max_tokens = 393_216;
+    let mc = rab::agent::base_model_config(&model);
     let mut agent = yoagent::agent::Agent::new(yoagent::provider::OpenAiCompatProvider)
         .with_model(&model)
         .with_api_key(&api_key)
