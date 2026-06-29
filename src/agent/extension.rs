@@ -547,6 +547,8 @@ pub enum CommandResult {
     SessionNamed { name: String },
     /// Open settings menu.
     OpenSettings,
+    /// Open model selector UI.
+    OpenModelSelector,
     /// Enable/disable models for cycling.
     ScopedModels,
     /// Export session (HTML default, or specify path).

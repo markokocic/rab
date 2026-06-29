@@ -50,6 +50,14 @@ pub struct Settings {
     )]
     pub collapse_tool_output: Option<bool>,
 
+    /// Model patterns for cycling (same format as --models CLI flag).
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "enabledModels"
+    )]
+    pub enabled_models: Option<Vec<String>>,
+
     /// Auto-compact enabled (Ctrl+Shift+C toggle).
     #[serde(
         default,
@@ -100,6 +108,12 @@ impl Settings {
     pub fn set_default_thinking_level(&mut self, value: Option<String>) {
         self.default_thinking_level = value;
         self.modified_fields.insert("defaultThinkingLevel".into());
+    }
+
+    /// Set enabled_models and mark it as modified.
+    pub fn set_enabled_models(&mut self, value: Option<Vec<String>>) {
+        self.enabled_models = value;
+        self.modified_fields.insert("enabledModels".into());
     }
 
     /// Set auto_compact and mark it as modified.
@@ -187,6 +201,7 @@ impl Settings {
             verbose: project.verbose || global.verbose,
             hide_thinking: project.hide_thinking.or(global.hide_thinking),
             collapse_tool_output: project.collapse_tool_output.or(global.collapse_tool_output),
+            enabled_models: project.enabled_models.or(global.enabled_models),
             auto_compact: project.auto_compact.or(global.auto_compact),
             compact_reserve_tokens: project
                 .compact_reserve_tokens
@@ -258,6 +273,7 @@ impl Settings {
         self.verbose = merged.verbose;
         self.hide_thinking = merged.hide_thinking;
         self.collapse_tool_output = merged.collapse_tool_output;
+        self.enabled_models = merged.enabled_models;
         self.auto_compact = merged.auto_compact;
         self.compact_reserve_tokens = merged.compact_reserve_tokens;
         self.compact_keep_recent_tokens = merged.compact_keep_recent_tokens;

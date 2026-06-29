@@ -15,18 +15,15 @@ fn test_quit_command() {
 }
 
 #[test]
-fn test_model_command_no_args_lists_models() {
+fn test_model_command_no_args_opens_selector() {
     let ext = CommandsExtension::new(vec!["m1".into(), "m2".into()]);
     let cmds = ext.commands();
     let model_cmd = cmds.iter().find(|c| c.name == "model").unwrap();
     let result = model_cmd.handler.execute("");
     assert!(result.is_ok());
     match result.unwrap() {
-        CommandResult::Info(ref text) => {
-            assert!(text.contains("Available models"));
-            assert!(text.contains("m1"));
-        }
-        other => panic!("Expected Info, got {:?}", other),
+        CommandResult::OpenModelSelector => {}
+        other => panic!("Expected OpenModelSelector, got {:?}", other),
     }
 }
 

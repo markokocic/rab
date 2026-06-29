@@ -17,17 +17,28 @@ use crate::provider;
 use crate::provider::ProviderRegistry;
 
 use crate::agent::ui::chat_editor::{ChatEditor, InputAction};
+
 use crate::agent::ui::components::EditorComponent;
 use crate::agent::ui::components::FooterComponent;
 use crate::agent::ui::components::InfoMessageComponent;
 use crate::agent::ui::footer::Footer;
-use crate::agent::ui::model_selector::ModelSelector;
 use crate::agent::ui::theme::RabTheme;
 use crate::agent::ui::working::WorkingIndicator;
 use crate::builtin::commands::SessionInfoInternal;
 use crate::tui::Component;
 use crate::tui::TUI;
 use crate::tui::focusable::Focusable;
+
+/// Result from an overlay lifecycle — checked by the main loop after route_input.
+#[derive(Debug, Clone)]
+pub enum OverlayResult {
+    /// User selected a model (provider/id string).
+    ModelSelected(String),
+    /// User accepted scoped model changes — persist to settings.
+    ScopedModelsAccepted(Option<Vec<String>>),
+    /// User cancelled — close overlay, no persist.
+    ScopedModelsCancelled,
+}
 
 use crate::agent::ui::theme::ThemeKey;
 use crate::tui::components::Spacer;
@@ -204,6 +215,12 @@ pub struct App {
     /// Set by handle_slash_command, consumed in the main loop where TUI is available.
     pending_command_result: Option<CommandResult>,
 
+    /// Overlay result signal — set by overlay callbacks, checked by main loop.
+    overlay_result_signal: Rc<RefCell<Option<OverlayResult>>>,
+
+    /// Pending scoped model changes from ScopedModelsSelector (session-only, no close).
+    pending_scoped_ids: Rc<RefCell<Option<Vec<String>>>>,
+
     /// Agent tools (for tool execution).
     /// Extensions.
     extensions: Arc<Vec<Box<dyn Extension>>>,
@@ -225,6 +242,9 @@ pub struct App {
     /// behavior where setToolsExpanded expands both the header and all
     /// expandable chat children).
     header: Rc<RefCell<crate::agent::ui::components::HeaderComponent>>,
+
+    /// Scoped model IDs for cycling (null = all enabled).
+    scoped_model_ids: Option<Vec<String>>,
 
     /// Session picker state (Some = picker is active).
     session_picker: Option<crate::agent::ui::components::SessionPicker>,
@@ -421,6 +441,8 @@ impl App {
             agent: None,
             forward_handle: None,
             pending_command_result: None,
+            overlay_result_signal: Rc::new(RefCell::new(None)),
+            pending_scoped_ids: Rc::new(RefCell::new(None)),
             hide_thinking: config.hide_thinking,
             collapse_tool_output: config.collapse_tool_output,
             tools_expanded: !config.collapse_tool_output,
@@ -439,6 +461,7 @@ impl App {
             skills: config.skills,
             session_info: config.session_info,
             api_key: config.api_key,
+            scoped_model_ids: config.settings.enabled_models.clone(),
             settings: config.settings,
             auto_compact: true,
             status_text: None,
@@ -635,6 +658,82 @@ pub async fn run(config: AppConfig, session: AgentSession) -> anyhow::Result<()>
             dirty = true;
         }
 
+        // Check pending scoped model changes (session-only, from on_change callback).
+        // Pi-compatible: only set scoped models when fewer than all models are enabled.
+        // Empty list or all models = no filter (None).
+        if let Some(ids) = app.pending_scoped_ids.borrow_mut().take() {
+            if ids.is_empty() || ids.len() >= app.available_models.len() {
+                app.scoped_model_ids = None;
+            } else {
+                app.scoped_model_ids = Some(ids);
+            }
+            dirty = true;
+        }
+
+        // Check overlay result signal (set by overlay callbacks when user selects/cancels).
+        if tui.has_overlays()
+            && let Some(result) = app.overlay_result_signal.borrow_mut().take()
+        {
+            tui.pop_overlay();
+            match result {
+                OverlayResult::ModelSelected(full_id) => {
+                    if !full_id.is_empty() {
+                        let model_id = full_id
+                            .split_once('/')
+                            .map(|(_, id)| id.to_string())
+                            .unwrap_or_else(|| full_id.clone());
+                        app.model = model_id.clone();
+                        if let Some(ref mut agent_session) = app.session {
+                            let provider = app
+                                .registry
+                                .provider_for_model(
+                                    &model_id,
+                                    app.settings.default_provider.as_deref(),
+                                )
+                                .unwrap_or_else(|| "opencode-go".to_string());
+                            agent_session.on_model_change(&provider, &model_id);
+                        }
+                        if let Some(ref session) = app.session {
+                            app.footer
+                                .borrow_mut()
+                                .refresh_from_session(session.session());
+                        }
+                        app.status_text = Some(format!("Model: {}", full_id));
+                    }
+                }
+                OverlayResult::ScopedModelsAccepted(ids) => {
+                    match ids {
+                        Some(ids) if !ids.is_empty() && ids.len() < app.available_models.len() => {
+                            app.scoped_model_ids = Some(ids.clone());
+                            // Persist to settings
+                            app.settings.set_enabled_models(Some(ids));
+                            if let Err(e) = app.settings.save() {
+                                app.status_text =
+                                    Some(format!("Failed to save model scope: {}", e));
+                            } else {
+                                app.status_text = Some("Model scope saved to settings".into());
+                            }
+                        }
+                        _ => {
+                            // All enabled or none = clear scoped models and settings
+                            app.scoped_model_ids = None;
+                            app.settings.set_enabled_models(None);
+                            if let Err(e) = app.settings.save() {
+                                app.status_text =
+                                    Some(format!("Failed to save model scope: {}", e));
+                            } else if ids.is_some() {
+                                app.status_text = Some("Model scope saved to settings".into());
+                            }
+                        }
+                    }
+                }
+                OverlayResult::ScopedModelsCancelled => {
+                    // Just close the overlay, don't persist anything.
+                }
+            }
+            dirty = true;
+        }
+
         // Re-drain agent events that arrived during terminal event processing.
         // AgentEnd (which sets is_streaming=false) can land between the initial
         // drain above and the user hitting Enter — processing terminal events
@@ -699,6 +798,9 @@ pub async fn run(config: AppConfig, session: AgentSession) -> anyhow::Result<()>
                     app.session_picker = Some(picker);
                     app.status_text = None;
                 }
+                CommandResult::OpenModelSelector => {
+                    open_model_selector(&mut app, &mut tui);
+                }
                 CommandResult::OpenSettings => {
                     chat_add(
                         &mut app,
@@ -708,12 +810,7 @@ pub async fn run(config: AppConfig, session: AgentSession) -> anyhow::Result<()>
                     );
                 }
                 CommandResult::ScopedModels => {
-                    chat_add(
-                        &mut app,
-                        std::boxed::Box::new(InfoMessageComponent::new(
-                            "Scoped models - not yet implemented.",
-                        )),
-                    );
+                    open_scoped_models_selector(&mut app, &mut tui);
                 }
                 CommandResult::Login { provider, api_key } => {
                     let p = provider.as_deref().unwrap_or("opencode-go");
@@ -875,8 +972,15 @@ fn handle_input(app: &mut App, tui: &mut TUI, term: &mut ProcessTerminal, key: &
     }
 
     // ── Check if any TUI overlay is active (help, model selector, etc.) ──
-    if tui.has_overlays() {
+    // Only pop when Escape is pressed and no overlay consumed it.
+    // Overlay components return false for Escape which reaches here —
+    // we pop the overlay instead of routing to the editor.
+    if tui.has_overlays() && matches!(key.code, crossterm::event::KeyCode::Esc) {
         tui.pop_overlay();
+        return;
+    }
+    if tui.has_overlays() {
+        // Overlay didn't handle this key and it's not Escape — just ignore.
         return;
     }
 
@@ -1035,21 +1139,43 @@ fn handle_thinking_cycle(app: &mut App) {
 }
 
 /// Cycle model forward (dir=1) or backward (dir=-1).
+/// If scoped models are set, cycles through those only (matching pi's cycleModel).
 fn handle_model_cycle(app: &mut App, dir: isize) {
-    let n = app.available_models.len();
+    // Determine the model pool: scoped models if set, otherwise all available.
+    let model_pool: Vec<String> = if let Some(ref scoped) = app.scoped_model_ids
+        && !scoped.is_empty()
+    {
+        // Scoped model IDs are "provider/id" — extract just the model id part.
+        // We match against app.model (which is just a model id string).
+        scoped
+            .iter()
+            .filter_map(|full_id| {
+                let (_provider, model_id) = full_id.split_once('/')?;
+                if app.available_models.iter().any(|m| m == model_id) {
+                    Some(model_id.to_string())
+                } else {
+                    None
+                }
+            })
+            .collect()
+    } else {
+        app.available_models.clone()
+    };
+
+    let n = model_pool.len();
     if n == 0 {
         app.status_text = Some("No models available".into());
         return;
     }
 
-    let current_idx = app.available_models.iter().position(|m| m == &app.model);
+    let current_idx = model_pool.iter().position(|m| m == &app.model);
 
     let next_idx = match current_idx {
         Some(idx) => (idx as isize + dir).rem_euclid(n as isize) as usize,
         None => 0,
     };
 
-    app.model = app.available_models[next_idx].clone();
+    app.model = model_pool[next_idx].clone();
     // Record the change in the session
     if let Some(ref mut agent_session) = app.session {
         let provider = app
@@ -1334,22 +1460,94 @@ fn handle_logout(app: &mut App, provider: Option<&str>) {
 
 /// Open the model selector overlay.
 fn open_model_selector(app: &mut App, tui: &mut TUI) {
-    let models = app.available_models.clone();
     let current = app.model.clone();
-    // Format as provider/model_id for display
-    let display_names: Vec<String> = models
+
+    // Build provider/id tuples from available models.
+    let all_models: Vec<(String, String, String)> = app
+        .available_models
         .iter()
         .map(|m| {
             let provider = app
                 .registry
-                .provider_for_model(m, app.settings.default_provider.as_deref());
-            match provider {
-                Some(p) => format!("{}/{}", p, m),
-                None => m.clone(),
-            }
+                .provider_for_model(m, app.settings.default_provider.as_deref())
+                .unwrap_or_else(|| "unknown".to_string());
+            (provider.clone(), m.clone(), m.clone()) // name = id for now
         })
         .collect();
-    let selector = ModelSelector::new(models, display_names, &current, &app.theme);
+
+    let scoped_ids = app.scoped_model_ids.clone().unwrap_or_default();
+
+    let signal = app.overlay_result_signal.clone();
+    let current_provider = app
+        .registry
+        .provider_for_model(&current, app.settings.default_provider.as_deref())
+        .unwrap_or_else(|| "unknown".to_string());
+    let current_full_id = format!("{}/{}", current_provider, current);
+
+    let callbacks = crate::agent::ui::model_selector::ModelSelectorCallbacks {
+        on_select: Box::new({
+            let signal = signal.clone();
+            move |full_id: String| {
+                *signal.borrow_mut() = Some(OverlayResult::ModelSelected(full_id));
+            }
+        }),
+        on_cancel: Box::new(|| {}), // No-op: overlay is popped by handle_input returning false
+    };
+
+    let selector = crate::agent::ui::model_selector::ModelSelector::new(
+        all_models,
+        scoped_ids,
+        current_full_id,
+        callbacks,
+    );
+    tui.show_overlay(Box::new(selector), Default::default());
+}
+
+/// Open the scoped-models selector overlay.
+fn open_scoped_models_selector(app: &mut App, tui: &mut TUI) {
+    use crate::agent::ui::components::scoped_models_selector::{
+        ModelsCallbacks, ModelsConfig, ScopedModelsSelector,
+    };
+
+    // Build provider/id/name tuples from available models.
+    let all_models: Vec<(String, String, String)> = app
+        .available_models
+        .iter()
+        .map(|m| {
+            let provider = app
+                .registry
+                .provider_for_model(m, app.settings.default_provider.as_deref())
+                .unwrap_or_else(|| "unknown".to_string());
+            (provider, m.clone(), m.clone())
+        })
+        .collect();
+
+    let current_enabled = app.scoped_model_ids.clone();
+    let change_signal = app.pending_scoped_ids.clone();
+    let close_signal = app.overlay_result_signal.clone();
+
+    let callbacks = ModelsCallbacks {
+        on_change: Box::new(move |enabled_ids: Option<Vec<String>>| {
+            // Session-only update — does NOT close the overlay.
+            *change_signal.borrow_mut() = Some(enabled_ids.unwrap_or_default());
+        }),
+        on_persist: Box::new({
+            let cs = close_signal.clone();
+            move |enabled_ids: Option<Vec<String>>| {
+                *cs.borrow_mut() = Some(OverlayResult::ScopedModelsAccepted(enabled_ids));
+            }
+        }),
+        on_cancel: Box::new(move || {
+            *close_signal.borrow_mut() = Some(OverlayResult::ScopedModelsCancelled);
+        }),
+    };
+
+    let config = ModelsConfig {
+        all_models,
+        enabled_model_ids: current_enabled,
+    };
+
+    let selector = ScopedModelsSelector::new(config, callbacks);
     tui.show_overlay(Box::new(selector), Default::default());
 }
 
@@ -2040,6 +2238,10 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
             if let Some(ref s) = app.session {
                 app.footer.borrow_mut().refresh_from_session(s.session());
             }
+        }
+        CommandResult::OpenModelSelector => {
+            // Needs TUI overlay - defer
+            app.pending_command_result = Some(result);
         }
         CommandResult::OpenSettings => {
             // Needs TUI overlay - defer

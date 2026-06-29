@@ -262,10 +262,7 @@ impl CommandHandler for ModelCommand {
     fn execute(&self, args: &str) -> anyhow::Result<CommandResult> {
         let model = args.trim();
         if model.is_empty() {
-            Ok(CommandResult::Info(format!(
-                "Available models: {}\nUsage: /model <name>",
-                self.available_models.join(", ")
-            )))
+            Ok(CommandResult::OpenModelSelector)
         } else {
             // Validate model exists
             if self.available_models.iter().any(|m| m == model) {

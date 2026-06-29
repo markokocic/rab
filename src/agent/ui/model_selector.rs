@@ -1,89 +1,368 @@
-use crate::agent::ui::theme::RabTheme;
-use crate::tui::Component;
-use crate::tui::components::select_list::{SelectItem, SelectList, SelectListTheme};
+//! ModelSelector component — matching pi's ModelSelectorComponent.
+//!
+//! Full-screen overlay for selecting a model with search.
+//! Supports switching between "all" and "scoped" model views (Tab).
 
-/// Full-screen model selector using tui::SelectList.
+use crate::agent::ui::theme::ThemeKey;
+use crate::agent::ui::theme::current_theme;
+use crate::tui::Component;
+use crate::tui::fuzzy::fuzzy_filter;
+use crate::tui::keybindings::{
+    ACTION_INPUT_TAB, ACTION_SELECT_CANCEL, ACTION_SELECT_CONFIRM, ACTION_SELECT_DOWN,
+    ACTION_SELECT_UP, get_keybindings,
+};
+use crossterm::event::{KeyCode, KeyEvent};
+
+// ── Model item for display ─────────────────────────────────────────
+
+#[derive(Clone)]
+struct ModelItem {
+    provider: String,
+    id: String,
+    name: String,
+    full_id: String,     // "provider/id"
+    search_text: String, // pre-computed search string
+}
+
+impl ModelItem {
+    fn new(provider: String, id: String, name: String) -> Self {
+        let full_id = format!("{}/{}", provider, id);
+        let search_text = format!("{} {} {} {}", provider, id, name, full_id);
+        Self {
+            provider,
+            id,
+            name,
+            full_id,
+            search_text,
+        }
+    }
+
+    fn search_text(&self) -> &str {
+        &self.search_text
+    }
+}
+
+// ── Visibility style ───────────────────────────────────────────────
+
+#[derive(Clone, Copy, PartialEq)]
+enum ModelScope {
+    All,
+    Scoped,
+}
+
+// ── ModelSelector component ────────────────────────────────────────
+
 pub struct ModelSelector {
-    select_list: SelectList,
-    theme: RabTheme,
-    pub selected_model: Option<String>,
+    all_models: Vec<ModelItem>,
+    scoped_model_ids: Vec<String>, // "provider/id" strings
+    scope: ModelScope,
+    active_items: Vec<ModelItem>,
+    filtered_indices: Vec<usize>,
+    selected_index: usize,
+    search_query: String,
+    current_model: String,
+    max_visible: usize,
+    callbacks: ModelSelectorCallbacks,
+}
+
+pub struct ModelSelectorCallbacks {
+    /// Called when user selects a model (receives full "provider/id" string).
+    pub on_select: Box<dyn Fn(String)>,
+    /// Called when user cancels.
+    pub on_cancel: Box<dyn Fn()>,
 }
 
 impl ModelSelector {
     pub fn new(
-        models: Vec<String>,
-        display_names: Vec<String>,
-        current_model: &str,
-        theme: &RabTheme,
+        all_models: Vec<(String, String, String)>, // (provider, id, name)
+        scoped_model_ids: Vec<String>,             // "provider/id" strings
+        current_model: String,
+        callbacks: ModelSelectorCallbacks,
     ) -> Self {
-        let items: Vec<SelectItem> = models
-            .iter()
-            .enumerate()
-            .map(|(i, m)| SelectItem::new(m.clone(), display_names[i].clone()))
+        let mut items: Vec<ModelItem> = all_models
+            .into_iter()
+            .map(|(p, id, name)| ModelItem::new(p, id, name))
             .collect();
 
-        let current_index = models.iter().position(|m| m == current_model).unwrap_or(0);
+        // Sort: current model first, then by provider (matches pi's sortModels)
+        items.sort_by(|a, b| {
+            let a_is_current = a.full_id == current_model;
+            let b_is_current = b.full_id == current_model;
+            if a_is_current && !b_is_current {
+                return std::cmp::Ordering::Less;
+            }
+            if !a_is_current && b_is_current {
+                return std::cmp::Ordering::Greater;
+            }
+            a.provider.cmp(&b.provider)
+        });
 
-        let list_theme = SelectListTheme {
-            selected_prefix: Box::new(|s| format!("\x1b[38;2;138;190;183m\x1b[1m> {}\x1b[0m", s)),
-            selected_text: Box::new(|s| format!("\x1b[38;2;138;190;183m\x1b[1m{}\x1b[0m", s)),
-            normal_text: Box::new(|s| format!("  \x1b[38;2;212;212;212m{}\x1b[0m", s)),
-            description: Box::new(|s| format!("\x1b[38;2;128;128;128m{}\x1b[0m", s)),
-            scroll_info: crate::tui::Style::new().fg("\x1b[38;2;80;80;80m".to_string()),
-            no_match: crate::tui::Style::new().fg("\x1b[38;2;255;255;0m".to_string()),
-            hint: crate::tui::Style::new().fg("\x1b[38;2;128;128;128m".to_string()),
+        let has_scoped = !scoped_model_ids.is_empty();
+        let scope = if has_scoped {
+            ModelScope::Scoped
+        } else {
+            ModelScope::All
         };
 
-        let max_visible = models.len().clamp(5, 20);
-        let mut select_list = SelectList::new(items, max_visible, list_theme, None);
-        select_list = select_list.with_search();
+        let active = if has_scoped {
+            let scoped_set: std::collections::HashSet<&str> =
+                scoped_model_ids.iter().map(|s| s.as_str()).collect();
+            items
+                .iter()
+                .filter(|item| scoped_set.contains(item.full_id.as_str()))
+                .cloned()
+                .collect()
+        } else {
+            items.clone()
+        };
 
-        // Set initial selection
-        for _ in 0..current_index {
-            select_list.handle_input(&crossterm::event::KeyEvent::new(
-                crossterm::event::KeyCode::Down,
-                crossterm::event::KeyModifiers::NONE,
-            ));
-        }
+        let current_idx = active
+            .iter()
+            .position(|m| m.full_id == current_model)
+            .unwrap_or(0);
+        let filtered: Vec<usize> = (0..active.len()).collect();
 
         Self {
-            select_list,
-            theme: theme.clone(),
-            selected_model: None,
+            all_models: items,
+            scoped_model_ids,
+            scope,
+            active_items: active,
+            filtered_indices: filtered,
+            selected_index: current_idx,
+            search_query: String::new(),
+            current_model,
+            max_visible: 10,
+            callbacks,
         }
+    }
+
+    fn set_scope(&mut self, scope: ModelScope) {
+        if self.scope == scope {
+            return;
+        }
+        self.scope = scope;
+        self.active_items = match scope {
+            ModelScope::All => self.all_models.clone(),
+            ModelScope::Scoped => {
+                let scoped_set: std::collections::HashSet<&str> =
+                    self.scoped_model_ids.iter().map(|s| s.as_str()).collect();
+                self.all_models
+                    .iter()
+                    .filter(|item| scoped_set.contains(item.full_id.as_str()))
+                    .cloned()
+                    .collect()
+            }
+        };
+        let current_idx = self
+            .active_items
+            .iter()
+            .position(|m| m.full_id == self.current_model)
+            .unwrap_or(0);
+        self.selected_index = current_idx;
+        self.refresh();
+    }
+
+    fn refresh(&mut self) {
+        let query = self.search_query.clone();
+        self.filtered_indices = if query.trim().is_empty() {
+            (0..self.active_items.len()).collect()
+        } else {
+            fuzzy_filter(&self.active_items, &query, |item| item.search_text())
+        };
+        self.selected_index = self
+            .selected_index
+            .min(self.filtered_indices.len().saturating_sub(1));
+    }
+
+    fn get_item(&self, filtered_idx: usize) -> Option<&ModelItem> {
+        self.filtered_indices
+            .get(filtered_idx)
+            .and_then(|&idx| self.active_items.get(idx))
     }
 }
 
 impl Component for ModelSelector {
     fn render(&mut self, width: usize) -> Vec<String> {
-        let mut lines = vec![
-            self.theme.bold(&self.theme.accent("  Select Model")),
-            String::new(),
-            self.theme.dim("  Type to search…"),
-            String::new(),
-        ];
+        use crate::tui::util::truncate_to_width;
+        let theme = current_theme();
+        let mut lines: Vec<String> = Vec::new();
 
-        // List
-        lines.extend(self.select_list.render(width));
+        // Top border
+        lines.push(theme.dim(&"─".repeat(width.saturating_sub(2))));
+        lines.push(String::new());
+
+        // Title
+        lines.push(format!(
+            "  {}",
+            theme.bold(&theme.fg_key(ThemeKey::Accent, "Select Model"))
+        ));
+
+        // Scope toggle (all | scoped)
+        let has_scoped = !self.scoped_model_ids.is_empty();
+        if has_scoped {
+            let all_text = match self.scope {
+                ModelScope::All => theme.fg_key(ThemeKey::Accent, "all"),
+                ModelScope::Scoped => theme.dim("all"),
+            };
+            let scoped_text = match self.scope {
+                ModelScope::Scoped => theme.fg_key(ThemeKey::Accent, "scoped"),
+                ModelScope::All => theme.dim("scoped"),
+            };
+            lines.push(format!(
+                "  {} {} | {}",
+                theme.dim("Scope:"),
+                all_text,
+                scoped_text,
+            ));
+            lines.push(theme.dim("  (Tab to toggle)"));
+        } else {
+            lines.push(theme.dim(
+                "  Only showing models from configured providers. Use /login to add providers.",
+            ));
+        }
+        lines.push(String::new());
+
+        // Search input line
+        let search_label = theme.dim("  Search: ");
+        let search_value = if self.search_query.is_empty() {
+            theme.dim("(type to filter)")
+        } else {
+            self.search_query.clone()
+        };
+        lines.push(format!("{}{}", search_label, search_value));
+        lines.push(String::new());
+
+        // Model list
+        let count = self.filtered_indices.len();
+        if count == 0 {
+            lines.push(theme.dim("  No matching models"));
+        } else {
+            let start = self
+                .selected_index
+                .saturating_sub(self.max_visible / 2)
+                .min(count.saturating_sub(self.max_visible));
+            let end = (start + self.max_visible).min(count);
+
+            for i in start..end {
+                let item = &self.active_items[self.filtered_indices[i]];
+                let is_selected = i == self.selected_index;
+                let is_current = item.full_id == self.current_model;
+
+                let prefix = if is_selected {
+                    theme.fg_key(ThemeKey::Accent, "→ ")
+                } else {
+                    "  ".to_string()
+                };
+                let model_text = if is_selected {
+                    theme.fg_key(ThemeKey::Accent, &item.id)
+                } else {
+                    item.id.clone()
+                };
+                let provider_badge = theme.dim(&format!(" [{}]", item.provider));
+                let checkmark = if is_current {
+                    theme.fg_key(ThemeKey::Success, " ✓")
+                } else {
+                    String::new()
+                };
+
+                lines.push(truncate_to_width(
+                    &format!("{}{}{}{}", prefix, model_text, provider_badge, checkmark),
+                    width.saturating_sub(4),
+                    "",
+                    false,
+                ));
+            }
+
+            // Scroll indicator
+            if count > self.max_visible {
+                lines.push(theme.dim(&format!("  ({}/{})", self.selected_index + 1, count)));
+            }
+
+            // Show model name for selected item
+            if let Some(item) = self.get_item(self.selected_index) {
+                lines.push(String::new());
+                lines.push(theme.dim(&format!("  Model Name: {}", item.name)));
+            }
+        }
+
+        // Bottom border
+        lines.push(theme.dim(&"─".repeat(width.saturating_sub(2))));
 
         lines
     }
 
-    fn handle_input(&mut self, key: &crossterm::event::KeyEvent) -> bool {
-        let kb = crate::tui::keybindings::get_keybindings();
+    fn handle_input(&mut self, key: &KeyEvent) -> bool {
+        let kb = get_keybindings();
 
-        if kb.matches(key, crate::tui::keybindings::ACTION_SELECT_CONFIRM) {
-            if let Some(item) = self.select_list.selected_item() {
-                self.selected_model = Some(item.value.clone());
+        // Tab toggles scope
+        if kb.matches(key, ACTION_INPUT_TAB) {
+            if !self.scoped_model_ids.is_empty() {
+                let next = match self.scope {
+                    ModelScope::All => ModelScope::Scoped,
+                    ModelScope::Scoped => ModelScope::All,
+                };
+                self.set_scope(next);
             }
             return true;
         }
 
-        if kb.matches(key, crate::tui::keybindings::ACTION_SELECT_CANCEL) {
-            self.selected_model = None;
+        // Up/Down navigation with wrapping
+        if kb.matches(key, ACTION_SELECT_UP) {
+            if self.filtered_indices.is_empty() {
+                return true;
+            }
+            self.selected_index = if self.selected_index == 0 {
+                self.filtered_indices.len() - 1
+            } else {
+                self.selected_index - 1
+            };
             return true;
         }
 
-        self.select_list.handle_input(key)
+        if kb.matches(key, ACTION_SELECT_DOWN) {
+            if self.filtered_indices.is_empty() {
+                return true;
+            }
+            self.selected_index = if self.selected_index >= self.filtered_indices.len() - 1 {
+                0
+            } else {
+                self.selected_index + 1
+            };
+            return true;
+        }
+
+        // Enter selects model
+        if kb.matches(key, ACTION_SELECT_CONFIRM) {
+            if let Some(item) = self.get_item(self.selected_index) {
+                (self.callbacks.on_select)(item.full_id.clone());
+            }
+            return true;
+        }
+
+        // Escape cancels - call callback then pop overlay via app
+        if kb.matches(key, ACTION_SELECT_CANCEL) {
+            (self.callbacks.on_cancel)();
+            return false; // Let App's fallback pop the overlay
+        }
+
+        // Backspace - delete from search
+        if key.code == KeyCode::Backspace {
+            if !self.search_query.is_empty() {
+                self.search_query.pop();
+                self.refresh();
+            }
+            return true;
+        }
+
+        // Typeable characters go to search
+        if let KeyCode::Char(c) = key.code
+            && !c.is_control()
+        {
+            self.search_query.push(c);
+            self.refresh();
+            return true;
+        }
+
+        false
     }
 }
