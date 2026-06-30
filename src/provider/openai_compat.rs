@@ -333,6 +333,14 @@ fn build_request_body(
                     }
                 }
 
+                // Skip assistant messages with no content and no tool calls.
+                // Some providers (e.g. DeepSeek) require "content or tool_calls must be set".
+                // Mirrors pi's guard in openai-completions.ts which prevents API errors
+                // from aborted/partial responses that got no content.
+                if parts.is_empty() && tool_calls.is_empty() {
+                    continue;
+                }
+
                 let mut msg_obj = serde_json::json!({"role": "assistant"});
                 if !parts.is_empty() {
                     msg_obj["content"] = serde_json::json!(parts);
