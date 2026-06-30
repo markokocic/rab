@@ -132,6 +132,20 @@ impl ProviderRegistry {
         model_set.into_iter().collect()
     }
 
+    /// List model IDs from providers that have valid authentication.
+    /// Used by the model cycle and selector to hide unconfigured providers.
+    pub fn list_authenticated_model_ids(&self) -> Vec<String> {
+        let mut model_set = std::collections::BTreeSet::new();
+        for entry in &self.entries {
+            if self.provider_has_auth(&entry.id) {
+                for m in &entry.models {
+                    model_set.insert(m.id.clone());
+                }
+            }
+        }
+        model_set.into_iter().collect()
+    }
+
     /// List all (provider, model_id, model_name) tuples, one per provider entry.
     /// Unlike `list_models()`, the same model ID can appear under multiple
     /// providers. Used by the model selector to show provider-prefixed entries.
@@ -204,33 +218,59 @@ impl ProviderRegistry {
             .collect()
     }
 
+    /// Check whether a provider has valid authentication (stored credential or env var).
+    pub fn provider_has_auth(&self, provider_id: &str) -> bool {
+        if self.auth_storage.api_key(provider_id).is_some()
+            || self.auth_storage.oauth_token(provider_id).is_some()
+        {
+            return true;
+        }
+        // Check env var
+        self.entries
+            .iter()
+            .find(|e| e.id == provider_id)
+            .and_then(|e| {
+                let env_name = e.env_var_name();
+                if std::env::var(env_name).is_ok() {
+                    Some(())
+                } else {
+                    None
+                }
+            })
+            .is_some()
+    }
+
     /// Get auth status for a provider (for UI display).
     pub fn auth_status_for_provider(
         &self,
         provider_id: &str,
     ) -> crate::agent::ui::components::oauth_selector::ProviderAuthStatus {
-        let configured = self.auth_storage.api_key(provider_id).is_some()
+        let has_stored = self.auth_storage.api_key(provider_id).is_some()
             || self.auth_storage.oauth_token(provider_id).is_some();
-        let source = if configured {
-            Some("stored".to_string())
+
+        // Check env var
+        let env_var = self
+            .entries
+            .iter()
+            .find(|e| e.id == provider_id)
+            .and_then(|e| {
+                let env_name = e.env_var_name();
+                if std::env::var(env_name).is_ok() {
+                    Some(env_name.to_string())
+                } else {
+                    None
+                }
+            });
+
+        let configured = has_stored || env_var.is_some();
+        let (source, label) = if has_stored {
+            (Some("stored".to_string()), None)
+        } else if let Some(env) = env_var {
+            (Some("environment".to_string()), Some(env))
         } else {
-            None
+            (None, None)
         };
-        let label = if !configured {
-            self.entries
-                .iter()
-                .find(|e| e.id == provider_id)
-                .and_then(|e| {
-                    let env_var = e.env_var_name();
-                    if std::env::var(env_var).is_ok() {
-                        Some(env_var.to_string())
-                    } else {
-                        None
-                    }
-                })
-        } else {
-            None
-        };
+
         crate::agent::ui::components::oauth_selector::ProviderAuthStatus {
             configured,
             source,

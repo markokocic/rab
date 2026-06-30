@@ -316,20 +316,19 @@ fn build_request_body(config: &StreamConfig, is_oauth: bool) -> serde_json::Valu
             if let Some(content) = messages[idx]["content"].as_array_mut()
                 && let Some(last_block) = content.last_mut()
             {
-                    let is_empty_text = last_block.get("type").and_then(|t| t.as_str())
-                        == Some("text")
-                        && last_block
-                            .get("text")
-                            .and_then(|t| t.as_str())
-                            .unwrap_or("")
-                            .is_empty();
-                    if !is_empty_text {
-                        last_block["cache_control"] = serde_json::json!({"type": "ephemeral"});
-                        break;
-                    }
+                let is_empty_text = last_block.get("type").and_then(|t| t.as_str()) == Some("text")
+                    && last_block
+                        .get("text")
+                        .and_then(|t| t.as_str())
+                        .unwrap_or("")
+                        .is_empty();
+                if !is_empty_text {
+                    last_block["cache_control"] = serde_json::json!({"type": "ephemeral"});
+                    break;
                 }
             }
         }
+    }
 
     let mut body = serde_json::json!({
         "model": config.model,
@@ -350,7 +349,8 @@ fn build_request_body(config: &StreamConfig, is_oauth: bool) -> serde_json::Valu
                 "text": config.system_prompt,
             }));
         }
-        if caching_enabled && cache_system
+        if caching_enabled
+            && cache_system
             && let Some(last) = system_blocks.last_mut()
         {
             last["cache_control"] = serde_json::json!({"type": "ephemeral"});
@@ -380,7 +380,8 @@ fn build_request_body(config: &StreamConfig, is_oauth: bool) -> serde_json::Valu
                 })
             })
             .collect();
-        if caching_enabled && cache_tools
+        if caching_enabled
+            && cache_tools
             && let Some(last_tool) = tools.last_mut()
         {
             last_tool["cache_control"] = serde_json::json!({"type": "ephemeral"});

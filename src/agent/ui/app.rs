@@ -42,8 +42,13 @@ pub enum OverlayResult {
     LoginProviderSelected(String),
     /// User provided an API key for login.
     LoginApiKeyProvided { provider: String, key: String },
+    /// User selected an auth type for login.
+    LoginAuthTypeSelected(AuthType),
+    /// User selected a provider for logout.
+    LogoutProviderSelected(String),
 }
 
+use crate::agent::ui::components::oauth_selector::AuthType;
 use crate::agent::ui::theme::ThemeKey;
 use crate::tui::components::Spacer;
 use crate::tui::components::Text;
@@ -666,7 +671,8 @@ pub async fn run(config: AppConfig, session: AgentSession) -> anyhow::Result<()>
         // Pi-compatible: only set scoped models when fewer than all models are enabled.
         // Empty list or all models = no filter (None).
         if let Some(ids) = app.pending_scoped_ids.borrow_mut().take() {
-            if ids.is_empty() || ids.len() >= app.available_models.len() {
+            let auth_count = app.registry.list_authenticated_model_ids().len();
+            if ids.is_empty() || ids.len() >= auth_count {
                 app.scoped_model_ids = None;
             } else {
                 app.scoped_model_ids = Some(ids);
@@ -709,7 +715,9 @@ pub async fn run(config: AppConfig, session: AgentSession) -> anyhow::Result<()>
                     OverlayResult::ScopedModelsAccepted(ids) => {
                         match ids {
                             Some(ids)
-                                if !ids.is_empty() && ids.len() < app.available_models.len() =>
+                                if !ids.is_empty()
+                                    && ids.len()
+                                        < app.registry.list_authenticated_model_ids().len() =>
                             {
                                 app.scoped_model_ids = Some(ids.clone());
                                 // Persist to settings
@@ -737,6 +745,10 @@ pub async fn run(config: AppConfig, session: AgentSession) -> anyhow::Result<()>
                     OverlayResult::ScopedModelsCancelled => {
                         // Just close the overlay, don't persist anything.
                     }
+                    OverlayResult::LoginAuthTypeSelected(auth_type) => {
+                        // User selected auth type — show provider selector filtered by type
+                        show_login_provider_selector(&mut app, &mut tui, Some(auth_type));
+                    }
                     OverlayResult::LoginProviderSelected(provider_id) => {
                         // Open the API key input dialog for this provider
                         show_api_key_login_dialog(&mut app, &mut tui, &provider_id);
@@ -745,9 +757,53 @@ pub async fn run(config: AppConfig, session: AgentSession) -> anyhow::Result<()>
                         match auth::login(&provider, &key) {
                             Ok(_) => {
                                 app.status_text = Some(format!("Logged in to {}", provider));
+                                // Refresh registry to reflect new auth state
+                                if let Some(reg) = Arc::get_mut(&mut app.registry) {
+                                    let _ = reg.reload(&provider::get_agent_dir());
+                                } else {
+                                    match provider::ProviderRegistry::load(
+                                        &provider::get_agent_dir(),
+                                    ) {
+                                        Ok(new_reg) => app.registry = Arc::new(new_reg),
+                                        Err(e) => {
+                                            app.status_text =
+                                                Some(format!("Failed to refresh registry: {}", e))
+                                        }
+                                    }
+                                }
+                                // Auto-select default model for this provider
+                                complete_login(&mut app, &provider, AuthType::ApiKey);
                             }
                             Err(e) => {
                                 app.status_text = Some(format!("Login failed: {}", e));
+                            }
+                        }
+                    }
+                    OverlayResult::LogoutProviderSelected(provider_id) => {
+                        match auth::logout(Some(&provider_id)) {
+                            Ok(true) => {
+                                app.status_text = Some(format!("Logged out from {}", provider_id));
+                                // Refresh registry to reflect new auth state
+                                if let Some(reg) = Arc::get_mut(&mut app.registry) {
+                                    let _ = reg.reload(&provider::get_agent_dir());
+                                } else {
+                                    match provider::ProviderRegistry::load(
+                                        &provider::get_agent_dir(),
+                                    ) {
+                                        Ok(new_reg) => app.registry = Arc::new(new_reg),
+                                        Err(e) => {
+                                            app.status_text =
+                                                Some(format!("Failed to refresh registry: {}", e))
+                                        }
+                                    }
+                                }
+                            }
+                            Ok(false) => {
+                                app.status_text =
+                                    Some(format!("No credentials for {}", provider_id));
+                            }
+                            Err(e) => {
+                                app.status_text = Some(format!("Logout failed: {}", e));
                             }
                         }
                     }
@@ -834,25 +890,24 @@ pub async fn run(config: AppConfig, session: AgentSession) -> anyhow::Result<()>
                 CommandResult::ScopedModels => {
                     open_scoped_models_selector(&mut app, &mut tui);
                 }
-                CommandResult::Login { provider, api_key } => {
-                    match (provider, api_key) {
-                        (Some(p), Some(key)) => {
-                            // Both provider and key provided — save directly
-                            handle_login(&mut app, &p, Some(&key));
-                        }
-                        (Some(p), None) => {
-                            // Provider specified but no key — show API key prompt
-                            show_api_key_login_dialog(&mut app, &mut tui, &p);
-                        }
-                        (None, _) => {
-                            // No provider specified — show provider selector
-                            show_login_provider_selector(&mut app, &mut tui);
-                        }
+                CommandResult::Login {
+                    ref provider,
+                    ref api_key,
+                } => {
+                    if let (Some(provider), Some(key)) = (provider, api_key) {
+                        handle_login(&mut app, provider, Some(key));
+                    } else if let Some(provider) = provider {
+                        // Provider specified, no key — show API key prompt
+                        show_api_key_login_dialog(&mut app, &mut tui, provider);
+                    } else {
+                        // No provider — determine if auth type selector is needed
+                        show_auth_type_or_provider_selector(&mut app, &mut tui);
                     }
                 }
-                CommandResult::Logout { provider } => {
-                    handle_logout(&mut app, provider.as_deref());
-                }
+                CommandResult::Logout { provider } => match provider {
+                    Some(p) => handle_logout(&mut app, Some(&p)),
+                    None => show_logout_provider_selector(&mut app, &mut tui),
+                },
                 _ => {}
             }
             dirty = true;
@@ -1175,7 +1230,9 @@ fn handle_thinking_cycle(app: &mut App) {
 /// Cycle model forward (dir=1) or backward (dir=-1).
 /// If scoped models are set, cycles through those only (matching pi's cycleModel).
 fn handle_model_cycle(app: &mut App, dir: isize) {
-    // Determine the model pool: scoped models if set, otherwise all available.
+    // Determine the model pool: scoped models if set, otherwise all available
+    // from authenticated providers.
+    let authenticated_models = app.registry.list_authenticated_model_ids();
     let model_pool: Vec<String> = if let Some(ref scoped) = app.scoped_model_ids
         && !scoped.is_empty()
     {
@@ -1185,7 +1242,7 @@ fn handle_model_cycle(app: &mut App, dir: isize) {
             .iter()
             .filter_map(|full_id| {
                 let (_provider, model_id) = full_id.split_once('/')?;
-                if app.available_models.iter().any(|m| m == model_id) {
+                if authenticated_models.iter().any(|m| m == model_id) {
                     Some(model_id.to_string())
                 } else {
                     None
@@ -1193,7 +1250,7 @@ fn handle_model_cycle(app: &mut App, dir: isize) {
             })
             .collect()
     } else {
-        app.available_models.clone()
+        authenticated_models
     };
 
     let n = model_pool.len();
@@ -1435,8 +1492,8 @@ fn interrupt_streaming(app: &mut App) {
 
 // ── Auth helpers ─────────────────────────────────────
 
-/// Handle a login command result. If `api_key` is provided, stores it immediately.
-/// Otherwise shows a usage message.
+/// Handle a login command result. If `api_key` is provided, stores it immediately
+/// and performs post-login completion (model auto-selection, registry refresh).
 fn handle_login(app: &mut App, provider: &str, api_key: Option<&str>) {
     let provider = if provider.is_empty() {
         "opencode-go"
@@ -1445,13 +1502,25 @@ fn handle_login(app: &mut App, provider: &str, api_key: Option<&str>) {
     };
     if let Some(key) = api_key {
         match auth::login(provider, key) {
-            Ok(_) => chat_add(
-                app,
-                std::boxed::Box::new(InfoMessageComponent::new(format!(
-                    "Logged in to {}",
-                    provider
-                ))),
-            ),
+            Ok(_) => {
+                // Refresh registry
+                if let Some(reg) = Arc::get_mut(&mut app.registry) {
+                    let _ = reg.reload(&provider::get_agent_dir());
+                } else {
+                    match provider::ProviderRegistry::load(&provider::get_agent_dir()) {
+                        Ok(new_reg) => app.registry = Arc::new(new_reg),
+                        Err(e) => {
+                            app.status_text = Some(format!("Failed to refresh registry: {}", e));
+                        }
+                    }
+                }
+                // Post-login completion
+                complete_login(
+                    app,
+                    provider,
+                    crate::agent::ui::components::oauth_selector::AuthType::ApiKey,
+                );
+            }
             Err(e) => chat_add(
                 app,
                 std::boxed::Box::new(InfoMessageComponent::new(format!("Login failed: {}", e))),
@@ -1476,6 +1545,17 @@ fn handle_logout(app: &mut App, provider: Option<&str>) {
                 .map(|p| format!("Logged out from {}", p))
                 .unwrap_or_else(|| "Logged out from all providers".into());
             chat_add(app, std::boxed::Box::new(InfoMessageComponent::new(msg)));
+            // Refresh registry
+            if let Some(reg) = Arc::get_mut(&mut app.registry) {
+                let _ = reg.reload(&provider::get_agent_dir());
+            } else {
+                match provider::ProviderRegistry::load(&provider::get_agent_dir()) {
+                    Ok(new_reg) => app.registry = Arc::new(new_reg),
+                    Err(e) => {
+                        app.status_text = Some(format!("Failed to refresh registry: {}", e));
+                    }
+                }
+            }
         }
         Ok(false) => {
             let msg = provider
@@ -1492,24 +1572,51 @@ fn handle_logout(app: &mut App, provider: Option<&str>) {
     }
 }
 
-/// Show the login provider selector overlay.
+/// Show the login provider selector overlay, optionally filtered by auth type.
 /// Shows all available providers from the registry for the user to pick one.
-fn show_login_provider_selector(app: &mut App, tui: &mut TUI) {
+fn show_login_provider_selector(app: &mut App, tui: &mut TUI, auth_type: Option<AuthType>) {
     use crate::agent::ui::components::oauth_selector::{
         AuthSelectorProvider, AuthType, OAuthSelector, SelectorMode,
     };
     use crate::tui::overlay::{OverlayAnchor, OverlayOptions, SizeValue};
 
-    let providers: Vec<AuthSelectorProvider> = app
-        .registry
-        .list_providers()
+    let all_providers = app.registry.list_providers();
+
+    // Filter by auth type if specified
+    let mut providers: Vec<AuthSelectorProvider> = all_providers
         .into_iter()
+        .filter(|(_id, _)| {
+            match auth_type {
+                Some(AuthType::ApiKey) => {
+                    // All current providers are API key. In the future,
+                    // filter out OAuth-only providers.
+                    true
+                }
+                Some(AuthType::OAuth) => {
+                    // No OAuth providers registered yet — show none
+                    false
+                }
+                None => true,
+            }
+        })
         .map(|(id, name)| AuthSelectorProvider {
             id,
             name,
-            auth_type: AuthType::ApiKey,
+            auth_type: auth_type.unwrap_or(AuthType::ApiKey),
         })
         .collect();
+
+    // Sort alphabetically by name for consistent display.
+    providers.sort_by_key(|a| a.name.to_lowercase());
+
+    if providers.is_empty() {
+        app.status_text = Some(match auth_type {
+            Some(AuthType::OAuth) => "No subscription providers available.".into(),
+            Some(AuthType::ApiKey) => "No API key providers available.".into(),
+            None => "No providers available.".into(),
+        });
+        return;
+    }
 
     let signal = app.overlay_result_signal.clone();
     let mut selector = OAuthSelector::new(
@@ -1574,16 +1681,273 @@ fn show_api_key_login_dialog(app: &mut App, tui: &mut TUI, provider_id: &str) {
     );
 }
 
+/// Show the auth type selector overlay ("Use a subscription" vs "Use an API key").
+/// Matches pi's showLoginAuthTypeSelector behavior.
+fn show_auth_type_selector(app: &mut App, tui: &mut TUI) {
+    use crate::tui::overlay::{OverlayAnchor, OverlayOptions, SizeValue};
+
+    // Build simple two-option selector
+    let signal = app.overlay_result_signal.clone();
+    let _theme = crate::agent::ui::theme::current_theme().clone();
+
+    let items = vec![crate::tui::components::select_list::SelectItem::new(
+        "api_key",
+        "Use an API key",
+    )];
+    // OAuth providers not registered yet — always show API key option
+    let _has_oauth = false;
+
+    let filtered_indices: Vec<usize> = (0..items.len()).collect();
+    let selected_index: usize = 0;
+
+    struct AuthTypeOverlay {
+        items: Vec<crate::tui::components::select_list::SelectItem>,
+        selected_index: usize,
+        filtered_indices: Vec<usize>,
+        signal: std::rc::Rc<std::cell::RefCell<Option<OverlayResult>>>,
+    }
+
+    impl crate::tui::Component for AuthTypeOverlay {
+        fn render(&mut self, width: usize) -> Vec<String> {
+            let theme = crate::agent::ui::theme::current_theme();
+            let mut lines = Vec::new();
+
+            lines.push(theme.dim(&"─".repeat(width.saturating_sub(2))));
+            lines.push(String::new());
+            lines.push(format!(
+                "  {}",
+                theme.bold(&theme.fg_key(ThemeKey::Accent, "Select authentication method:"))
+            ));
+            lines.push(String::new());
+
+            for (i, &item_idx) in self.filtered_indices.iter().enumerate() {
+                let item = &self.items[item_idx];
+                let is_selected = i == self.selected_index;
+                let prefix = if is_selected {
+                    theme.fg_key(ThemeKey::Accent, "→ ")
+                } else {
+                    "  ".to_string()
+                };
+                let text = if is_selected {
+                    theme.fg_key(ThemeKey::Accent, &item.label)
+                } else {
+                    theme.fg_key(ThemeKey::Text, &item.label)
+                };
+                lines.push(format!("{}{}", prefix, text));
+            }
+
+            lines.push(String::new());
+            lines.push(format!("  {}", theme.dim("Enter: select · Esc: cancel")));
+            lines.push(String::new());
+            lines.push(theme.dim(&"─".repeat(width.saturating_sub(2))));
+
+            lines
+        }
+
+        fn handle_input(&mut self, key: &crossterm::event::KeyEvent) -> bool {
+            let kb = crate::tui::keybindings::get_keybindings();
+
+            if kb.matches(key, crate::tui::keybindings::ACTION_SELECT_UP) {
+                if self.filtered_indices.is_empty() {
+                    return true;
+                }
+                self.selected_index = if self.selected_index == 0 {
+                    self.filtered_indices.len() - 1
+                } else {
+                    self.selected_index - 1
+                };
+                return true;
+            }
+
+            if kb.matches(key, crate::tui::keybindings::ACTION_SELECT_DOWN) {
+                if self.filtered_indices.is_empty() {
+                    return true;
+                }
+                self.selected_index = if self.selected_index >= self.filtered_indices.len() - 1 {
+                    0
+                } else {
+                    self.selected_index + 1
+                };
+                return true;
+            }
+
+            if kb.matches(key, crate::tui::keybindings::ACTION_SELECT_CONFIRM) {
+                if let Some(&idx) = self.filtered_indices.get(self.selected_index) {
+                    let value = self.items[idx].value.clone();
+                    let auth_type = match value.as_str() {
+                        "oauth" => AuthType::OAuth,
+                        _ => AuthType::ApiKey,
+                    };
+                    *self.signal.borrow_mut() =
+                        Some(OverlayResult::LoginAuthTypeSelected(auth_type));
+                }
+                return true;
+            }
+
+            if kb.matches(key, crate::tui::keybindings::ACTION_SELECT_CANCEL) {
+                // Cancel — just close overlay
+                return true;
+            }
+
+            false
+        }
+    }
+
+    let overlay = AuthTypeOverlay {
+        items,
+        selected_index,
+        filtered_indices,
+        signal: signal.clone(),
+    };
+
+    tui.show_overlay(
+        Box::new(overlay),
+        OverlayOptions {
+            width: Some(SizeValue::Percent(100.0)),
+            anchor: Some(OverlayAnchor::TopLeft),
+            ..Default::default()
+        },
+    );
+}
+
+/// Show auth type selector or go directly to provider list depending on
+/// which auth types are available. Matches pi's logic.
+fn show_auth_type_or_provider_selector(app: &mut App, tui: &mut TUI) {
+    let providers = app.registry.list_providers();
+    if providers.is_empty() {
+        app.status_text = Some("No providers available for login.".into());
+        return;
+    }
+    // All current providers are API key; no OAuth providers yet.
+    // When OAuth providers are added, show auth type selector if both types exist.
+    let all_api_key = providers.iter().all(|(_, _)| true); // all are API key for now
+    if all_api_key {
+        show_login_provider_selector(app, tui, Some(AuthType::ApiKey));
+    } else {
+        show_auth_type_selector(app, tui);
+    }
+}
+
+/// Show the logout provider selector overlay.
+/// Shows only providers with stored credentials (matching pi's getLogoutProviderOptions).
+fn show_logout_provider_selector(app: &mut App, tui: &mut TUI) {
+    use crate::agent::ui::components::oauth_selector::{
+        AuthSelectorProvider, AuthType, OAuthSelector, SelectorMode,
+    };
+    use crate::tui::overlay::{OverlayAnchor, OverlayOptions, SizeValue};
+
+    // Get providers that have stored credentials
+    let logged_in = auth::list_logged_in().unwrap_or_default();
+
+    if logged_in.is_empty() {
+        app.status_text = Some(
+            "No stored credentials to remove. /logout only removes credentials saved by /login; \
+             environment variables and models.json config are unchanged."
+                .into(),
+        );
+        return;
+    }
+
+    let mut providers: Vec<AuthSelectorProvider> = logged_in
+        .into_iter()
+        .filter_map(|id| {
+            app.registry
+                .list_providers()
+                .into_iter()
+                .find(|(pid, _)| pid == &id)
+                .map(|(pid, name)| AuthSelectorProvider {
+                    id: pid,
+                    name,
+                    auth_type: AuthType::ApiKey,
+                })
+        })
+        .collect();
+
+    // Sort alphabetically by name for consistent display.
+    providers.sort_by_key(|a| a.name.to_lowercase());
+
+    if providers.is_empty() {
+        // Providers with stored credentials may not be in registry anymore
+        app.status_text = Some("No registered providers with stored credentials.".into());
+        return;
+    }
+
+    let signal = app.overlay_result_signal.clone();
+    let mut selector = OAuthSelector::new(
+        providers,
+        |provider_id| app.registry.auth_status_for_provider(provider_id),
+        SelectorMode::Logout,
+    );
+
+    selector.on_select(move |provider_id: String| {
+        *signal.borrow_mut() = Some(OverlayResult::LogoutProviderSelected(provider_id));
+    });
+    selector.on_cancel(|| {});
+
+    tui.show_overlay(
+        Box::new(selector),
+        OverlayOptions {
+            width: Some(SizeValue::Percent(100.0)),
+            anchor: Some(OverlayAnchor::TopLeft),
+            ..Default::default()
+        },
+    );
+}
+
+/// Post-login completion: auto-select default model for the provider.
+/// Matches pi's completeProviderAuthentication logic for API key login.
+fn complete_login(app: &mut App, provider_id: &str, _auth_type: AuthType) {
+    // Try to select the default model for this provider
+    let available_models = app.registry.list_model_provider_tuples();
+    let provider_models: Vec<&str> = available_models
+        .iter()
+        .filter(|(pid, _, _)| pid == provider_id)
+        .map(|(_, mid, _)| mid.as_str())
+        .collect();
+
+    if provider_models.is_empty() {
+        app.status_text = Some(format!(
+            "Saved API key for {provider_id}. No models available for this provider. Use /model to select a model."
+        ));
+        return;
+    }
+
+    // If current model is unknown or doesn't belong to this provider, select first available
+    let current_provider = app
+        .registry
+        .provider_for_model(&app.model, app.settings.default_provider.as_deref())
+        .unwrap_or_default();
+
+    if current_provider != provider_id || !app.available_models.contains(&app.model) {
+        let first_model = provider_models[0];
+        app.model = first_model.to_string();
+        if let Some(ref mut agent_session) = app.session {
+            agent_session.on_model_change(provider_id, first_model);
+        }
+        if let Some(ref session) = app.session {
+            app.footer
+                .borrow_mut()
+                .refresh_from_session(session.session());
+        }
+        app.status_text = Some(format!(
+            "Saved API key for {provider_id}. Selected {first_model}."
+        ));
+    } else {
+        app.status_text = Some(format!("Saved API key for {provider_id}."));
+    }
+}
+
 /// Open the model selector overlay.
 fn open_model_selector(app: &mut App, tui: &mut TUI) {
     let current = app.model.clone();
 
-    // Build (provider, model_id, name) tuples directly from registry entries.
-    // This preserves provider distinction — same model ID can appear under
-    // different providers (e.g. deepseek-v4-flash under both "opencode-go"
-    // and "deepseek"). Do NOT use provider_for_model here since it resolves
-    // to the preferred provider for ALL entries, collapsing duplicates.
-    let all_models: Vec<(String, String, String)> = app.registry.list_model_provider_tuples();
+    // Build (provider, model_id, name) tuples from authenticated providers only.
+    // This matches pi's behavior of showing only models from configured providers.
+    let all_tuples: Vec<(String, String, String)> = app.registry.list_model_provider_tuples();
+    let all_models: Vec<(String, String, String)> = all_tuples
+        .into_iter()
+        .filter(|(provider, _, _)| app.registry.provider_has_auth(provider))
+        .collect();
 
     let scoped_ids = app.scoped_model_ids.clone().unwrap_or_default();
 
@@ -1627,8 +1991,12 @@ fn open_scoped_models_selector(app: &mut App, tui: &mut TUI) {
         ModelsCallbacks, ModelsConfig, ScopedModelsSelector,
     };
 
-    // Build (provider, model_id, name) tuples directly from registry entries.
-    let all_models: Vec<(String, String, String)> = app.registry.list_model_provider_tuples();
+    // Build (provider, model_id, name) tuples from authenticated providers only.
+    let all_tuples: Vec<(String, String, String)> = app.registry.list_model_provider_tuples();
+    let all_models: Vec<(String, String, String)> = all_tuples
+        .into_iter()
+        .filter(|(provider, _, _)| app.registry.provider_has_auth(provider))
+        .collect();
 
     let current_enabled = app.scoped_model_ids.clone();
     let change_signal = app.pending_scoped_ids.clone();
@@ -2512,8 +2880,13 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
                 app.pending_command_result = Some(result);
             }
         }
-        CommandResult::Logout { provider } => {
-            handle_logout(app, provider.as_deref());
+        CommandResult::Logout { ref provider } => {
+            if let Some(p) = provider {
+                handle_logout(app, Some(p));
+            } else {
+                // Needs provider selector — defer
+                app.pending_command_result = Some(result);
+            }
         }
         CommandResult::CompactSession(custom_instructions) => {
             // If streaming, interrupt first

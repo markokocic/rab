@@ -16,7 +16,7 @@ use crossterm::event::{KeyCode, KeyEvent};
 
 // ── Provider item types ────────────────────────────────────────────
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum AuthType {
     OAuth,
     ApiKey,
@@ -273,8 +273,10 @@ impl Component for OAuthSelector {
 
                 // Status indicator (matching pi's formatStatusIndicator)
                 let status = if item.has_stored {
+                    // Exact credential match (credential type == provider auth type)
                     theme.success(" ✓ configured")
                 } else if item.has_other_auth {
+                    // Env var or other non-stored auth source
                     theme.success(&format!(" ✓ {}", item.status_label))
                 } else {
                     theme.dim(" • unconfigured")

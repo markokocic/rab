@@ -1,5 +1,571 @@
 {
   "providers": {
+    "github-copilot": {
+      "api": "openai-completions",
+      "baseUrl": "https://api.individual.githubcopilot.com",
+      "env": {
+        "apiKey": "COPILOT_GITHUB_TOKEN"
+      },
+      "headers": {
+        "Copilot-Integration-Id": "vscode-chat",
+        "Editor-Plugin-Version": "copilot-chat/0.35.0",
+        "Editor-Version": "vscode/1.107.0",
+        "User-Agent": "GitHubCopilotChat/0.35.0"
+      },
+      "models": [
+        {
+          "api": "openai-completions",
+          "baseUrl": "https://api.individual.githubcopilot.com/v1",
+          "compat": {
+            "maxTokensField": "max_tokens",
+            "supportsDeveloperRole": false,
+            "supportsReasoningEffort": false,
+            "supportsStore": false
+          },
+          "contextWindow": 1000000,
+          "cost": {
+            "cacheRead": 1.0,
+            "cacheWrite": 12.5,
+            "input": 10.0,
+            "output": 50.0
+          },
+          "id": "claude-fable-5",
+          "input": [
+            "text",
+            "image"
+          ],
+          "maxTokens": 128000,
+          "name": "Claude Fable 5",
+          "reasoning": true
+        },
+        {
+          "api": "openai-completions",
+          "baseUrl": "https://api.individual.githubcopilot.com/v1",
+          "compat": {
+            "maxTokensField": "max_tokens",
+            "supportsDeveloperRole": false,
+            "supportsReasoningEffort": false,
+            "supportsStore": false
+          },
+          "contextWindow": 200000,
+          "cost": {
+            "cacheRead": 0.1,
+            "cacheWrite": 1.25,
+            "input": 1.0,
+            "output": 5.0
+          },
+          "id": "claude-haiku-4.5",
+          "input": [
+            "text",
+            "image"
+          ],
+          "maxTokens": 64000,
+          "name": "Claude Haiku 4.5 (latest)",
+          "reasoning": true
+        },
+        {
+          "api": "openai-completions",
+          "baseUrl": "https://api.individual.githubcopilot.com/v1",
+          "compat": {
+            "maxTokensField": "max_tokens",
+            "supportsDeveloperRole": false,
+            "supportsReasoningEffort": false,
+            "supportsStore": false
+          },
+          "contextWindow": 200000,
+          "cost": {
+            "cacheRead": 0.5,
+            "cacheWrite": 6.25,
+            "input": 5.0,
+            "output": 25.0
+          },
+          "id": "claude-opus-4.5",
+          "input": [
+            "text",
+            "image"
+          ],
+          "maxTokens": 32000,
+          "name": "Claude Opus 4.5 (latest)",
+          "reasoning": true
+        },
+        {
+          "api": "openai-completions",
+          "baseUrl": "https://api.individual.githubcopilot.com/v1",
+          "compat": {
+            "maxTokensField": "max_tokens",
+            "supportsDeveloperRole": false,
+            "supportsReasoningEffort": false,
+            "supportsStore": false
+          },
+          "contextWindow": 200000,
+          "cost": {
+            "cacheRead": 0.5,
+            "cacheWrite": 6.25,
+            "input": 5.0,
+            "output": 25.0
+          },
+          "id": "claude-opus-4.6",
+          "input": [
+            "text",
+            "image"
+          ],
+          "maxTokens": 32000,
+          "name": "Claude Opus 4.6",
+          "reasoning": true
+        },
+        {
+          "api": "openai-completions",
+          "baseUrl": "https://api.individual.githubcopilot.com/v1",
+          "compat": {
+            "maxTokensField": "max_tokens",
+            "supportsDeveloperRole": false,
+            "supportsReasoningEffort": false,
+            "supportsStore": false
+          },
+          "contextWindow": 200000,
+          "cost": {
+            "cacheRead": 0.5,
+            "cacheWrite": 6.25,
+            "input": 5.0,
+            "output": 25.0
+          },
+          "id": "claude-opus-4.7",
+          "input": [
+            "text",
+            "image"
+          ],
+          "maxTokens": 32000,
+          "name": "Claude Opus 4.7",
+          "reasoning": true
+        },
+        {
+          "api": "openai-completions",
+          "baseUrl": "https://api.individual.githubcopilot.com/v1",
+          "compat": {
+            "maxTokensField": "max_tokens",
+            "supportsDeveloperRole": false,
+            "supportsReasoningEffort": false,
+            "supportsStore": false
+          },
+          "contextWindow": 200000,
+          "cost": {
+            "cacheRead": 0.5,
+            "cacheWrite": 6.25,
+            "input": 5.0,
+            "output": 25.0
+          },
+          "id": "claude-opus-4.8",
+          "input": [
+            "text",
+            "image"
+          ],
+          "maxTokens": 64000,
+          "name": "Claude Opus 4.8",
+          "reasoning": true
+        },
+        {
+          "api": "openai-completions",
+          "baseUrl": "https://api.individual.githubcopilot.com/v1",
+          "compat": {
+            "maxTokensField": "max_tokens",
+            "supportsDeveloperRole": false,
+            "supportsReasoningEffort": false,
+            "supportsStore": false
+          },
+          "contextWindow": 216000,
+          "cost": {
+            "cacheRead": 0.3,
+            "cacheWrite": 3.75,
+            "input": 3.0,
+            "output": 15.0
+          },
+          "id": "claude-sonnet-4",
+          "input": [
+            "text",
+            "image"
+          ],
+          "maxTokens": 16000,
+          "name": "Claude Sonnet 4 (latest)",
+          "reasoning": true
+        },
+        {
+          "api": "openai-completions",
+          "baseUrl": "https://api.individual.githubcopilot.com/v1",
+          "compat": {
+            "maxTokensField": "max_tokens",
+            "supportsDeveloperRole": false,
+            "supportsReasoningEffort": false,
+            "supportsStore": false
+          },
+          "contextWindow": 200000,
+          "cost": {
+            "cacheRead": 0.3,
+            "cacheWrite": 3.75,
+            "input": 3.0,
+            "output": 15.0
+          },
+          "id": "claude-sonnet-4.5",
+          "input": [
+            "text",
+            "image"
+          ],
+          "maxTokens": 32000,
+          "name": "Claude Sonnet 4.5 (latest)",
+          "reasoning": true
+        },
+        {
+          "api": "openai-completions",
+          "baseUrl": "https://api.individual.githubcopilot.com/v1",
+          "compat": {
+            "maxTokensField": "max_tokens",
+            "supportsDeveloperRole": false,
+            "supportsReasoningEffort": false,
+            "supportsStore": false
+          },
+          "contextWindow": 200000,
+          "cost": {
+            "cacheRead": 0.3,
+            "cacheWrite": 3.75,
+            "input": 3.0,
+            "output": 15.0
+          },
+          "id": "claude-sonnet-4.6",
+          "input": [
+            "text",
+            "image"
+          ],
+          "maxTokens": 32000,
+          "name": "Claude Sonnet 4.6",
+          "reasoning": true
+        },
+        {
+          "api": "openai-completions",
+          "baseUrl": "https://api.individual.githubcopilot.com/v1",
+          "compat": {
+            "maxTokensField": "max_tokens",
+            "supportsDeveloperRole": false,
+            "supportsReasoningEffort": false,
+            "supportsStore": false
+          },
+          "contextWindow": 128000,
+          "cost": {
+            "cacheRead": 0.125,
+            "cacheWrite": 0.0,
+            "input": 1.25,
+            "output": 10.0
+          },
+          "id": "gemini-2.5-pro",
+          "input": [
+            "text",
+            "image"
+          ],
+          "maxTokens": 64000,
+          "name": "Gemini 2.5 Pro",
+          "reasoning": true
+        },
+        {
+          "api": "openai-completions",
+          "baseUrl": "https://api.individual.githubcopilot.com/v1",
+          "compat": {
+            "maxTokensField": "max_tokens",
+            "supportsDeveloperRole": false,
+            "supportsReasoningEffort": false,
+            "supportsStore": false
+          },
+          "contextWindow": 128000,
+          "cost": {
+            "cacheRead": 0.05,
+            "cacheWrite": 0.0,
+            "input": 0.5,
+            "output": 3.0
+          },
+          "id": "gemini-3-flash-preview",
+          "input": [
+            "text",
+            "image"
+          ],
+          "maxTokens": 64000,
+          "name": "Gemini 3 Flash Preview",
+          "reasoning": true
+        },
+        {
+          "api": "openai-completions",
+          "baseUrl": "https://api.individual.githubcopilot.com/v1",
+          "compat": {
+            "maxTokensField": "max_tokens",
+            "supportsDeveloperRole": false,
+            "supportsReasoningEffort": false,
+            "supportsStore": false
+          },
+          "contextWindow": 200000,
+          "cost": {
+            "cacheRead": 0.2,
+            "cacheWrite": 0.0,
+            "input": 2.0,
+            "output": 12.0
+          },
+          "id": "gemini-3.1-pro-preview",
+          "input": [
+            "text",
+            "image"
+          ],
+          "maxTokens": 64000,
+          "name": "Gemini 3.1 Pro Preview",
+          "reasoning": true
+        },
+        {
+          "api": "openai-completions",
+          "baseUrl": "https://api.individual.githubcopilot.com/v1",
+          "compat": {
+            "maxTokensField": "max_tokens",
+            "supportsDeveloperRole": false,
+            "supportsReasoningEffort": false,
+            "supportsStore": false
+          },
+          "contextWindow": 200000,
+          "cost": {
+            "cacheRead": 0.15,
+            "cacheWrite": 0.0,
+            "input": 1.5,
+            "output": 9.0
+          },
+          "id": "gemini-3.5-flash",
+          "input": [
+            "text",
+            "image"
+          ],
+          "maxTokens": 64000,
+          "name": "Gemini 3.5 Flash",
+          "reasoning": true
+        },
+        {
+          "api": "openai-completions",
+          "baseUrl": "https://api.individual.githubcopilot.com/v1",
+          "compat": {
+            "maxTokensField": "max_tokens",
+            "supportsDeveloperRole": false,
+            "supportsReasoningEffort": false,
+            "supportsStore": false
+          },
+          "contextWindow": 128000,
+          "cost": {
+            "cacheRead": 0.5,
+            "cacheWrite": 0.0,
+            "input": 2.0,
+            "output": 8.0
+          },
+          "id": "gpt-4.1",
+          "input": [
+            "text",
+            "image"
+          ],
+          "maxTokens": 16384,
+          "name": "GPT-4.1",
+          "reasoning": false
+        },
+        {
+          "api": "openai-completions",
+          "baseUrl": "https://api.individual.githubcopilot.com/v1",
+          "compat": {
+            "maxTokensField": "max_tokens",
+            "supportsDeveloperRole": false,
+            "supportsReasoningEffort": false,
+            "supportsStore": false
+          },
+          "contextWindow": 264000,
+          "cost": {
+            "cacheRead": 0.025,
+            "cacheWrite": 0.0,
+            "input": 0.25,
+            "output": 2.0
+          },
+          "id": "gpt-5-mini",
+          "input": [
+            "text",
+            "image"
+          ],
+          "maxTokens": 64000,
+          "name": "GPT-5 Mini",
+          "reasoning": true
+        },
+        {
+          "api": "openai-completions",
+          "baseUrl": "https://api.individual.githubcopilot.com/v1",
+          "compat": {
+            "maxTokensField": "max_tokens",
+            "supportsDeveloperRole": false,
+            "supportsReasoningEffort": false,
+            "supportsStore": false
+          },
+          "contextWindow": 400000,
+          "cost": {
+            "cacheRead": 0.175,
+            "cacheWrite": 0.0,
+            "input": 1.75,
+            "output": 14.0
+          },
+          "id": "gpt-5.2",
+          "input": [
+            "text",
+            "image"
+          ],
+          "maxTokens": 128000,
+          "name": "GPT-5.2",
+          "reasoning": true
+        },
+        {
+          "api": "openai-completions",
+          "baseUrl": "https://api.individual.githubcopilot.com/v1",
+          "compat": {
+            "maxTokensField": "max_tokens",
+            "supportsDeveloperRole": false,
+            "supportsReasoningEffort": false,
+            "supportsStore": false
+          },
+          "contextWindow": 400000,
+          "cost": {
+            "cacheRead": 0.175,
+            "cacheWrite": 0.0,
+            "input": 1.75,
+            "output": 14.0
+          },
+          "id": "gpt-5.2-codex",
+          "input": [
+            "text",
+            "image"
+          ],
+          "maxTokens": 128000,
+          "name": "GPT-5.2 Codex",
+          "reasoning": true
+        },
+        {
+          "api": "openai-completions",
+          "baseUrl": "https://api.individual.githubcopilot.com/v1",
+          "compat": {
+            "maxTokensField": "max_tokens",
+            "supportsDeveloperRole": false,
+            "supportsReasoningEffort": false,
+            "supportsStore": false
+          },
+          "contextWindow": 400000,
+          "cost": {
+            "cacheRead": 0.175,
+            "cacheWrite": 0.0,
+            "input": 1.75,
+            "output": 14.0
+          },
+          "id": "gpt-5.3-codex",
+          "input": [
+            "text",
+            "image"
+          ],
+          "maxTokens": 128000,
+          "name": "GPT-5.3 Codex",
+          "reasoning": true
+        },
+        {
+          "api": "openai-completions",
+          "baseUrl": "https://api.individual.githubcopilot.com/v1",
+          "compat": {
+            "maxTokensField": "max_tokens",
+            "supportsDeveloperRole": false,
+            "supportsReasoningEffort": false,
+            "supportsStore": false
+          },
+          "contextWindow": 400000,
+          "cost": {
+            "cacheRead": 0.25,
+            "cacheWrite": 0.0,
+            "input": 2.5,
+            "output": 15.0
+          },
+          "id": "gpt-5.4",
+          "input": [
+            "text",
+            "image"
+          ],
+          "maxTokens": 128000,
+          "name": "GPT-5.4",
+          "reasoning": true
+        },
+        {
+          "api": "openai-completions",
+          "baseUrl": "https://api.individual.githubcopilot.com/v1",
+          "compat": {
+            "maxTokensField": "max_tokens",
+            "supportsDeveloperRole": false,
+            "supportsReasoningEffort": false,
+            "supportsStore": false
+          },
+          "contextWindow": 400000,
+          "cost": {
+            "cacheRead": 0.075,
+            "cacheWrite": 0.0,
+            "input": 0.75,
+            "output": 4.5
+          },
+          "id": "gpt-5.4-mini",
+          "input": [
+            "text",
+            "image"
+          ],
+          "maxTokens": 128000,
+          "name": "GPT-5.4 mini",
+          "reasoning": true
+        },
+        {
+          "api": "openai-completions",
+          "baseUrl": "https://api.individual.githubcopilot.com/v1",
+          "compat": {
+            "maxTokensField": "max_tokens",
+            "supportsDeveloperRole": false,
+            "supportsReasoningEffort": false,
+            "supportsStore": false
+          },
+          "contextWindow": 400000,
+          "cost": {
+            "cacheRead": 0.02,
+            "cacheWrite": 0.0,
+            "input": 0.2,
+            "output": 1.25
+          },
+          "id": "gpt-5.4-nano",
+          "input": [
+            "text",
+            "image"
+          ],
+          "maxTokens": 128000,
+          "name": "GPT-5.4 nano",
+          "reasoning": true
+        },
+        {
+          "api": "openai-completions",
+          "baseUrl": "https://api.individual.githubcopilot.com/v1",
+          "compat": {
+            "maxTokensField": "max_tokens",
+            "supportsDeveloperRole": false,
+            "supportsReasoningEffort": false,
+            "supportsStore": false
+          },
+          "contextWindow": 400000,
+          "cost": {
+            "cacheRead": 0.5,
+            "cacheWrite": 0.0,
+            "input": 5.0,
+            "output": 30.0
+          },
+          "id": "gpt-5.5",
+          "input": [
+            "text",
+            "image"
+          ],
+          "maxTokens": 128000,
+          "name": "GPT-5.5",
+          "reasoning": true
+        }
+      ],
+      "name": "GitHub Copilot"
+    },
     "opencode": {
       "api": "openai-completions",
       "baseUrl": "https://opencode.ai/zen",
