@@ -267,6 +267,10 @@ fn resolve_api_and_base_url<'a>(
         Some("@ai-sdk/anthropic") => ("anthropic-messages", Some(base_path.into())),
         Some("@ai-sdk/google") => ("google-generative-ai", Some(format!("{}/v1", base_path))),
         _ => {
+            // GitHub Copilot's openai-completions API is at the root, not under /v1
+            if provider_key == "github-copilot" {
+                return ("openai-completions", Some(base_path.into()));
+            }
             if provider_key == "opencode-go" && model_id == "minimax-m2.7" {
                 return ("openai-completions", Some(format!("{}/v1", base_path)));
             }
