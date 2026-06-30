@@ -158,7 +158,9 @@ impl Extension for CommandsExtension {
             SlashCommand {
                 name: "name".to_string(),
                 description: "Set session display name".to_string(),
-                handler: Box::new(NameCommand),
+                handler: Box::new(NameCommand {
+                    session_info: self.session_info.clone(),
+                }),
             },
             SlashCommand {
                 name: "session".to_string(),
@@ -366,15 +368,23 @@ impl CommandHandler for SessionInfoCommand {
 
 // ── /name ─────────────────────────────────────────────────────────
 
-struct NameCommand;
+struct NameCommand {
+    session_info: Arc<Mutex<Option<SessionInfoInternal>>>,
+}
 
 impl CommandHandler for NameCommand {
     fn execute(&self, args: &str) -> anyhow::Result<CommandResult> {
         let name = args.trim();
         if name.is_empty() {
-            return Ok(CommandResult::Info(
-                "Usage: /name <name> - set session display name".to_string(),
-            ));
+            let info = self.session_info.lock().unwrap();
+            let current_name = info
+                .as_ref()
+                .and_then(|si| si.name.as_deref())
+                .filter(|n| !n.is_empty());
+            return match current_name {
+                Some(n) => Ok(CommandResult::Info(format!("Session name: {}", n))),
+                None => Ok(CommandResult::Info("Usage: /name <name>".to_string())),
+            };
         }
         Ok(CommandResult::SessionNamed {
             name: name.to_string(),

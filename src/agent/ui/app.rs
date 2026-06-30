@@ -2761,12 +2761,37 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
             }
         }
         CommandResult::SessionNamed { name } => {
-            app.status_text = Some(format!("Session name: {}", name));
-
             // Persist name in session
             if let Some(ref mut s) = app.session {
                 s.session_mut().append_session_info(&name);
             }
+
+            // Check if name was normalized (pi-compatible normalization warning)
+            let stored_name = app
+                .session
+                .as_ref()
+                .and_then(|s| s.session().session_name());
+            if let Some(ref stored) = stored_name
+                && stored != &name
+            {
+                chat_info(
+                    app,
+                    format!("Session name normalized from {:?} to {:?}", name, stored),
+                );
+            }
+
+            chat_info(
+                app,
+                format!(
+                    "Session name set: {}",
+                    stored_name.as_deref().unwrap_or(&name)
+                ),
+            );
+
+            app.status_text = Some(format!(
+                "Session name set: {}",
+                stored_name.as_deref().unwrap_or(&name)
+            ));
 
             // Update session info and footer (refresh_from_session picks up the new name)
             app.update_session_info();
