@@ -85,6 +85,20 @@ impl TUI {
         id
     }
 
+    /// Convenience: show an overlay anchored at top-left, full width.
+    /// The pattern used by most agent UI overlays (model selector, auth dialogs, etc.).
+    pub fn show_top_overlay(&mut self, component: Box<dyn Component>) -> u64 {
+        use crate::tui::overlay::{OverlayAnchor, OverlayOptions, SizeValue};
+        self.show_overlay(
+            component,
+            OverlayOptions {
+                width: Some(SizeValue::Percent(100.0)),
+                anchor: Some(OverlayAnchor::TopLeft),
+                ..Default::default()
+            },
+        )
+    }
+
     pub fn hide_overlay(&mut self, id: u64) {
         self.root.hide_overlay(id);
         self.dirty = true;

@@ -551,6 +551,47 @@ impl App {
         }
     }
 
+    /// Record a model change in the session and refresh footer display.
+    fn record_model_change(&mut self, model: &str) {
+        if let Some(ref mut agent_session) = self.session {
+            let provider = self
+                .registry
+                .provider_for_model(model, self.settings.default_provider.as_deref())
+                .unwrap_or_else(|| "opencode-go".to_string());
+            agent_session.on_model_change(&provider, model);
+        }
+        if let Some(ref session) = self.session {
+            self.footer
+                .borrow_mut()
+                .refresh_from_session(session.session());
+        }
+    }
+
+    /// Reload the provider registry from disk, updating `self.registry`.
+    /// Shows a status message on failure.
+    fn refresh_registry(&mut self) {
+        match provider::ProviderRegistry::load(&provider::get_agent_dir()) {
+            Ok(new_reg) => self.registry = Arc::new(new_reg),
+            Err(e) => {
+                self.status_text = Some(format!("Failed to refresh registry: {}", e));
+            }
+        }
+    }
+
+    /// Propagate `hide_thinking` to all chat container children and the streaming component.
+    fn propagate_hide_thinking(&mut self) {
+        let hide = self.hide_thinking;
+        {
+            let mut chat = self.chat_container.borrow_mut();
+            for child in chat.children_mut().iter_mut() {
+                child.set_hide_thinking(hide);
+            }
+        }
+        if let Some(weak) = self.streaming_component.as_ref().and_then(|w| w.upgrade()) {
+            weak.borrow_mut().set_hide_thinking(hide);
+        }
+    }
+
     /// Switch to a different session: open the file, clear state, rebuild chat.
     fn switch_to_session(&mut self, new_session: AgentSession) {
         let ctx = new_session.session().build_session_context();
@@ -702,22 +743,7 @@ pub async fn run(config: AppConfig, session: AgentSession) -> anyhow::Result<()>
                                 .map(|(_, id)| id.to_string())
                                 .unwrap_or_else(|| full_id.clone());
                             app.model = model_id.clone();
-                            if let Some(ref mut agent_session) = app.session {
-                                let provider = app
-                                    .registry
-                                    .provider_for_model(
-                                        &model_id,
-                                        app.settings.default_provider.as_deref(),
-                                    )
-                                    .unwrap_or_else(|| "opencode-go".to_string());
-                                agent_session.on_model_change(&provider, &model_id);
-                            }
-                            // Refresh footer from session to pick up model/provider/thinking
-                            if let Some(ref session) = app.session {
-                                app.footer
-                                    .borrow_mut()
-                                    .refresh_from_session(session.session());
-                            }
+                            app.record_model_change(&model_id);
                             app.status_text = Some(format!("Model: {}", full_id));
                         }
                     }
@@ -776,16 +802,7 @@ pub async fn run(config: AppConfig, session: AgentSession) -> anyhow::Result<()>
                             match auth::login(&provider, &key) {
                                 Ok(_) => {
                                     app.status_text = Some(format!("Logged in to {}", provider));
-                                    // Refresh registry
-                                    match provider::ProviderRegistry::load(
-                                        &provider::get_agent_dir(),
-                                    ) {
-                                        Ok(new_reg) => app.registry = Arc::new(new_reg),
-                                        Err(e) => {
-                                            app.status_text =
-                                                Some(format!("Failed to refresh registry: {}", e));
-                                        }
-                                    }
+                                    app.refresh_registry();
                                     complete_login(&mut app, &provider, AuthType::ApiKey);
                                 }
                                 Err(e) => {
@@ -798,14 +815,7 @@ pub async fn run(config: AppConfig, session: AgentSession) -> anyhow::Result<()>
                         match auth::logout(Some(&provider_id)) {
                             Ok(true) => {
                                 app.status_text = Some(format!("Logged out from {}", provider_id));
-                                // Refresh registry to reflect new auth state
-                                match provider::ProviderRegistry::load(&provider::get_agent_dir()) {
-                                    Ok(new_reg) => app.registry = Arc::new(new_reg),
-                                    Err(e) => {
-                                        app.status_text =
-                                            Some(format!("Failed to refresh registry: {}", e))
-                                    }
-                                }
+                                app.refresh_registry();
                             }
                             Ok(false) => {
                                 app.status_text =
@@ -871,16 +881,8 @@ pub async fn run(config: AppConfig, session: AgentSession) -> anyhow::Result<()>
                     .unwrap_or_else(|| provider_id.clone());
                 let msg = format!("✓ Logged in to {} via OAuth", provider_name);
                 app.status_text = Some(msg.clone());
-                chat_add(
-                    &mut app,
-                    std::boxed::Box::new(InfoMessageComponent::new(&msg)),
-                );
-                // Refresh registry
-                if let Ok(new_reg) =
-                    crate::provider::ProviderRegistry::load(&crate::provider::get_agent_dir())
-                {
-                    app.registry = Arc::new(new_reg);
-                }
+                chat_info(&mut app, &msg);
+                app.refresh_registry();
                 complete_login(
                     &mut app,
                     provider_id,
@@ -891,10 +893,7 @@ pub async fn run(config: AppConfig, session: AgentSession) -> anyhow::Result<()>
                 // The error message was already shown as status_text; persist it to chat.
                 let err_msg = app.status_text.clone().unwrap_or_default();
                 if !err_msg.is_empty() {
-                    chat_add(
-                        &mut app,
-                        std::boxed::Box::new(InfoMessageComponent::new(&err_msg)),
-                    );
+                    chat_info(&mut app, &err_msg);
                 }
             }
         }
@@ -943,12 +942,7 @@ pub async fn run(config: AppConfig, session: AgentSession) -> anyhow::Result<()>
                     open_model_selector(&mut app, &mut tui);
                 }
                 CommandResult::OpenSettings => {
-                    chat_add(
-                        &mut app,
-                        std::boxed::Box::new(InfoMessageComponent::new(
-                            "Settings menu - not yet implemented.",
-                        )),
-                    );
+                    chat_info(&mut app, "Settings menu - not yet implemented.");
                 }
                 CommandResult::ScopedModels => {
                     open_scoped_models_selector(&mut app, &mut tui);
@@ -1182,16 +1176,7 @@ fn handle_input(app: &mut App, tui: &mut TUI, term: &mut ProcessTerminal, key: &
         InputAction::ToggleThinking => {
             app.hide_thinking = !app.hide_thinking;
             // Propagate to ALL existing components in chat container (matching pi)
-            {
-                let mut chat = app.chat_container.borrow_mut();
-                for child in chat.children_mut().iter_mut() {
-                    child.set_hide_thinking(app.hide_thinking);
-                }
-            }
-            // Update streaming component if it exists
-            if let Some(weak) = app.streaming_component.as_ref().and_then(|w| w.upgrade()) {
-                weak.borrow_mut().set_hide_thinking(app.hide_thinking);
-            }
+            app.propagate_hide_thinking();
             // Persist only the affected field (incremental save)
             app.settings.set_hide_thinking(Some(app.hide_thinking));
             if let Err(e) = app.settings.save() {
@@ -1291,7 +1276,7 @@ fn handle_thinking_cycle(app: &mut App) {
     if let Some(ref s) = app.session {
         app.footer.borrow_mut().refresh_from_session(s.session());
     }
-    app.status_text = Some(format!("Thinking level: {}", next));
+    show_status(app, format!("Thinking level: {}", next));
 }
 
 /// Cycle model forward (dir=1) or backward (dir=-1).
@@ -1334,21 +1319,9 @@ fn handle_model_cycle(app: &mut App, dir: isize) {
     };
 
     app.model = model_pool[next_idx].clone();
-    // Record the change in the session
-    if let Some(ref mut agent_session) = app.session {
-        let provider = app
-            .registry
-            .provider_for_model(&app.model, app.settings.default_provider.as_deref())
-            .unwrap_or_else(|| "opencode-go".to_string());
-        agent_session.on_model_change(&provider, &app.model);
-    }
-    // Refresh footer from session to pick up model/provider/thinking
-    if let Some(ref session) = app.session {
-        app.footer
-            .borrow_mut()
-            .refresh_from_session(session.session());
-    }
-    app.status_text = Some(format!("Model: {}", app.model));
+    let model = app.model.clone();
+    app.record_model_change(&model);
+    show_status(app, format!("Model: {}", app.model));
 }
 
 /// Toggle all tool output expansion (Ctrl+O).
@@ -1570,13 +1543,7 @@ fn handle_login(app: &mut App, provider: &str, api_key: Option<&str>) {
     if let Some(key) = api_key {
         match auth::login(provider, key) {
             Ok(_) => {
-                // Refresh registry
-                match provider::ProviderRegistry::load(&provider::get_agent_dir()) {
-                    Ok(new_reg) => app.registry = Arc::new(new_reg),
-                    Err(e) => {
-                        app.status_text = Some(format!("Failed to refresh registry: {}", e));
-                    }
-                }
+                app.refresh_registry();
                 // Post-login completion
                 complete_login(
                     app,
@@ -1584,19 +1551,10 @@ fn handle_login(app: &mut App, provider: &str, api_key: Option<&str>) {
                     crate::agent::ui::components::oauth_selector::AuthType::ApiKey,
                 );
             }
-            Err(e) => chat_add(
-                app,
-                std::boxed::Box::new(InfoMessageComponent::new(format!("Login failed: {}", e))),
-            ),
+            Err(e) => chat_info(app, format!("Login failed: {}", e)),
         }
     } else {
-        chat_add(
-            app,
-            std::boxed::Box::new(InfoMessageComponent::new(format!(
-                "Usage: /login {} <api-key>",
-                provider
-            ))),
-        );
+        chat_info(app, format!("Usage: /login {} <api-key>", provider));
     }
 }
 
@@ -1607,26 +1565,16 @@ fn handle_logout(app: &mut App, provider: Option<&str>) {
             let msg = provider
                 .map(|p| format!("Logged out from {}", p))
                 .unwrap_or_else(|| "Logged out from all providers".into());
-            chat_add(app, std::boxed::Box::new(InfoMessageComponent::new(msg)));
-            // Refresh registry
-            match provider::ProviderRegistry::load(&provider::get_agent_dir()) {
-                Ok(new_reg) => app.registry = Arc::new(new_reg),
-                Err(e) => {
-                    app.status_text = Some(format!("Failed to refresh registry: {}", e));
-                }
-            }
+            chat_info(app, msg);
         }
         Ok(false) => {
             let msg = provider
                 .map(|p| format!("No credentials for {}", p))
                 .unwrap_or_else(|| "No credentials found".into());
-            chat_add(app, std::boxed::Box::new(InfoMessageComponent::new(msg)));
+            chat_info(app, msg);
         }
         Err(e) => {
-            chat_add(
-                app,
-                std::boxed::Box::new(InfoMessageComponent::new(format!("Logout failed: {}", e))),
-            );
+            chat_info(app, format!("Logout failed: {}", e));
         }
     }
 }
@@ -1637,7 +1585,6 @@ fn show_login_provider_selector(app: &mut App, tui: &mut TUI, auth_type: Option<
     use crate::agent::ui::components::oauth_selector::{
         AuthSelectorProvider, AuthType, OAuthSelector, SelectorMode,
     };
-    use crate::tui::overlay::{OverlayAnchor, OverlayOptions, SizeValue};
 
     let all_providers = app.registry.list_providers();
 
@@ -1721,21 +1668,13 @@ fn show_login_provider_selector(app: &mut App, tui: &mut TUI, auth_type: Option<
     });
     selector.on_cancel(|| {});
 
-    tui.show_overlay(
-        Box::new(selector),
-        OverlayOptions {
-            width: Some(SizeValue::Percent(100.0)),
-            anchor: Some(OverlayAnchor::TopLeft),
-            ..Default::default()
-        },
-    );
+    tui.show_top_overlay(Box::new(selector));
 }
 
 /// Show the API key input dialog for a specific provider.
 /// Uses LoginDialog which matches pi's LoginDialogComponent.
 fn show_api_key_login_dialog(app: &mut App, tui: &mut TUI, provider_id: &str) {
     use crate::agent::ui::components::LoginDialog;
-    use crate::tui::overlay::{OverlayAnchor, OverlayOptions, SizeValue};
 
     // Find the provider name from the registry
     let provider_name = app
@@ -1762,14 +1701,7 @@ fn show_api_key_login_dialog(app: &mut App, tui: &mut TUI, provider_id: &str) {
 
     dialog.show_prompt("Enter API key:", Some("sk-..."));
 
-    tui.show_overlay(
-        Box::new(dialog),
-        OverlayOptions {
-            width: Some(SizeValue::Percent(100.0)),
-            anchor: Some(OverlayAnchor::TopLeft),
-            ..Default::default()
-        },
-    );
+    tui.show_top_overlay(Box::new(dialog));
 }
 
 /// Show the OAuth login dialog for a specific provider.
@@ -1900,8 +1832,6 @@ fn show_oauth_login_dialog(app: &mut App, tui: &mut TUI, provider_id: &str) {
 /// Show the auth type selector overlay ("Use a subscription" vs "Use an API key").
 /// Matches pi's showLoginAuthTypeSelector behavior.
 fn show_auth_type_selector(app: &mut App, tui: &mut TUI) {
-    use crate::tui::overlay::{OverlayAnchor, OverlayOptions, SizeValue};
-
     // Build simple two-option selector
     let signal = app.overlay_result_signal.clone();
     let _theme = crate::agent::ui::theme::current_theme().clone();
@@ -2022,14 +1952,7 @@ fn show_auth_type_selector(app: &mut App, tui: &mut TUI) {
         signal: signal.clone(),
     };
 
-    tui.show_overlay(
-        Box::new(overlay),
-        OverlayOptions {
-            width: Some(SizeValue::Percent(100.0)),
-            anchor: Some(OverlayAnchor::TopLeft),
-            ..Default::default()
-        },
-    );
+    tui.show_top_overlay(Box::new(overlay));
 }
 
 /// Show auth type selector or go directly to provider list depending on
@@ -2058,7 +1981,6 @@ fn show_logout_provider_selector(app: &mut App, tui: &mut TUI) {
     use crate::agent::ui::components::oauth_selector::{
         AuthSelectorProvider, AuthType, OAuthSelector, SelectorMode,
     };
-    use crate::tui::overlay::{OverlayAnchor, OverlayOptions, SizeValue};
 
     // Get providers that have stored credentials
     let logged_in = auth::list_logged_in().unwrap_or_default();
@@ -2108,14 +2030,7 @@ fn show_logout_provider_selector(app: &mut App, tui: &mut TUI) {
     });
     selector.on_cancel(|| {});
 
-    tui.show_overlay(
-        Box::new(selector),
-        OverlayOptions {
-            width: Some(SizeValue::Percent(100.0)),
-            anchor: Some(OverlayAnchor::TopLeft),
-            ..Default::default()
-        },
-    );
+    tui.show_top_overlay(Box::new(selector));
 }
 
 /// Post-login completion: auto-select default model for the provider.
@@ -2145,14 +2060,8 @@ fn complete_login(app: &mut App, provider_id: &str, _auth_type: AuthType) {
     if current_provider != provider_id || !app.available_models.contains(&app.model) {
         let first_model = provider_models[0];
         app.model = first_model.to_string();
-        if let Some(ref mut agent_session) = app.session {
-            agent_session.on_model_change(provider_id, first_model);
-        }
-        if let Some(ref session) = app.session {
-            app.footer
-                .borrow_mut()
-                .refresh_from_session(session.session());
-        }
+        let model = app.model.clone();
+        app.record_model_change(&model);
         app.status_text = Some(format!(
             "Saved API key for {provider_id}. Selected {first_model}."
         ));
@@ -2198,15 +2107,7 @@ fn open_model_selector(app: &mut App, tui: &mut TUI) {
         current_full_id,
         callbacks,
     );
-    use crate::tui::overlay::{OverlayAnchor, OverlayOptions, SizeValue};
-    tui.show_overlay(
-        Box::new(selector),
-        OverlayOptions {
-            width: Some(SizeValue::Percent(100.0)),
-            anchor: Some(OverlayAnchor::TopLeft),
-            ..Default::default()
-        },
-    );
+    tui.show_top_overlay(Box::new(selector));
 }
 
 /// Open the scoped-models selector overlay.
@@ -2248,15 +2149,7 @@ fn open_scoped_models_selector(app: &mut App, tui: &mut TUI) {
     };
 
     let selector = ScopedModelsSelector::new(config, callbacks);
-    use crate::tui::overlay::{OverlayAnchor, OverlayOptions, SizeValue};
-    tui.show_overlay(
-        Box::new(selector),
-        OverlayOptions {
-            width: Some(SizeValue::Percent(100.0)),
-            anchor: Some(OverlayAnchor::TopLeft),
-            ..Default::default()
-        },
-    );
+    tui.show_top_overlay(Box::new(selector));
 }
 
 fn show_help_overlay(app: &mut App, tui: &mut TUI) {
@@ -2441,6 +2334,13 @@ async fn start_agent_loop(app: &mut App, message: String) {
         .map(|s| s.session().build_session_context().messages)
         .unwrap_or_default();
 
+    // Record model/thinking changes in the session before borrowing agent
+    let model = app.model.clone();
+    app.record_model_change(&model);
+    if let Some(ref mut session) = app.session {
+        session.on_thinking_level_change(app.thinking_level.as_deref().unwrap_or("off"));
+    }
+
     let agent: &mut yoagent::agent::Agent = match &mut app.agent {
         Some(existing) => {
             // Reuse existing agent — messages are already correct from
@@ -2464,16 +2364,6 @@ async fn start_agent_loop(app: &mut App, message: String) {
         }
     };
 
-    // Record model/thinking changes in the session
-    if let Some(ref mut session) = app.session {
-        let provider = app
-            .registry
-            .provider_for_model(&app.model, app.settings.default_provider.as_deref())
-            .unwrap_or_else(|| "opencode-go".to_string());
-        session.on_model_change(&provider, &app.model);
-        session.on_thinking_level_change(app.thinking_level.as_deref().unwrap_or("off"));
-    }
-
     // Start the turn: agent.prompt() spawns the loop internally, keeps the
     // Agent in scope, and returns a receiver for streaming events.
     let mut rx = agent.prompt(message).await;
@@ -2495,12 +2385,7 @@ async fn start_agent_loop(app: &mut App, message: String) {
 /// Called from the main loop when pending_compact is set.
 async fn handle_compact_command(app: &mut App, custom_instructions: Option<String>) {
     if app.session.is_none() {
-        chat_add(
-            app,
-            std::boxed::Box::new(InfoMessageComponent::new(
-                "No active session to compact".to_string(),
-            )),
-        );
+        chat_info(app, "No active session to compact".to_string());
         return;
     }
 
@@ -2521,13 +2406,7 @@ async fn handle_compact_command(app: &mut App, custom_instructions: Option<Strin
         Err(e) => {
             app.working.stop();
             app.status_text = None;
-            chat_add(
-                app,
-                std::boxed::Box::new(InfoMessageComponent::new(format!(
-                    "Compaction failed: {}",
-                    e
-                ))),
-            );
+            chat_info(app, format!("Compaction failed: {}", e));
         }
     }
 }
@@ -2632,13 +2511,7 @@ fn handle_slash_command(app: &mut App, input: &str) {
                     }
                     Err(e) => {
                         drop((ext, cmd));
-                        chat_add(
-                            app,
-                            std::boxed::Box::new(InfoMessageComponent::new(format!(
-                                "Error executing /{}: {}",
-                                cmd_name, e
-                            ))),
-                        );
+                        chat_info(app, format!("Error executing /{}: {}", cmd_name, e));
                         return;
                     }
                 }
@@ -2661,27 +2534,14 @@ fn handle_slash_command(app: &mut App, input: &str) {
 fn handle_command_result(app: &mut App, result: CommandResult) {
     match result {
         CommandResult::Info(msg) => {
-            chat_add(
-                app,
-                std::boxed::Box::new(InfoMessageComponent::new(msg.clone())),
-            );
+            chat_info(app, msg.clone());
         }
         CommandResult::Quit => {
             app.should_quit = true;
         }
         CommandResult::ModelChanged(model) => {
             app.model = model.clone();
-            // Record model in session and refresh footer (no direct setters)
-            if let Some(ref mut s) = app.session {
-                let provider = app
-                    .registry
-                    .provider_for_model(&model, app.settings.default_provider.as_deref())
-                    .unwrap_or_else(|| "opencode-go".to_string());
-                s.on_model_change(&provider, &model);
-            }
-            if let Some(ref s) = app.session {
-                app.footer.borrow_mut().refresh_from_session(s.session());
-            }
+            app.record_model_change(&model);
             app.status_text = Some(format!("Model: {}", model));
         }
         CommandResult::ShowHelp => {
@@ -2689,11 +2549,7 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
             app.pending_command_result = Some(result);
         }
         CommandResult::Reloaded => {
-            // Reload registry
-            match provider::ProviderRegistry::load(&provider::get_agent_dir()) {
-                Ok(new_reg) => app.registry = Arc::new(new_reg),
-                Err(e) => app.status_text = Some(format!("Failed to reload models: {}", e)),
-            }
+            app.refresh_registry();
             // Reload settings from disk (pi-compatible)
             if let Err(e) = app.settings.reload(&app.cwd) {
                 app.status_text = Some(format!("Failed to reload settings: {}", e));
@@ -2710,26 +2566,14 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
                     // yoagent hardcodes ThinkingLevel::High
                 }
                 app.hide_thinking = app.settings.hide_thinking.unwrap_or(true);
-                // Propagate to all chat container components
-                {
-                    let mut chat = app.chat_container.borrow_mut();
-                    for child in chat.children_mut().iter_mut() {
-                        child.set_hide_thinking(app.hide_thinking);
-                    }
-                }
-                // Update streaming component if it exists
-                if let Some(weak) = app.streaming_component.as_ref().and_then(|w| w.upgrade()) {
-                    weak.borrow_mut().set_hide_thinking(app.hide_thinking);
-                }
+                app.propagate_hide_thinking();
                 app.editor.borrow_mut().update_border_color(
                     app.thinking_level.as_deref(),
                     &app.theme as &dyn crate::tui::Theme,
                 );
-                chat_add(
+                chat_info(
                     app,
-                    std::boxed::Box::new(InfoMessageComponent::new(
-                        "Settings, extensions, and keybindings reloaded.".to_string(),
-                    )),
+                    "Settings, extensions, and keybindings reloaded.".to_string(),
                 );
             }
         }
@@ -2883,10 +2727,7 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
                 info += &format!("\n\nParent: {}", parent);
             }
 
-            chat_add(
-                app,
-                std::boxed::Box::new(InfoMessageComponent::new(info.clone())),
-            );
+            chat_info(app, info.clone());
         }
         CommandResult::OpenSessionSelector => {
             // Load and display available sessions
@@ -2896,10 +2737,7 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
 
             if sessions.is_empty() {
                 let msg = "No sessions found.".to_string();
-                chat_add(
-                    app,
-                    std::boxed::Box::new(InfoMessageComponent::new(msg.clone())),
-                );
+                chat_info(app, msg.clone());
             } else {
                 let mut info = format!("Available Sessions ({} total)\n\n", sessions.len());
                 for (i, s) in sessions.iter().take(20).enumerate() {
@@ -2919,10 +2757,7 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
                 }
                 info += "Use /resume to open the interactive picker";
 
-                chat_add(
-                    app,
-                    std::boxed::Box::new(InfoMessageComponent::new(info.clone())),
-                );
+                chat_info(app, info.clone());
             }
         }
         CommandResult::SessionNamed { name } => {
@@ -2957,38 +2792,23 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
             } else {
                 "Export session - not yet implemented (defaults to HTML).".to_string()
             };
-            chat_add(
-                app,
-                std::boxed::Box::new(InfoMessageComponent::new(msg.clone())),
-            );
+            chat_info(app, msg.clone());
         }
         CommandResult::ImportSession { path } => {
             let msg = format!("Import session from {} - not yet implemented.", path);
-            chat_add(
-                app,
-                std::boxed::Box::new(InfoMessageComponent::new(msg.clone())),
-            );
+            chat_info(app, msg.clone());
         }
         CommandResult::ShareSession => {
             let msg = "Share session - not yet implemented.".to_string();
-            chat_add(
-                app,
-                std::boxed::Box::new(InfoMessageComponent::new(msg.clone())),
-            );
+            chat_info(app, msg.clone());
         }
         CommandResult::CopyLastMessage => {
             let msg = "Copy last agent message to clipboard - not yet implemented.".to_string();
-            chat_add(
-                app,
-                std::boxed::Box::new(InfoMessageComponent::new(msg.clone())),
-            );
+            chat_info(app, msg.clone());
         }
         CommandResult::ShowChangelog => {
             let msg = "Changelog - not yet implemented.".to_string();
-            chat_add(
-                app,
-                std::boxed::Box::new(InfoMessageComponent::new(msg.clone())),
-            );
+            chat_info(app, msg.clone());
         }
         CommandResult::ForkSession { message_id } => {
             // Clone the session info before modifying app.session
@@ -3039,51 +2859,33 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
                                 None => {
                                     let msg =
                                         format!("Fork created but new file not found: {}", new_id);
-                                    chat_add(
-                                        app,
-                                        std::boxed::Box::new(InfoMessageComponent::new(msg)),
-                                    );
+                                    chat_info(app, msg);
                                 }
                             }
                         }
                         Err(e) => {
                             let msg = format!("Fork failed: {}", e);
-                            chat_add(
-                                app,
-                                std::boxed::Box::new(InfoMessageComponent::new(msg.clone())),
-                            );
+                            chat_info(app, msg.clone());
                         }
                     }
                 }
                 _ => {
                     let msg = "No active session to fork".to_string();
-                    chat_add(
-                        app,
-                        std::boxed::Box::new(InfoMessageComponent::new(msg.clone())),
-                    );
+                    chat_info(app, msg.clone());
                 }
             }
         }
         CommandResult::CloneSession => {
             let msg = "Clone session - not yet implemented.".to_string();
-            chat_add(
-                app,
-                std::boxed::Box::new(InfoMessageComponent::new(msg.clone())),
-            );
+            chat_info(app, msg.clone());
         }
         CommandResult::SessionTree => {
             let msg = "Session tree - not yet implemented.".to_string();
-            chat_add(
-                app,
-                std::boxed::Box::new(InfoMessageComponent::new(msg.clone())),
-            );
+            chat_info(app, msg.clone());
         }
         CommandResult::TrustDecision { decision } => {
             let msg = format!("Trust decision '{}' saved.", decision);
-            chat_add(
-                app,
-                std::boxed::Box::new(InfoMessageComponent::new(msg.clone())),
-            );
+            chat_info(app, msg.clone());
         }
         CommandResult::Login {
             ref provider,
@@ -3180,6 +2982,14 @@ fn handle_bang_command(app: &mut App, command: String) {
             sent: false,
         };
 
+        let send_progress = |text: &str| {
+            let _ = tx.send(YoEvent::ProgressMessage {
+                tool_call_id: "__bang__".to_string(),
+                tool_name: "bash".into(),
+                text: text.to_string(),
+            });
+        };
+
         let mut child = match tokio::process::Command::new("sh")
             .arg("-c")
             .arg(&command)
@@ -3225,11 +3035,7 @@ fn handle_bang_command(app: &mut App, command: String) {
                         Ok(n) => {
                             if let Ok(text) = std::str::from_utf8(&buf1[..n]) {
                                 all_output.push_str(text);
-                                let _ = tx.send(YoEvent::ProgressMessage {
-                                    tool_call_id: "__bang__".to_string(),
-                                    tool_name: "bash".into(),
-                                    text: text.to_string(),
-                                });
+                                send_progress(text);
                             }
                         }
                         Err(_) => stdout_done = true,
@@ -3241,11 +3047,7 @@ fn handle_bang_command(app: &mut App, command: String) {
                         Ok(n) => {
                             if let Ok(text) = std::str::from_utf8(&buf2[..n]) {
                                 all_output.push_str(text);
-                                let _ = tx.send(YoEvent::ProgressMessage {
-                                    tool_call_id: "__bang__".to_string(),
-                                    tool_name: "bash".into(),
-                                    text: text.to_string(),
-                                });
+                                send_progress(text);
                             }
                         }
                         Err(_) => stderr_done = true,
@@ -3325,15 +3127,7 @@ pub fn rebuild_chat_from_messages(
                 if !tcs.is_empty() {
                     // Assistant with tool calls — render text first
                     if !text.trim().is_empty() {
-                        if !chat.children().is_empty() {
-                            chat.add_child(std::boxed::Box::new(Spacer::new(1)));
-                        }
-                        let mut asst =
-                            crate::agent::ui::components::AssistantMessageComponent::new(&text);
-                        if hide_thinking {
-                            asst.set_hide_thinking(true);
-                        }
-                        chat.add_child(std::boxed::Box::new(asst));
+                        add_assistant_message(chat, &text, hide_thinking);
                     }
                     // Create ToolExecComponent for each tool call
                     for (id, name, args) in &tcs {
@@ -3353,15 +3147,7 @@ pub fn rebuild_chat_from_messages(
                     }
                 } else if !text.trim().is_empty() {
                     // Plain text assistant
-                    if !chat.children().is_empty() {
-                        chat.add_child(std::boxed::Box::new(Spacer::new(1)));
-                    }
-                    let mut asst =
-                        crate::agent::ui::components::AssistantMessageComponent::new(&text);
-                    if hide_thinking {
-                        asst.set_hide_thinking(true);
-                    }
-                    chat.add_child(std::boxed::Box::new(asst));
+                    add_assistant_message(chat, &text, hide_thinking);
                 }
             }
         } else if crate::agent::types::message_is_tool_result(msg) {
@@ -3400,6 +3186,26 @@ pub fn chat_add(app: &mut App, component: std::boxed::Box<dyn Component>) {
     chat.add_child(component);
 }
 
+/// Convenience shortcut: add an InfoMessageComponent to chat.
+pub fn chat_info(app: &mut App, msg: impl Into<String>) {
+    chat_add(
+        app,
+        std::boxed::Box::new(InfoMessageComponent::new(msg.into())),
+    );
+}
+
+/// Add an AssistantMessageComponent with a preceding spacer.
+fn add_assistant_message(chat: &mut crate::tui::Container, text: &str, hide_thinking: bool) {
+    if !chat.children().is_empty() {
+        chat.add_child(std::boxed::Box::new(Spacer::new(1)));
+    }
+    let mut asst = crate::agent::ui::components::AssistantMessageComponent::new(text);
+    if hide_thinking {
+        asst.set_hide_thinking(true);
+    }
+    chat.add_child(std::boxed::Box::new(asst));
+}
+
 /// Show a status message in the chat (pi-style `showStatus`).
 ///
 /// If the last two children of `chat_container` are from a previous status
@@ -3428,6 +3234,21 @@ fn show_status(app: &mut App, message: String) {
     app.last_status_len = Some(chat.len());
 }
 
+/// Concatenate all Text content from a slice of Content values.
+fn extract_text_content(content: &[yoagent::types::Content]) -> String {
+    content
+        .iter()
+        .filter_map(|c| {
+            if let yoagent::types::Content::Text { text } = c {
+                Some(text.clone())
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("")
+}
+
 /// Handle agent events from the channel.
 ///
 /// Delegates persistence to `AgentSession::on_agent_event()` (single source of truth)
@@ -3436,40 +3257,33 @@ fn show_status(app: &mut App, message: String) {
 /// mode adds display on top.
 fn handle_agent_event(app: &mut App, event: yoagent::types::AgentEvent) {
     // ── Persistence: delegate to the shared handler (single source of truth) ──
-    // Match on &event while event is still owned, to avoid consuming it.
-    match &event {
-        E::MessageEnd { message } => {
-            // Pi-compatible: reset overflow recovery when a user message arrives
-            // (matches pi's _overflowRecoveryAttempted reset in message_start for user).
+    // Handle with &event before the display match consumes it.
+    {
+        let ev = &event;
+        if let E::MessageEnd { message } = ev {
             if crate::agent::types::message_is_user(message)
                 && let Some(ref mut s) = app.session
             {
                 s.reset_overflow_recovery();
             }
-            // Special cases: persist as extension (excluded from LLM context).
-            // on_agent_event would persist them as regular LLM messages, so skip.
-            if crate::agent::types::message_error(message).is_some()
-                || crate::agent::types::message_is_system_stop(message)
-            {
-                // Handled inline below with display.
-            } else if let Some(ref mut s) = app.session {
-                s.on_agent_event(&event);
-            }
-        }
-        E::ToolExecutionEnd { tool_call_id, .. } => {
-            // Skip bang commands (user-initiated, not agent-invoked).
-            if tool_call_id != "__bang__"
+            if crate::agent::types::message_error(message).is_none()
+                && !crate::agent::types::message_is_system_stop(message)
                 && let Some(ref mut s) = app.session
             {
-                s.on_agent_event(&event);
+                s.on_agent_event(ev);
             }
         }
-        E::AgentEnd { .. } => {
-            if let Some(ref mut s) = app.session {
-                s.on_agent_event(&event);
-            }
+        if let E::ToolExecutionEnd { tool_call_id, .. } = ev
+            && tool_call_id != "__bang__"
+            && let Some(ref mut s) = app.session
+        {
+            s.on_agent_event(ev);
         }
-        _ => {}
+        if let E::AgentEnd { .. } = ev
+            && let Some(ref mut s) = app.session
+        {
+            s.on_agent_event(ev);
+        }
     }
 
     // ── Display logic (consumes owned event) ──
@@ -3580,18 +3394,7 @@ fn handle_agent_event(app: &mut App, event: yoagent::types::AgentEvent) {
             ..
         } => {
             // Forward partial results to the pending tool component (live streaming).
-            let partial_text: String = partial_result
-                .content
-                .iter()
-                .filter_map(|c| {
-                    if let yoagent::types::Content::Text { text } = c {
-                        Some(text.clone())
-                    } else {
-                        None
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join("");
+            let partial_text = extract_text_content(&partial_result.content);
             if !partial_text.is_empty()
                 && let Some(weak) = app.pending_tools.get(&tool_call_id)
                 && let Some(comp) = weak.upgrade()
@@ -3606,18 +3409,7 @@ fn handle_agent_event(app: &mut App, event: yoagent::types::AgentEvent) {
             is_error,
         } => {
             app.pending_tool_executions = app.pending_tool_executions.saturating_sub(1);
-            let content: String = result
-                .content
-                .iter()
-                .filter_map(|c| {
-                    if let yoagent::types::Content::Text { text } = c {
-                        Some(text.clone())
-                    } else {
-                        None
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join("");
+            let content = extract_text_content(&result.content);
             if let Some(weak) = app.pending_tools.get(&tool_call_id)
                 && let Some(comp) = weak.upgrade()
             {
@@ -3643,13 +3435,7 @@ fn handle_agent_event(app: &mut App, event: yoagent::types::AgentEvent) {
             app.streaming_component = None;
             // Surface provider errors carried by the turn's final message.
             if let Some(err) = crate::agent::types::message_error(&message) {
-                chat_add(
-                    app,
-                    std::boxed::Box::new(InfoMessageComponent::new(format!(
-                        "Provider error: {}",
-                        err
-                    ))),
-                );
+                chat_info(app, format!("Provider error: {}", err));
             }
         }
         E::AgentEnd { messages } => {
@@ -3679,13 +3465,7 @@ fn handle_agent_event(app: &mut App, event: yoagent::types::AgentEvent) {
                     && stop_reason != &yoagent::types::StopReason::ToolUse
                 {
                     if let Some(err) = error_message {
-                        chat_add(
-                            app,
-                            std::boxed::Box::new(InfoMessageComponent::new(format!(
-                                "Provider error: {}",
-                                err
-                            ))),
-                        );
+                        chat_info(app, format!("Provider error: {}", err));
                         break;
                     }
                     // Check for any visible content: non-empty text or tool calls.
@@ -3697,15 +3477,13 @@ fn handle_agent_event(app: &mut App, event: yoagent::types::AgentEvent) {
                         _ => false,
                     });
                     if !has_visible {
-                        chat_add(
+                        chat_info(
                             app,
-                            std::boxed::Box::new(InfoMessageComponent::new(
-                                "The agent returned an empty response. \
+                            "The agent returned an empty response. \
                                  This can happen when the provider's context \
                                  limit is exceeded or the model declined to \
                                  respond. Try sending a new message."
-                                    .to_string(),
-                            )),
+                                .to_string(),
                         );
                         break;
                     }
@@ -3714,22 +3492,16 @@ fn handle_agent_event(app: &mut App, event: yoagent::types::AgentEvent) {
         }
         E::MessageEnd { message } => {
             // Special cases: persist as extension (excluded from LLM context).
-            // Persistence already handled above in the &event match.
+            // Normal persistence handled by if-let above before the display match.
             if let Some(err) = crate::agent::types::message_error(&message) {
-                chat_add(
-                    app,
-                    std::boxed::Box::new(InfoMessageComponent::new(err.to_string())),
-                );
+                chat_info(app, err.to_string());
                 let ext = crate::agent::types::extension_message("error", err, true);
                 if let Some(ref mut s) = app.session {
                     s.persist_extension_message(&ext);
                 }
             } else if crate::agent::types::message_is_system_stop(&message) {
                 let text = crate::agent::types::message_text(&message);
-                chat_add(
-                    app,
-                    std::boxed::Box::new(InfoMessageComponent::new(text.clone())),
-                );
+                chat_info(app, text.clone());
                 if let Some(ref mut s) = app.session {
                     let ext = crate::agent::types::extension_message("system_stop", text, true);
                     s.persist_extension_message(&ext);
@@ -3737,16 +3509,13 @@ fn handle_agent_event(app: &mut App, event: yoagent::types::AgentEvent) {
             } else if crate::agent::types::message_is_extension(&message) {
                 // Extension messages: display in chat (persisted by on_agent_event).
                 if let Some(text) = crate::agent::types::message_extension_text(&message) {
-                    chat_add(app, std::boxed::Box::new(InfoMessageComponent::new(text)));
+                    chat_info(app, text);
                 }
             }
         }
         E::InputRejected { reason } => {
             let msg = format!("Input rejected: {}", reason);
-            chat_add(
-                app,
-                std::boxed::Box::new(InfoMessageComponent::new(msg.clone())),
-            );
+            chat_info(app, msg);
         }
     }
 }
