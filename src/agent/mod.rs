@@ -5,8 +5,6 @@ pub mod context_files;
 pub mod extension;
 pub mod footer_data_provider;
 pub mod session;
-pub mod session_repo;
-pub mod session_storage;
 pub mod settings;
 pub mod system_prompt;
 pub mod types;
@@ -15,10 +13,9 @@ pub mod ui;
 pub use agent_session::{AgentSession, CompactionEvent, CompactionEventCallback};
 pub use context_files::{ContextFile, load_context_files};
 pub use extension::{CommandHandler, CommandResult, Extension, SlashCommand, ToolDefinition};
-pub use session::{Session, SessionContext, SessionManager};
-pub use session_repo::{DefaultSessionRepo, SessionRepo};
-pub use session_storage::{
-    InMemorySessionStorage, JsonlSessionStorage, SessionMetadata, SessionStorage,
+pub use session::{
+    DefaultSessionRepo, InMemorySessionStorage, JsonlSessionStorage, Session, SessionContext,
+    SessionManager, SessionMetadata, SessionRepo, SessionStorage,
 };
 pub use settings::Settings;
 

@@ -238,8 +238,8 @@ mod tests {
     #[test]
     fn test_refresh_from_session_extracts_latest_model_change() {
         use crate::agent::SessionMetadata;
+        use crate::agent::session::InMemorySessionStorage;
         use crate::agent::session::*;
-        use crate::agent::session_storage::InMemorySessionStorage;
 
         let meta = SessionMetadata {
             id: "test".into(),
@@ -263,8 +263,8 @@ mod tests {
     #[test]
     fn test_refresh_from_session_no_model_change() {
         use crate::agent::SessionMetadata;
+        use crate::agent::session::InMemorySessionStorage;
         use crate::agent::session::*;
-        use crate::agent::session_storage::InMemorySessionStorage;
 
         let meta = SessionMetadata {
             id: "test".into(),

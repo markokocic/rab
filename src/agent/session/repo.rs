@@ -1,4 +1,4 @@
-use crate::agent::session::{
+use super::model::{
     SessionInfo, delete_session as delete_session_file, fork_session, load_session_info,
 };
 use std::path::{Path, PathBuf};
@@ -236,8 +236,8 @@ fn list_sessions_concurrent(session_dir: &Path, filter_cwd: Option<&Path>) -> Ve
 
 #[cfg(test)]
 mod tests {
+    use super::super::model::SessionManager;
     use super::*;
-    use crate::agent::session::SessionManager;
     use crate::agent::types::{assistant_message, user_message};
     use tempfile::TempDir;
 

@@ -8,7 +8,7 @@
 //! This module provides the trait and both implementations.
 //! The `Session` struct lives in `session.rs`.
 
-use crate::agent::session::{
+use super::model::{
     SessionEntry, SessionHeader, append_entry_to_file, generate_entry_id, load_session_from_file,
 };
 use std::path::{Path, PathBuf};
@@ -458,8 +458,8 @@ fn entry_type_name(entry: &SessionEntry) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    use super::super::model::MessageEntry;
     use super::*;
-    use crate::agent::session::MessageEntry;
     use crate::agent::types::user_message;
     use tempfile::TempDir;
 

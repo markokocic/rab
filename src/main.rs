@@ -1,5 +1,5 @@
 use rab::agent::extension::Extension;
-use rab::agent::session_repo::SessionRepo;
+use rab::agent::session::SessionRepo;
 use rab::agent::settings::Settings;
 use rab::agent::ui;
 use rab::builtin::{
@@ -205,7 +205,7 @@ async fn main() -> anyhow::Result<()> {
         }
 
         // Try to match as session ID prefix (first exact, then prefix)
-        let repo = rab::agent::session_repo::DefaultSessionRepo::new();
+        let repo = rab::agent::session::DefaultSessionRepo::new();
         let sessions = repo.list_all(None);
 
         // Exact match first

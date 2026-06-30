@@ -1,4 +1,4 @@
-use crate::agent::session_storage::{InMemorySessionStorage, JsonlSessionStorage, SessionStorage};
+use super::storage::{InMemorySessionStorage, JsonlSessionStorage, SessionStorage};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -532,7 +532,7 @@ pub fn generate_entry_id(by_id: &HashMap<String, SessionEntry>) -> String {
 
 // ── Session (Pi-compatible high-level wrapper) ──────────────────────
 
-use crate::agent::session_storage::SessionMetadata;
+use super::storage::SessionMetadata;
 
 /// High-level session wrapper, matching pi's `Session` class.
 ///
@@ -1106,7 +1106,7 @@ impl SessionManager {
         let created_at = chrono::Utc::now().to_rfc3339();
 
         // Use in-memory storage initially — no file created yet (lazy write).
-        let meta = crate::agent::session_storage::SessionMetadata {
+        let meta = super::storage::SessionMetadata {
             id: id.clone(),
             created_at: created_at.clone(),
             cwd: cwd.to_string_lossy().to_string(),
@@ -1140,7 +1140,7 @@ impl SessionManager {
                     Err(e2) => {
                         eprintln!("Warning: failed to create session file: {}", e2);
                         Box::new(InMemorySessionStorage::new(
-                            crate::agent::session_storage::SessionMetadata {
+                            super::storage::SessionMetadata {
                                 id,
                                 created_at: chrono::Utc::now().to_rfc3339(),
                                 cwd: cwd.to_string_lossy().to_string(),
@@ -1164,7 +1164,7 @@ impl SessionManager {
 
     /// Create an in-memory (non-persisted) session.
     fn create_in_memory(cwd: &Path, session_dir: &Path) -> Self {
-        let meta = crate::agent::session_storage::SessionMetadata {
+        let meta = super::storage::SessionMetadata {
             id: uuid::Uuid::new_v4().to_string(),
             created_at: chrono::Utc::now().to_rfc3339(),
             cwd: cwd.to_string_lossy().to_string(),
@@ -1187,7 +1187,7 @@ impl SessionManager {
 
         // Always create in-memory initially (lazy write).
         // ensure_flushed() will create the file on first assistant message.
-        let meta = crate::agent::session_storage::SessionMetadata {
+        let meta = super::storage::SessionMetadata {
             id,
             created_at,
             cwd: self.cwd.to_string_lossy().to_string(),
