@@ -16,9 +16,9 @@ use rab::tui::keybindings::{Keybindings, init_keybindings};
 async fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
 
-    // Subcommand: rab update-models
-    if args.get(1).map(|s| s.as_str()) == Some("update-models") {
-        return rab::provider::update::run_update_models().await;
+    // Subcommand: rab generate-models
+    if args.get(1).map(|s| s.as_str()) == Some("generate-models") {
+        return rab::provider::generate_models::run_generate_models().await;
     }
 
     let cwd = std::env::current_dir()?;

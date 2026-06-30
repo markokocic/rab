@@ -1,4 +1,4 @@
-//! `rab update-models` subcommand.
+//! `rab generate-models` subcommand.
 //!
 //! Fetches https://models.dev/api.json, applies pi-style corrections,
 //! and writes `provider/models.json` in the repo root.
@@ -16,10 +16,11 @@ const TARGET_PROVIDERS: &[(&str, &str)] = &[
     ("github-copilot", "github-copilot"),
     ("opencode", "opencode"),
     ("opencode-go", "opencode-go"),
+    ("deepseek", "deepseek"),
 ];
 
-/// Run the update. Called from main.rs when args contain "update-models".
-pub async fn run_update_models() -> anyhow::Result<()> {
+/// Run the generate. Called from main.rs when args contain "generate-models".
+pub async fn run_generate_models() -> anyhow::Result<()> {
     // 1. Fetch models.dev
     eprintln!("Fetching {} ...", MODELS_DEV_URL);
     let raw = fetch(MODELS_DEV_URL).await?;
@@ -30,7 +31,7 @@ pub async fn run_update_models() -> anyhow::Result<()> {
     let output_path = std::env::current_dir()?.join(OUTPUT_PATH);
     if !output_path.exists() {
         anyhow::bail!(
-            "{} not found.\nRun this from the rab repo root, or specify a project that has the built-in catalog.\n  cargo run -- update-models",
+            "{} not found.\nRun this from the rab repo root, or specify a project that has the built-in catalog.\n  cargo run -- generate-models",
             output_path.display()
         );
     }
@@ -130,6 +131,7 @@ fn provider_display_name(key: &str) -> &'static str {
     match key {
         "github-copilot" => "GitHub Copilot",
         "opencode-go" => "OpenCode Zen Go",
+        "deepseek" => "DeepSeek",
         _ => "OpenCode Zen",
     }
 }
@@ -138,6 +140,7 @@ fn provider_base_url(key: &str) -> &'static str {
     match key {
         "github-copilot" => "https://api.individual.githubcopilot.com",
         "opencode-go" => "https://opencode.ai/zen/go",
+        "deepseek" => "https://api.deepseek.com",
         _ => "https://opencode.ai/zen",
     }
 }
@@ -145,6 +148,7 @@ fn provider_base_url(key: &str) -> &'static str {
 fn provider_env_var(key: &str) -> &'static str {
     match key {
         "github-copilot" => "COPILOT_GITHUB_TOKEN",
+        "deepseek" => "DEEPSEEK_API_KEY",
         _ => "OPENCODE_API_KEY",
     }
 }
@@ -308,12 +312,15 @@ fn apply_corrections(
         compat["requiresReasoningContentOnAssistantMessages"] = Value::Bool(true);
         compat["thinkingFormat"] = Value::String("deepseek".into());
         compat["supportsReasoningEffort"] = Value::Bool(false);
-        entry["thinkingLevelMap"] = serde_json::json!({
-            "minimal": null, "low": null, "medium": null, "high": "high", "xhigh": "max"
-        });
         if provider_key == "opencode" {
             compat["supportsLongCacheRetention"] = Value::Bool(false);
         }
+        if provider_key == "deepseek" {
+            compat["supportsThinkingControl"] = Value::Bool(true);
+        }
+        entry["thinkingLevelMap"] = serde_json::json!({
+            "minimal": null, "low": null, "medium": null, "high": "high", "xhigh": "max"
+        });
     }
 
     if model_id == "kimi-k2.6" {
@@ -328,6 +335,16 @@ fn apply_corrections(
 
     if model_id == "minimax-m2.7" {
         compat["supportsLongCacheRetention"] = Value::Bool(false);
+    }
+
+    if model_id == "deepseek-reasoner" {
+        compat["requiresReasoningContentOnAssistantMessages"] = Value::Bool(true);
+        compat["thinkingFormat"] = Value::String("deepseek".into());
+        compat["supportsReasoningEffort"] = Value::Bool(false);
+        compat["supportsThinkingControl"] = Value::Bool(true);
+        entry["thinkingLevelMap"] = serde_json::json!({
+            "minimal": null, "low": null, "medium": null, "high": "high", "xhigh": "max"
+        });
     }
 
     if model_id == "grok-build-0.1" {

@@ -1,5 +1,140 @@
 {
   "providers": {
+    "deepseek": {
+      "api": "openai-completions",
+      "baseUrl": "https://api.deepseek.com",
+      "env": {
+        "apiKey": "DEEPSEEK_API_KEY"
+      },
+      "models": [
+        {
+          "api": "openai-completions",
+          "baseUrl": "https://api.deepseek.com/v1",
+          "compat": {
+            "maxTokensField": "max_tokens",
+            "supportsDeveloperRole": false,
+            "supportsStore": false
+          },
+          "contextWindow": 1000000,
+          "cost": {
+            "cacheRead": 0.0028,
+            "cacheWrite": 0.0,
+            "input": 0.14,
+            "output": 0.28
+          },
+          "id": "deepseek-chat",
+          "input": [
+            "text"
+          ],
+          "maxTokens": 384000,
+          "name": "DeepSeek Chat",
+          "reasoning": false
+        },
+        {
+          "api": "openai-completions",
+          "baseUrl": "https://api.deepseek.com/v1",
+          "compat": {
+            "maxTokensField": "max_tokens",
+            "requiresReasoningContentOnAssistantMessages": true,
+            "supportsDeveloperRole": false,
+            "supportsReasoningEffort": false,
+            "supportsStore": false,
+            "supportsThinkingControl": true,
+            "thinkingFormat": "deepseek"
+          },
+          "contextWindow": 1000000,
+          "cost": {
+            "cacheRead": 0.0028,
+            "cacheWrite": 0.0,
+            "input": 0.14,
+            "output": 0.28
+          },
+          "id": "deepseek-reasoner",
+          "input": [
+            "text"
+          ],
+          "maxTokens": 384000,
+          "name": "DeepSeek Reasoner",
+          "reasoning": true,
+          "thinkingLevelMap": {
+            "high": "high",
+            "low": null,
+            "medium": null,
+            "minimal": null,
+            "xhigh": "max"
+          }
+        },
+        {
+          "api": "openai-completions",
+          "baseUrl": "https://api.deepseek.com/v1",
+          "compat": {
+            "maxTokensField": "max_tokens",
+            "requiresReasoningContentOnAssistantMessages": true,
+            "supportsDeveloperRole": false,
+            "supportsReasoningEffort": false,
+            "supportsStore": false,
+            "supportsThinkingControl": true,
+            "thinkingFormat": "deepseek"
+          },
+          "contextWindow": 1000000,
+          "cost": {
+            "cacheRead": 0.0028,
+            "cacheWrite": 0.0,
+            "input": 0.14,
+            "output": 0.28
+          },
+          "id": "deepseek-v4-flash",
+          "input": [
+            "text"
+          ],
+          "maxTokens": 384000,
+          "name": "DeepSeek V4 Flash",
+          "reasoning": true,
+          "thinkingLevelMap": {
+            "high": "high",
+            "low": null,
+            "medium": null,
+            "minimal": null,
+            "xhigh": "max"
+          }
+        },
+        {
+          "api": "openai-completions",
+          "baseUrl": "https://api.deepseek.com/v1",
+          "compat": {
+            "maxTokensField": "max_tokens",
+            "requiresReasoningContentOnAssistantMessages": true,
+            "supportsDeveloperRole": false,
+            "supportsReasoningEffort": false,
+            "supportsStore": false,
+            "supportsThinkingControl": true,
+            "thinkingFormat": "deepseek"
+          },
+          "contextWindow": 1000000,
+          "cost": {
+            "cacheRead": 0.003625,
+            "cacheWrite": 0.0,
+            "input": 0.435,
+            "output": 0.87
+          },
+          "id": "deepseek-v4-pro",
+          "input": [
+            "text"
+          ],
+          "maxTokens": 384000,
+          "name": "DeepSeek V4 Pro",
+          "reasoning": true,
+          "thinkingLevelMap": {
+            "high": "high",
+            "low": null,
+            "medium": null,
+            "minimal": null,
+            "xhigh": "max"
+          }
+        }
+      ],
+      "name": "DeepSeek"
+    },
     "github-copilot": {
       "api": "openai-completions",
       "baseUrl": "https://api.individual.githubcopilot.com",
