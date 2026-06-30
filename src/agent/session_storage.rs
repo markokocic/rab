@@ -9,8 +9,7 @@
 //! The `Session` struct lives in `session.rs`.
 
 use crate::agent::session::{
-    LeafEntry, SessionEntry, SessionHeader, append_entry_to_file, generate_entry_id,
-    load_session_from_file,
+    SessionEntry, SessionHeader, append_entry_to_file, generate_entry_id, load_session_from_file,
 };
 use std::path::{Path, PathBuf};
 
@@ -168,15 +167,8 @@ impl SessionStorage for InMemorySessionStorage {
         {
             return Err(format!("Entry {} not found", id));
         }
-        let entry = SessionEntry::Leaf(LeafEntry {
-            id: self.create_entry_id(),
-            parent_id: self.leaf_id.clone(),
-            timestamp: chrono::Utc::now().to_rfc3339(),
-            target_id: leaf_id.map(|s| s.to_string()),
-        });
+        // Pi-compatible: leaf is in-memory only, no LeafEntry created
         self.leaf_id = leaf_id.map(|s| s.to_string());
-        self.entries.push(entry.clone());
-        self.by_id.insert(entry.id().to_string(), entry);
         Ok(())
     }
 
@@ -368,16 +360,8 @@ impl SessionStorage for JsonlSessionStorage {
         {
             return Err(format!("Entry {} not found", id));
         }
-        let entry = SessionEntry::Leaf(LeafEntry {
-            id: self.create_entry_id(),
-            parent_id: self.leaf_id.clone(),
-            timestamp: chrono::Utc::now().to_rfc3339(),
-            target_id: leaf_id.map(|s| s.to_string()),
-        });
-        self.append_to_file(&entry)?;
+        // Pi-compatible: leaf is in-memory only, no LeafEntry written to file
         self.leaf_id = leaf_id.map(|s| s.to_string());
-        self.entries.push(entry.clone());
-        self.by_id.insert(entry.id().to_string(), entry);
         Ok(())
     }
 
@@ -579,16 +563,14 @@ mod tests {
             .append_entry(make_msg_entry("m2", Some("m1"), "second"))
             .unwrap();
 
-        // Set leaf to m1 (branching)
+        // Set leaf to m1 (branching) — in-memory only, no LeafEntry written
         storage.set_leaf_id(Some("m1")).unwrap();
-        // The leaf entry points to m1
         assert_eq!(storage.get_leaf_id(), Some("m1".to_string()));
 
-        // Verify leaf entry was appended
+        // Verify no LeafEntry was added to entries
         let entries = storage.get_entries();
-        assert_eq!(entries.len(), 3);
-        assert_eq!(entries[2].id().len(), 8); // leaf entry has auto-generated id
-        assert!(matches!(entries[2], SessionEntry::Leaf(_)));
+        assert_eq!(entries.len(), 2);
+        assert!(!entries.iter().any(|e| matches!(e, SessionEntry::Leaf(_))));
     }
 
     #[test]

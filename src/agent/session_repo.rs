@@ -125,50 +125,32 @@ impl SessionRepo for DefaultSessionRepo {
 // ── Sequential listing (used by `list`) ────────────────────────────
 
 /// List session files sequentially with optional cwd filtering and progress callback.
+/// Uses the public `list_sessions` from `session.rs` for the core listing.
 fn list_sessions(
     session_dir: &Path,
     filter_cwd: Option<&Path>,
     progress: Option<&dyn Fn(usize, usize)>,
 ) -> Vec<SessionInfo> {
-    let dir = match std::fs::read_dir(session_dir) {
-        Ok(d) => d,
-        Err(_) => return vec![],
-    };
-
-    let file_paths: Vec<PathBuf> = dir
-        .flatten()
-        .filter(|e| e.path().extension().is_some_and(|ext| ext == "jsonl"))
-        .map(|e| e.path())
-        .collect();
-
-    let total = file_paths.len();
-    let mut sessions: Vec<SessionInfo> = Vec::with_capacity(total);
+    let sessions = crate::agent::session::list_sessions(session_dir);
+    let total = sessions.len();
     let mut loaded = 0;
 
-    for path in &file_paths {
-        let header = crate::agent::session::read_session_header(path);
-        if let Some(ref h) = header
-            && let Some(filter) = filter_cwd
-            && h.cwd != filter.to_string_lossy().as_ref()
-        {
+    let filtered: Vec<SessionInfo> = sessions
+        .into_iter()
+        .filter(|s| {
             loaded += 1;
             if let Some(ref cb) = progress {
                 cb(loaded, total);
             }
-            continue;
-        }
+            if let Some(filter) = filter_cwd {
+                s.cwd == filter.to_string_lossy().as_ref()
+            } else {
+                true
+            }
+        })
+        .collect();
 
-        if let Some(info) = load_session_info(path) {
-            sessions.push(info);
-        }
-        loaded += 1;
-        if let Some(ref cb) = progress {
-            cb(loaded, total);
-        }
-    }
-
-    sessions.sort_by_key(|b| std::cmp::Reverse(b.created));
-    sessions
+    filtered
 }
 
 // ── Concurrent listing (used by `list_all`) ────────────────────────
@@ -330,7 +312,7 @@ mod tests {
         let mut sm1 = SessionManager::create(&cwd1, Some(&sessions_dir));
         sm1.append_message(&make_user_msg("p1 msg"));
         sm1.append_message(&make_asst_msg("p1 resp"));
-        let _id1 = sm1.session_id().to_string();
+        let _id1 = sm1.session().session_id().to_string();
         drop(sm1);
 
         // Session in project2

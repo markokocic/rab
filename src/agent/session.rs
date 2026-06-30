@@ -1256,23 +1256,7 @@ impl SessionManager {
         self.session_dir == get_default_session_dir(&self.cwd)
     }
 
-    pub fn session_id(&self) -> String {
-        self.session.metadata().id
-    }
-
-    pub fn session_file(&self) -> Option<PathBuf> {
-        self.session.metadata().path
-    }
-
-    pub fn leaf_id(&self) -> Option<String> {
-        self.session.get_leaf_id()
-    }
-
     /// Get the current session name.
-    pub fn session_name(&self) -> Option<String> {
-        self.session.get_session_name()
-    }
-
     /// Get the underlying Session reference.
     pub fn session(&self) -> &Session {
         &self.session
@@ -1292,7 +1276,35 @@ impl SessionManager {
 
     /// Get the current leaf entry (pi-compatible).
     pub fn get_leaf_entry(&self) -> Option<SessionEntry> {
-        self.leaf_id().and_then(|id| self.entry(&id))
+        self.session
+            .get_leaf_id()
+            .as_ref()
+            .and_then(|id| self.session.get_entry(id.as_str()))
+    }
+
+    /// Get all direct children of an entry (pi-compatible).
+    pub fn get_children(&self, parent_id: &str) -> Vec<SessionEntry> {
+        self.session
+            .get_entries()
+            .iter()
+            .filter(|e| e.parent_id() == Some(parent_id))
+            .cloned()
+            .collect()
+    }
+
+    /// Get the session header (pi-compatible).
+    pub fn get_header(&self) -> Option<SessionHeader> {
+        // The header is stored as the first entry in the session storage.
+        // We can reconstruct it from metadata.
+        let meta = self.session.metadata();
+        Some(SessionHeader {
+            type_: "session".to_string(),
+            version: Some(CURRENT_SESSION_VERSION),
+            id: meta.id,
+            timestamp: meta.created_at,
+            cwd: meta.cwd,
+            parent_session: meta.parent_session_path,
+        })
     }
 
     /// Get the session as a tree structure with resolved children and labels (pi-compatible).
@@ -1362,128 +1374,48 @@ impl SessionManager {
 
     // ── Public: Appending (delegated to Session) ──────────────────
 
+    /// Check whether the session already contains an assistant message (pi-compatible).
+    fn has_assistant_message(&self) -> bool {
+        self.session.get_entries().iter().any(|e| {
+            matches!(
+                e,
+                SessionEntry::Message(m) if matches!(&m.message, yoagent::types::AgentMessage::Llm(yoagent::types::Message::Assistant { .. }))
+            )
+        })
+    }
+
     pub fn append_message(&mut self, message: &yoagent::types::AgentMessage) -> String {
-        // Flush on first message (lazy write) to ensure session is persisted
-        // even if the agent never produces an assistant message (e.g. provider error).
+        // Pi-compatible lazy-write: defer file creation until first assistant message.
+        // Before the first assistant, all entries are held in memory only.
         if !self.flushed && self.persist {
-            self.ensure_flushed();
+            let is_assistant = matches!(
+                message,
+                yoagent::types::AgentMessage::Llm(yoagent::types::Message::Assistant { .. })
+            );
+            if is_assistant || self.has_assistant_message() {
+                self.ensure_flushed();
+            }
         }
         self.session.append_message(message)
     }
 
-    pub fn append_thinking_level_change(&mut self, thinking_level: &str) -> String {
-        self.session.append_thinking_level_change(thinking_level)
-    }
-
-    pub fn append_model_change(&mut self, provider: &str, model_id: &str) -> String {
-        self.session.append_model_change(provider, model_id)
-    }
-
-    pub fn append_session_info(&mut self, name: &str) -> String {
-        self.session.append_session_info(name)
-    }
-
-    pub fn append_compaction(
+    /// Append a message with a pre-computed cost (pi-style).
+    /// Pi-compatible lazy-write: defer file creation until first assistant message.
+    pub fn append_message_with_cost(
         &mut self,
-        summary: &str,
-        first_kept_entry_id: &str,
-        tokens_before: u64,
-        details: Option<serde_json::Value>,
-        from_hook: Option<bool>,
+        message: &yoagent::types::AgentMessage,
+        cost: f64,
     ) -> String {
-        self.session.append_compaction(
-            summary,
-            first_kept_entry_id,
-            tokens_before,
-            details,
-            from_hook,
-        )
-    }
-
-    pub fn append_branch_summary(
-        &mut self,
-        from_id: &str,
-        summary: &str,
-        details: Option<serde_json::Value>,
-        from_hook: Option<bool>,
-    ) -> String {
-        self.session
-            .append_branch_summary(from_id, summary, details, from_hook)
-    }
-
-    pub fn append_label_change(
-        &mut self,
-        target_id: &str,
-        label: Option<&str>,
-    ) -> Result<String, SessionError> {
-        self.session.append_label_change(target_id, label)
-    }
-
-    pub fn append_custom_entry(&mut self, custom_type: &str, data: serde_json::Value) -> String {
-        self.session.append_custom_entry(custom_type, data)
-    }
-
-    pub fn append_active_tools_change(&mut self, active_tool_names: &[String]) -> String {
-        self.session.append_active_tools_change(active_tool_names)
-    }
-
-    pub fn append_custom_message_entry(
-        &mut self,
-        custom_type: &str,
-        content: serde_json::Value,
-        display: bool,
-        details: Option<serde_json::Value>,
-    ) -> String {
-        self.session
-            .append_custom_message_entry(custom_type, content, display, details)
-    }
-
-    // ── Public: Querying (delegated to Session) ──────────────────
-
-    /// Find all entries of a given type (pi-compatible).
-    pub fn find_entries_by_type(&self, type_name: &str) -> Vec<SessionEntry> {
-        self.session.find_entries(type_name)
-    }
-
-    /// Get all entries (excludes header).
-    pub fn entries(&self) -> Vec<SessionEntry> {
-        self.session.get_entries()
-    }
-
-    /// Look up an entry by id.
-    pub fn entry(&self, id: &str) -> Option<SessionEntry> {
-        self.session.get_entry(id)
-    }
-
-    /// Get all direct children of an entry.
-    pub fn children(&self, parent_id: &str) -> Vec<SessionEntry> {
-        self.session
-            .get_entries()
-            .into_iter()
-            .filter(|e| e.parent_id() == Some(parent_id))
-            .collect()
-    }
-
-    /// Walk from entry to root, returning all entries in path order.
-    pub fn branch(&self, from_id: Option<&str>) -> Vec<SessionEntry> {
-        self.session.get_branch(from_id).unwrap_or_default()
-    }
-
-    /// Build the session context (messages for LLM with compaction handling).
-    /// Pi-compatible: delegates to Session::build_context.
-    pub fn build_session_context(&self) -> SessionContext {
-        self.session.build_context()
-    }
-
-    /// Get the label for an entry, if any.
-    pub fn label(&self, id: &str) -> Option<String> {
-        self.session.get_label(id)
-    }
-
-    /// Get the timestamp of the latest label change for an entry, if any.
-    /// Pi-compatible: delegates to session's get_label_timestamp.
-    pub fn label_timestamp(&self, id: &str) -> Option<String> {
-        self.session.get_label_timestamp(id)
+        if !self.flushed && self.persist {
+            let is_assistant = matches!(
+                message,
+                yoagent::types::AgentMessage::Llm(yoagent::types::Message::Assistant { .. })
+            );
+            if is_assistant || self.has_assistant_message() {
+                self.ensure_flushed();
+            }
+        }
+        self.session.append_message_with_cost(message, cost)
     }
 
     // ── Public: Branching ─────────────────────────────────────────
@@ -1628,7 +1560,7 @@ impl SessionManager {
     /// Extracts the linear path from root to leaf into a new session file.
     /// Pi-compatible: creates a new session file, preserving labels.
     pub fn create_branched_session(&mut self, leaf_id: &str) -> Option<PathBuf> {
-        let path = self.branch(Some(leaf_id));
+        let path = self.session.get_branch(Some(leaf_id)).unwrap_or_default();
         if path.is_empty() {
             return None;
         }
@@ -1717,38 +1649,6 @@ impl SessionManager {
         }
 
         Some(new_session_file)
-    }
-
-    /// List all sessions across all project directories (pi-compatible).
-    pub fn list_all(session_dir: Option<&Path>) -> Vec<SessionInfo> {
-        let dir = if let Some(d) = session_dir {
-            d.to_path_buf()
-        } else {
-            directories::BaseDirs::new()
-                .expect("Could not determine home directory")
-                .home_dir()
-                .join(".rab")
-                .join("sessions")
-        };
-
-        let mut all_sessions: Vec<SessionInfo> = Vec::new();
-
-        if let Ok(read_dir) = std::fs::read_dir(&dir) {
-            for entry in read_dir.flatten() {
-                let path = entry.path();
-                if path.is_dir() {
-                    let sessions = list_sessions(&path);
-                    all_sessions.extend(sessions);
-                }
-            }
-        }
-
-        // Also check the root dir itself for sessions
-        let root_sessions = list_sessions(&dir);
-        all_sessions.extend(root_sessions);
-
-        all_sessions.sort_by_key(|b| std::cmp::Reverse(b.created));
-        all_sessions
     }
 }
 
@@ -1976,13 +1876,15 @@ mod tests {
         std::fs::create_dir_all(&cwd).unwrap();
 
         let mut sm = SessionManager::create(&cwd, Some(&sessions_dir));
-        sm.append_thinking_level_change("high");
-        sm.append_model_change("opencode_go", "deepseek-v4-pro");
-        sm.append_active_tools_change(&["read".to_string(), "write".to_string()]);
+        sm.session_mut().append_thinking_level_change("high");
+        sm.session_mut()
+            .append_model_change("opencode_go", "deepseek-v4-pro");
+        sm.session_mut()
+            .append_active_tools_change(&["read".to_string(), "write".to_string()]);
         sm.append_message(&make_user_msg("hello"));
         sm.append_message(&make_asst_msg("hi"));
 
-        let context = sm.build_session_context();
+        let context = sm.session().build_context();
         assert_eq!(context.thinking_level, "high");
         assert_eq!(
             context.model,
@@ -1999,7 +1901,7 @@ mod tests {
     fn test_build_context_defaults_when_no_metadata() {
         let cwd = Path::new("/tmp/test");
         let sm = SessionManager::in_memory(cwd);
-        let context = sm.build_session_context();
+        let context = sm.session().build_context();
         assert_eq!(context.thinking_level, "off");
         assert!(context.model.is_none());
         assert!(context.active_tool_names.is_none());
@@ -2013,20 +1915,20 @@ mod tests {
         let cwd = Path::new("/tmp/test");
         let mut sm = SessionManager::in_memory(cwd);
         sm.append_message(&make_user_msg("hello"));
-        sm.append_thinking_level_change("high");
-        sm.append_model_change("p", "m");
-        sm.append_session_info("test session");
+        sm.session_mut().append_thinking_level_change("high");
+        sm.session_mut().append_model_change("p", "m");
+        sm.session_mut().append_session_info("test session");
 
-        let messages = sm.find_entries_by_type("message");
+        let messages = sm.session().find_entries("message");
         assert_eq!(messages.len(), 1);
 
-        let thinking = sm.find_entries_by_type("thinking_level_change");
+        let thinking = sm.session().find_entries("thinking_level_change");
         assert_eq!(thinking.len(), 1);
 
-        let models = sm.find_entries_by_type("model_change");
+        let models = sm.session().find_entries("model_change");
         assert_eq!(models.len(), 1);
 
-        let infos = sm.find_entries_by_type("session_info");
+        let infos = sm.session().find_entries("session_info");
         assert_eq!(infos.len(), 1);
     }
 
@@ -2049,7 +1951,7 @@ mod tests {
         let mut sm = SessionManager::create(&cwd, Some(&sessions_dir));
         sm.append_message(&make_user_msg("first"));
         sm.append_message(&make_asst_msg("response"));
-        let path = sm.session_file().unwrap().to_path_buf();
+        let path = sm.session().session_file().unwrap().to_path_buf();
         drop(sm);
 
         let sessions = list_sessions(&sessions_dir);
@@ -2068,7 +1970,7 @@ mod tests {
         let mut sm = SessionManager::create(&cwd, Some(&sessions_dir));
         sm.append_message(&make_user_msg("hello"));
         sm.append_message(&make_asst_msg("world"));
-        let source_path = sm.session_file().unwrap().to_path_buf();
+        let source_path = sm.session().session_file().unwrap().to_path_buf();
         drop(sm);
 
         let target_dir = tmp.path().join("forked");
@@ -2421,10 +2323,10 @@ mod tests {
         let cwd = Path::new("/tmp/test-project");
         let sm = SessionManager::in_memory(cwd);
         assert!(!sm.is_persisted());
-        assert!(!sm.session_id().is_empty());
+        assert!(!sm.session().session_id().is_empty());
         assert_eq!(sm.cwd(), cwd);
-        assert!(sm.leaf_id().is_none());
-        assert!(sm.entries().is_empty());
+        assert!(sm.session().get_leaf_id().is_none());
+        assert!(sm.session().get_entries().is_empty());
     }
 
     #[test]
@@ -2436,10 +2338,10 @@ mod tests {
 
         let sm = SessionManager::create(&cwd, Some(&sessions_dir));
         assert!(sm.is_persisted());
-        assert!(!sm.session_id().is_empty());
+        assert!(!sm.session().session_id().is_empty());
         // File should NOT exist yet (lazy write: no file path until first assistant)
         assert!(
-            sm.session_file().is_none(),
+            sm.session().session_file().is_none(),
             "session file should not be created until first assistant message (lazy write)"
         );
         assert!(!sm.flushed);
@@ -2456,22 +2358,25 @@ mod tests {
 
         let user_msg = make_user_msg("hello");
         let user_id = sm.append_message(&user_msg);
-        assert_eq!(sm.leaf_id().as_deref(), Some(user_id.as_str()));
+        assert_eq!(
+            sm.session().get_leaf_id().as_deref(),
+            Some(user_id.as_str())
+        );
 
         // In-memory entries exist even before flush
-        assert_eq!(sm.entries().len(), 1);
+        assert_eq!(sm.session().get_entries().len(), 1);
 
         let assistant_msg = make_asst_msg("hi there");
         sm.append_message(&assistant_msg);
-        assert_eq!(sm.entries().len(), 2);
+        assert_eq!(sm.session().get_entries().len(), 2);
 
         // After assistant message, file should be created (lazy write)
         assert!(
-            sm.session_file().unwrap().exists(),
+            sm.session().session_file().unwrap().exists(),
             "session file should exist after first assistant message"
         );
 
-        let context = sm.build_session_context();
+        let context = sm.session().build_context();
         assert_eq!(context.messages.len(), 2);
         assert_eq!(
             crate::agent::types::message_text(&context.messages[0]),
@@ -2495,14 +2400,14 @@ mod tests {
         sm.append_message(&make_user_msg("first"));
         sm.append_message(&make_asst_msg("response"));
 
-        let file_path = sm.session_file().unwrap().to_path_buf();
-        let session_id = sm.session_id().to_string();
+        let file_path = sm.session().session_file().unwrap().to_path_buf();
+        let session_id = sm.session().session_id().to_string();
         drop(sm);
 
         // Open it
         let sm2 = SessionManager::open(&file_path, Some(&sessions_dir), None);
-        assert_eq!(sm2.session_id(), session_id);
-        let context = sm2.build_session_context();
+        assert_eq!(sm2.session().session_id(), session_id);
+        let context = sm2.session().build_context();
         assert_eq!(context.messages.len(), 2);
         assert_eq!(
             crate::agent::types::message_text(&context.messages[0]),
@@ -2525,7 +2430,7 @@ mod tests {
         let mut sm1 = SessionManager::create(&cwd, Some(&sessions_dir));
         sm1.append_message(&make_user_msg("old session"));
         sm1.append_message(&make_asst_msg("old response"));
-        let _old_id = sm1.session_id().to_string();
+        let _old_id = sm1.session().session_id().to_string();
         drop(sm1);
 
         // Small delay to ensure different mtime
@@ -2535,13 +2440,13 @@ mod tests {
         let mut sm2 = SessionManager::create(&cwd, Some(&sessions_dir));
         sm2.append_message(&make_user_msg("new session"));
         sm2.append_message(&make_asst_msg("new response"));
-        let new_id = sm2.session_id().to_string();
+        let new_id = sm2.session().session_id().to_string();
         drop(sm2);
 
         // Continue recent - should get the new one
         let sm3 = SessionManager::continue_recent(&cwd, Some(&sessions_dir));
-        assert_eq!(sm3.session_id(), new_id);
-        let context = sm3.build_session_context();
+        assert_eq!(sm3.session().session_id(), new_id);
+        let context = sm3.session().build_context();
         assert_eq!(
             crate::agent::types::message_text(&context.messages[0]),
             "new session"
@@ -2558,8 +2463,8 @@ mod tests {
 
         // No sessions exist - should create new
         let sm = SessionManager::continue_recent(&cwd, Some(&sessions_dir));
-        assert!(!sm.session_id().is_empty());
-        assert!(sm.entries().is_empty());
+        assert!(!sm.session().session_id().is_empty());
+        assert!(sm.session().get_entries().is_empty());
     }
 
     #[test]
@@ -2570,16 +2475,16 @@ mod tests {
         std::fs::create_dir_all(&cwd).unwrap();
 
         let mut sm = SessionManager::create(&cwd, Some(&sessions_dir));
-        assert!(sm.session_name().is_none());
+        assert!(sm.session().session_name().is_none());
 
-        sm.append_session_info("My Task");
+        sm.session_mut().append_session_info("My Task");
         sm.append_message(&make_user_msg("hello"));
         sm.append_message(&make_asst_msg("hi"));
-        assert_eq!(sm.session_name().as_deref(), Some("My Task"));
+        assert_eq!(sm.session().session_name().as_deref(), Some("My Task"));
 
         // Setting empty name clears it
-        sm.append_session_info("");
-        assert!(sm.session_name().is_none());
+        sm.session_mut().append_session_info("");
+        assert!(sm.session().session_name().is_none());
     }
 
     #[test]
@@ -2590,10 +2495,10 @@ mod tests {
         std::fs::create_dir_all(&cwd).unwrap();
 
         let mut sm = SessionManager::create(&cwd, Some(&sessions_dir));
-        sm.append_thinking_level_change("high");
+        sm.session_mut().append_thinking_level_change("high");
 
-        assert_eq!(sm.entries().len(), 1);
-        match &sm.entries()[0] {
+        assert_eq!(sm.session().get_entries().len(), 1);
+        match &sm.session().get_entries()[0] {
             SessionEntry::ThinkingLevelChange(e) => {
                 assert_eq!(e.thinking_level, "high");
             }
@@ -2609,10 +2514,11 @@ mod tests {
         std::fs::create_dir_all(&cwd).unwrap();
 
         let mut sm = SessionManager::create(&cwd, Some(&sessions_dir));
-        sm.append_model_change("opencode_go", "deepseek-v4-pro");
+        sm.session_mut()
+            .append_model_change("opencode_go", "deepseek-v4-pro");
 
-        assert_eq!(sm.entries().len(), 1);
-        match &sm.entries()[0] {
+        assert_eq!(sm.session().get_entries().len(), 1);
+        match &sm.session().get_entries()[0] {
             SessionEntry::ModelChange(e) => {
                 assert_eq!(e.provider, "opencode_go");
                 assert_eq!(e.model_id, "deepseek-v4-pro");
@@ -2629,9 +2535,15 @@ mod tests {
         std::fs::create_dir_all(&cwd).unwrap();
 
         let mut sm = SessionManager::create(&cwd, Some(&sessions_dir));
-        sm.append_compaction("Earlier work summarized", "entry_kept", 5000, None, None);
+        sm.session_mut().append_compaction(
+            "Earlier work summarized",
+            "entry_kept",
+            5000,
+            None,
+            None,
+        );
 
-        match &sm.entries()[0] {
+        match &sm.session().get_entries()[0] {
             SessionEntry::Compaction(e) => {
                 assert_eq!(e.summary, "Earlier work summarized");
                 assert_eq!(e.first_kept_entry_id, "entry_kept");
@@ -2653,12 +2565,17 @@ mod tests {
         sm.append_message(&make_asst_msg("ok"));
 
         // Set label
-        sm.append_label_change(&msg_id, Some("important")).unwrap();
-        assert_eq!(sm.label(&msg_id).as_deref(), Some("important"));
+        sm.session_mut()
+            .append_label_change(&msg_id, Some("important"))
+            .unwrap();
+        assert_eq!(
+            sm.session().get_label(&msg_id).as_deref(),
+            Some("important")
+        );
 
         // Clear label
-        sm.append_label_change(&msg_id, None).unwrap();
-        assert_eq!(sm.label(&msg_id), None);
+        sm.session_mut().append_label_change(&msg_id, None).unwrap();
+        assert_eq!(sm.session().get_label(&msg_id), None);
     }
 
     #[test]
@@ -2675,20 +2592,21 @@ mod tests {
         sm.append_message(&make_asst_msg("response two"));
 
         // Current leaf is after last message
-        assert_eq!(sm.entries().len(), 4);
+        assert_eq!(sm.session().get_entries().len(), 4);
 
-        // Branch back to first user message (writes a persistent LeafEntry, pi-compatible)
+        // Branch back to first user message (pi-compatible: leaf is in-memory only)
         sm.set_branch(&m1).unwrap();
-        assert_eq!(sm.entries().len(), 5); // 4 original + 1 leaf entry
-        assert_eq!(sm.leaf_id().as_deref(), Some(m1.as_str()));
+        // No LeafEntry written, entries count unchanged
+        assert_eq!(sm.session().get_entries().len(), 4);
+        assert_eq!(sm.session().get_leaf_id().as_deref(), Some(m1.as_str()));
 
         // Append a new branch
         sm.append_message(&make_asst_msg("alternate response"));
-        // Now 6 entries (original 4 + leaf + 1 new message)
-        assert_eq!(sm.entries().len(), 6);
+        // 5 entries (original 4 + 1 new message, no leaf entry)
+        assert_eq!(sm.session().get_entries().len(), 5);
 
         // Build context from current leaf - should have 2 messages (m1, branch asst)
-        let context = sm.build_session_context();
+        let context = sm.session().build_context();
         assert_eq!(context.messages.len(), 2); // user "one" + assistant "alternate response"
         // Verify metadata in context
         assert_eq!(context.thinking_level, "off");
@@ -2706,19 +2624,19 @@ mod tests {
         let mut sm = SessionManager::create(&cwd, Some(&sessions_dir));
         sm.append_message(&make_user_msg("one"));
         sm.append_message(&make_asst_msg("response"));
-        assert_eq!(sm.entries().len(), 2);
+        assert_eq!(sm.session().get_entries().len(), 2);
 
-        // Reset leaf (persistent leaf entry, pi-compatible)
+        // Reset leaf (pi-compatible: leaf is in-memory only)
         sm.reset_leaf();
-        // Leaf entry was written (type: "leaf", targetId: null)
-        assert_eq!(sm.entries().len(), 3);
-        assert!(sm.leaf_id().is_none());
+        // No LeafEntry written, entries count unchanged
+        assert_eq!(sm.session().get_entries().len(), 2);
+        assert!(sm.session().get_leaf_id().is_none());
 
         // Append from reset state (parentId should be None since leaf is None)
         sm.append_message(&make_user_msg("fresh start"));
-        assert_eq!(sm.entries().len(), 4);
+        assert_eq!(sm.session().get_entries().len(), 3);
         // Verify fresh start has no parent
-        match &sm.entries()[3] {
+        match &sm.session().get_entries()[2] {
             SessionEntry::Message(m) => {
                 assert!(m.parent_id.is_none());
             }
@@ -2737,9 +2655,10 @@ mod tests {
         sm.append_message(&make_user_msg("one"));
         sm.append_message(&make_asst_msg("response"));
 
-        sm.append_branch_summary("root", "Abandoned path summary", None, None);
+        sm.session_mut()
+            .append_branch_summary("root", "Abandoned path summary", None, None);
 
-        match &sm.entries()[2] {
+        match &sm.session().get_entries()[2] {
             SessionEntry::BranchSummary(e) => {
                 assert_eq!(e.summary, "Abandoned path summary");
                 assert_eq!(e.from_id, "root");
@@ -2760,7 +2679,7 @@ mod tests {
         sm.append_message(&make_asst_msg("response"));
 
         // m1 should have the assistant as child
-        let children = sm.children(&m1);
+        let children = sm.get_children(&m1);
         assert_eq!(children.len(), 1);
     }
 
@@ -2774,9 +2693,10 @@ mod tests {
         let mut sm = SessionManager::create(&cwd, Some(&sessions_dir));
         sm.append_message(&make_user_msg("one"));
         sm.append_message(&make_asst_msg("ok"));
-        sm.append_custom_entry("my_ext", serde_json::json!({"key": "value"}));
+        sm.session_mut()
+            .append_custom_entry("my_ext", serde_json::json!({"key": "value"}));
 
-        match &sm.entries()[2] {
+        match &sm.session().get_entries()[2] {
             SessionEntry::Custom(e) => {
                 assert_eq!(e.custom_type, "my_ext");
                 assert_eq!(e.data["key"], "value");
@@ -2797,7 +2717,7 @@ mod tests {
         let mut sm1 = SessionManager::create(&cwd, Some(&sessions_dir));
         sm1.append_message(&make_user_msg("old"));
         sm1.append_message(&make_asst_msg("old"));
-        let _path1 = sm1.session_file().unwrap().to_path_buf();
+        let _path1 = sm1.session().session_file().unwrap().to_path_buf();
         drop(sm1);
 
         std::thread::sleep(std::time::Duration::from_millis(10));
@@ -2806,7 +2726,7 @@ mod tests {
         let mut sm2 = SessionManager::create(&cwd, Some(&sessions_dir));
         sm2.append_message(&make_user_msg("new"));
         sm2.append_message(&make_asst_msg("new"));
-        let path2 = sm2.session_file().unwrap().to_path_buf();
+        let path2 = sm2.session().session_file().unwrap().to_path_buf();
         drop(sm2);
 
         let most_recent = find_most_recent_session(&sessions_dir, None).unwrap();
@@ -2829,9 +2749,9 @@ mod tests {
 
         // Opening an empty file should not panic - should start fresh
         let sm = SessionManager::open(&file_path, Some(&sessions_dir), None);
-        assert!(!sm.session_id().is_empty());
-        assert!(sm.entries().is_empty());
-        assert_eq!(sm.session_file().unwrap(), file_path);
+        assert!(!sm.session().session_id().is_empty());
+        assert!(sm.session().get_entries().is_empty());
+        assert_eq!(sm.session().session_file().unwrap(), file_path);
     }
 
     #[test]
@@ -2852,8 +2772,8 @@ mod tests {
 
         // Should recover gracefully
         let sm = SessionManager::open(&file_path, Some(&sessions_dir), None);
-        assert!(!sm.session_id().is_empty());
-        assert!(sm.entries().is_empty());
+        assert!(!sm.session().session_id().is_empty());
+        assert!(sm.session().get_entries().is_empty());
     }
 
     #[test]
@@ -2868,8 +2788,8 @@ mod tests {
         let mut sm = SessionManager::create(&cwd, Some(&sessions_dir));
         sm.append_message(&make_user_msg("test"));
         sm.append_message(&make_asst_msg("ok"));
-        let original_id = sm.session_id().to_string();
-        let file_path = sm.session_file().unwrap().to_path_buf();
+        let original_id = sm.session().session_id().to_string();
+        let file_path = sm.session().session_file().unwrap().to_path_buf();
         drop(sm);
 
         // Read the header line and write only that
@@ -2879,8 +2799,8 @@ mod tests {
 
         // Open - should keep the session (header exists, just no entries)
         let sm = SessionManager::open(&file_path, Some(&sessions_dir), None);
-        assert_eq!(sm.session_id(), original_id);
-        assert!(sm.entries().is_empty());
+        assert_eq!(sm.session().session_id(), original_id);
+        assert!(sm.session().get_entries().is_empty());
     }
 
     #[test]
@@ -2895,7 +2815,7 @@ mod tests {
         let mut sm = SessionManager::create(&cwd, Some(&sessions_dir));
         sm.append_message(&make_user_msg("valid message"));
         sm.append_message(&make_asst_msg("valid response"));
-        let file_path = sm.session_file().unwrap().to_path_buf();
+        let file_path = sm.session().session_file().unwrap().to_path_buf();
         drop(sm);
 
         // Append garbage lines to the file
@@ -2907,7 +2827,7 @@ mod tests {
 
         // Open - valid entries should be loaded, garbage skipped
         let sm = SessionManager::open(&file_path, Some(&sessions_dir), None);
-        let ctx = sm.build_session_context();
+        let ctx = sm.session().build_context();
         assert_eq!(ctx.messages.len(), 2);
         assert_eq!(
             crate::agent::types::message_text(&ctx.messages[0]),
@@ -2942,8 +2862,8 @@ mod tests {
         // Pi-compatible: no valid session header means the file is invalid.
         // Should generate new ID, empty entries (fresh start).
         let sm = SessionManager::open(&file_path, Some(&sessions_dir), None);
-        assert!(!sm.session_id().is_empty());
-        assert_eq!(sm.entries().len(), 0);
+        assert!(!sm.session().session_id().is_empty());
+        assert_eq!(sm.session().get_entries().len(), 0);
     }
 
     #[test]
@@ -2960,13 +2880,13 @@ mod tests {
 
         // Open - recovers
         let mut sm = SessionManager::open(&file_path, Some(&sessions_dir), None);
-        assert!(sm.entries().is_empty());
+        assert!(sm.session().get_entries().is_empty());
 
         // Should be able to append normally
         sm.append_message(&make_user_msg("fresh start"));
         sm.append_message(&make_asst_msg("fresh response"));
 
-        let ctx = sm.build_session_context();
+        let ctx = sm.session().build_context();
         assert_eq!(ctx.messages.len(), 2);
         assert_eq!(
             crate::agent::types::message_text(&ctx.messages[0]),
@@ -3010,9 +2930,10 @@ mod tests {
     #[test]
     fn test_session_name_sanitizes_newlines() {
         let mut sm = SessionManager::in_memory(Path::new("/tmp/test"));
-        sm.append_session_info("My\nTask\rWith\r\nNewlines");
+        sm.session_mut()
+            .append_session_info("My\nTask\rWith\r\nNewlines");
         assert_eq!(
-            sm.session_name().as_deref(),
+            sm.session().session_name().as_deref(),
             Some("My Task With  Newlines")
         );
     }
@@ -3022,7 +2943,9 @@ mod tests {
     #[test]
     fn test_append_label_nonexistent_target_returns_error() {
         let mut sm = SessionManager::in_memory(Path::new("/tmp/test"));
-        let result = sm.append_label_change("nonexistent", Some("label"));
+        let result = sm
+            .session_mut()
+            .append_label_change("nonexistent", Some("label"));
         assert!(result.is_err());
         match result {
             Err(SessionError::NotFound(msg)) => {
@@ -3041,25 +2964,29 @@ mod tests {
         sm.append_message(&make_asst_msg("ok"));
 
         // No label yet
-        assert!(sm.label_timestamp(&msg_id).is_none());
+        assert!(sm.session().get_label_timestamp(&msg_id).is_none());
 
         // Set label
-        sm.append_label_change(&msg_id, Some("important")).unwrap();
-        let ts = sm.label_timestamp(&msg_id);
+        sm.session_mut()
+            .append_label_change(&msg_id, Some("important"))
+            .unwrap();
+        let ts = sm.session().get_label_timestamp(&msg_id);
         assert!(ts.is_some());
         // Timestamp should be parseable as RFC3339
         chrono::DateTime::parse_from_rfc3339(&ts.unwrap()).unwrap();
 
         // Clear label — timestamp should be removed
-        sm.append_label_change(&msg_id, None).unwrap();
-        assert!(sm.label_timestamp(&msg_id).is_none());
+        sm.session_mut().append_label_change(&msg_id, None).unwrap();
+        assert!(sm.session().get_label_timestamp(&msg_id).is_none());
     }
 
     #[test]
     fn test_get_tree_includes_label_timestamp() {
         let mut sm = SessionManager::in_memory(Path::new("/tmp/test"));
         let msg_id = sm.append_message(&make_user_msg("mark this"));
-        sm.append_label_change(&msg_id, Some("bookmark")).unwrap();
+        sm.session_mut()
+            .append_label_change(&msg_id, Some("bookmark"))
+            .unwrap();
 
         let tree = sm.get_tree();
         // Find the node for msg_id

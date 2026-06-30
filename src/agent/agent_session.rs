@@ -4,14 +4,11 @@ use crate::agent::compaction::{
 };
 use crate::agent::extension::Extension;
 use crate::agent::session::SessionManager;
-use crate::agent::session_storage::{InMemorySessionStorage, SessionMetadata, SessionStorage};
-use crate::agent::types::{message_dedup_key, message_text, tool_result_message, user_message};
-use std::collections::HashSet;
+use crate::agent::types::{message_text, user_message};
 use std::sync::Arc;
 
 use crate::provider::ProviderRegistry;
 use yoagent::types::AgentMessage;
-use yoagent::types::Content;
 
 // ── Compaction lifecycle events ─────────────────────────────────────
 
@@ -40,27 +37,14 @@ pub type CompactionEventCallback = Box<dyn Fn(&CompactionEvent) + Send + Sync>;
 /// - Event-driven message persistence (persist tool results as they arrive)
 /// - Automatic model/thinking/tool change detection and persistence
 pub struct AgentSession {
-    /// The core session (wraps SessionStorage).
-    session: crate::agent::session::Session,
-    /// Session storage directory on disk.
-    session_dir: std::path::PathBuf,
-    /// Working directory for this session.
-    cwd: std::path::PathBuf,
-    /// Whether session persistence is enabled.
-    persist: bool,
-    /// Whether the session file has been written at least once (lazy write).
-    flushed: bool,
+    /// The session manager (owns Session + flush logic).
+    mgr: SessionManager,
     /// Last known model for change detection.
     last_model: Option<(String, String)>,
     /// Last known thinking level for change detection.
     last_thinking_level: String,
     /// Last known active tool names for change detection.
     last_active_tools: Option<Vec<String>>,
-    /// IDs of messages already persisted via event-driven persistence,
-    /// to avoid duplicates when AgentEnd fires.
-    persisted_message_ids: HashSet<String>,
-    /// Tool call IDs already persisted (for tool result dedup).
-    persisted_tool_call_ids: HashSet<String>,
     /// Compaction settings (default: enabled).
     compaction_settings: CompactionSettings,
     /// Model context window in tokens (for shouldCompact check).
@@ -86,20 +70,17 @@ pub struct AgentSession {
 }
 
 impl AgentSession {
-    /// Create a new AgentSession from a SessionManager (extracts inner Session + config).
+    /// Create a new AgentSession from a SessionManager (pi-compatible: keeps the manager).
     pub fn new(mgr: SessionManager) -> Self {
         // Snapshot current metadata from the session context for change detection.
-        let ctx = mgr.build_session_context();
-
-        // Extract config before consuming mgr
-        let cwd = mgr.cwd().to_path_buf();
-        let session_dir = mgr.session_dir().to_path_buf();
-        let persist = mgr.is_persisted();
-        let session = mgr.into_session();
+        let ctx = mgr.session().build_context();
 
         // If the session has no thinking level change entries, set last_thinking_level
         // to empty so the first on_thinking_level_change always detects a change.
-        let has_thinking_entries = !session.find_entries("thinking_level_change").is_empty();
+        let has_thinking_entries = !mgr
+            .session()
+            .find_entries("thinking_level_change")
+            .is_empty();
         let last_thinking_level = if has_thinking_entries {
             ctx.thinking_level
         } else {
@@ -107,16 +88,10 @@ impl AgentSession {
         };
 
         Self {
-            session,
-            session_dir,
-            cwd,
-            persist,
-            flushed: false,
+            mgr,
             last_model: ctx.model,
             last_thinking_level,
             last_active_tools: ctx.active_tool_names,
-            persisted_message_ids: HashSet::new(),
-            persisted_tool_call_ids: HashSet::new(),
             compaction_settings: CompactionSettings::default(),
             context_window: 200_000,
             model_name: String::new(),
@@ -191,41 +166,10 @@ impl AgentSession {
         self.registry = Some(registry);
     }
 
-    /// Compute the cost of a message in USD using its model's cost config.
-    /// Returns 0.0 if the message is not an assistant message or if the model
-    /// can't be resolved.
-    fn message_cost(&self, msg: &AgentMessage) -> f64 {
-        let Some(yoagent::types::Message::Assistant {
-            usage,
-            model,
-            provider,
-            ..
-        }) = msg.as_llm()
-        else {
-            return 0.0;
-        };
-
-        let Some(ref registry) = self.registry else {
-            return 0.0;
-        };
-
-        match registry.resolve(model, Some(provider)) {
-            Ok(resolved) => {
-                let cost = &resolved.model_config.cost;
-                (usage.input as f64 * cost.input_per_million
-                    + usage.output as f64 * cost.output_per_million
-                    + usage.cache_read as f64 * cost.cache_read_per_million
-                    + usage.cache_write as f64 * cost.cache_write_per_million)
-                    / 1_000_000.0
-            }
-            Err(_) => 0.0,
-        }
-    }
-
     /// Sync the thinking level from the session context.
     /// Should be called after the session context changes.
     pub fn sync_thinking_level(&mut self) {
-        let ctx = self.session.build_session_context();
+        let ctx = self.mgr.session().build_context();
         let level_str = ctx.thinking_level.to_lowercase();
         self.thinking_level = match level_str.as_str() {
             "off" => yoagent::types::ThinkingLevel::Off,
@@ -272,6 +216,8 @@ impl AgentSession {
     }
 
     /// Reset overflow recovery state (called when starting a new turn).
+    /// Pi-compatible: reset overflow recovery when a user message arrives
+    /// (matches pi's _overflowRecoveryAttempted reset in message_start for user role).
     pub fn reset_overflow_recovery(&mut self) {
         self.overflow_recovery_attempted = false;
         self.compaction_cancel = crate::agent::extension::Cancel::new();
@@ -298,79 +244,49 @@ impl AgentSession {
     /// Borrow the underlying session manager.
     /// Borrow the underlying Session.
     pub fn session(&self) -> &crate::agent::session::Session {
-        &self.session
+        self.mgr.session()
     }
 
     /// Mutably borrow the underlying Session.
     pub fn session_mut(&mut self) -> &mut crate::agent::session::Session {
-        &mut self.session
+        self.mgr.session_mut()
     }
 
     /// Consume and return the inner Session.
     pub fn into_session(self) -> crate::agent::session::Session {
-        self.session
+        self.mgr.into_session()
     }
 
-    /// Ensure the session file has been written (lazy write on first assistant message).
+    /// Flush is handled automatically by `SessionManager` on every `append_message`.
+    /// Call this to force an early flush (e.g. before saving state externally).
     pub fn ensure_flushed(&mut self) {
-        if self.flushed || !self.persist {
-            return;
-        }
-        let id = self.session.session_id();
-        let cwd_str = self.cwd.to_string_lossy().to_string();
-        let parent_session = self.session.metadata().parent_session_path.clone();
-        let created_at = self.session.metadata().created_at.clone();
-        let file_ts = created_at.replace([':', '.'], "-");
-        let file_path = self.session_dir.join(format!("{}_{}.jsonl", file_ts, id));
-
-        let existing_entries = self.session.get_entries();
-
-        match crate::agent::session_storage::JsonlSessionStorage::create(
-            file_path,
-            &cwd_str,
-            &id,
-            parent_session,
-        ) {
-            Ok(mut file_storage) => {
-                for entry in &existing_entries {
-                    if let Err(e) = file_storage.append_entry(entry.clone()) {
-                        eprintln!("Warning: failed to write entry to session file: {}", e);
-                    }
-                }
-                self.session = crate::agent::session::Session::new(Box::new(file_storage));
-                self.flushed = true;
-            }
-            Err(e) => {
-                eprintln!("Warning: failed to create session file: {}", e);
-                self.flushed = true;
-            }
-        }
+        self.mgr.ensure_flushed();
     }
 
     // ── App-level accessors ────────────────────────────────────
 
     pub fn cwd(&self) -> &std::path::Path {
-        &self.cwd
+        self.mgr.cwd()
     }
 
     pub fn session_dir(&self) -> &std::path::Path {
-        &self.session_dir
+        self.mgr.session_dir()
     }
 
     pub fn is_persisted(&self) -> bool {
-        self.persist
+        self.mgr.is_persisted()
     }
 
     pub fn session_id(&self) -> String {
-        self.session.session_id()
+        self.mgr.session().session_id()
     }
 
     pub fn session_file(&self) -> Option<std::path::PathBuf> {
-        self.session.session_file()
+        self.mgr.session().session_file()
     }
 
     pub fn session_name(&self) -> Option<String> {
-        self.session.session_name()
+        self.mgr.session().session_name()
     }
 
     // ── Model / thinking / tool change tracking ─────────────────
@@ -380,7 +296,9 @@ impl AgentSession {
     pub fn on_model_change(&mut self, provider: &str, model_id: &str) -> bool {
         let new = (provider.to_string(), model_id.to_string());
         if self.last_model.as_ref() != Some(&new) {
-            self.session.append_model_change(provider, model_id);
+            self.mgr
+                .session_mut()
+                .append_model_change(provider, model_id);
             self.last_model = Some(new);
             true
         } else {
@@ -392,7 +310,7 @@ impl AgentSession {
     /// Pi-compatible: writes immediately to the session.
     pub fn on_thinking_level_change(&mut self, level: &str) -> bool {
         if self.last_thinking_level != level {
-            self.session.append_thinking_level_change(level);
+            self.mgr.session_mut().append_thinking_level_change(level);
             self.last_thinking_level = level.to_string();
             true
         } else {
@@ -405,7 +323,9 @@ impl AgentSession {
     pub fn on_active_tools_change(&mut self, tools: &[String]) -> bool {
         let tools_vec = tools.to_vec();
         if self.last_active_tools.as_ref() != Some(&tools_vec) {
-            self.session.append_active_tools_change(&tools_vec);
+            self.mgr
+                .session_mut()
+                .append_active_tools_change(&tools_vec);
             self.last_active_tools = Some(tools_vec);
             true
         } else {
@@ -418,128 +338,51 @@ impl AgentSession {
     /// Reset the session (creates a new empty session) and clear
     /// all tracked state so the new session starts fresh.
     pub fn new_session(&mut self) {
-        // Create a fresh in-memory session
-        let meta = SessionMetadata {
-            id: uuid::Uuid::new_v4().to_string(),
-            created_at: chrono::Utc::now().to_rfc3339(),
-            cwd: self.cwd.to_string_lossy().to_string(),
-            path: None,
-            parent_session_path: None,
-        };
-        let storage = Box::new(InMemorySessionStorage::new(meta));
-        self.session = crate::agent::session::Session::new(storage);
-        self.flushed = false;
-        self.persisted_message_ids.clear();
-        self.persisted_tool_call_ids.clear();
+        self.mgr.new_session(None);
         self.last_model = None;
         self.last_thinking_level = String::new();
         self.last_active_tools = None;
         self.compaction_cancel = crate::agent::extension::Cancel::new();
     }
 
-    /// Append a user message to the session and register it as persisted.
+    /// Append a user message to the session (pi-compatible: persists immediately).
     /// Returns the entry id.
     pub fn send_user_message(&mut self, content: &str) -> String {
         let msg = user_message(content);
-        let id = self.session.append_message(&msg);
-        self.persisted_message_ids.insert(message_dedup_key(&msg));
-        id
+        self.mgr.append_message(&msg)
     }
 
     /// Append a user message (pre-constructed) to the session.
     /// Returns the entry id.
     pub fn send_user_message_obj(&mut self, msg: &AgentMessage) -> String {
-        let id = self.session.append_message(msg);
-        self.persisted_message_ids.insert(message_dedup_key(msg));
-        id
+        self.mgr.append_message(msg)
     }
 
     // ── Event-driven persistence ──────────────────────────────────
 
     /// Process an agent event for automatic persistence (pi-compatible).
     ///
-    /// - `ToolResult` events are persisted immediately (crash-safe).
-    /// - `MessageEnd` persists every message in real-time (pi-compatible, crash-safe).
-    /// - `AgentEnd` persists any remaining assistant messages not yet captured.
+    /// Pi persists every message (user, assistant, tool result, custom) immediately
+    /// on `message_end`, not deferred to `agent_end`. Extension messages use
+    /// `custom_message` entries (excluded from LLM context); all others use regular
+    /// `message` entries.
     ///
-    /// Call this from your agent event handler alongside any UI updates.
-    /// This is the mode-agnostic persistence handler, matching pi's `_handleAgentEvent`.
+    /// Call this from your agent event handler.
     pub fn on_agent_event(&mut self, event: &yoagent::types::AgentEvent) {
-        use yoagent::types::AgentEvent as YoEvent;
-        match event {
-            YoEvent::ToolExecutionEnd {
-                tool_call_id,
-                tool_name,
-                result,
-                is_error,
-                ..
-            } => {
-                let content = result
-                    .content
-                    .iter()
-                    .filter_map(|c| {
-                        if let Content::Text { text } = c {
-                            Some(text.clone())
-                        } else {
-                            None
-                        }
-                    })
-                    .collect::<Vec<_>>()
-                    .join("");
-                let msg = tool_result_message(tool_call_id, tool_name, content, *is_error);
-                self.persist_message(&msg);
+        // Pi-compatible: persist every message immediately on message_end
+        if let yoagent::types::AgentEvent::MessageEnd { message } = event {
+            // Pi-compatible: reset overflow recovery when a user message arrives
+            // (matches pi's _overflowRecoveryAttempted reset in message_start for user role).
+            if crate::agent::types::message_is_user(message) {
+                self.reset_overflow_recovery();
             }
-            YoEvent::MessageEnd { message } => {
-                // Pi-compatible: reset overflow recovery when a user message arrives
-                // (matches pi's _overflowRecoveryAttempted reset in message_start for user role).
-                if crate::agent::types::message_is_user(message) {
-                    self.reset_overflow_recovery();
-                }
-                // Pi-compatible: persist every message immediately on message_end,
-                // not deferred to agent_end. Extension messages use custom_message
-                // entries (excluded from LLM context); all others use regular messages.
-                if crate::agent::types::message_is_extension(message) {
-                    self.persist_extension_message(message);
-                } else {
-                    self.persist_message_end(message);
-                }
-            }
-            YoEvent::AgentEnd { messages } => {
-                self.on_agent_end(messages);
-            }
-            _ => {}
-        }
-    }
-
-    /// Persist all new messages from an agent run that haven't been
-    /// persisted yet (e.g. assistant messages not captured by event-driven
-    /// persistence, or error messages).
-    ///
-    /// Call this when the agent loop finishes, or let `handle_event` do it
-    /// automatically on `AgentEnd`.
-    pub fn on_agent_end(&mut self, messages: &[AgentMessage]) {
-        for msg in messages {
-            if crate::agent::types::message_is_user(msg) {
-                continue;
-            }
-            // Skip Llm-form error messages — they're already persisted as
-            // Extension (custom_message) in the MessageEnd handler and should
-            // not be persisted again as Llm messages, which would be included
-            // in the LLM context on subsequent turns.
-            if crate::agent::types::message_error(msg).is_some() {
-                continue;
-            }
-            // Skip tool results already persisted via event-driven persistence
-            if crate::agent::types::message_is_tool_result(msg)
-                && let Some(tcid) = crate::agent::types::message_tool_call_id(msg)
-                && self.persisted_tool_call_ids.contains(tcid)
-            {
-                continue;
-            }
-            if !self.persisted_message_ids.contains(&message_dedup_key(msg)) {
-                let cost = self.message_cost(msg);
-                self.session.append_message_with_cost(msg, cost);
-                self.persisted_message_ids.insert(message_dedup_key(msg));
+            // Pi-compatible: persist every message immediately on message_end.
+            // Extension messages use custom_message entries (excluded from LLM context);
+            // all others use regular messages.
+            if crate::agent::types::message_is_extension(message) {
+                self.persist_extension_message(message);
+            } else {
+                self.mgr.append_message(message);
             }
         }
     }
@@ -612,11 +455,11 @@ impl AgentSession {
             return Ok(None);
         }
 
-        let entries = self.session.get_entries();
+        let entries = self.mgr.get_entries();
 
         // Check threshold for auto-compact
         if reason == CompactionReason::Threshold {
-            let context_msgs = self.session.build_session_context().messages;
+            let context_msgs = self.mgr.session().build_context().messages;
             let context_tokens = compaction::estimate_context_tokens(&context_msgs);
             if !compaction::should_compact(
                 context_tokens,
@@ -695,7 +538,7 @@ impl AgentSession {
         };
 
         // Append the compaction entry to the session
-        self.session.append_compaction(
+        self.mgr.session_mut().append_compaction(
             &result.summary,
             &result.first_kept_entry_id,
             result.tokens_before,
@@ -704,7 +547,7 @@ impl AgentSession {
         );
 
         // Compute estimated tokens after compaction
-        let context_after = self.session.build_session_context().messages;
+        let context_after = self.mgr.session().build_context().messages;
         let estimated_tokens_after = compaction::estimate_context_tokens(&context_after);
 
         let final_result = CompactionResult {
@@ -767,7 +610,7 @@ impl AgentSession {
 
         let api_key = self.compaction_api_key.as_ref().unwrap();
         generate_branch_summary(
-            &mut self.session,
+            self.mgr.session_mut(),
             &entries,
             target_id,
             api_key,
@@ -782,7 +625,7 @@ impl AgentSession {
     /// Optionally summarizes the abandoned path if a provider is configured.
     /// Returns the branch summary text if summarization was performed.
     pub async fn set_branch(&mut self, branch_from_id: &str) -> Result<Option<String>, String> {
-        let old_leaf = self.session.get_leaf_id();
+        let old_leaf = self.mgr.session().get_leaf_id();
 
         let summary = if self.compaction_api_key.is_some()
             && !self.model_name.is_empty()
@@ -805,7 +648,8 @@ impl AgentSession {
             None
         };
 
-        self.session
+        self.mgr
+            .session_mut()
             .set_leaf_id(Some(branch_from_id))
             .map_err(|e| format!("Failed to set branch: {}", e))?;
 
@@ -814,17 +658,6 @@ impl AgentSession {
 
     /// Persist a tool result message (public so the agent loop can persist crash-safely).
     /// Deduplicates by tool_call_id.
-    pub fn persist_tool_result(
-        &mut self,
-        tool_call_id: &str,
-        tool_name: &str,
-        content: String,
-        is_error: bool,
-    ) {
-        let msg = tool_result_message(tool_call_id, tool_name, content, is_error);
-        self.persist_message(&msg);
-    }
-
     /// Persist an Extension message as a `custom_message` session entry (pi-compatible).
     /// Extension messages are NOT persisted as regular messages — they use the
     /// `custom_message` entry type which supports `custom_type`, `display`, and `details`.
@@ -835,54 +668,8 @@ impl AgentSession {
         let text = crate::agent::types::message_extension_text(msg)
             .unwrap_or_else(|| crate::agent::types::message_text(msg));
         let content = serde_json::json!({"text": text});
-        self.session
+        self.mgr
+            .session_mut()
             .append_custom_message_entry(kind, content, true, None);
-    }
-
-    /// Persist a single message on `message_end` (pi-compatible pattern).
-    ///
-    /// Pi persists every message (user, assistant, toolResult) immediately on `message_end`,
-    /// not deferred to `agent_end`. This method handles dedup for tool results (already
-    /// persisted via `persist_tool_result`) and dedup by text for other message types.
-    pub fn persist_message_end(&mut self, msg: &AgentMessage) {
-        // Tool results are already persisted crash-safely via persist_tool_result on
-        // ToolExecutionEnd — skip them here to avoid duplicates.
-        if crate::agent::types::message_is_tool_result(msg)
-            && let Some(tcid) = crate::agent::types::message_tool_call_id(msg)
-            && self.persisted_tool_call_ids.contains(tcid)
-        {
-            return;
-        }
-        // Use persist_message for dedup (checks both tool_call_id and text)
-        self.persist_message(msg);
-    }
-
-    // ── Internal helpers ──────────────────────────────────────────
-
-    /// Persist a single message, skipping if already persisted (dedup).
-    /// Tool results are deduped by tool_call_id; other messages by text.
-    /// Persist a message directly (pi-compatible: messages are written immediately, not queued).
-    fn persist_message(&mut self, msg: &AgentMessage) {
-        // Dedup tool results by tool_call_id
-        if crate::agent::types::message_is_tool_result(msg)
-            && let Some(tcid) = crate::agent::types::message_tool_call_id(msg)
-        {
-            if self.persisted_tool_call_ids.contains(tcid) {
-                return;
-            }
-            self.session.append_message(msg);
-            self.persisted_tool_call_ids.insert(tcid.to_string());
-            self.persisted_message_ids.insert(message_dedup_key(msg));
-            return;
-        }
-        // Dedup other messages by dedup key (role + content signature)
-        if self.persisted_message_ids.contains(&message_dedup_key(msg)) {
-            return;
-        }
-        // Compute cost for assistant messages using the message's own model
-        // (pi-style: cost is pre-computed and stored per message).
-        let cost = self.message_cost(msg);
-        self.session.append_message_with_cost(msg, cost);
-        self.persisted_message_ids.insert(message_dedup_key(msg));
     }
 }

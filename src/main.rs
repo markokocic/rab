@@ -1,4 +1,5 @@
 use rab::agent::extension::Extension;
+use rab::agent::session_repo::SessionRepo;
 use rab::agent::settings::Settings;
 use rab::agent::ui;
 use rab::builtin::{
@@ -192,7 +193,7 @@ async fn main() -> anyhow::Result<()> {
     fn resolve_session_arg(
         arg: &str,
         cwd: &std::path::Path,
-        session_dir: Option<&std::path::Path>,
+        _session_dir: Option<&std::path::Path>,
     ) -> Result<ResolvedSession, String> {
         // If it looks like a path (contains separator or ends with .jsonl), use as-is
         if arg.contains('/') || arg.contains('\\') || arg.ends_with(".jsonl") {
@@ -204,7 +205,8 @@ async fn main() -> anyhow::Result<()> {
         }
 
         // Try to match as session ID prefix (first exact, then prefix)
-        let sessions = rab::agent::session::SessionManager::list_all(session_dir);
+        let repo = rab::agent::session_repo::DefaultSessionRepo::new();
+        let sessions = repo.list_all(None);
 
         // Exact match first
         if let Some(s) = sessions.iter().find(|s| s.id == arg) {
@@ -290,7 +292,7 @@ async fn main() -> anyhow::Result<()> {
             fork_options.as_ref(),
         ) {
             Ok(sm) => {
-                eprintln!("Forked session {}", sm.session_id());
+                eprintln!("Forked session {}", sm.session().session_id());
                 rab::agent::AgentSession::new(sm)
             }
             Err(e) => {

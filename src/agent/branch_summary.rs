@@ -348,7 +348,7 @@ mod tests {
     #[test]
     fn test_collect_entries_no_old_leaf() {
         let (sm, _ids) = linear_chain(3);
-        let target_id = sm.entries().last().unwrap().id().to_string();
+        let target_id = sm.session().get_entries().last().unwrap().id().to_string();
         let (entries, ancestor) =
             collect_entries_for_branch_summary(sm.session(), None, &target_id);
         assert!(entries.is_empty());
@@ -432,7 +432,7 @@ mod tests {
     #[test]
     fn test_prepare_branch_entries_with_entries() {
         let (sm, _ids) = linear_chain(3);
-        let entries: Vec<SessionEntry> = sm.entries().to_vec();
+        let entries: Vec<SessionEntry> = sm.session().get_entries().to_vec();
         let result = prepare_branch_entries(&entries, 1000);
         assert!(!result.0.is_empty());
         assert!(result.1 > 0);
