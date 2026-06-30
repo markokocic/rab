@@ -68,7 +68,7 @@ fn available_thinking_levels(app: &App) -> Vec<&'static str> {
     // Try to read thinkingLevelMap from the resolved model
     let thinking_map: Option<std::collections::HashMap<String, Option<serde_json::Value>>> = app
         .registry
-        .resolve(&app.model, app.settings.default_provider.as_deref())
+        .resolve(&app.model, Some(&app.current_provider))
         .ok()
         .and_then(|r| {
             r.model_config
@@ -96,6 +96,7 @@ fn available_thinking_levels(app: &App) -> Vec<&'static str> {
 /// Configuration for the UI app.
 pub struct AppConfig {
     pub model: String,
+    pub provider: String,
     pub system_prompt: String,
     pub extensions: Vec<Box<dyn Extension>>,
     pub cwd: PathBuf,
@@ -122,6 +123,7 @@ pub struct AppConfig {
 pub struct App {
     cwd: PathBuf,
     model: String,
+    current_provider: String,
     thinking_level: Option<String>,
     system_prompt: String,
     theme: RabTheme,
@@ -280,7 +282,7 @@ impl App {
         let mut agent_session = session;
         let model_config = config
             .registry
-            .resolve(&config.model, config.settings.default_provider.as_deref())
+            .resolve(&config.model, Some(&config.provider))
             .ok()
             .map(|r| r.model_config.clone())
             .unwrap_or_else(|| {
@@ -368,11 +370,7 @@ impl App {
                 .find_entries("model_change")
                 .is_empty();
             if !has_model_entry {
-                let provider = config
-                    .registry
-                    .provider_for_model(&config.model, config.settings.default_provider.as_deref())
-                    .unwrap_or_else(|| "opencode-go".to_string());
-                agent_session.on_model_change(&provider, &config.model);
+                agent_session.on_model_change(&config.provider, &config.model);
             }
             let has_thinking_entry = !agent_session
                 .session()
@@ -431,6 +429,7 @@ impl App {
         let mut result = Self {
             cwd: config.cwd,
             model: config.model,
+            current_provider: config.provider,
             thinking_level: config.thinking_level,
             system_prompt: config.system_prompt,
             theme,
@@ -555,11 +554,7 @@ impl App {
     /// Record a model change in the session and refresh footer display.
     fn record_model_change(&mut self, model: &str) {
         if let Some(ref mut agent_session) = self.session {
-            let provider = self
-                .registry
-                .provider_for_model(model, self.settings.default_provider.as_deref())
-                .unwrap_or_else(|| "opencode-go".to_string());
-            agent_session.on_model_change(&provider, model);
+            agent_session.on_model_change(&self.current_provider, model);
         }
         if let Some(ref session) = self.session {
             self.footer
@@ -739,10 +734,11 @@ pub async fn run(config: AppConfig, session: AgentSession) -> anyhow::Result<()>
                 match result {
                     OverlayResult::ModelSelected(full_id) => {
                         if !full_id.is_empty() {
-                            let model_id = full_id
+                            let (provider, model_id) = full_id
                                 .split_once('/')
-                                .map(|(_, id)| id.to_string())
-                                .unwrap_or_else(|| full_id.clone());
+                                .map(|(p, m)| (p.to_string(), m.to_string()))
+                                .unwrap_or_else(|| (String::new(), full_id.clone()));
+                            app.current_provider = provider;
                             app.model = model_id.clone();
                             app.record_model_change(&model_id);
                             app.status_text = Some(format!("Model: {}", full_id));
@@ -1319,8 +1315,12 @@ fn handle_model_cycle(app: &mut App, dir: isize) {
         None => 0,
     };
 
-    app.model = model_pool[next_idx].clone();
-    let model = app.model.clone();
+    let model = model_pool[next_idx].clone();
+    app.model = model.clone();
+    app.current_provider = app
+        .registry
+        .provider_for_model(&model, Some(&app.current_provider))
+        .unwrap_or_default();
     app.record_model_change(&model);
     show_status(app, format!("Model: {}", app.model));
 }
@@ -2055,12 +2055,13 @@ fn complete_login(app: &mut App, provider_id: &str, _auth_type: AuthType) {
     // If current model is unknown or doesn't belong to this provider, select first available
     let current_provider = app
         .registry
-        .provider_for_model(&app.model, app.settings.default_provider.as_deref())
+        .provider_for_model(&app.model, Some(&app.current_provider))
         .unwrap_or_default();
 
     if current_provider != provider_id || !app.available_models.contains(&app.model) {
         let first_model = provider_models[0];
         app.model = first_model.to_string();
+        app.current_provider = provider_id.to_string();
         let model = app.model.clone();
         app.record_model_change(&model);
         app.status_text = Some(format!(
@@ -2088,7 +2089,7 @@ fn open_model_selector(app: &mut App, tui: &mut TUI) {
     let signal = app.overlay_result_signal.clone();
     let current_provider = app
         .registry
-        .provider_for_model(&current, app.settings.default_provider.as_deref())
+        .provider_for_model(&current, Some(&app.current_provider))
         .unwrap_or_else(|| "unknown".to_string());
     let current_full_id = format!("{}/{}", current_provider, current);
 
@@ -2350,6 +2351,11 @@ async fn start_agent_loop(app: &mut App, message: String) {
             existing
         }
         None => {
+            let preferred = if !app.current_provider.is_empty() {
+                Some(app.current_provider.as_str())
+            } else {
+                app.settings.default_provider.as_deref()
+            };
             app.agent = Some(build_fresh_agent(
                 &app.registry,
                 &app.model,
@@ -2358,7 +2364,7 @@ async fn start_agent_loop(app: &mut App, message: String) {
                 thinking,
                 msgs,
                 &app.extensions,
-                app.settings.default_provider.as_deref(),
+                preferred,
             ));
             // SAFETY: we just set app.agent to Some(...)
             app.agent.as_mut().unwrap()
@@ -2542,6 +2548,10 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
         }
         CommandResult::ModelChanged(model) => {
             app.model = model.clone();
+            app.current_provider = app
+                .registry
+                .provider_for_model(&model, Some(&app.current_provider))
+                .unwrap_or_default();
             app.record_model_change(&model);
             app.status_text = Some(format!("Model: {}", model));
         }

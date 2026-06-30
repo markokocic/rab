@@ -281,7 +281,7 @@ impl Settings {
         Ok(())
     }
 
-    /// Resolved model name (defaults to deepseek-v4-flask).
+    /// Resolved model name (defaults to deepseek-v4-flash).
     pub fn model(&self) -> &str {
         self.default_model.as_deref().unwrap_or("deepseek-v4-flash")
     }

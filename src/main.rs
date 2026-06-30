@@ -519,8 +519,13 @@ async fn main() -> anyhow::Result<()> {
             .map(|r| r.api_key.clone())
             .or_else(|| auth.api_key("opencode-go"))
             .unwrap_or_default();
+        let provider = resolved
+            .as_ref()
+            .map(|r| r.model_config.provider.clone())
+            .unwrap_or_default();
         let config = ui::AppConfig {
             model,
+            provider,
             system_prompt,
             extensions,
             cwd,
