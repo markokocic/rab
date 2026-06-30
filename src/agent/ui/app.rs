@@ -164,6 +164,9 @@ pub struct App {
     /// receiver to the UI channel. The Agent stays in `app.agent` during streaming.
     forward_handle: Option<tokio::task::JoinHandle<()>>,
 
+    /// Handle for the OAuth login task, aborted on quit to avoid background polling.
+    oauth_join_handle: Option<tokio::task::JoinHandle<()>>,
+
     /// Display settings.
     hide_thinking: bool,
     collapse_tool_output: bool,
@@ -450,6 +453,7 @@ impl App {
             pending_auto_compact: false,
             agent: None,
             forward_handle: None,
+            oauth_join_handle: None,
             pending_command_result: None,
             overlay_result_signal: Rc::new(RefCell::new(None)),
             pending_scoped_ids: Rc::new(RefCell::new(None)),
@@ -750,32 +754,38 @@ pub async fn run(config: AppConfig, session: AgentSession) -> anyhow::Result<()>
                         show_login_provider_selector(&mut app, &mut tui, Some(auth_type));
                     }
                     OverlayResult::LoginProviderSelected(provider_id) => {
-                        // Open the API key input dialog for this provider
-                        show_api_key_login_dialog(&mut app, &mut tui, &provider_id);
+                        // Check if this is an OAuth provider
+                        if crate::provider::oauth::get(&provider_id).is_some() {
+                            // OAuth login flow
+                            show_oauth_login_dialog(&mut app, &mut tui, &provider_id);
+                        } else {
+                            // API key login flow
+                            show_api_key_login_dialog(&mut app, &mut tui, &provider_id);
+                        }
                     }
                     OverlayResult::LoginApiKeyProvided { provider, key } => {
-                        match auth::login(&provider, &key) {
-                            Ok(_) => {
-                                app.status_text = Some(format!("Logged in to {}", provider));
-                                // Refresh registry to reflect new auth state
-                                if let Some(reg) = Arc::get_mut(&mut app.registry) {
-                                    let _ = reg.reload(&provider::get_agent_dir());
-                                } else {
+                        // Check for OAuth login failure prefix
+                        if let Some(err_msg) = key.strip_prefix("OAUTH_LOGIN_FAILED:") {
+                            app.status_text = Some(format!("OAuth login failed: {}", err_msg));
+                        } else {
+                            match auth::login(&provider, &key) {
+                                Ok(_) => {
+                                    app.status_text = Some(format!("Logged in to {}", provider));
+                                    // Refresh registry
                                     match provider::ProviderRegistry::load(
                                         &provider::get_agent_dir(),
                                     ) {
                                         Ok(new_reg) => app.registry = Arc::new(new_reg),
                                         Err(e) => {
                                             app.status_text =
-                                                Some(format!("Failed to refresh registry: {}", e))
+                                                Some(format!("Failed to refresh registry: {}", e));
                                         }
                                     }
+                                    complete_login(&mut app, &provider, AuthType::ApiKey);
                                 }
-                                // Auto-select default model for this provider
-                                complete_login(&mut app, &provider, AuthType::ApiKey);
-                            }
-                            Err(e) => {
-                                app.status_text = Some(format!("Login failed: {}", e));
+                                Err(e) => {
+                                    app.status_text = Some(format!("Login failed: {}", e));
+                                }
                             }
                         }
                     }
@@ -784,17 +794,11 @@ pub async fn run(config: AppConfig, session: AgentSession) -> anyhow::Result<()>
                             Ok(true) => {
                                 app.status_text = Some(format!("Logged out from {}", provider_id));
                                 // Refresh registry to reflect new auth state
-                                if let Some(reg) = Arc::get_mut(&mut app.registry) {
-                                    let _ = reg.reload(&provider::get_agent_dir());
-                                } else {
-                                    match provider::ProviderRegistry::load(
-                                        &provider::get_agent_dir(),
-                                    ) {
-                                        Ok(new_reg) => app.registry = Arc::new(new_reg),
-                                        Err(e) => {
-                                            app.status_text =
-                                                Some(format!("Failed to refresh registry: {}", e))
-                                        }
+                                match provider::ProviderRegistry::load(&provider::get_agent_dir()) {
+                                    Ok(new_reg) => app.registry = Arc::new(new_reg),
+                                    Err(e) => {
+                                        app.status_text =
+                                            Some(format!("Failed to refresh registry: {}", e))
                                     }
                                 }
                             }
@@ -834,6 +838,15 @@ pub async fn run(config: AppConfig, session: AgentSession) -> anyhow::Result<()>
                 // The JoinHandle is resolved, so this returns instantly.
                 agent.finish().await;
             }
+        }
+
+        // Clean up completed OAuth handle
+        if app
+            .oauth_join_handle
+            .as_ref()
+            .is_some_and(|h| h.is_finished())
+        {
+            app.oauth_join_handle.take();
         }
 
         // Handle pending agent submission (async).
@@ -974,6 +987,10 @@ pub async fn run(config: AppConfig, session: AgentSession) -> anyhow::Result<()>
         app.status_text = None;
 
         if app.should_quit {
+            // Abort any in-flight OAuth login task
+            if let Some(handle) = app.oauth_join_handle.take() {
+                handle.abort();
+            }
             break;
         }
     }
@@ -1504,14 +1521,10 @@ fn handle_login(app: &mut App, provider: &str, api_key: Option<&str>) {
         match auth::login(provider, key) {
             Ok(_) => {
                 // Refresh registry
-                if let Some(reg) = Arc::get_mut(&mut app.registry) {
-                    let _ = reg.reload(&provider::get_agent_dir());
-                } else {
-                    match provider::ProviderRegistry::load(&provider::get_agent_dir()) {
-                        Ok(new_reg) => app.registry = Arc::new(new_reg),
-                        Err(e) => {
-                            app.status_text = Some(format!("Failed to refresh registry: {}", e));
-                        }
+                match provider::ProviderRegistry::load(&provider::get_agent_dir()) {
+                    Ok(new_reg) => app.registry = Arc::new(new_reg),
+                    Err(e) => {
+                        app.status_text = Some(format!("Failed to refresh registry: {}", e));
                     }
                 }
                 // Post-login completion
@@ -1546,14 +1559,10 @@ fn handle_logout(app: &mut App, provider: Option<&str>) {
                 .unwrap_or_else(|| "Logged out from all providers".into());
             chat_add(app, std::boxed::Box::new(InfoMessageComponent::new(msg)));
             // Refresh registry
-            if let Some(reg) = Arc::get_mut(&mut app.registry) {
-                let _ = reg.reload(&provider::get_agent_dir());
-            } else {
-                match provider::ProviderRegistry::load(&provider::get_agent_dir()) {
-                    Ok(new_reg) => app.registry = Arc::new(new_reg),
-                    Err(e) => {
-                        app.status_text = Some(format!("Failed to refresh registry: {}", e));
-                    }
+            match provider::ProviderRegistry::load(&provider::get_agent_dir()) {
+                Ok(new_reg) => app.registry = Arc::new(new_reg),
+                Err(e) => {
+                    app.status_text = Some(format!("Failed to refresh registry: {}", e));
                 }
             }
         }
@@ -1582,29 +1591,61 @@ fn show_login_provider_selector(app: &mut App, tui: &mut TUI, auth_type: Option<
 
     let all_providers = app.registry.list_providers();
 
-    // Filter by auth type if specified
-    let mut providers: Vec<AuthSelectorProvider> = all_providers
-        .into_iter()
-        .filter(|(_id, _)| {
-            match auth_type {
-                Some(AuthType::ApiKey) => {
-                    // All current providers are API key. In the future,
-                    // filter out OAuth-only providers.
-                    true
+    // Build the provider list, including OAuth providers from the OAuth registry
+    let mut providers: Vec<AuthSelectorProvider> = Vec::new();
+
+    // Add API key providers
+    for (id, name) in all_providers {
+        let is_oauth_provider = crate::provider::oauth::get(&id).is_some();
+        match auth_type {
+            Some(AuthType::ApiKey) => {
+                // Skip OAuth-only providers (those not in models.json)
+                if !is_oauth_provider {
+                    providers.push(AuthSelectorProvider {
+                        id,
+                        name,
+                        auth_type: AuthType::ApiKey,
+                    });
                 }
-                Some(AuthType::OAuth) => {
-                    // No OAuth providers registered yet — show none
-                    false
-                }
-                None => true,
             }
-        })
-        .map(|(id, name)| AuthSelectorProvider {
-            id,
-            name,
-            auth_type: auth_type.unwrap_or(AuthType::ApiKey),
-        })
-        .collect();
+            Some(AuthType::OAuth) => {
+                // Only include OAuth providers
+                if is_oauth_provider {
+                    providers.push(AuthSelectorProvider {
+                        id,
+                        name,
+                        auth_type: AuthType::OAuth,
+                    });
+                }
+            }
+            None => {
+                providers.push(AuthSelectorProvider {
+                    id,
+                    name,
+                    auth_type: if is_oauth_provider {
+                        AuthType::OAuth
+                    } else {
+                        AuthType::ApiKey
+                    },
+                });
+            }
+        }
+    }
+
+    // Also add OAuth providers that aren't in models.json (e.g. only in OAuth registry)
+    if auth_type != Some(AuthType::ApiKey) {
+        for oauth_id in crate::provider::oauth::list_ids() {
+            if !providers.iter().any(|p| p.id == oauth_id)
+                && let Some(provider) = crate::provider::oauth::get(&oauth_id)
+            {
+                providers.push(AuthSelectorProvider {
+                    id: oauth_id,
+                    name: provider.name().to_string(),
+                    auth_type: AuthType::OAuth,
+                });
+            }
+        }
+    }
 
     // Sort alphabetically by name for consistent display.
     providers.sort_by_key(|a| a.name.to_lowercase());
@@ -1681,6 +1722,129 @@ fn show_api_key_login_dialog(app: &mut App, tui: &mut TUI, provider_id: &str) {
     );
 }
 
+/// Show the OAuth login dialog for a specific provider.
+/// Matches pi's showLoginDialog for OAuth providers.
+fn show_oauth_login_dialog(app: &mut App, tui: &mut TUI, provider_id: &str) {
+    let provider_name = app
+        .registry
+        .list_providers()
+        .into_iter()
+        .find(|(id, _)| id == provider_id)
+        .map(|(_, name)| name)
+        .unwrap_or_else(|| {
+            crate::provider::oauth::get(provider_id)
+                .map(|p| p.name().to_string())
+                .unwrap_or_else(|| provider_id.to_string())
+        });
+
+    app.status_text = Some(format!("Starting OAuth login for {}…", provider_name));
+    tui.pop_overlay(); // close the provider selector overlay
+
+    // Send progress updates through the agent event channel.
+    // ProgressMessage with empty tool_name sets app.status_text (visible to user).
+    let tx = app.event_tx.clone();
+    let pid = provider_id.to_string();
+    let pname = provider_name.clone();
+
+    let tx2 = tx.clone();
+    let tx3 = tx.clone();
+    let tx4 = tx.clone();
+
+    let handle = tokio::spawn(async move {
+        let oauth_provider = match crate::provider::oauth::get(&pid) {
+            Some(p) => p,
+            None => {
+                let _ = tx.send(yoagent::types::AgentEvent::ProgressMessage {
+                    tool_call_id: String::new(),
+                    tool_name: String::new(),
+                    text: format!(
+                        "OAuth login failed: No OAuth provider registered for '{}'",
+                        pid
+                    ),
+                });
+                return;
+            }
+        };
+
+        let mut callbacks = crate::provider::oauth::OAuthLoginCallbacks {
+            on_device_code: Box::new(move |info: crate::provider::oauth::DeviceCodeInfo| {
+                let device_msg = format!(
+                    "Open {} and enter code: {}",
+                    info.verification_uri, info.user_code
+                );
+                // Show as status AND as a persistent chat message via ToolExecutionEnd
+                let _ = tx.send(yoagent::types::AgentEvent::ProgressMessage {
+                    tool_call_id: String::new(),
+                    tool_name: String::new(),
+                    text: device_msg,
+                });
+            }),
+            on_prompt: Box::new(
+                move |prompt: crate::provider::oauth::OAuthPrompt| match prompt {
+                    crate::provider::oauth::OAuthPrompt::Text {
+                        message,
+                        placeholder: _,
+                        allow_empty: _,
+                    } => {
+                        // Log the prompt so users see it; empty response = default (github.com)
+                        let _ = tx2.send(yoagent::types::AgentEvent::ProgressMessage {
+                            tool_call_id: String::new(),
+                            tool_name: String::new(),
+                            text: format!("{} (empty = github.com)", message),
+                        });
+                        // For now, accept empty — GitHub Enterprise users need to
+                        // set enterprise_url in credentials manually or via config.
+                        Ok(String::new())
+                    }
+                },
+            ),
+            on_progress: Box::new(move |msg: String| {
+                let _ = tx3.send(yoagent::types::AgentEvent::ProgressMessage {
+                    tool_call_id: String::new(),
+                    tool_name: String::new(),
+                    text: format!("[OAuth] {}", msg),
+                });
+            }),
+            signal: None,
+        };
+
+        match oauth_provider.login(&mut callbacks).await {
+            Ok(credentials) => {
+                let cred = crate::auth::AuthCredential::Oauth {
+                    access: credentials.access.clone(),
+                    refresh: Some(credentials.refresh.clone()),
+                    expires: Some(credentials.expires),
+                    enterprise_url: credentials.enterprise_url.clone(),
+                };
+                match crate::auth::login_oauth(&pid, &cred) {
+                    Ok(_) => {
+                        let _ = tx4.send(yoagent::types::AgentEvent::ProgressMessage {
+                            tool_call_id: String::new(),
+                            tool_name: String::new(),
+                            text: format!("✓ Logged in to {} via OAuth", pname),
+                        });
+                    }
+                    Err(e) => {
+                        let _ = tx4.send(yoagent::types::AgentEvent::ProgressMessage {
+                            tool_call_id: String::new(),
+                            tool_name: String::new(),
+                            text: format!("Failed to save OAuth credentials: {}", e),
+                        });
+                    }
+                }
+            }
+            Err(e) => {
+                let _ = tx4.send(yoagent::types::AgentEvent::ProgressMessage {
+                    tool_call_id: String::new(),
+                    tool_name: String::new(),
+                    text: format!("OAuth login failed: {}", e),
+                });
+            }
+        }
+    });
+    app.oauth_join_handle = Some(handle);
+}
+
 /// Show the auth type selector overlay ("Use a subscription" vs "Use an API key").
 /// Matches pi's showLoginAuthTypeSelector behavior.
 fn show_auth_type_selector(app: &mut App, tui: &mut TUI) {
@@ -1690,12 +1854,18 @@ fn show_auth_type_selector(app: &mut App, tui: &mut TUI) {
     let signal = app.overlay_result_signal.clone();
     let _theme = crate::agent::ui::theme::current_theme().clone();
 
-    let items = vec![crate::tui::components::select_list::SelectItem::new(
+    let mut items = vec![crate::tui::components::select_list::SelectItem::new(
         "api_key",
         "Use an API key",
     )];
-    // OAuth providers not registered yet — always show API key option
-    let _has_oauth = false;
+    // Add OAuth option if any OAuth providers are registered
+    let has_oauth = !crate::provider::oauth::list_ids().is_empty();
+    if has_oauth {
+        items.push(crate::tui::components::select_list::SelectItem::new(
+            "oauth",
+            "Use a subscription",
+        ));
+    }
 
     let filtered_indices: Vec<usize> = (0..items.len()).collect();
     let selected_index: usize = 0;
@@ -1818,13 +1988,15 @@ fn show_auth_type_or_provider_selector(app: &mut App, tui: &mut TUI) {
         app.status_text = Some("No providers available for login.".into());
         return;
     }
-    // All current providers are API key; no OAuth providers yet.
-    // When OAuth providers are added, show auth type selector if both types exist.
-    let all_api_key = providers.iter().all(|(_, _)| true); // all are API key for now
-    if all_api_key {
-        show_login_provider_selector(app, tui, Some(AuthType::ApiKey));
-    } else {
+    // Check if any OAuth providers are registered (from OAuth registry)
+    let has_oauth = !crate::provider::oauth::list_ids().is_empty();
+    let has_api_key = providers.iter().any(|(_, _)| true);
+    if has_oauth && has_api_key {
         show_auth_type_selector(app, tui);
+    } else if has_oauth {
+        show_login_provider_selector(app, tui, Some(AuthType::OAuth));
+    } else {
+        show_login_provider_selector(app, tui, Some(AuthType::ApiKey));
     }
 }
 
@@ -2466,17 +2638,9 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
         }
         CommandResult::Reloaded => {
             // Reload registry
-            // Reload registry: create a fresh one and replace via Arc::get_mut
-            if let Some(reg) = Arc::get_mut(&mut app.registry) {
-                if let Err(e) = reg.reload(&provider::get_agent_dir()) {
-                    app.status_text = Some(format!("Failed to reload models: {}", e));
-                }
-            } else {
-                // Arc is shared — create fresh and replace
-                match provider::ProviderRegistry::load(&provider::get_agent_dir()) {
-                    Ok(new_reg) => app.registry = Arc::new(new_reg),
-                    Err(e) => app.status_text = Some(format!("Failed to reload models: {}", e)),
-                }
+            match provider::ProviderRegistry::load(&provider::get_agent_dir()) {
+                Ok(new_reg) => app.registry = Arc::new(new_reg),
+                Err(e) => app.status_text = Some(format!("Failed to reload models: {}", e)),
             }
             // Reload settings from disk (pi-compatible)
             if let Err(e) = app.settings.reload(&app.cwd) {

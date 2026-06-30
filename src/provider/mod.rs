@@ -12,6 +12,7 @@ use yoagent::provider::model::ModelConfig;
 pub mod anthropic;
 pub mod compat;
 pub mod models;
+pub mod oauth;
 pub mod openai_compat;
 pub mod update;
 
@@ -34,6 +35,9 @@ pub struct ProviderRegistry {
 impl ProviderRegistry {
     /// Load the provider registry from built-in + user models.json.
     pub fn load(agent_dir: &Path) -> anyhow::Result<Self> {
+        // Register built-in OAuth providers once
+        crate::provider::oauth::register_builtins();
+
         let builtin_json = include_str!("models.json");
         let builtin = models::load_builtin(builtin_json)?;
 
@@ -80,6 +84,10 @@ impl ProviderRegistry {
                     .auth_storage
                     .api_key(&entry.id)
                     .or_else(|| {
+                        // Check for valid OAuth access token
+                        self.auth_storage.oauth_token(&entry.id)
+                    })
+                    .or_else(|| {
                         // Fallback: check environment variable
                         let env_var = entry.env_var_name();
                         std::env::var(env_var).ok()
@@ -108,6 +116,10 @@ impl ProviderRegistry {
         let api_key = self
             .auth_storage
             .api_key(provider_id)
+            .or_else(|| {
+                // Check for valid OAuth access token
+                self.auth_storage.oauth_token(provider_id)
+            })
             .or_else(|| {
                 let env_var = entry.env_var_name();
                 std::env::var(env_var).ok()
@@ -224,6 +236,10 @@ impl ProviderRegistry {
             || self.auth_storage.oauth_token(provider_id).is_some()
         {
             return true;
+        }
+        // Check if this is an OAuth provider that could be logged in
+        if crate::provider::oauth::is_built_in(provider_id) {
+            return self.auth_storage.oauth_token(provider_id).is_some();
         }
         // Check env var
         self.entries
