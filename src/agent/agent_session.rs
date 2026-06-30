@@ -34,15 +34,6 @@ pub enum CompactionEvent {
 /// Callback for compaction lifecycle events.
 pub type CompactionEventCallback = Box<dyn Fn(&CompactionEvent) + Send + Sync>;
 
-/// A deferred session write, queued during an agent run.
-/// Pi-compatible: batched and flushed at turn boundaries.
-#[allow(clippy::enum_variant_names)]
-pub(crate) enum PendingSessionWrite {
-    ModelChange { provider: String, model_id: String },
-    ThinkingLevelChange(String),
-    ActiveToolsChange(Vec<String>),
-}
-
 /// Bridges the agent loop events and session persistence.
 ///
 /// Handles:
@@ -90,8 +81,6 @@ pub struct AgentSession {
     overflow_recovery_attempted: bool,
     /// Cancellation token for in-progress compaction (pi-compatible abort).
     compaction_cancel: crate::agent::extension::Cancel,
-    /// Queued session writes, flushed at turn boundaries (pi-compatible).
-    pending_writes: Vec<PendingSessionWrite>,
     /// Provider registry for resolving model cost configs per message (pi-style).
     registry: Option<Arc<ProviderRegistry>>,
 }
@@ -138,7 +127,6 @@ impl AgentSession {
             event_listeners: Vec::new(),
             overflow_recovery_attempted: false,
             compaction_cancel: crate::agent::extension::Cancel::new(),
-            pending_writes: Vec::new(),
             registry: None,
         }
     }
@@ -385,45 +373,15 @@ impl AgentSession {
         self.session.session_name()
     }
 
-    // ── Pending writes (pi-compatible batching) ─────────────────
-
-    /// Queue a session write for batching. Pi-compatible: flushes at turn boundaries.
-    pub(crate) fn publish_session_write(&mut self, write: PendingSessionWrite) {
-        self.pending_writes.push(write);
-    }
-
-    /// Flush all queued writes to the underlying session storage.
-    /// Called at the end of `on_agent_event` and `on_agent_end`.
-    pub fn flush_pending_writes(&mut self) {
-        for write in self.pending_writes.drain(..) {
-            match write {
-                PendingSessionWrite::ModelChange { provider, model_id } => {
-                    self.session.append_model_change(&provider, &model_id);
-                }
-                PendingSessionWrite::ThinkingLevelChange(level) => {
-                    self.session.append_thinking_level_change(&level);
-                }
-                PendingSessionWrite::ActiveToolsChange(tools) => {
-                    self.session.append_active_tools_change(&tools);
-                }
-            }
-        }
-    }
-
     // ── Model / thinking / tool change tracking ─────────────────
 
     /// Persist a model change if it differs from the last known model.
-    /// Flushes pending writes immediately so callers can read the change
-    /// from session.get_entries() without an extra flush step.
+    /// Pi-compatible: writes immediately to the session.
     pub fn on_model_change(&mut self, provider: &str, model_id: &str) -> bool {
         let new = (provider.to_string(), model_id.to_string());
         if self.last_model.as_ref() != Some(&new) {
-            self.publish_session_write(PendingSessionWrite::ModelChange {
-                provider: provider.to_string(),
-                model_id: model_id.to_string(),
-            });
+            self.session.append_model_change(provider, model_id);
             self.last_model = Some(new);
-            self.flush_pending_writes();
             true
         } else {
             false
@@ -431,13 +389,11 @@ impl AgentSession {
     }
 
     /// Persist a thinking level change if it differs from the last known level.
-    /// Flushes pending writes immediately so callers can read the change
-    /// from session.get_entries() without an extra flush step.
+    /// Pi-compatible: writes immediately to the session.
     pub fn on_thinking_level_change(&mut self, level: &str) -> bool {
         if self.last_thinking_level != level {
-            self.publish_session_write(PendingSessionWrite::ThinkingLevelChange(level.to_string()));
+            self.session.append_thinking_level_change(level);
             self.last_thinking_level = level.to_string();
-            self.flush_pending_writes();
             true
         } else {
             false
@@ -445,11 +401,11 @@ impl AgentSession {
     }
 
     /// Persist an active tools change if it differs from the last known set.
-    /// Returns true if a change entry was enqueued.
+    /// Pi-compatible: writes immediately to the session.
     pub fn on_active_tools_change(&mut self, tools: &[String]) -> bool {
         let tools_vec = tools.to_vec();
         if self.last_active_tools.as_ref() != Some(&tools_vec) {
-            self.publish_session_write(PendingSessionWrite::ActiveToolsChange(tools_vec.clone()));
+            self.session.append_active_tools_change(&tools_vec);
             self.last_active_tools = Some(tools_vec);
             true
         } else {
@@ -532,8 +488,6 @@ impl AgentSession {
                     .join("");
                 let msg = tool_result_message(tool_call_id, tool_name, content, *is_error);
                 self.persist_message(&msg);
-                // Pi-compatible: flush tool result writes immediately (crash-safe)
-                self.flush_pending_writes();
             }
             YoEvent::MessageEnd { message } => {
                 // Pi-compatible: reset overflow recovery when a user message arrives
@@ -588,8 +542,6 @@ impl AgentSession {
                 self.persisted_message_ids.insert(message_dedup_key(msg));
             }
         }
-        // Pi-compatible: flush queued metadata writes at turn end
-        self.flush_pending_writes();
     }
 
     // ── Compaction ────────────────────────────────────────────────

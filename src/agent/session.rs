@@ -9,7 +9,57 @@ use yoagent::types::AgentMessage;
 
 // ── Constants ───────────────────────────────────────────────────────
 
+/// Current session format version.
+///
+/// Rab only produces v3 sessions. Unlike pi, there is no migration path for
+/// v1/v2 files because rab never created them. The header validation in
+/// `parse_session_header_line` rejects anything that isn't v3, so unsupported
+/// files are caught early rather than silently misinterpreted.
 pub const CURRENT_SESSION_VERSION: u32 = 3;
+
+// ── Session error type ─────────────────────────────────────────────
+
+/// Structured error type for session operations.
+/// Pi-compatible: matches `SessionError` with typed codes.
+#[derive(Debug, Clone)]
+pub enum SessionError {
+    /// Entry or session not found.
+    NotFound(String),
+    /// Session file is invalid or corrupt.
+    InvalidSession(String),
+    /// A session entry line is malformed.
+    InvalidEntry(String),
+    /// Fork target is not a user message or not found.
+    InvalidForkTarget(String),
+    /// Storage backend error.
+    Storage(String),
+}
+
+impl std::fmt::Display for SessionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SessionError::NotFound(msg) => write!(f, "not found: {}", msg),
+            SessionError::InvalidSession(msg) => write!(f, "invalid session: {}", msg),
+            SessionError::InvalidEntry(msg) => write!(f, "invalid entry: {}", msg),
+            SessionError::InvalidForkTarget(msg) => write!(f, "invalid fork target: {}", msg),
+            SessionError::Storage(msg) => write!(f, "storage error: {}", msg),
+        }
+    }
+}
+
+impl std::error::Error for SessionError {}
+
+impl From<std::io::Error> for SessionError {
+    fn from(e: std::io::Error) -> Self {
+        SessionError::Storage(e.to_string())
+    }
+}
+
+impl From<serde_json::Error> for SessionError {
+    fn from(e: serde_json::Error) -> Self {
+        SessionError::InvalidEntry(e.to_string())
+    }
+}
 
 // ── Session header ──────────────────────────────────────────────────
 
@@ -328,6 +378,8 @@ pub fn parse_session_entry_line(line: &str) -> Option<SessionEntry> {
 }
 
 /// Parse a single line as a SessionHeader.
+/// Pi-compatible: validates required fields (id, timestamp, cwd) are non-empty
+/// and version is present and matches CURRENT_SESSION_VERSION.
 pub fn parse_session_header_line(line: &str) -> Option<SessionHeader> {
     let line = line.trim();
     if line.is_empty() {
@@ -337,6 +389,15 @@ pub fn parse_session_header_line(line: &str) -> Option<SessionHeader> {
     if header.type_ != "session" {
         return None;
     }
+    // Pi-compatible: validate version
+    if header.version != Some(CURRENT_SESSION_VERSION) {
+        return None;
+    }
+    // Pi-compatible: validate required string fields are non-empty
+    if header.id.is_empty() || header.timestamp.is_empty() || header.cwd.is_empty() {
+        return None;
+    }
+    // Pi-compatible: parentSession must be a string if present (enforced by serde)
     Some(header)
 }
 
@@ -350,6 +411,12 @@ pub fn read_session_header(path: &Path) -> Option<SessionHeader> {
 const SESSION_READ_BUFFER_SIZE: usize = 1024 * 1024; // 1MB
 
 /// Load header + entries from a session JSONL file using buffered reading.
+///
+/// No format migration is performed (pi has v1→v2→v3 migration logic). Rab was
+/// built from the start targeting session format v3, never produced v1 or v2 files,
+/// and does not need to open legacy sessions from other tools. If interop with
+/// pi's v1/v2 files is ever required, add `migrateV1ToV2` and `migrateV2ToV3`
+/// logic here (matching pi's `session-manager.ts`).
 /// Pi-compatible: uses a 1MB buffer for efficient reading of large files.
 /// Returns (header, entries). Returns (None, empty) if file is missing/corrupted.
 pub fn load_session_from_file(path: &Path) -> (Option<SessionHeader>, Vec<SessionEntry>) {
@@ -523,6 +590,12 @@ impl Session {
         self.storage.get_label(id)
     }
 
+    /// Get the timestamp of the latest label change for an entry, if any.
+    /// Pi-compatible: used by get_tree() to populate labelTimestamp.
+    pub fn get_label_timestamp(&self, id: &str) -> Option<String> {
+        self.storage.get_label_timestamp(id)
+    }
+
     /// Get the path from root to the given leaf (or current leaf if None).
     /// Pi-compatible: delegates to storage's `get_path_to_root`.
     pub fn get_branch(&self, from_id: Option<&str>) -> Result<Vec<SessionEntry>, String> {
@@ -673,12 +746,14 @@ impl Session {
     }
 
     /// Append a session info entry (display name). Returns the entry id.
+    /// Pi-compatible: sanitizes by stripping newlines (replaces with spaces).
     pub fn append_session_info(&mut self, name: &str) -> String {
+        let sanitized = name.replace(['\r', '\n'], " ").trim().to_string();
         let entry = SessionEntry::SessionInfo(SessionInfoEntry {
             id: self.storage.create_entry_id(),
             parent_id: self.storage.get_leaf_id(),
             timestamp: chrono::Utc::now().to_rfc3339(),
-            name: name.trim().to_string(),
+            name: sanitized,
         });
         let id = entry.id().to_string();
         self.storage.append_entry(entry).unwrap_or_else(|e| {
@@ -712,7 +787,18 @@ impl Session {
     }
 
     /// Append a label change (bookmark/unbookmark). Returns the entry id.
-    pub fn append_label_change(&mut self, target_id: &str, label: Option<&str>) -> String {
+    /// Pi-compatible: validates target entry exists before creating the label.
+    pub fn append_label_change(
+        &mut self,
+        target_id: &str,
+        label: Option<&str>,
+    ) -> Result<String, SessionError> {
+        if self.storage.get_entry(target_id).is_none() {
+            return Err(SessionError::NotFound(format!(
+                "Entry {} not found",
+                target_id
+            )));
+        }
         let entry = SessionEntry::Label(LabelEntry {
             id: self.storage.create_entry_id(),
             parent_id: self.storage.get_leaf_id(),
@@ -721,10 +807,10 @@ impl Session {
             label: label.map(|s| s.to_string()),
         });
         let id = entry.id().to_string();
-        self.storage.append_entry(entry).unwrap_or_else(|e| {
-            eprintln!("Warning: failed to append label change: {}", e);
-        });
-        id
+        self.storage
+            .append_entry(entry)
+            .map_err(SessionError::Storage)?;
+        Ok(id)
     }
 
     /// Append a custom entry (extension data). Returns the entry id.
@@ -1216,13 +1302,14 @@ impl SessionManager {
 
         for entry in &entries {
             let label = self.session.get_label(entry.id());
+            let label_timestamp = self.session.get_label_timestamp(entry.id());
             node_map.insert(
                 entry.id().to_string(),
                 SessionTreeNode {
                     entry: entry.clone(),
                     children: Vec::new(),
                     label,
-                    label_timestamp: None,
+                    label_timestamp,
                 },
             );
         }
@@ -1324,7 +1411,11 @@ impl SessionManager {
             .append_branch_summary(from_id, summary, details, from_hook)
     }
 
-    pub fn append_label_change(&mut self, target_id: &str, label: Option<&str>) -> String {
+    pub fn append_label_change(
+        &mut self,
+        target_id: &str,
+        label: Option<&str>,
+    ) -> Result<String, SessionError> {
         self.session.append_label_change(target_id, label)
     }
 
@@ -1387,6 +1478,12 @@ impl SessionManager {
     /// Get the label for an entry, if any.
     pub fn label(&self, id: &str) -> Option<String> {
         self.session.get_label(id)
+    }
+
+    /// Get the timestamp of the latest label change for an entry, if any.
+    /// Pi-compatible: delegates to session's get_label_timestamp.
+    pub fn label_timestamp(&self, id: &str) -> Option<String> {
+        self.session.get_label_timestamp(id)
     }
 
     // ── Public: Branching ─────────────────────────────────────────
@@ -2556,11 +2653,11 @@ mod tests {
         sm.append_message(&make_asst_msg("ok"));
 
         // Set label
-        sm.append_label_change(&msg_id, Some("important"));
+        sm.append_label_change(&msg_id, Some("important")).unwrap();
         assert_eq!(sm.label(&msg_id).as_deref(), Some("important"));
 
         // Clear label
-        sm.append_label_change(&msg_id, None);
+        sm.append_label_change(&msg_id, None).unwrap();
         assert_eq!(sm.label(&msg_id), None);
     }
 
@@ -2906,5 +3003,145 @@ mod tests {
     fn test_corrupt_header_line_malformed_returns_none() {
         let result = read_session_header(Path::new("/nonexistent"));
         assert!(result.is_none());
+    }
+
+    // ── Name sanitization (gap 6) ───────────────────────────────────
+
+    #[test]
+    fn test_session_name_sanitizes_newlines() {
+        let mut sm = SessionManager::in_memory(Path::new("/tmp/test"));
+        sm.append_session_info("My\nTask\rWith\r\nNewlines");
+        assert_eq!(
+            sm.session_name().as_deref(),
+            Some("My Task With  Newlines")
+        );
+    }
+
+    // ── Label validation (gap 3) ────────────────────────────────────
+
+    #[test]
+    fn test_append_label_nonexistent_target_returns_error() {
+        let mut sm = SessionManager::in_memory(Path::new("/tmp/test"));
+        let result = sm.append_label_change("nonexistent", Some("label"));
+        assert!(result.is_err());
+        match result {
+            Err(SessionError::NotFound(msg)) => {
+                assert!(msg.contains("nonexistent"));
+            }
+            _ => panic!("Expected SessionError::NotFound"),
+        }
+    }
+
+    // ── Label timestamp (gap 2) ─────────────────────────────────────
+
+    #[test]
+    fn test_session_label_timestamp() {
+        let mut sm = SessionManager::in_memory(Path::new("/tmp/test"));
+        let msg_id = sm.append_message(&make_user_msg("important"));
+        sm.append_message(&make_asst_msg("ok"));
+
+        // No label yet
+        assert!(sm.label_timestamp(&msg_id).is_none());
+
+        // Set label
+        sm.append_label_change(&msg_id, Some("important")).unwrap();
+        let ts = sm.label_timestamp(&msg_id);
+        assert!(ts.is_some());
+        // Timestamp should be parseable as RFC3339
+        chrono::DateTime::parse_from_rfc3339(&ts.unwrap()).unwrap();
+
+        // Clear label — timestamp should be removed
+        sm.append_label_change(&msg_id, None).unwrap();
+        assert!(sm.label_timestamp(&msg_id).is_none());
+    }
+
+    #[test]
+    fn test_get_tree_includes_label_timestamp() {
+        let mut sm = SessionManager::in_memory(Path::new("/tmp/test"));
+        let msg_id = sm.append_message(&make_user_msg("mark this"));
+        sm.append_label_change(&msg_id, Some("bookmark")).unwrap();
+
+        let tree = sm.get_tree();
+        // Find the node for msg_id
+        let node = tree.iter().find(|n| n.entry.id() == msg_id);
+        assert!(node.is_some());
+        let node = node.unwrap();
+        assert_eq!(node.label.as_deref(), Some("bookmark"));
+        assert!(
+            node.label_timestamp.is_some(),
+            "label_timestamp should be populated in get_tree()"
+        );
+    }
+
+    // ── Header validation (gap 4) ───────────────────────────────────
+
+    #[test]
+    fn test_parse_session_header_line_wrong_version() {
+        // version 2 should be rejected
+        let json = r#"{"type":"session","version":2,"id":"abc","timestamp":"2026-01-01T00:00:00Z","cwd":"/home"}"#;
+        let result = parse_session_header_line(json);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_parse_session_header_line_empty_id() {
+        let json = r#"{"type":"session","version":3,"id":"","timestamp":"2026-01-01T00:00:00Z","cwd":"/home"}"#;
+        let result = parse_session_header_line(json);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_parse_session_header_line_empty_timestamp() {
+        let json = r#"{"type":"session","version":3,"id":"abc","timestamp":"","cwd":"/home"}"#;
+        let result = parse_session_header_line(json);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_parse_session_header_line_empty_cwd() {
+        let json = r#"{"type":"session","version":3,"id":"abc","timestamp":"2026-01-01T00:00:00Z","cwd":""}"#;
+        let result = parse_session_header_line(json);
+        assert!(result.is_none());
+    }
+
+    // ── SessionError (gap 5) ────────────────────────────────────────
+
+    #[test]
+    fn test_session_error_display() {
+        assert_eq!(
+            SessionError::NotFound("entry x".to_string()).to_string(),
+            "not found: entry x"
+        );
+        assert_eq!(
+            SessionError::InvalidSession("bad file".to_string()).to_string(),
+            "invalid session: bad file"
+        );
+        assert_eq!(
+            SessionError::InvalidEntry("bad line".to_string()).to_string(),
+            "invalid entry: bad line"
+        );
+        assert_eq!(
+            SessionError::InvalidForkTarget("wrong position".to_string()).to_string(),
+            "invalid fork target: wrong position"
+        );
+        assert_eq!(
+            SessionError::Storage("io error".to_string()).to_string(),
+            "storage error: io error"
+        );
+    }
+
+    #[test]
+    fn test_session_error_from_io_error() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::Other, "disk full");
+        let session_err: SessionError = io_err.into();
+        assert!(matches!(session_err, SessionError::Storage(_)));
+        assert_eq!(session_err.to_string(), "storage error: disk full");
+    }
+
+    #[test]
+    fn test_session_error_from_json_error() {
+        let json_err = serde_json::from_str::<serde_json::Value>("invalid json").unwrap_err();
+        let session_err: SessionError = json_err.into();
+        assert!(matches!(session_err, SessionError::InvalidEntry(_)));
     }
 }

@@ -62,6 +62,10 @@ pub trait SessionStorage: Send {
     /// Get the human-readable label for an entry, if any.
     fn get_label(&self, id: &str) -> Option<String>;
 
+    /// Get the timestamp of the latest label change for an entry, if any.
+    /// Pi-compatible: used by get_tree() to populate labelTimestamp.
+    fn get_label_timestamp(&self, id: &str) -> Option<String>;
+
     /// Walk from `leaf_id` (or current leaf, if None) to root, returning entries in path order.
     fn get_path_to_root(&self, leaf_id: Option<&str>) -> Result<Vec<SessionEntry>, String>;
 
@@ -84,8 +88,10 @@ fn leaf_id_after_entry(entry: &SessionEntry) -> Option<String> {
 }
 
 /// Update the label cache from an entry (call after every append).
+/// Pi-compatible: also tracks the timestamp of the latest label change.
 fn update_label_cache(
     labels_by_id: &mut std::collections::HashMap<String, String>,
+    label_timestamps_by_id: &mut std::collections::HashMap<String, String>,
     entry: &SessionEntry,
 ) {
     if let SessionEntry::Label(e) = entry {
@@ -93,22 +99,31 @@ fn update_label_cache(
             let trimmed = label.trim();
             if trimmed.is_empty() {
                 labels_by_id.remove(&e.target_id);
+                label_timestamps_by_id.remove(&e.target_id);
             } else {
                 labels_by_id.insert(e.target_id.clone(), trimmed.to_string());
+                label_timestamps_by_id.insert(e.target_id.clone(), e.timestamp.clone());
             }
         } else {
             labels_by_id.remove(&e.target_id);
+            label_timestamps_by_id.remove(&e.target_id);
         }
     }
 }
 
 /// Build a label cache from a slice of entries.
-fn build_labels_by_id(entries: &[SessionEntry]) -> std::collections::HashMap<String, String> {
+fn build_labels_by_id(
+    entries: &[SessionEntry],
+) -> (
+    std::collections::HashMap<String, String>,
+    std::collections::HashMap<String, String>,
+) {
     let mut labels = std::collections::HashMap::new();
+    let mut timestamps = std::collections::HashMap::new();
     for entry in entries {
-        update_label_cache(&mut labels, entry);
+        update_label_cache(&mut labels, &mut timestamps, entry);
     }
-    labels
+    (labels, timestamps)
 }
 
 // ── InMemorySessionStorage ─────────────────────────────────────────
@@ -120,6 +135,7 @@ pub struct InMemorySessionStorage {
     entries: Vec<SessionEntry>,
     by_id: std::collections::HashMap<String, SessionEntry>,
     labels_by_id: std::collections::HashMap<String, String>,
+    label_timestamps_by_id: std::collections::HashMap<String, String>,
     leaf_id: Option<String>,
 }
 
@@ -131,6 +147,7 @@ impl InMemorySessionStorage {
             entries: Vec::new(),
             by_id: std::collections::HashMap::new(),
             labels_by_id: std::collections::HashMap::new(),
+            label_timestamps_by_id: std::collections::HashMap::new(),
             leaf_id: None,
         }
     }
@@ -175,6 +192,7 @@ impl SessionStorage for InMemorySessionStorage {
         self.leaf_id = leaf_id_after_entry(self.by_id.get(&id).expect("just inserted"));
         update_label_cache(
             &mut self.labels_by_id,
+            &mut self.label_timestamps_by_id,
             self.by_id.get(&id).expect("just inserted"),
         );
         Ok(())
@@ -194,6 +212,10 @@ impl SessionStorage for InMemorySessionStorage {
 
     fn get_label(&self, id: &str) -> Option<String> {
         self.labels_by_id.get(id).cloned()
+    }
+
+    fn get_label_timestamp(&self, id: &str) -> Option<String> {
+        self.label_timestamps_by_id.get(id).cloned()
     }
 
     fn get_path_to_root(&self, leaf_id: Option<&str>) -> Result<Vec<SessionEntry>, String> {
@@ -239,6 +261,7 @@ pub struct JsonlSessionStorage {
     entries: Vec<SessionEntry>,
     by_id: std::collections::HashMap<String, SessionEntry>,
     labels_by_id: std::collections::HashMap<String, String>,
+    label_timestamps_by_id: std::collections::HashMap<String, String>,
     leaf_id: Option<String>,
 }
 
@@ -286,6 +309,7 @@ impl JsonlSessionStorage {
             entries: Vec::new(),
             by_id: std::collections::HashMap::new(),
             labels_by_id: std::collections::HashMap::new(),
+            label_timestamps_by_id: std::collections::HashMap::new(),
             leaf_id: None,
         })
     }
@@ -308,7 +332,7 @@ impl JsonlSessionStorage {
             .iter()
             .map(|e| (e.id().to_string(), e.clone()))
             .collect();
-        let labels_by_id = build_labels_by_id(&entries);
+        let (labels_by_id, label_timestamps_by_id) = build_labels_by_id(&entries);
         let leaf_id = entries.last().and_then(leaf_id_after_entry);
 
         Ok(Self {
@@ -317,6 +341,7 @@ impl JsonlSessionStorage {
             entries,
             by_id,
             labels_by_id,
+            label_timestamps_by_id,
             leaf_id,
         })
     }
@@ -369,6 +394,7 @@ impl SessionStorage for JsonlSessionStorage {
         self.leaf_id = leaf_id_after_entry(self.by_id.get(&id).expect("just inserted"));
         update_label_cache(
             &mut self.labels_by_id,
+            &mut self.label_timestamps_by_id,
             self.by_id.get(&id).expect("just inserted"),
         );
         Ok(())
@@ -388,6 +414,10 @@ impl SessionStorage for JsonlSessionStorage {
 
     fn get_label(&self, id: &str) -> Option<String> {
         self.labels_by_id.get(id).cloned()
+    }
+
+    fn get_label_timestamp(&self, id: &str) -> Option<String> {
+        self.label_timestamps_by_id.get(id).cloned()
     }
 
     fn get_path_to_root(&self, leaf_id: Option<&str>) -> Result<Vec<SessionEntry>, String> {
@@ -627,5 +657,72 @@ mod tests {
         let loaded = JsonlSessionStorage::open(path).unwrap();
         let path_to = loaded.get_path_to_root(Some("m2")).unwrap();
         assert_eq!(path_to.len(), 2);
+    }
+
+    #[test]
+    fn test_in_memory_label_timestamp() {
+        let mut storage = InMemorySessionStorage::new(make_session_meta("s1"));
+        storage
+            .append_entry(make_msg_entry("m1", None, "first"))
+            .unwrap();
+
+        // No label yet
+        assert!(storage.get_label_timestamp("m1").is_none());
+
+        // Add label
+        let label_entry = SessionEntry::Label(crate::agent::session::LabelEntry {
+            id: "l1".to_string(),
+            parent_id: Some("m1".to_string()),
+            timestamp: "2026-06-30T12:00:00Z".to_string(),
+            target_id: "m1".to_string(),
+            label: Some("star".to_string()),
+        });
+        storage.append_entry(label_entry).unwrap();
+        assert_eq!(storage.get_label("m1"), Some("star".to_string()));
+        assert_eq!(
+            storage.get_label_timestamp("m1").as_deref(),
+            Some("2026-06-30T12:00:00Z")
+        );
+
+        // Remove label
+        let unlabel_entry = SessionEntry::Label(crate::agent::session::LabelEntry {
+            id: "l2".to_string(),
+            parent_id: Some("l1".to_string()),
+            timestamp: "2026-06-30T13:00:00Z".to_string(),
+            target_id: "m1".to_string(),
+            label: None,
+        });
+        storage.append_entry(unlabel_entry).unwrap();
+        assert!(storage.get_label_timestamp("m1").is_none());
+    }
+
+    #[test]
+    fn test_jsonl_label_timestamp_persistence() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("session.jsonl");
+
+        let mut storage =
+            JsonlSessionStorage::create(path.clone(), "/tmp/test", "s1", None).unwrap();
+        storage
+            .append_entry(make_msg_entry("m1", None, "first"))
+            .unwrap();
+
+        let label_entry = SessionEntry::Label(crate::agent::session::LabelEntry {
+            id: "l1".to_string(),
+            parent_id: Some("m1".to_string()),
+            timestamp: "2026-06-30T12:00:00Z".to_string(),
+            target_id: "m1".to_string(),
+            label: Some("important".to_string()),
+        });
+        storage.append_entry(label_entry).unwrap();
+        drop(storage);
+
+        // Reopen and verify timestamp survived
+        let loaded = JsonlSessionStorage::open(path).unwrap();
+        assert_eq!(loaded.get_label("m1"), Some("important".to_string()));
+        assert_eq!(
+            loaded.get_label_timestamp("m1").as_deref(),
+            Some("2026-06-30T12:00:00Z")
+        );
     }
 }
