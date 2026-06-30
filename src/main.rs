@@ -593,7 +593,7 @@ async fn run_print_mode(
             yoagent::agent::Agent::new(rab::provider::openai_compat::RabOpenAiCompatProvider)
         }
         ApiProtocol::AnthropicMessages => {
-            yoagent::agent::Agent::new(yoagent::provider::AnthropicProvider)
+            yoagent::agent::Agent::new(rab::provider::anthropic::RabAnthropicProvider)
         }
         ApiProtocol::OpenAiResponses => {
             yoagent::agent::Agent::new(yoagent::provider::OpenAiResponsesProvider)

@@ -9,6 +9,7 @@ use std::path::Path;
 use anyhow::bail;
 use yoagent::provider::model::ModelConfig;
 
+pub mod anthropic;
 pub mod compat;
 pub mod models;
 pub mod openai_compat;
@@ -179,6 +180,62 @@ impl ProviderRegistry {
     /// Count the number of distinct providers in the registry.
     pub fn count_providers(&self) -> usize {
         self.entries.len()
+    }
+
+    /// List all provider (id, name) tuples.
+    pub fn list_providers(&self) -> Vec<(String, String)> {
+        self.entries
+            .iter()
+            .map(|e| (e.id.clone(), e.name.clone()))
+            .collect()
+    }
+
+    /// Get the list of provider IDs that have stored credentials.
+    pub fn configured_providers(&self) -> Vec<String> {
+        self.entries
+            .iter()
+            .filter_map(|e| {
+                if self.auth_storage.api_key(&e.id).is_some() {
+                    Some(e.id.clone())
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    /// Get auth status for a provider (for UI display).
+    pub fn auth_status_for_provider(
+        &self,
+        provider_id: &str,
+    ) -> crate::agent::ui::components::oauth_selector::ProviderAuthStatus {
+        let configured = self.auth_storage.api_key(provider_id).is_some()
+            || self.auth_storage.oauth_token(provider_id).is_some();
+        let source = if configured {
+            Some("stored".to_string())
+        } else {
+            None
+        };
+        let label = if !configured {
+            self.entries
+                .iter()
+                .find(|e| e.id == provider_id)
+                .and_then(|e| {
+                    let env_var = e.env_var_name();
+                    if std::env::var(env_var).is_ok() {
+                        Some(env_var.to_string())
+                    } else {
+                        None
+                    }
+                })
+        } else {
+            None
+        };
+        crate::agent::ui::components::oauth_selector::ProviderAuthStatus {
+            configured,
+            source,
+            label,
+        }
     }
 }
 

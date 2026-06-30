@@ -445,9 +445,11 @@ impl CommandHandler for LoginCommand {
     fn execute(&self, args: &str) -> anyhow::Result<CommandResult> {
         let args = args.trim();
         if args.is_empty() {
-            return Ok(CommandResult::Info(
-                "Usage: /login <provider> [api-key]\n  Provide the API key as argument to store it.\n  If omitted, you'll be prompted.".into()
-            ));
+            // No args — show provider selector
+            return Ok(CommandResult::Login {
+                provider: None,
+                api_key: None,
+            });
         }
         // Split on first space: provider [api-key]
         let (provider, api_key) = match args.split_once(' ') {

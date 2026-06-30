@@ -31,6 +31,8 @@ struct ProviderDef {
     #[serde(default)]
     env: Option<HashMap<String, String>>,
     #[serde(default)]
+    headers: Option<HashMap<String, String>>,
+    #[serde(default)]
     models: Vec<ModelDef>,
 }
 
@@ -60,6 +62,8 @@ struct ModelDef {
     max_tokens: Option<u32>,
     #[serde(default)]
     compat: Option<RabOpenAiCompat>,
+    #[serde(default)]
+    headers: Option<HashMap<String, String>>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -150,6 +154,18 @@ fn parse_provider(id: &str, def: ProviderDef) -> anyhow::Result<ProviderEntry> {
             && let Ok(json) = serde_json::to_string(tlm)
         {
             headers.insert("_rab_thinking_map".to_string(), json);
+        }
+
+        // Merge provider-level headers, then model-level headers
+        if let Some(provider_headers) = &def.headers {
+            for (k, v) in provider_headers {
+                headers.entry(k.clone()).or_insert_with(|| v.clone());
+            }
+        }
+        if let Some(model_headers) = &m.headers {
+            for (k, v) in model_headers {
+                headers.insert(k.clone(), v.clone());
+            }
         }
 
         let model = ModelConfig {

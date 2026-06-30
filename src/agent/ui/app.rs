@@ -38,6 +38,10 @@ pub enum OverlayResult {
     ScopedModelsAccepted(Option<Vec<String>>),
     /// User cancelled — close overlay, no persist.
     ScopedModelsCancelled,
+    /// User selected a provider for login.
+    LoginProviderSelected(String),
+    /// User provided an API key for login.
+    LoginApiKeyProvided { provider: String, key: String },
 }
 
 use crate::agent::ui::theme::ThemeKey;
@@ -671,65 +675,82 @@ pub async fn run(config: AppConfig, session: AgentSession) -> anyhow::Result<()>
         }
 
         // Check overlay result signal (set by overlay callbacks when user selects/cancels).
-        if tui.has_overlays()
-            && let Some(result) = app.overlay_result_signal.borrow_mut().take()
-        {
-            tui.pop_overlay();
-            match result {
-                OverlayResult::ModelSelected(full_id) => {
-                    if !full_id.is_empty() {
-                        let model_id = full_id
-                            .split_once('/')
-                            .map(|(_, id)| id.to_string())
-                            .unwrap_or_else(|| full_id.clone());
-                        app.model = model_id.clone();
-                        if let Some(ref mut agent_session) = app.session {
-                            let provider = app
-                                .registry
-                                .provider_for_model(
-                                    &model_id,
-                                    app.settings.default_provider.as_deref(),
-                                )
-                                .unwrap_or_else(|| "opencode-go".to_string());
-                            agent_session.on_model_change(&provider, &model_id);
-                        }
-                        // Refresh footer from session to pick up model/provider/thinking
-                        if let Some(ref session) = app.session {
-                            app.footer
-                                .borrow_mut()
-                                .refresh_from_session(session.session());
-                        }
-                        app.status_text = Some(format!("Model: {}", full_id));
-                    }
-                }
-                OverlayResult::ScopedModelsAccepted(ids) => {
-                    match ids {
-                        Some(ids) if !ids.is_empty() && ids.len() < app.available_models.len() => {
-                            app.scoped_model_ids = Some(ids.clone());
-                            // Persist to settings
-                            app.settings.set_enabled_models(Some(ids));
-                            if let Err(e) = app.settings.save() {
-                                app.status_text =
-                                    Some(format!("Failed to save model scope: {}", e));
-                            } else {
-                                app.status_text = Some("Model scope saved to settings".into());
+        if tui.has_overlays() {
+            let result = app.overlay_result_signal.borrow_mut().take();
+            if let Some(result) = result {
+                tui.pop_overlay();
+                match result {
+                    OverlayResult::ModelSelected(full_id) => {
+                        if !full_id.is_empty() {
+                            let model_id = full_id
+                                .split_once('/')
+                                .map(|(_, id)| id.to_string())
+                                .unwrap_or_else(|| full_id.clone());
+                            app.model = model_id.clone();
+                            if let Some(ref mut agent_session) = app.session {
+                                let provider = app
+                                    .registry
+                                    .provider_for_model(
+                                        &model_id,
+                                        app.settings.default_provider.as_deref(),
+                                    )
+                                    .unwrap_or_else(|| "opencode-go".to_string());
+                                agent_session.on_model_change(&provider, &model_id);
                             }
-                        }
-                        _ => {
-                            // All enabled or none = clear scoped models and settings
-                            app.scoped_model_ids = None;
-                            app.settings.set_enabled_models(None);
-                            if let Err(e) = app.settings.save() {
-                                app.status_text =
-                                    Some(format!("Failed to save model scope: {}", e));
-                            } else if ids.is_some() {
-                                app.status_text = Some("Model scope saved to settings".into());
+                            // Refresh footer from session to pick up model/provider/thinking
+                            if let Some(ref session) = app.session {
+                                app.footer
+                                    .borrow_mut()
+                                    .refresh_from_session(session.session());
                             }
+                            app.status_text = Some(format!("Model: {}", full_id));
                         }
                     }
-                }
-                OverlayResult::ScopedModelsCancelled => {
-                    // Just close the overlay, don't persist anything.
+                    OverlayResult::ScopedModelsAccepted(ids) => {
+                        match ids {
+                            Some(ids)
+                                if !ids.is_empty() && ids.len() < app.available_models.len() =>
+                            {
+                                app.scoped_model_ids = Some(ids.clone());
+                                // Persist to settings
+                                app.settings.set_enabled_models(Some(ids));
+                                if let Err(e) = app.settings.save() {
+                                    app.status_text =
+                                        Some(format!("Failed to save model scope: {}", e));
+                                } else {
+                                    app.status_text = Some("Model scope saved to settings".into());
+                                }
+                            }
+                            _ => {
+                                // All enabled or none = clear scoped models and settings
+                                app.scoped_model_ids = None;
+                                app.settings.set_enabled_models(None);
+                                if let Err(e) = app.settings.save() {
+                                    app.status_text =
+                                        Some(format!("Failed to save model scope: {}", e));
+                                } else if ids.is_some() {
+                                    app.status_text = Some("Model scope saved to settings".into());
+                                }
+                            }
+                        }
+                    }
+                    OverlayResult::ScopedModelsCancelled => {
+                        // Just close the overlay, don't persist anything.
+                    }
+                    OverlayResult::LoginProviderSelected(provider_id) => {
+                        // Open the API key input dialog for this provider
+                        show_api_key_login_dialog(&mut app, &mut tui, &provider_id);
+                    }
+                    OverlayResult::LoginApiKeyProvided { provider, key } => {
+                        match auth::login(&provider, &key) {
+                            Ok(_) => {
+                                app.status_text = Some(format!("Logged in to {}", provider));
+                            }
+                            Err(e) => {
+                                app.status_text = Some(format!("Login failed: {}", e));
+                            }
+                        }
+                    }
                 }
             }
             dirty = true;
@@ -814,8 +835,20 @@ pub async fn run(config: AppConfig, session: AgentSession) -> anyhow::Result<()>
                     open_scoped_models_selector(&mut app, &mut tui);
                 }
                 CommandResult::Login { provider, api_key } => {
-                    let p = provider.as_deref().unwrap_or("opencode-go");
-                    handle_login(&mut app, p, api_key.as_deref());
+                    match (provider, api_key) {
+                        (Some(p), Some(key)) => {
+                            // Both provider and key provided — save directly
+                            handle_login(&mut app, &p, Some(&key));
+                        }
+                        (Some(p), None) => {
+                            // Provider specified but no key — show API key prompt
+                            show_api_key_login_dialog(&mut app, &mut tui, &p);
+                        }
+                        (None, _) => {
+                            // No provider specified — show provider selector
+                            show_login_provider_selector(&mut app, &mut tui);
+                        }
+                    }
                 }
                 CommandResult::Logout { provider } => {
                     handle_logout(&mut app, provider.as_deref());
@@ -1459,6 +1492,88 @@ fn handle_logout(app: &mut App, provider: Option<&str>) {
     }
 }
 
+/// Show the login provider selector overlay.
+/// Shows all available providers from the registry for the user to pick one.
+fn show_login_provider_selector(app: &mut App, tui: &mut TUI) {
+    use crate::agent::ui::components::oauth_selector::{
+        AuthSelectorProvider, AuthType, OAuthSelector, SelectorMode,
+    };
+    use crate::tui::overlay::{OverlayAnchor, OverlayOptions, SizeValue};
+
+    let providers: Vec<AuthSelectorProvider> = app
+        .registry
+        .list_providers()
+        .into_iter()
+        .map(|(id, name)| AuthSelectorProvider {
+            id,
+            name,
+            auth_type: AuthType::ApiKey,
+        })
+        .collect();
+
+    let signal = app.overlay_result_signal.clone();
+    let mut selector = OAuthSelector::new(
+        providers,
+        |provider_id| app.registry.auth_status_for_provider(provider_id),
+        SelectorMode::Login,
+    );
+
+    selector.on_select(move |provider_id: String| {
+        *signal.borrow_mut() = Some(OverlayResult::LoginProviderSelected(provider_id));
+    });
+    selector.on_cancel(|| {});
+
+    tui.show_overlay(
+        Box::new(selector),
+        OverlayOptions {
+            width: Some(SizeValue::Percent(100.0)),
+            anchor: Some(OverlayAnchor::TopLeft),
+            ..Default::default()
+        },
+    );
+}
+
+/// Show the API key input dialog for a specific provider.
+/// Uses LoginDialog which matches pi's LoginDialogComponent.
+fn show_api_key_login_dialog(app: &mut App, tui: &mut TUI, provider_id: &str) {
+    use crate::agent::ui::components::LoginDialog;
+    use crate::tui::overlay::{OverlayAnchor, OverlayOptions, SizeValue};
+
+    // Find the provider name from the registry
+    let provider_name = app
+        .registry
+        .list_providers()
+        .into_iter()
+        .find(|(id, _)| id == provider_id)
+        .map(|(_, name)| name)
+        .unwrap_or_else(|| provider_id.to_string());
+
+    let mut dialog = LoginDialog::new(provider_id.to_string(), provider_name.clone());
+
+    let signal = app.overlay_result_signal.clone();
+    let provider_id_clone = provider_id.to_string();
+
+    dialog.on_submit(move |api_key: String| {
+        *signal.borrow_mut() = Some(OverlayResult::LoginApiKeyProvided {
+            provider: provider_id_clone,
+            key: api_key,
+        });
+    });
+
+    dialog.on_cancel(|| {});
+
+    dialog.show_prompt("Enter API key:", Some("sk-..."));
+
+    tui.show_overlay(
+        Box::new(dialog),
+        OverlayOptions {
+            width: Some(SizeValue::Percent(100.0)),
+            anchor: Some(OverlayAnchor::TopLeft),
+            ..Default::default()
+        },
+    );
+}
+
 /// Open the model selector overlay.
 fn open_model_selector(app: &mut App, tui: &mut TUI) {
     let current = app.model.clone();
@@ -1674,7 +1789,7 @@ fn build_fresh_agent(
             yoagent::agent::Agent::new(crate::provider::openai_compat::RabOpenAiCompatProvider)
         }
         ApiProtocol::AnthropicMessages => {
-            yoagent::agent::Agent::new(yoagent::provider::AnthropicProvider)
+            yoagent::agent::Agent::new(crate::provider::anthropic::RabAnthropicProvider)
         }
         ApiProtocol::OpenAiResponses => {
             yoagent::agent::Agent::new(yoagent::provider::OpenAiResponsesProvider)

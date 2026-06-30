@@ -12,8 +12,11 @@ const MODELS_DEV_URL: &str = "https://models.dev/api.json";
 const OUTPUT_PATH: &str = "src/provider/models.json";
 
 /// Providers we care about and their model-dev key.
-const TARGET_PROVIDERS: &[(&str, &str)] =
-    &[("opencode", "opencode"), ("opencode-go", "opencode-go")];
+const TARGET_PROVIDERS: &[(&str, &str)] = &[
+    ("github-copilot", "github-copilot"),
+    ("opencode", "opencode"),
+    ("opencode-go", "opencode-go"),
+];
 
 /// Run the update. Called from main.rs when args contain "update-models".
 pub async fn run_update_models() -> anyhow::Result<()> {
@@ -80,13 +83,21 @@ pub async fn run_update_models() -> anyhow::Result<()> {
                 .map(|(model_id, model_val)| build_model_entry(provider_key, model_id, model_val))
                 .collect::<Result<Vec<_>, _>>()?;
 
-            let provider_entry = serde_json::json!({
+            let headers = provider_headers(provider_key);
+            let mut provider_entry = serde_json::json!({
                 "name": provider_display_name(provider_key),
                 "baseUrl": provider_base_url(provider_key),
                 "api": provider_base_api(provider_key),
-                "env": { "apiKey": "OPENCODE_API_KEY" },
+                "env": { "apiKey": provider_env_var(provider_key) },
                 "models": models
             });
+            if !headers.is_empty() {
+                let headers_obj: serde_json::Map<String, Value> = headers
+                    .iter()
+                    .map(|(k, v)| ((*k).to_string(), Value::String((*v).to_string())))
+                    .collect();
+                provider_entry["headers"] = Value::Object(headers_obj);
+            }
 
             providers_obj.insert(provider_key.to_string(), provider_entry);
         }
@@ -117,6 +128,7 @@ pub async fn run_update_models() -> anyhow::Result<()> {
 
 fn provider_display_name(key: &str) -> &'static str {
     match key {
+        "github-copilot" => "GitHub Copilot",
         "opencode-go" => "OpenCode Zen Go",
         _ => "OpenCode Zen",
     }
@@ -124,14 +136,35 @@ fn provider_display_name(key: &str) -> &'static str {
 
 fn provider_base_url(key: &str) -> &'static str {
     match key {
+        "github-copilot" => "https://api.individual.githubcopilot.com",
         "opencode-go" => "https://opencode.ai/zen/go",
         _ => "https://opencode.ai/zen",
+    }
+}
+
+fn provider_env_var(key: &str) -> &'static str {
+    match key {
+        "github-copilot" => "COPILOT_GITHUB_TOKEN",
+        _ => "OPENCODE_API_KEY",
     }
 }
 
 fn provider_base_api(key: &str) -> &'static str {
     let _ = key;
     "openai-completions"
+}
+
+/// Provider-level HTTP headers (e.g. for GitHub Copilot).
+fn provider_headers(key: &str) -> Vec<(&'static str, &'static str)> {
+    match key {
+        "github-copilot" => vec![
+            ("User-Agent", "GitHubCopilotChat/0.35.0"),
+            ("Editor-Version", "vscode/1.107.0"),
+            ("Editor-Plugin-Version", "copilot-chat/0.35.0"),
+            ("Copilot-Integration-Id", "vscode-chat"),
+        ],
+        _ => vec![],
+    }
 }
 
 fn build_model_entry(
@@ -302,6 +335,11 @@ fn apply_corrections(
 
     if provider_key == "opencode-go" && (model_id.starts_with("qwen3")) {
         compat["thinkingFormat"] = Value::String("qwen".into());
+    }
+
+    // GitHub Copilot: openai-completions models need standard Copilot compat
+    if provider_key == "github-copilot" {
+        compat["supportsReasoningEffort"] = Value::Bool(false);
     }
 
     entry["compat"] = compat;
