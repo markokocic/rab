@@ -94,8 +94,29 @@ impl ProviderRegistry {
                     })
                     .unwrap_or_default();
 
+                let mut model_config = model_config.clone();
+
+                // For GitHub Copilot, derive the API base URL from the OAuth
+                // token's proxy-ep field (pi-compatible dynamic endpoint).
+                if entry.id == "github-copilot" {
+                    let enterprise_domain =
+                        self.auth_storage
+                            .oauth_credential(&entry.id)
+                            .and_then(|c| match c {
+                                crate::auth::AuthCredential::Oauth { enterprise_url, .. } => {
+                                    enterprise_url
+                                }
+                                _ => None,
+                            });
+                    let derived = crate::provider::oauth::github_copilot::get_copilot_base_url(
+                        Some(&api_key),
+                        enterprise_domain.as_deref(),
+                    );
+                    model_config.base_url = derived;
+                }
+
                 return Ok(ResolvedModel {
-                    model_config: model_config.clone(),
+                    model_config,
                     api_key,
                 });
             }
@@ -112,7 +133,7 @@ impl ProviderRegistry {
     /// exist or doesn't have the given model.
     fn resolve_from_provider(&self, model_id: &str, provider_id: &str) -> Option<ResolvedModel> {
         let entry = self.entries.iter().find(|e| e.id == provider_id)?;
-        let model_config = entry.models.iter().find(|m| m.id == model_id)?.clone();
+        let mut model_config = entry.models.iter().find(|m| m.id == model_id)?.clone();
         let api_key = self
             .auth_storage
             .api_key(provider_id)
@@ -125,6 +146,24 @@ impl ProviderRegistry {
                 std::env::var(env_var).ok()
             })
             .unwrap_or_default();
+
+        // For GitHub Copilot, derive the API base URL from the OAuth
+        // token's proxy-ep field (pi-compatible dynamic endpoint).
+        if provider_id == "github-copilot" {
+            let enterprise_domain = self
+                .auth_storage
+                .oauth_credential(provider_id)
+                .and_then(|c| match c {
+                    crate::auth::AuthCredential::Oauth { enterprise_url, .. } => enterprise_url,
+                    _ => None,
+                });
+            let derived = crate::provider::oauth::github_copilot::get_copilot_base_url(
+                Some(&api_key),
+                enterprise_domain.as_deref(),
+            );
+            model_config.base_url = derived;
+        }
+
         Some(ResolvedModel {
             model_config,
             api_key,

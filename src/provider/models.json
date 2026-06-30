@@ -15,7 +15,7 @@
       "models": [
         {
           "api": "openai-completions",
-          "baseUrl": "https://api.individual.githubcopilot.com/v1",
+          "baseUrl": "https://api.individual.githubcopilot.com",
           "compat": {
             "maxTokensField": "max_tokens",
             "supportsDeveloperRole": false,
@@ -40,7 +40,7 @@
         },
         {
           "api": "openai-completions",
-          "baseUrl": "https://api.individual.githubcopilot.com/v1",
+          "baseUrl": "https://api.individual.githubcopilot.com",
           "compat": {
             "maxTokensField": "max_tokens",
             "supportsDeveloperRole": false,
@@ -65,7 +65,7 @@
         },
         {
           "api": "openai-completions",
-          "baseUrl": "https://api.individual.githubcopilot.com/v1",
+          "baseUrl": "https://api.individual.githubcopilot.com",
           "compat": {
             "maxTokensField": "max_tokens",
             "supportsDeveloperRole": false,
@@ -90,7 +90,7 @@
         },
         {
           "api": "openai-completions",
-          "baseUrl": "https://api.individual.githubcopilot.com/v1",
+          "baseUrl": "https://api.individual.githubcopilot.com",
           "compat": {
             "maxTokensField": "max_tokens",
             "supportsDeveloperRole": false,
@@ -115,7 +115,7 @@
         },
         {
           "api": "openai-completions",
-          "baseUrl": "https://api.individual.githubcopilot.com/v1",
+          "baseUrl": "https://api.individual.githubcopilot.com",
           "compat": {
             "maxTokensField": "max_tokens",
             "supportsDeveloperRole": false,
@@ -140,7 +140,7 @@
         },
         {
           "api": "openai-completions",
-          "baseUrl": "https://api.individual.githubcopilot.com/v1",
+          "baseUrl": "https://api.individual.githubcopilot.com",
           "compat": {
             "maxTokensField": "max_tokens",
             "supportsDeveloperRole": false,
@@ -165,7 +165,7 @@
         },
         {
           "api": "openai-completions",
-          "baseUrl": "https://api.individual.githubcopilot.com/v1",
+          "baseUrl": "https://api.individual.githubcopilot.com",
           "compat": {
             "maxTokensField": "max_tokens",
             "supportsDeveloperRole": false,
@@ -190,7 +190,7 @@
         },
         {
           "api": "openai-completions",
-          "baseUrl": "https://api.individual.githubcopilot.com/v1",
+          "baseUrl": "https://api.individual.githubcopilot.com",
           "compat": {
             "maxTokensField": "max_tokens",
             "supportsDeveloperRole": false,
@@ -215,7 +215,7 @@
         },
         {
           "api": "openai-completions",
-          "baseUrl": "https://api.individual.githubcopilot.com/v1",
+          "baseUrl": "https://api.individual.githubcopilot.com",
           "compat": {
             "maxTokensField": "max_tokens",
             "supportsDeveloperRole": false,
@@ -240,7 +240,7 @@
         },
         {
           "api": "openai-completions",
-          "baseUrl": "https://api.individual.githubcopilot.com/v1",
+          "baseUrl": "https://api.individual.githubcopilot.com",
           "compat": {
             "maxTokensField": "max_tokens",
             "supportsDeveloperRole": false,
@@ -265,7 +265,7 @@
         },
         {
           "api": "openai-completions",
-          "baseUrl": "https://api.individual.githubcopilot.com/v1",
+          "baseUrl": "https://api.individual.githubcopilot.com",
           "compat": {
             "maxTokensField": "max_tokens",
             "supportsDeveloperRole": false,
@@ -290,7 +290,7 @@
         },
         {
           "api": "openai-completions",
-          "baseUrl": "https://api.individual.githubcopilot.com/v1",
+          "baseUrl": "https://api.individual.githubcopilot.com",
           "compat": {
             "maxTokensField": "max_tokens",
             "supportsDeveloperRole": false,
@@ -315,7 +315,7 @@
         },
         {
           "api": "openai-completions",
-          "baseUrl": "https://api.individual.githubcopilot.com/v1",
+          "baseUrl": "https://api.individual.githubcopilot.com",
           "compat": {
             "maxTokensField": "max_tokens",
             "supportsDeveloperRole": false,
@@ -340,7 +340,7 @@
         },
         {
           "api": "openai-completions",
-          "baseUrl": "https://api.individual.githubcopilot.com/v1",
+          "baseUrl": "https://api.individual.githubcopilot.com",
           "compat": {
             "maxTokensField": "max_tokens",
             "supportsDeveloperRole": false,
@@ -365,7 +365,7 @@
         },
         {
           "api": "openai-completions",
-          "baseUrl": "https://api.individual.githubcopilot.com/v1",
+          "baseUrl": "https://api.individual.githubcopilot.com",
           "compat": {
             "maxTokensField": "max_tokens",
             "supportsDeveloperRole": false,
@@ -390,7 +390,7 @@
         },
         {
           "api": "openai-completions",
-          "baseUrl": "https://api.individual.githubcopilot.com/v1",
+          "baseUrl": "https://api.individual.githubcopilot.com",
           "compat": {
             "maxTokensField": "max_tokens",
             "supportsDeveloperRole": false,
@@ -415,7 +415,7 @@
         },
         {
           "api": "openai-completions",
-          "baseUrl": "https://api.individual.githubcopilot.com/v1",
+          "baseUrl": "https://api.individual.githubcopilot.com",
           "compat": {
             "maxTokensField": "max_tokens",
             "supportsDeveloperRole": false,
@@ -440,7 +440,7 @@
         },
         {
           "api": "openai-completions",
-          "baseUrl": "https://api.individual.githubcopilot.com/v1",
+          "baseUrl": "https://api.individual.githubcopilot.com",
           "compat": {
             "maxTokensField": "max_tokens",
             "supportsDeveloperRole": false,
@@ -465,7 +465,7 @@
         },
         {
           "api": "openai-completions",
-          "baseUrl": "https://api.individual.githubcopilot.com/v1",
+          "baseUrl": "https://api.individual.githubcopilot.com",
           "compat": {
             "maxTokensField": "max_tokens",
             "supportsDeveloperRole": false,
@@ -490,7 +490,7 @@
         },
         {
           "api": "openai-completions",
-          "baseUrl": "https://api.individual.githubcopilot.com/v1",
+          "baseUrl": "https://api.individual.githubcopilot.com",
           "compat": {
             "maxTokensField": "max_tokens",
             "supportsDeveloperRole": false,
@@ -515,7 +515,7 @@
         },
         {
           "api": "openai-completions",
-          "baseUrl": "https://api.individual.githubcopilot.com/v1",
+          "baseUrl": "https://api.individual.githubcopilot.com",
           "compat": {
             "maxTokensField": "max_tokens",
             "supportsDeveloperRole": false,
@@ -540,7 +540,7 @@
         },
         {
           "api": "openai-completions",
-          "baseUrl": "https://api.individual.githubcopilot.com/v1",
+          "baseUrl": "https://api.individual.githubcopilot.com",
           "compat": {
             "maxTokensField": "max_tokens",
             "supportsDeveloperRole": false,
