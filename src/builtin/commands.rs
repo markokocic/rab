@@ -153,7 +153,7 @@ impl Extension for CommandsExtension {
             SlashCommand {
                 name: "copy".to_string(),
                 description: "Copy last agent message to clipboard".to_string(),
-                handler: Box::new(command_not_implemented_handler("copy")),
+                handler: Box::new(CopyCommand),
             },
             SlashCommand {
                 name: "name".to_string(),
@@ -363,6 +363,16 @@ impl CommandHandler for SessionInfoCommand {
                 "No active session (use --no-session?)".to_string(),
             )),
         }
+    }
+}
+
+// ── /copy ────────────────────────────────────────────────────────
+
+struct CopyCommand;
+
+impl CommandHandler for CopyCommand {
+    fn execute(&self, _args: &str) -> anyhow::Result<CommandResult> {
+        Ok(CommandResult::CopyLastMessage)
     }
 }
 

@@ -12,6 +12,7 @@ use yoagent::types::AgentTool;
 use crate::agent::AgentSession;
 use crate::agent::extension::{CommandResult, Extension};
 use crate::agent::footer_data_provider::FooterDataProvider;
+use crate::agent::session::SessionEntry;
 use crate::auth;
 use crate::provider;
 use crate::provider::ProviderRegistry;
@@ -2828,8 +2829,44 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
             chat_info(app, msg.clone());
         }
         CommandResult::CopyLastMessage => {
-            let msg = "Copy last agent message to clipboard - not yet implemented.".to_string();
-            chat_info(app, msg.clone());
+            // Get last assistant message text (pi-compatible)
+            let text = app.session.as_ref().and_then(|s| {
+                let entries = s.session().get_entries();
+                entries.iter().rev().find_map(|entry| {
+                    if let SessionEntry::Message(m) = entry
+                        && matches!(
+                                &m.message,
+                                yoagent::types::AgentMessage::Llm(
+                                    yoagent::types::Message::Assistant {
+                                        stop_reason, ..
+                                    },
+                                ) if *stop_reason != yoagent::types::StopReason::Aborted
+                                    || !crate::agent::types::message_text(&m.message)
+                                        .trim()
+                                        .is_empty()
+                        )
+                    {
+                        let text = crate::agent::types::message_text(&m.message);
+                        let trimmed = text.trim();
+                        if !trimmed.is_empty() {
+                            return Some(trimmed.to_string());
+                        }
+                    }
+                    None
+                })
+            });
+
+            let text = match text {
+                Some(t) => t,
+                None => {
+                    chat_info(app, "No agent messages to copy yet.");
+                    return;
+                }
+            };
+
+            // Pi-compatible clipboard copy (includes OSC 52 fallback)
+            copy_to_clipboard(&text);
+            chat_info(app, "Copied last agent message to clipboard");
         }
         CommandResult::ShowChangelog => {
             let msg = "Changelog - not yet implemented.".to_string();
@@ -3272,6 +3309,151 @@ fn extract_text_content(content: &[yoagent::types::Content]) -> String {
         })
         .collect::<Vec<_>>()
         .join("")
+}
+
+/// Try to copy text to the system clipboard using platform-specific tools.
+/// Returns true if successful, false if no tool was available.
+/// Falls back to OSC 52 escape sequence for remote sessions.
+/// Mirrors pi's clipboard strategy exactly.
+fn copy_to_clipboard(text: &str) -> bool {
+    use std::io::Write;
+    let mut copied = false;
+
+    // macOS
+    if !copied
+        && std::process::Command::new("pbcopy")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .ok()
+            .and_then(|mut child| {
+                let _ = child.stdin.take().map(|mut stdin| {
+                    let _ = stdin.write_all(text.as_bytes());
+                });
+                child.wait().ok()
+            })
+            .is_some_and(|s| s.success())
+    {
+        copied = true;
+    }
+
+    // Windows
+    if !copied
+        && std::process::Command::new("clip")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .ok()
+            .and_then(|mut child| {
+                let _ = child.stdin.take().map(|mut stdin| {
+                    let _ = stdin.write_all(text.as_bytes());
+                });
+                child.wait().ok()
+            })
+            .is_some_and(|s| s.success())
+    {
+        copied = true;
+    }
+
+    // Linux / Termux
+    if !copied
+        && std::env::var("TERMUX_VERSION").is_ok()
+        && let Ok(mut child) = std::process::Command::new("termux-clipboard-set")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+    {
+        let _ = child.stdin.take().map(|mut stdin| {
+            let _ = stdin.write_all(text.as_bytes());
+        });
+        copied = child.wait().ok().is_some_and(|s| s.success());
+    }
+
+    // Wayland: spawn wl-copy without waiting (it daemonizes, pi-compatible)
+    if !copied
+        && std::env::var("WAYLAND_DISPLAY").is_ok()
+        && std::process::Command::new("which")
+            .arg("wl-copy")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .ok()
+            .is_some_and(|s| s.success())
+        && let Ok(mut child) = std::process::Command::new("wl-copy")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+    {
+        let _ = child.stdin.take().map(|mut stdin| {
+            let _ = stdin.write_all(text.as_bytes());
+        });
+        // Don't wait — wl-copy daemonizes (pi-compatible)
+        copied = true;
+    }
+
+    // X11: try xclip, then xsel
+    if !copied
+        && std::process::Command::new("xclip")
+            .arg("-selection")
+            .arg("clipboard")
+            .arg("-i")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .ok()
+            .and_then(|mut child| {
+                let _ = child.stdin.take().map(|mut stdin| {
+                    let _ = stdin.write_all(text.as_bytes());
+                });
+                child.wait().ok()
+            })
+            .is_some_and(|s| s.success())
+    {
+        copied = true;
+    }
+
+    if !copied
+        && std::process::Command::new("xsel")
+            .arg("--clipboard")
+            .arg("--input")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .ok()
+            .and_then(|mut child| {
+                let _ = child.stdin.take().map(|mut stdin| {
+                    let _ = stdin.write_all(text.as_bytes());
+                });
+                child.wait().ok()
+            })
+            .is_some_and(|s| s.success())
+    {
+        copied = true;
+    }
+
+    // OSC 52 fallback: emit for remote sessions or when nothing copied
+    let remote = std::env::var("SSH_CONNECTION").is_ok()
+        || std::env::var("SSH_CLIENT").is_ok()
+        || std::env::var("MOSH_CONNECTION").is_ok();
+
+    if remote || !copied {
+        use base64::Engine as _;
+        let encoded = base64::engine::general_purpose::STANDARD.encode(text.as_bytes());
+        // Pi-compatible: skip OSC 52 for very large payloads (>100KB encoded)
+        if encoded.len() <= 100_000 {
+            let _ = writeln!(std::io::stdout(), "\x1b]52;c;{}\x07", encoded);
+            let _ = std::io::stdout().flush();
+            copied = true;
+        }
+    }
+
+    copied
 }
 
 /// Handle agent events from the channel.
