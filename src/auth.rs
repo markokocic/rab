@@ -108,10 +108,11 @@ fn with_exclusive_lock<T>(path: &PathBuf, f: impl FnOnce() -> T) -> T {
         let _ = std::fs::create_dir_all(parent);
     }
 
-    // Open or create the auth file itself
+    // Open or create the auth file itself (no truncate — we're just getting
+    // a fd for locking; actual reads/writes are done separately).
     let file = std::fs::OpenOptions::new()
         .create(true)
-        .truncate(true)
+        .truncate(false)
         .write(true)
         .read(true)
         .open(path)

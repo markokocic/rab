@@ -167,6 +167,10 @@ pub struct App {
     /// Handle for the OAuth login task, aborted on quit to avoid background polling.
     oauth_join_handle: Option<tokio::task::JoinHandle<()>>,
 
+    /// Provider ID of an in-flight OAuth login, used to perform post-login
+    /// actions (registry refresh, model auto-selection) after the task completes.
+    pending_oauth_provider: Option<String>,
+
     /// Display settings.
     hide_thinking: bool,
     collapse_tool_output: bool,
@@ -454,6 +458,7 @@ impl App {
             agent: None,
             forward_handle: None,
             oauth_join_handle: None,
+            pending_oauth_provider: None,
             pending_command_result: None,
             overlay_result_signal: Rc::new(RefCell::new(None)),
             pending_scoped_ids: Rc::new(RefCell::new(None)),
@@ -847,6 +852,51 @@ pub async fn run(config: AppConfig, session: AgentSession) -> anyhow::Result<()>
             .is_some_and(|h| h.is_finished())
         {
             app.oauth_join_handle.take();
+
+            // OAuth task finished — check if credentials were saved and if so,
+            // refresh registry and auto-select a model (matching API key login flow).
+            // Also add a persistent chat message so the user sees the result
+            // even after the status bar text gets overwritten.
+            let oauth_provider = app.pending_oauth_provider.take();
+            if let Some(ref provider_id) = oauth_provider
+                && let Ok(Some(auth::AuthCredential::Oauth { .. })) =
+                    auth::read_credential(provider_id)
+            {
+                let provider_name = app
+                    .registry
+                    .list_providers()
+                    .into_iter()
+                    .find(|(id, _)| id == provider_id)
+                    .map(|(_, name)| name)
+                    .unwrap_or_else(|| provider_id.clone());
+                let msg = format!("✓ Logged in to {} via OAuth", provider_name);
+                app.status_text = Some(msg.clone());
+                chat_add(
+                    &mut app,
+                    std::boxed::Box::new(InfoMessageComponent::new(&msg)),
+                );
+                // Refresh registry
+                if let Ok(new_reg) =
+                    crate::provider::ProviderRegistry::load(&crate::provider::get_agent_dir())
+                {
+                    app.registry = Arc::new(new_reg);
+                }
+                complete_login(
+                    &mut app,
+                    provider_id,
+                    crate::agent::ui::components::oauth_selector::AuthType::OAuth,
+                );
+            } else if oauth_provider.is_some() {
+                // OAuth task finished but no credential saved (login failed).
+                // The error message was already shown as status_text; persist it to chat.
+                let err_msg = app.status_text.clone().unwrap_or_default();
+                if !err_msg.is_empty() {
+                    chat_add(
+                        &mut app,
+                        std::boxed::Box::new(InfoMessageComponent::new(&err_msg)),
+                    );
+                }
+            }
         }
 
         // Handle pending agent submission (async).
@@ -1749,6 +1799,8 @@ fn show_oauth_login_dialog(app: &mut App, tui: &mut TUI, provider_id: &str) {
     let tx2 = tx.clone();
     let tx3 = tx.clone();
     let tx4 = tx.clone();
+
+    app.pending_oauth_provider = Some(pid.clone());
 
     let handle = tokio::spawn(async move {
         let oauth_provider = match crate::provider::oauth::get(&pid) {
