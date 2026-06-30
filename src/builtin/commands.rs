@@ -151,11 +151,6 @@ impl Extension for CommandsExtension {
                 handler: Box::new(command_not_implemented_handler("import")),
             },
             SlashCommand {
-                name: "share".to_string(),
-                description: "Share session as a secret GitHub gist".to_string(),
-                handler: Box::new(command_not_implemented_handler("share")),
-            },
-            SlashCommand {
                 name: "copy".to_string(),
                 description: "Copy last agent message to clipboard".to_string(),
                 handler: Box::new(command_not_implemented_handler("copy")),
@@ -173,14 +168,9 @@ impl Extension for CommandsExtension {
                 }),
             },
             SlashCommand {
-                name: "changelog".to_string(),
-                description: "Show changelog entries".to_string(),
-                handler: Box::new(command_not_implemented_handler("changelog")),
-            },
-            SlashCommand {
                 name: "hotkeys".to_string(),
                 description: "Show all keyboard shortcuts".to_string(),
-                handler: Box::new(HotkeysCommand),
+                handler: Box::new(command_not_implemented_handler("hotkeys")),
             },
             SlashCommand {
                 name: "fork".to_string(),
@@ -196,11 +186,6 @@ impl Extension for CommandsExtension {
                 name: "tree".to_string(),
                 description: "Navigate session tree (switch branches)".to_string(),
                 handler: Box::new(command_not_implemented_handler("tree")),
-            },
-            SlashCommand {
-                name: "trust".to_string(),
-                description: "Save project trust decision for future sessions".to_string(),
-                handler: Box::new(TrustCommand),
             },
             SlashCommand {
                 name: "login".to_string(),
@@ -225,7 +210,7 @@ impl Extension for CommandsExtension {
             SlashCommand {
                 name: "resume".to_string(),
                 description: "Resume a different session".to_string(),
-                handler: Box::new(ResumeCommand),
+                handler: Box::new(command_not_implemented_handler("resume")),
             },
             SlashCommand {
                 name: "reload".to_string(),
@@ -326,16 +311,6 @@ impl CommandHandler for ScopedModelsCommand {
     }
 }
 
-// ── /hotkeys ──────────────────────────────────────────────────────
-
-struct HotkeysCommand;
-
-impl CommandHandler for HotkeysCommand {
-    fn execute(&self, _args: &str) -> anyhow::Result<CommandResult> {
-        Ok(CommandResult::ShowHelp)
-    }
-}
-
 // ── /reload ───────────────────────────────────────────────────────
 
 struct ReloadCommand;
@@ -353,16 +328,6 @@ struct NewCommand;
 impl CommandHandler for NewCommand {
     fn execute(&self, _args: &str) -> anyhow::Result<CommandResult> {
         Ok(CommandResult::NewSession)
-    }
-}
-
-// ── /resume ───────────────────────────────────────────────────────
-
-struct ResumeCommand;
-
-impl CommandHandler for ResumeCommand {
-    fn execute(&self, _args: &str) -> anyhow::Result<CommandResult> {
-        Ok(CommandResult::OpenSessionSelector)
     }
 }
 
@@ -414,26 +379,6 @@ impl CommandHandler for NameCommand {
         Ok(CommandResult::SessionNamed {
             name: name.to_string(),
         })
-    }
-}
-
-// ── /trust ────────────────────────────────────────────────────────
-
-struct TrustCommand;
-
-impl CommandHandler for TrustCommand {
-    fn execute(&self, args: &str) -> anyhow::Result<CommandResult> {
-        let decision = args.trim();
-        if decision.is_empty() {
-            Ok(CommandResult::Info(
-                "Usage: /trust <auto|always|never> - save project trust decision for future sessions"
-                    .to_string(),
-            ))
-        } else {
-            Ok(CommandResult::TrustDecision {
-                decision: decision.to_string(),
-            })
-        }
     }
 }
 
