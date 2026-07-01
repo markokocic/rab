@@ -279,7 +279,7 @@ impl crate::tui::Component for Footer {
 
         // ── Line 1: pwd (git branch) • session-name ──
         let home = std::env::var("HOME").ok();
-        let mut pwd = format_cwd_for_footer(&self.cwd, home.as_deref());
+        let mut pwd = format!("Ⱀ {}", format_cwd_for_footer(&self.cwd, home.as_deref()));
 
         if let Some(ref branch) = git_branch {
             pwd = format!("{} ({})", pwd, branch);
