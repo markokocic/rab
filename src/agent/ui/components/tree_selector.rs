@@ -324,12 +324,18 @@ impl TreeSelector {
         let Some(ref leaf) = self.current_leaf_id else {
             return false;
         };
-        if node.entry.id() == leaf {
-            return true;
-        }
-        for child in &node.children {
-            if self.node_contains_leaf(child) {
+        // Iterative DFS to avoid stack overflow on deep trees.
+        let mut stack = vec![node];
+        let mut visited = std::collections::HashSet::new();
+        while let Some(current) = stack.pop() {
+            if !visited.insert(current.entry.id()) {
+                continue; // cycle guard
+            }
+            if current.entry.id() == leaf {
                 return true;
+            }
+            for child in &current.children {
+                stack.push(child);
             }
         }
         false
@@ -625,7 +631,13 @@ impl TreeSelector {
         let find_visible_ancestor = |node_id: &str| -> Option<String> {
             let entry = entry_map.get(node_id)?;
             let mut current = entry.node.entry.parent_id()?.to_string();
+            let mut seen = std::collections::HashSet::new();
+            seen.insert(node_id.to_string());
             loop {
+                if !seen.insert(current.clone()) {
+                    // Cycle detected in parent_id chain — bail out.
+                    return None;
+                }
                 if visible_ids.contains(current.as_str()) {
                     return Some(current);
                 }
@@ -1119,6 +1131,12 @@ impl TreeSelector {
     // ── Input handling ────────────────────────────────────────
 
     pub fn handle_key(&mut self, key: &KeyEvent) -> bool {
+        // Filter out release events (Kitty keyboard protocol sends both
+        // Press and Release for every key, which would cause double-input).
+        if key.kind == crossterm::event::KeyEventKind::Release {
+            return true;
+        }
+
         if self.label_input_active {
             return self.handle_label_input(key);
         }
@@ -1388,7 +1406,10 @@ impl TreeSelector {
 
 impl Component for TreeSelector {
     fn render(&mut self, width: usize) -> Vec<String> {
-        let theme = current_theme();
+        // Clone immediately to release the mutex; other calls (e.g.
+        // render_help) may call current_theme() and would deadlock
+        // on the non-reentrant std::sync::Mutex.
+        let theme = current_theme().clone();
         let mut lines: Vec<String> = Vec::new();
 
         lines.push(theme.fg("muted", &"─".repeat(width.saturating_sub(2))));
@@ -1438,8 +1459,15 @@ impl Component for TreeSelector {
                 "  {}",
                 theme.fg(
                     "muted",
-                    &format!("No entries found  (0/0){}", self.filter_mode.label())
+                    &format!(
+                        "No entries match current filter (0/0){}",
+                        self.filter_mode.label()
+                    )
                 )
+            ));
+            lines.push(format!(
+                "  {}",
+                theme.fg("muted", "Press 1-5 or Tab to change filter, Esc to close")
             ));
             lines.push(theme.fg("muted", &"─".repeat(width.saturating_sub(2))));
             return lines;
