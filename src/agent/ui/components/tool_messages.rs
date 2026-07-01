@@ -253,42 +253,56 @@ impl ToolExecComponent {
             invalidate: self.invalidate_tx.clone(),
         };
 
-        // Self-shell: tool controls its own framing (e.g. edit with diff preview)
+        // Self-shell: tool controls its own framing (e.g. edit with diff preview).
+        // Pi: no outer Box — the tool's render_call handles its own background/framing.
+        // Since rab renderers return Vec<String> (not Components), we apply the background
+        // directly to each line and avoid the TuiBox wrapper with its extra padding.
         if renderer.render_self() {
             let mut lines: Vec<String> = Vec::new();
-            lines.push(String::new());
+            lines.push(String::new()); // Leading spacer (matching pi's Spacer(1))
 
             let bg_key = self.compute_bg_key(Some(renderer));
             let bg_ansi = theme.bg_ansi(bg_key).to_string();
-            let mut call_box = TuiBox::new(1, 1, Some(crate::tui::Style::new().bg(bg_ansi)));
+            let bg_style = crate::tui::Style::new().bg(bg_ansi);
 
-            let mut all_content = String::new();
-
+            // Call render_call at full width (pi passes width to the component directly)
             let call_lines = renderer.render_call(&self.args, width, theme, &ctx);
+
+            let mut all_lines: Vec<String> = Vec::new();
             if !call_lines.is_empty() {
-                all_content.push_str(&call_lines.join("\n"));
+                all_lines.extend(call_lines);
             }
 
             if let Some(ref output) = self.output {
                 let result_lines = renderer.render_result(output, width, theme, &ctx);
                 if !result_lines.is_empty() {
-                    if !all_content.is_empty() {
-                        all_content.push('\n');
-                        all_content.push('\n');
+                    if !all_lines.is_empty() {
+                        all_lines.push(String::new());
                     }
-                    all_content.push_str(&result_lines.join("\n"));
+                    all_lines.extend(result_lines);
                 }
             }
 
-            if !all_content.is_empty() {
-                let call_text = Text::new(all_content, 0, 0, None);
-                call_box.add_child(std::boxed::Box::new(call_text));
-                lines.extend(call_box.render(width));
+            if !all_lines.is_empty() {
+                // Apply background to each line, padding to full width.
+                for line in &all_lines {
+                    let vis = crate::tui::util::visible_width(line);
+                    let padded = if vis < width {
+                        format!("{}{}", line, " ".repeat(width - vis))
+                    } else {
+                        line.to_string()
+                    };
+                    lines.push(bg_style.apply(&padded));
+                }
             }
+
             return lines;
         }
 
         // ── Default shell: colored box wrapping ──
+        let mut lines: Vec<String> = Vec::new();
+        lines.push(String::new()); // Leading spacer (matching pi's Spacer(1))
+
         let bg_key = self.compute_bg_key(Some(renderer));
         let bg_ansi = theme.bg_ansi(bg_key).to_string();
         let theme_clone = theme.clone();
@@ -309,12 +323,16 @@ impl ToolExecComponent {
             }
         }
 
-        msg_box.render(width)
+        lines.extend(msg_box.render(width));
+        lines
     }
 
     /// Generic fallback rendering for tools with no renderer.
     /// Shows tool name, JSON args, and output text (collapsed if long).
     fn render_generic(&self, theme: &RabTheme, width: usize) -> Vec<String> {
+        let mut lines: Vec<String> = Vec::new();
+        lines.push(String::new()); // Leading spacer (matching pi's Spacer(1))
+
         let bg_key = self.compute_bg_key(None);
         let bg_ansi = theme.bg_ansi(bg_key).to_string();
         let mut msg_box = TuiBox::new(1, 1, Some(crate::tui::Style::new().bg(bg_ansi)));
@@ -370,7 +388,8 @@ impl ToolExecComponent {
             msg_box.add_child(std::boxed::Box::new(result_text));
         }
 
-        msg_box.render(width)
+        lines.extend(msg_box.render(width));
+        lines
     }
 
     fn compute_bg_key(&self, renderer: Option<&dyn ToolRenderer>) -> &'static str {
