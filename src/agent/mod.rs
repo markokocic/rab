@@ -4,6 +4,7 @@ pub mod compaction;
 pub mod context_files;
 pub mod extension;
 pub mod footer_data_provider;
+pub mod prompt_templates;
 pub mod session;
 pub mod settings;
 pub mod system_prompt;

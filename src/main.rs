@@ -490,6 +490,25 @@ async fn main() -> anyhow::Result<()> {
     }
     let skills: Vec<yoagent::skills::Skill> = skill_set.skills().to_vec();
 
+    // Load prompt templates from template directories
+    let mut prompt_template_dirs = Vec::new();
+    prompt_template_dirs.push(agent_dir.join("prompts"));
+    if let Some(home) = directories::BaseDirs::new().map(|d| d.home_dir().to_path_buf()) {
+        prompt_template_dirs.push(home.join(".agents").join("prompts"));
+    }
+    let mut current = Some(cwd.to_path_buf());
+    while let Some(dir) = current {
+        prompt_template_dirs.push(dir.join(".rab").join("prompts"));
+        prompt_template_dirs.push(dir.join(".agents").join("prompts"));
+        let parent = match dir.parent() {
+            Some(p) if p != dir => p.to_path_buf(),
+            _ => break,
+        };
+        current = Some(parent);
+    }
+    let prompt_templates =
+        rab::agent::prompt_templates::load_prompt_templates(&prompt_template_dirs);
+
     // Build system prompt using the new builder
     let has_read_tool = tool_snippets.iter().any(|t| t.name == "read");
     let system_prompt = rab::agent::SystemPromptBuilder::new()
@@ -543,6 +562,8 @@ async fn main() -> anyhow::Result<()> {
             skills,
             skill_dirs,
             agent_dir: agent_dir.clone(),
+            prompt_templates,
+            prompt_template_dirs,
             session_info: Some(session_info),
             api_key,
             registry: Arc::new(registry),

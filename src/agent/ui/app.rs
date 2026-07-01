@@ -120,6 +120,10 @@ pub struct AppConfig {
     pub skill_dirs: Vec<PathBuf>,
     /// Agent config directory (~/.rab/agent).
     pub agent_dir: PathBuf,
+    /// Prompt templates loaded for the session (/name expansion).
+    pub prompt_templates: Vec<crate::agent::prompt_templates::PromptTemplate>,
+    /// Prompt template directories to scan (for /reload support).
+    pub prompt_template_dirs: Vec<PathBuf>,
     /// Session info Arc for /session command (shared with CommandsExtension).
     pub session_info: Option<std::sync::Arc<std::sync::Mutex<Option<SessionInfoInternal>>>>,
     /// API key for yoagent provider.
@@ -258,6 +262,10 @@ pub struct App {
     skill_dirs: Vec<PathBuf>,
     /// Agent config directory (~/.rab/agent).
     agent_dir: PathBuf,
+    /// Prompt template directories to scan (for /reload support).
+    prompt_template_dirs: Vec<PathBuf>,
+    /// Prompt templates loaded for the session (/name expansion).
+    prompt_templates: Vec<crate::agent::prompt_templates::PromptTemplate>,
     /// API key for yoagent provider.
     api_key: String,
     /// Session info updater for /session command.
@@ -360,6 +368,17 @@ impl App {
                 get_argument_completions: None,
             });
         }
+
+        // Register prompt template commands for autocomplete (pi-compatible)
+        for template in &config.prompt_templates {
+            auto_commands.push(AutoSlashCommand {
+                name: template.name.clone(),
+                description: Some(template.description.clone()),
+                argument_hint: template.argument_hint.clone(),
+                argument_completions: None,
+                get_argument_completions: None,
+            });
+        }
         editor.set_slash_commands(auto_commands);
 
         // Keep commands list for help overlay and unknown-command display.
@@ -373,6 +392,11 @@ impl App {
         // Add skill commands (pi-compatible: /skill:name is an implicit command)
         for skill in &config.skills {
             commands.push((format!("skill:{}", skill.name), skill.description.clone()));
+        }
+
+        // Add prompt template commands (pi-compatible: /name is an implicit command)
+        for template in &config.prompt_templates {
+            commands.push((template.name.clone(), template.description.clone()));
         }
 
         let editor = Rc::new(RefCell::new(editor));
@@ -426,6 +450,14 @@ impl App {
         if !config.skills.is_empty() {
             let skill_names: Vec<&str> = config.skills.iter().map(|s| s.name.as_str()).collect();
             resource_parts.push(format!("Skills: {}", skill_names.join(", ")));
+        }
+        if !config.prompt_templates.is_empty() {
+            let template_names: Vec<&str> = config
+                .prompt_templates
+                .iter()
+                .map(|t| t.name.as_str())
+                .collect();
+            resource_parts.push(format!("Prompts: {}", template_names.join(", ")));
         }
 
         // Build chat_container from AgentMessages directly (matching pi's renderSessionContext).
@@ -510,6 +542,8 @@ impl App {
             skills: config.skills,
             skill_dirs: config.skill_dirs,
             agent_dir: config.agent_dir,
+            prompt_template_dirs: config.prompt_template_dirs,
+            prompt_templates: config.prompt_templates,
             session_info: config.session_info,
             api_key: config.api_key,
             scoped_model_ids: config.settings.enabled_models.clone(),
@@ -2297,6 +2331,16 @@ fn submit_message(app: &mut App, message: String) {
         return;
     }
 
+    // Handle prompt template expansion (/name) before /skill: (pi-compatible order)
+    let expanded =
+        crate::agent::prompt_templates::expand_prompt_template(&trimmed, &app.prompt_templates);
+
+    // If a template matched, submit the expanded content directly (no longer a command)
+    if expanded != trimmed {
+        submit_message(app, expanded);
+        return;
+    }
+
     // Handle /skill:name [args] expansion (pi-style: before command dispatch)
     if trimmed.starts_with("/skill:") {
         let expanded = expand_skill_command(&trimmed, &app.skills);
@@ -2748,6 +2792,14 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
             app.skills = new_skill_set.skills().to_vec();
             reload_parts.push("skills");
 
+            // 5. Reload prompt templates from disk (pi-compatible)
+            app.prompt_templates =
+                crate::agent::prompt_templates::load_prompt_templates(&app.prompt_template_dirs);
+            // Only report if there are any template dirs configured
+            if !app.prompt_template_dirs.is_empty() {
+                reload_parts.push("prompts");
+            }
+
             // 5. Reload context files (AGENTS.md / CLAUDE.md) and system prompt (pi-compatible)
             let context_files =
                 crate::agent::context_files::load_context_files(&app.cwd, &app.agent_dir);
@@ -2853,6 +2905,17 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
                         get_argument_completions: None,
                     });
                 }
+
+                // Re-register prompt template commands
+                for template in &app.prompt_templates {
+                    auto_commands.push(AutoSlashCommand {
+                        name: template.name.clone(),
+                        description: Some(template.description.clone()),
+                        argument_hint: template.argument_hint.clone(),
+                        argument_completions: None,
+                        get_argument_completions: None,
+                    });
+                }
                 app.editor.borrow_mut().set_slash_commands(auto_commands);
             }
 
@@ -2866,6 +2929,10 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
             for skill in &app.skills {
                 app.commands
                     .push((format!("skill:{}", skill.name), skill.description.clone()));
+            }
+            for template in &app.prompt_templates {
+                app.commands
+                    .push((template.name.clone(), template.description.clone()));
             }
 
             // 7. Notify extensions that reload is complete (pi-compatible: session_start)
