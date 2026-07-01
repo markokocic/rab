@@ -4,7 +4,6 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use crate::agent::extension::{ToolRenderContext, ToolRenderer};
-use crate::agent::ui::render_utils::pad_to_width;
 use crate::agent::ui::theme::{RabTheme, current_theme};
 use crate::tui::Component;
 use crate::tui::component::{RenderCache, RenderCacheKey};
@@ -255,16 +254,12 @@ impl ToolExecComponent {
         };
 
         // Self-shell: tool controls its own framing (e.g. edit with diff preview).
-        // Pi: no outer Box — the tool's render_call handles its own background/framing.
-        // Since rab renderers return Vec<String> (not Components), we apply the background
-        // directly to each line and avoid the TuiBox wrapper with its extra padding.
+        // Pi: no outer Box — the tool's render_call and render_result handle their own
+        // background/framing. We just pass through their lines unchanged and add the leading
+        // spacer. No padding or background is applied by the execution component.
         if renderer.render_self() {
             let mut lines: Vec<String> = Vec::new();
             lines.push(String::new()); // Leading spacer (matching pi's Spacer(1))
-
-            let bg_key = self.compute_bg_key(Some(renderer));
-            let bg_ansi = theme.bg_ansi(bg_key).to_string();
-            let bg_style = crate::tui::Style::new().bg(bg_ansi);
 
             // Call render_call at full width (pi passes width to the component directly)
             let call_lines = renderer.render_call(&self.args, width, theme, &ctx);
@@ -285,11 +280,8 @@ impl ToolExecComponent {
             }
 
             if !all_lines.is_empty() {
-                // Apply background to each line, padding (or truncating) to full width.
-                for line in &all_lines {
-                    let padded = pad_to_width(line, width);
-                    lines.push(bg_style.apply(&padded));
-                }
+                // Pass through lines as rendered by the tool (no bg/padding added here).
+                lines.extend(all_lines);
             }
 
             return lines;

@@ -1030,26 +1030,15 @@ impl ToolRenderer for EditRenderer {
     }
 
     fn render_bg_key(&self) -> Option<&'static str> {
-        // Match pi's edit tool background management:
-        // - If preview exists and has an error → toolErrorBg
-        // - If preview exists and is valid → toolSuccessBg (preview succeeded)
-        // - Otherwise → None (let ToolExecComponent decide based on is_complete/is_error)
-        if let Ok(p) = self.preview.lock()
-            && let Some(ref preview) = *p
-            && preview.error.as_deref() != Some("pending")
-        {
-            if preview.error.is_some() {
-                return Some("toolErrorBg");
-            }
-            return Some("toolSuccessBg");
-        }
-        None // Let compute_bg_key use default (toolPendingBg or is_error)
+        // The edit tool handles its own bg in render_call now.
+        // This hint is no longer used by the execution component.
+        None
     }
 
     fn render_call(
         &self,
         args: &serde_json::Value,
-        _width: usize,
+        width: usize,
         theme: &dyn Theme,
         ctx: &ToolRenderContext,
     ) -> Vec<String> {
@@ -1075,7 +1064,7 @@ impl ToolRenderer for EditRenderer {
             path_disp
         );
 
-        let mut lines = vec![header];
+        let mut content_lines: Vec<String> = vec![header];
 
         // Decide what diff to show:
         // 1. If execution completed and details are available, use actual diff from details
@@ -1112,11 +1101,8 @@ impl ToolRenderer for EditRenderer {
                     Some(preview.diff.clone())
                 }
             } else if let Some((path_str, edits)) = parse_path_edits(args) {
-                // If no cached preview, check if preview is already being computed
-                // (pending flag not started yet). If not, spawn async computation.
                 let mut preview_lock = self.preview.lock().unwrap();
                 if preview_lock.is_some() {
-                    // Preview was set between lock releases (race)
                     drop(preview_lock);
                     let cached = self.preview.lock().ok().and_then(|p| p.clone());
                     cached.map(|preview| {
@@ -1127,14 +1113,12 @@ impl ToolRenderer for EditRenderer {
                         }
                     })
                 } else {
-                    // Mark as pending (store a place-holder)
                     *preview_lock = Some(EditPreview {
                         diff: String::new(),
                         error: Some("pending".to_string()),
                     });
                     drop(preview_lock);
 
-                    // Spawn async computation (matching pi's computeEditsDiff called from renderCall)
                     let preview_arc = self.preview.clone();
                     let path_owned = path_str.clone();
                     let edits_owned = edits.clone();
@@ -1153,13 +1137,11 @@ impl ToolRenderer for EditRenderer {
                         if let Ok(mut p) = preview_arc.lock() {
                             *p = Some(EditPreview { diff, error });
                         }
-                        // Notify UI to re-render
                         if let Some(ref tx) = invalidate_tx {
                             let _ = tx.send(());
                         }
                     });
 
-                    // No diff to show yet (pending)
                     None
                 }
             } else {
@@ -1168,24 +1150,73 @@ impl ToolRenderer for EditRenderer {
         };
 
         if let Some(ref diff) = diff_to_show {
-            if diff.starts_with("error: ") {
-                // Show error inline (dimmed, matching pi error display)
-                lines.push(String::new());
-                lines.push(theme.fg_key(ThemeKey::Muted, diff));
+            if let Some(err_msg) = diff.strip_prefix("error: ") {
+                // Show error in error color (matching pi's theme.fg("error", ...))
+                content_lines.push(String::new());
+                content_lines.push(theme.fg_key(ThemeKey::Error, err_msg));
             } else if !diff.is_empty() {
-                lines.push(String::new());
+                content_lines.push(String::new());
                 let rendered_lines = crate::tui::components::diff::render_diff(diff, theme);
-                lines.extend(rendered_lines);
+                content_lines.extend(rendered_lines);
             }
         }
 
-        lines
+        // ── Pad and apply background to match pi's Box(1,1) handling ──
+        // Pi's edit tool returns a Box with bgFn based on preview/error state.
+        // Since rab returns Vec<String>, we pad each line to width and wrap in bg.
+        let bg_key = if let Ok(p) = self.preview.lock()
+            && let Some(ref preview) = *p
+            && preview.error.as_deref() != Some("pending")
+        {
+            if preview.error.is_some() {
+                "toolErrorBg"
+            } else {
+                "toolSuccessBg"
+            }
+        } else if ctx.is_error {
+            // Execution error (not preview) — matches pi's fallback bgFn
+            "toolErrorBg"
+        } else if ctx.args_complete && !ctx.is_partial {
+            "toolSuccessBg"
+        } else {
+            "toolPendingBg"
+        };
+
+        // In pi, the edit tool uses Box(1,1) which means:
+        // - padding_x=1 on each side (contentWidth = width - 2)
+        // - left_pad = " "
+        // - applyBg pads to full width
+        // We replicate this here.
+        let left_pad = " ";
+        let content_width = width.saturating_sub(2).max(1);
+
+        let mut result: Vec<String> = Vec::new();
+        for line in content_lines {
+            // Pad each content line to content_width
+            let vw = crate::tui::util::visible_width(&line);
+            let padded_line = if vw < content_width {
+                format!("{}{}", line, " ".repeat(content_width - vw))
+            } else {
+                line.to_string()
+            };
+            // Add left padding and pad to full width
+            let with_pad = format!("{}{}", left_pad, padded_line);
+            let vw2 = crate::tui::util::visible_width(&with_pad);
+            let fully_padded = if vw2 < width {
+                format!("{}{}", with_pad, " ".repeat(width - vw2))
+            } else {
+                with_pad
+            };
+            result.push(theme.bg(bg_key, &fully_padded));
+        }
+
+        result
     }
 
     fn render_result(
         &self,
         content: &str,
-        _width: usize,
+        width: usize,
         theme: &dyn Theme,
         ctx: &ToolRenderContext,
     ) -> Vec<String> {
@@ -1200,7 +1231,18 @@ impl ToolRenderer for EditRenderer {
                 .ok()
                 .and_then(|p| p.as_ref().and_then(|preview| preview.error.clone()));
             if preview_err.as_deref() != Some(msg) {
-                return vec![String::new(), theme.fg_key(ThemeKey::Error, msg)];
+                // Pi: renderResult wraps error in Container(Spacer(1) + Text(output, 1, 0)).
+                // Text(1,0) adds 1-space padding on each side.
+                // We return just the error line with 1-space indent (ToolExecComponent adds the spacer).
+                let indent = " ";
+                let error_line = format!("{}{}", indent, theme.fg_key(ThemeKey::Error, msg));
+                // Pad to full width for consistent display
+                let vw = crate::tui::util::visible_width(&error_line);
+                if vw < width {
+                    let padded = format!("{}{}", error_line, " ".repeat(width - vw));
+                    return vec![padded];
+                }
+                return vec![error_line];
             }
         }
 
