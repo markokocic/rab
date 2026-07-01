@@ -140,11 +140,13 @@ pub fn render_diff(diff_text: &str, theme: &dyn Theme) -> Vec<String> {
                 }
             }
 
-            // Single-line change: intra-line word diff
+            // Single-line change: intra-line word diff (pi-style with line numbers)
             if removed.len() == 1 && added.len() == 1 {
                 render_intra_line_diff(
                     &replace_tabs(removed[0].content),
                     &replace_tabs(added[0].content),
+                    removed[0].line_num,
+                    added[0].line_num,
                     &mut lines,
                     theme,
                 );
@@ -220,8 +222,16 @@ fn replace_tabs(text: &str) -> String {
 /// Matches pi's `renderIntraLineDiff()` which uses `diffWords` to find changed
 /// tokens and applies `theme.inverse()` on them.
 /// Strips leading whitespace from inverse to avoid highlighting indentation.
-fn render_intra_line_diff(old: &str, new: &str, output: &mut Vec<String>, theme: &dyn Theme) {
-    let changes = compute_word_diff(old, new);
+/// Includes line numbers (pi-compatible): `-{lineNum} {content}` / `+{lineNum} {content}`
+fn render_intra_line_diff(
+    old_content: &str,
+    new_content: &str,
+    old_line_num: &str,
+    new_line_num: &str,
+    output: &mut Vec<String>,
+    theme: &dyn Theme,
+) {
+    let changes = compute_word_diff(old_content, new_content);
 
     let mut removed_line = String::new();
     let mut added_line = String::new();
@@ -257,8 +267,22 @@ fn render_intra_line_diff(old: &str, new: &str, output: &mut Vec<String>, theme:
         }
     }
 
-    output.push(theme.fg_key(ThemeKey::ToolDiffRemoved, &format!("-{}", removed_line)));
-    output.push(theme.fg_key(ThemeKey::ToolDiffAdded, &format!("+{}", added_line)));
+    if old_line_num.is_empty() {
+        output.push(theme.fg_key(ThemeKey::ToolDiffRemoved, &format!("-{}", removed_line)));
+    } else {
+        output.push(theme.fg_key(
+            ThemeKey::ToolDiffRemoved,
+            &format!("-{} {}", old_line_num, removed_line),
+        ));
+    }
+    if new_line_num.is_empty() {
+        output.push(theme.fg_key(ThemeKey::ToolDiffAdded, &format!("+{}", added_line)));
+    } else {
+        output.push(theme.fg_key(
+            ThemeKey::ToolDiffAdded,
+            &format!("+{} {}", new_line_num, added_line),
+        ));
+    }
 }
 
 /// A change in a diff: equal, removed, or added.
@@ -518,6 +542,31 @@ mod tests {
         assert!(
             result[1].contains("\x1b[7m"),
             "should have inverse on added"
+        );
+    }
+
+    #[test]
+    fn test_single_line_modification_with_line_numbers() {
+        crate::agent::ui::theme::init_theme(Some("dark"), false);
+        let theme = test_theme();
+        let diff = "- 42 foo\n+ 42 bar\n";
+        let result = render_diff(diff, &theme);
+        assert_eq!(result.len(), 2);
+        // Intra-line diff should have line numbers (pi-compatible)
+        assert!(
+            result[0].contains("-42"),
+            "should show line number on removed line: {:?}",
+            result[0]
+        );
+        assert!(
+            result[1].contains("+42"),
+            "should show line number on added line: {:?}",
+            result[1]
+        );
+        // Should have inverse markers on changed words
+        assert!(
+            result[0].contains("\x1b[7m"),
+            "should have inverse on removed"
         );
     }
 

@@ -1033,17 +1033,17 @@ impl ToolRenderer for EditRenderer {
         // Match pi's edit tool background management:
         // - If preview exists and has an error → toolErrorBg
         // - If preview exists and is valid → toolSuccessBg (preview succeeded)
-        // - If settled error (post-exec) → toolErrorBg
-        // - Otherwise → toolPendingBg (no preview yet)
+        // - Otherwise → None (let ToolExecComponent decide based on is_complete/is_error)
         if let Ok(p) = self.preview.lock()
             && let Some(ref preview) = *p
+            && preview.error.as_deref() != Some("pending")
         {
             if preview.error.is_some() {
                 return Some("toolErrorBg");
             }
             return Some("toolSuccessBg");
         }
-        None // Let compute_bg_key use default (toolPendingBg)
+        None // Let compute_bg_key use default (toolPendingBg or is_error)
     }
 
     fn render_call(
@@ -1089,8 +1089,9 @@ impl ToolRenderer for EditRenderer {
 
         let diff_to_show = if let Some(ref d) = actual_diff {
             Some(d.clone())
-        } else if ctx.args_complete && !ctx.is_partial {
-            // After execution, if details aren't in context (unlikely), fallback to preview
+        } else if ctx.args_complete {
+            // After execution: use cached preview if available, otherwise show nothing.
+            // Don't spawn async preview computation — the tool already ran.
             self.preview.lock().ok().and_then(|p| {
                 p.as_ref().map(|preview| {
                     if let Some(ref err) = preview.error {
@@ -1100,8 +1101,8 @@ impl ToolRenderer for EditRenderer {
                     }
                 })
             })
-        } else if ctx.args_complete && actual_diff.is_none() {
-            // Pending state: try to use cached preview or spawn async computation
+        } else {
+            // Before execution: try to show or compute cached preview
             let cached = self.preview.lock().ok().and_then(|p| p.clone());
 
             if let Some(preview) = cached {
@@ -1113,7 +1114,6 @@ impl ToolRenderer for EditRenderer {
             } else if let Some((path_str, edits)) = parse_path_edits(args) {
                 // If no cached preview, check if preview is already being computed
                 // (pending flag not started yet). If not, spawn async computation.
-                // First, check a "pending" flag to avoid duplicate spawns.
                 let mut preview_lock = self.preview.lock().unwrap();
                 if preview_lock.is_some() {
                     // Preview was set between lock releases (race)
@@ -1165,8 +1165,6 @@ impl ToolRenderer for EditRenderer {
             } else {
                 None
             }
-        } else {
-            None
         };
 
         if let Some(ref diff) = diff_to_show {
@@ -1186,26 +1184,23 @@ impl ToolRenderer for EditRenderer {
 
     fn render_result(
         &self,
-        _content: &str,
+        content: &str,
         _width: usize,
         theme: &dyn Theme,
         ctx: &ToolRenderContext,
     ) -> Vec<String> {
         // Result is already shown in the call header (via render_call using ctx.details).
         // If there's an error message not already shown, return it.
-        if ctx.is_error {
-            // Error case: content has the error text
-            if !_content.is_empty() {
-                let msg = _content;
-                // Check if this error is already shown as preview
-                let preview_err = self
-                    .preview
-                    .lock()
-                    .ok()
-                    .and_then(|p| p.as_ref().and_then(|preview| preview.error.clone()));
-                if preview_err.as_deref() != Some(msg) {
-                    return vec![String::new(), theme.fg_key(ThemeKey::Error, msg)];
-                }
+        if ctx.is_error && !content.is_empty() {
+            let msg = content;
+            // Check if this error is already shown as preview
+            let preview_err = self
+                .preview
+                .lock()
+                .ok()
+                .and_then(|p| p.as_ref().and_then(|preview| preview.error.clone()));
+            if preview_err.as_deref() != Some(msg) {
+                return vec![String::new(), theme.fg_key(ThemeKey::Error, msg)];
             }
         }
 

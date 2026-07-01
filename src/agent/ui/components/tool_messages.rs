@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use crate::agent::extension::{ToolRenderContext, ToolRenderer};
+use crate::agent::ui::render_utils::pad_to_width;
 use crate::agent::ui::theme::{RabTheme, current_theme};
 use crate::tui::Component;
 use crate::tui::component::{RenderCache, RenderCacheKey};
@@ -284,14 +285,9 @@ impl ToolExecComponent {
             }
 
             if !all_lines.is_empty() {
-                // Apply background to each line, padding to full width.
+                // Apply background to each line, padding (or truncating) to full width.
                 for line in &all_lines {
-                    let vis = crate::tui::util::visible_width(line);
-                    let padded = if vis < width {
-                        format!("{}{}", line, " ".repeat(width - vis))
-                    } else {
-                        line.to_string()
-                    };
+                    let padded = pad_to_width(line, width);
                     lines.push(bg_style.apply(&padded));
                 }
             }
