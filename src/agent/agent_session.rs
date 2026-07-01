@@ -247,6 +247,11 @@ impl AgentSession {
         self.mgr.session()
     }
 
+    /// Borrow the underlying SessionManager.
+    pub fn session_manager(&self) -> &crate::agent::session::SessionManager {
+        &self.mgr
+    }
+
     /// Mutably borrow the underlying Session.
     pub fn session_mut(&mut self) -> &mut crate::agent::session::Session {
         self.mgr.session_mut()

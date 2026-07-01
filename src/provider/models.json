@@ -903,6 +903,25 @@
           "reasoning": true
         },
         {
+          "api": "anthropic-messages",
+          "baseUrl": "https://opencode.ai/zen",
+          "contextWindow": 1000000,
+          "cost": {
+            "cacheRead": 0.2,
+            "cacheWrite": 2.5,
+            "input": 2.0,
+            "output": 10.0
+          },
+          "id": "claude-sonnet-5",
+          "input": [
+            "text",
+            "image"
+          ],
+          "maxTokens": 128000,
+          "name": "Claude Sonnet 5",
+          "reasoning": true
+        },
+        {
           "api": "openai-completions",
           "baseUrl": "https://opencode.ai/zen/v1",
           "compat": {
@@ -1543,6 +1562,30 @@
             "supportsDeveloperRole": false,
             "supportsStore": false
           },
+          "contextWindow": 262144,
+          "cost": {
+            "cacheRead": 0.19,
+            "cacheWrite": 0.0,
+            "input": 0.95,
+            "output": 4.0
+          },
+          "id": "kimi-k2.7-code",
+          "input": [
+            "text",
+            "image"
+          ],
+          "maxTokens": 262144,
+          "name": "Kimi K2.7 Code",
+          "reasoning": true
+        },
+        {
+          "api": "openai-completions",
+          "baseUrl": "https://opencode.ai/zen/v1",
+          "compat": {
+            "maxTokensField": "max_tokens",
+            "supportsDeveloperRole": false,
+            "supportsStore": false
+          },
           "contextWindow": 200000,
           "cost": {
             "cacheRead": 0.0,
@@ -1579,7 +1622,7 @@
             "text"
           ],
           "maxTokens": 131072,
-          "name": "MiniMax M2.5",
+          "name": "MiniMax-M2.5",
           "reasoning": true
         },
         {
@@ -1603,7 +1646,31 @@
             "text"
           ],
           "maxTokens": 131072,
-          "name": "MiniMax M2.7",
+          "name": "MiniMax-M2.7",
+          "reasoning": true
+        },
+        {
+          "api": "openai-completions",
+          "baseUrl": "https://opencode.ai/zen/v1",
+          "compat": {
+            "maxTokensField": "max_tokens",
+            "supportsDeveloperRole": false,
+            "supportsStore": false
+          },
+          "contextWindow": 512000,
+          "cost": {
+            "cacheRead": 0.06,
+            "cacheWrite": 0.0,
+            "input": 0.3,
+            "output": 1.2
+          },
+          "id": "minimax-m3",
+          "input": [
+            "text",
+            "image"
+          ],
+          "maxTokens": 128000,
+          "name": "MiniMax-M3",
           "reasoning": true
         },
         {
@@ -1925,7 +1992,7 @@
             "text"
           ],
           "maxTokens": 131072,
-          "name": "MiniMax M2.7",
+          "name": "MiniMax-M2.7",
           "reasoning": true
         },
         {
@@ -1933,10 +2000,10 @@
           "baseUrl": "https://opencode.ai/zen/go",
           "contextWindow": 1000000,
           "cost": {
-            "cacheRead": 0.02,
+            "cacheRead": 0.06,
             "cacheWrite": 0.0,
-            "input": 0.1,
-            "output": 0.4
+            "input": 0.3,
+            "output": 1.2
           },
           "id": "minimax-m3",
           "input": [
@@ -1944,7 +2011,7 @@
             "image"
           ],
           "maxTokens": 131072,
-          "name": "MiniMax M3 (3x usage)",
+          "name": "MiniMax-M3 (3x usage)",
           "reasoning": true
         },
         {

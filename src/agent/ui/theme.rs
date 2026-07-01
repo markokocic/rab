@@ -131,7 +131,7 @@ impl RabTheme {
     }
 
     /// Resolve variable references and color values to hex strings.
-    fn resolve_colors(config: &ThemeConfig) -> HashMap<String, String> {
+    pub fn resolve_colors(config: &ThemeConfig) -> HashMap<String, String> {
         let mut resolved: HashMap<String, String> = HashMap::new();
 
         for (name, value) in &config.colors {
@@ -440,7 +440,7 @@ pub fn init_theme(theme_name: Option<&str>, force_256: bool) {
 }
 
 /// Load a theme by name. Checks built-in themes first, then custom themes directory.
-fn load_theme_config(name: &str) -> Result<ThemeConfig, String> {
+pub fn load_theme_config(name: &str) -> Result<ThemeConfig, String> {
     match name {
         "dark" => {
             let json = include_str!("themes/dark.json");

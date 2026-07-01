@@ -6,6 +6,7 @@ use crate::agent::types::{
     message_is_assistant, message_is_tool_result, message_is_user, message_tool_call_count,
     message_usage,
 };
+use crate::builtin::export::{ExportCommand, ImportCommand};
 use std::borrow::Cow;
 use std::sync::{Arc, Mutex};
 
@@ -142,12 +143,12 @@ impl Extension for CommandsExtension {
                 name: "export".to_string(),
                 description: "Export session (HTML default, or specify path: .html/.jsonl)"
                     .to_string(),
-                handler: Box::new(command_not_implemented_handler("export")),
+                handler: Box::new(ExportCommand),
             },
             SlashCommand {
                 name: "import".to_string(),
                 description: "Import and resume a session from a JSONL file".to_string(),
-                handler: Box::new(command_not_implemented_handler("import")),
+                handler: Box::new(ImportCommand),
             },
             SlashCommand {
                 name: "copy".to_string(),

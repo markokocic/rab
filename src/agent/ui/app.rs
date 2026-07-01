@@ -14,6 +14,7 @@ use crate::agent::extension::{CommandResult, Extension};
 use crate::agent::footer_data_provider::FooterDataProvider;
 use crate::agent::session::SessionEntry;
 use crate::auth;
+use crate::builtin::export;
 use crate::provider;
 use crate::provider::ProviderRegistry;
 
@@ -47,6 +48,10 @@ pub enum OverlayResult {
     LoginAuthTypeSelected(AuthType),
     /// User selected a provider for logout.
     LogoutProviderSelected(String),
+    /// User confirmed session import (carries the resolved path).
+    ImportConfirmed(String),
+    /// User cancelled session import.
+    ImportCancelled,
 }
 
 use crate::agent::ui::components::oauth_selector::AuthType;
@@ -823,6 +828,66 @@ pub async fn run(config: AppConfig, session: AgentSession) -> anyhow::Result<()>
                             }
                         }
                     }
+                    OverlayResult::ImportConfirmed(path) => {
+                        let result = (|| -> Result<PathBuf, String> {
+                            let resolved = crate::builtin::resolve_path(&path, &app.cwd);
+                            if !resolved.exists() {
+                                return Err(format!("File not found: {}", resolved.display()));
+                            }
+
+                            // Get the session directory from the current session (pi-compatible)
+                            let session_dir = app
+                                .session
+                                .as_ref()
+                                .map(|s| s.session_manager().session_dir().to_path_buf())
+                                .unwrap_or_else(|| {
+                                    crate::agent::session::get_default_session_dir(&app.cwd)
+                                });
+
+                            // Ensure session directory exists
+                            std::fs::create_dir_all(&session_dir)
+                                .map_err(|e| format!("Failed to create session dir: {}", e))?;
+
+                            // Copy the file to the session directory (pi-compatible)
+                            let dest = session_dir.join(
+                                resolved
+                                    .file_name()
+                                    .unwrap_or_else(|| std::ffi::OsStr::new("session.jsonl")),
+                            );
+                            if dest != resolved {
+                                std::fs::copy(&resolved, &dest)
+                                    .map_err(|e| format!("Failed to copy session file: {}", e))?;
+                            }
+
+                            let agent_session = crate::agent::AgentSession::open(
+                                &dest,
+                                Some(&session_dir),
+                                Some(&app.cwd),
+                            );
+                            app.working.stop();
+                            app.status_text = None;
+                            app.switch_to_session(agent_session);
+                            Ok(dest)
+                        })();
+
+                        match result {
+                            Ok(path) => {
+                                chat_info(
+                                    &mut app,
+                                    format!(
+                                        "✓ Imported and switched to session: {}",
+                                        crate::builtin::shorten_path(&path.to_string_lossy())
+                                    ),
+                                );
+                            }
+                            Err(msg) => {
+                                chat_info(&mut app, format!("✗ {}", msg));
+                            }
+                        }
+                    }
+                    OverlayResult::ImportCancelled => {
+                        chat_info(&mut app, "Import cancelled.");
+                    }
                 }
             }
             dirty = true;
@@ -962,6 +1027,38 @@ pub async fn run(config: AppConfig, session: AgentSession) -> anyhow::Result<()>
                     Some(p) => handle_logout(&mut app, Some(&p)),
                     None => show_logout_provider_selector(&mut app, &mut tui),
                 },
+                CommandResult::ImportSession { path } => {
+                    let resolved = crate::builtin::resolve_path(&path, &app.cwd);
+                    if !resolved.exists() {
+                        chat_info(
+                            &mut app,
+                            format!("✗ File not found: {}", resolved.display()),
+                        );
+                    } else {
+                        let display_path = resolved.display().to_string();
+                        let signal = app.overlay_result_signal.clone();
+                        let path_for_confirm = path.clone();
+                        let mut confirm =
+                            Box::new(crate::agent::ui::components::ConfirmOverlay::new(
+                                "Import Session",
+                                format!("Replace current session with {}?", display_path),
+                            ));
+                        confirm.on_confirm({
+                            let signal = signal.clone();
+                            move || {
+                                *signal.borrow_mut() =
+                                    Some(OverlayResult::ImportConfirmed(path_for_confirm));
+                            }
+                        });
+                        confirm.on_cancel({
+                            let signal = signal.clone();
+                            move || {
+                                *signal.borrow_mut() = Some(OverlayResult::ImportCancelled);
+                            }
+                        });
+                        tui.show_overlay(confirm, Default::default());
+                    }
+                }
                 _ => {}
             }
             dirty = true;
@@ -2790,16 +2887,44 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
             app.pending_command_result = Some(result);
         }
         CommandResult::ExportSession { path } => {
-            let msg = if let Some(p) = path {
-                format!("Export session to {} - not yet implemented.", p)
-            } else {
-                "Export session - not yet implemented (defaults to HTML).".to_string()
-            };
-            chat_info(app, msg.clone());
+            // Get session reference
+            let result = (|| -> Result<PathBuf, String> {
+                let agent_session = app.session.as_ref().ok_or("No active session")?;
+                let session = agent_session.session();
+                let system_prompt = Some(app.system_prompt.as_str());
+                let theme = crate::agent::ui::theme::current_theme();
+                let theme_name = Some(theme.name.as_str());
+
+                let output_path = if path.as_ref().is_some_and(|p| p.ends_with(".jsonl")) {
+                    export::export_to_jsonl(session, &app.cwd, path.as_deref())
+                        .map_err(|e| format!("Export failed: {}", e))?
+                } else {
+                    export::export_to_html(
+                        session,
+                        system_prompt,
+                        &app.cwd,
+                        path.as_deref(),
+                        theme_name,
+                    )
+                    .map_err(|e| format!("Export failed: {}", e))?
+                };
+
+                Ok(output_path)
+            })();
+
+            match result {
+                Ok(path) => {
+                    let display = crate::builtin::shorten_path(path.to_string_lossy().as_ref());
+                    chat_info(app, format!("✓ Session exported to: {}", display));
+                }
+                Err(msg) => {
+                    chat_info(app, format!("✗ {}", msg));
+                }
+            }
         }
-        CommandResult::ImportSession { path } => {
-            let msg = format!("Import session from {} - not yet implemented.", path);
-            chat_info(app, msg.clone());
+        result @ CommandResult::ImportSession { .. } => {
+            // Needs TUI overlay (confirmation) - defer
+            app.pending_command_result = Some(result);
         }
         CommandResult::ShareSession => {
             let msg = "Share session - not yet implemented.".to_string();

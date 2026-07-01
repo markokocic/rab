@@ -1,4 +1,5 @@
 pub mod assistant_message;
+pub mod confirm_overlay;
 pub mod editor_component;
 pub mod footer_component;
 pub mod header;
@@ -11,6 +12,7 @@ pub mod tool_messages;
 pub mod user_message;
 
 pub use assistant_message::AssistantMessageComponent;
+pub use confirm_overlay::ConfirmOverlay;
 pub use editor_component::EditorComponent;
 pub use footer_component::FooterComponent;
 pub use header::HeaderComponent;
