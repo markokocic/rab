@@ -598,7 +598,7 @@ async fn main() -> anyhow::Result<()> {
             *guard = Some(si);
         }
 
-        run_print_mode(
+        let result = run_print_mode(
             message,
             model,
             api_key,
@@ -607,7 +607,16 @@ async fn main() -> anyhow::Result<()> {
             agent_tools,
             &mut agent_session,
         )
-        .await
+        .await;
+
+        // Update session info snapshot after print mode completes to reflect
+        // the costs and stats from the current run.
+        let si = rab::builtin::commands::compute_session_info(agent_session.session());
+        if let Ok(mut guard) = session_info.lock() {
+            *guard = Some(si);
+        }
+
+        result
     }
 }
 

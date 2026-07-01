@@ -96,10 +96,11 @@ pub fn compute_session_info(session: &Session) -> SessionInfoInternal {
                 cache_read_tokens += usage.cache_read;
                 cache_write_tokens += usage.cache_write;
                 total_tokens += usage.input + usage.output + usage.cache_read + usage.cache_write;
-                // Rough cost estimate: $2/M input, $8/M output (deepseek pricing)
-                cost += usage.input as f64 * 2.0 / 1_000_000.0
-                    + usage.output as f64 * 8.0 / 1_000_000.0;
             }
+            // Use pre-computed per-message cost (pi-style): computed at message
+            // creation time via the model's cost config. Falls back to 0.0 for
+            // sessions created before cost was stored.
+            cost += m.cost.total();
         }
     }
 

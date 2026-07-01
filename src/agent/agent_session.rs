@@ -4,11 +4,13 @@ use crate::agent::compaction::{
 };
 use crate::agent::extension::Extension;
 use crate::agent::session::SessionManager;
+use crate::agent::session::model::MessageCost;
 use crate::agent::types::{message_text, user_message};
 use std::sync::Arc;
 
 use crate::provider::ProviderRegistry;
 use yoagent::types::AgentMessage;
+use yoagent::types::Message;
 
 // ── Compaction lifecycle events ─────────────────────────────────────
 
@@ -372,6 +374,9 @@ impl AgentSession {
     /// `custom_message` entries (excluded from LLM context); all others use regular
     /// `message` entries.
     ///
+    /// Cost is computed per-message at creation time using the model's cost config
+    /// from the provider registry (pi-style: `calculateCost` in models.ts).
+    ///
     /// Call this from your agent event handler.
     pub fn on_agent_event(&mut self, event: &yoagent::types::AgentEvent) {
         // Pi-compatible: persist every message immediately on message_end
@@ -387,9 +392,41 @@ impl AgentSession {
             if crate::agent::types::message_is_extension(message) {
                 self.persist_extension_message(message);
             } else {
-                self.mgr.append_message(message);
+                // Compute cost per-message using model's cost config (pi-style).
+                let cost = self.compute_message_cost(message);
+                self.mgr.append_message_with_cost(message, cost);
             }
         }
+    }
+
+    /// Compute the USD cost of a message using the provider registry.
+    /// Returns 0.0 if the message isn't an assistant message, the registry is unset,
+    /// or the model can't be resolved.
+    fn compute_message_cost(&self, message: &AgentMessage) -> MessageCost {
+        // Only assistant messages have usage data.
+        let (provider, model_id, usage) = match message {
+            AgentMessage::Llm(Message::Assistant {
+                provider,
+                model,
+                usage,
+                ..
+            }) => (provider.as_str(), model.as_str(), usage),
+            _ => return MessageCost::ZERO,
+        };
+
+        let Some(ref registry) = self.registry else {
+            return MessageCost::ZERO;
+        };
+
+        // Resolve the model to get its cost config.
+        let Ok(resolved) = registry.resolve(model_id, Some(provider)) else {
+            return MessageCost::ZERO;
+        };
+
+        let cost_config = &resolved.model_config.cost;
+        let (input, output, cache_read, cache_write, _total) =
+            crate::provider::calculate_cost(cost_config, usage);
+        MessageCost::new(input, output, cache_read, cache_write)
     }
 
     // ── Compaction ────────────────────────────────────────────────

@@ -458,7 +458,7 @@ fn entry_type_name(entry: &SessionEntry) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::super::model::MessageEntry;
+    use super::super::model::{MessageCost, MessageEntry};
     use super::*;
     use crate::agent::types::user_message;
     use tempfile::TempDir;
@@ -479,7 +479,7 @@ mod tests {
             parent_id: parent.map(|s| s.to_string()),
             timestamp: chrono::Utc::now().to_rfc3339(),
             message: user_message(text),
-            cost: 0.0,
+            cost: MessageCost::ZERO,
         })
     }
 

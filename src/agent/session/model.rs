@@ -160,6 +160,133 @@ impl SessionEntry {
     }
 }
 
+/// Cost of a message with full breakdown (pi-style).
+///
+/// Pi stores `usage.cost` as `{ input, output, cacheRead, cacheWrite, total }`.
+/// This matches that structure. Old sessions serialize cost as a plain number;
+/// we handle both formats via custom serde.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct MessageCost {
+    pub input: f64,
+    pub output: f64,
+    pub cache_read: f64,
+    pub cache_write: f64,
+    pub total: f64,
+}
+
+impl MessageCost {
+    /// Zero cost constant.
+    pub const ZERO: Self = Self {
+        input: 0.0,
+        output: 0.0,
+        cache_read: 0.0,
+        cache_write: 0.0,
+        total: 0.0,
+    };
+
+    /// Create a new `MessageCost` with the given components. `total` is computed
+    /// automatically as `input + output + cache_read + cache_write`.
+    pub fn new(input: f64, output: f64, cache_read: f64, cache_write: f64) -> Self {
+        let total = input + output + cache_read + cache_write;
+        Self {
+            input,
+            output,
+            cache_read,
+            cache_write,
+            total,
+        }
+    }
+
+    /// Total cost (shorthand).
+    pub fn total(&self) -> f64 {
+        self.total
+    }
+}
+
+/// Custom serializer: always writes the object form for new sessions.
+impl Serialize for MessageCost {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut s = serializer.serialize_struct("MessageCost", 5)?;
+        s.serialize_field("input", &self.input)?;
+        s.serialize_field("output", &self.output)?;
+        s.serialize_field("cacheRead", &self.cache_read)?;
+        s.serialize_field("cacheWrite", &self.cache_write)?;
+        s.serialize_field("total", &self.total)?;
+        s.end()
+    }
+}
+
+/// Custom deserializer: accepts both the object form (new format) and a plain
+/// number (old format: `"cost": 0.0123`).
+impl<'de> Deserialize<'de> for MessageCost {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de;
+
+        struct MessageCostVisitor;
+
+        impl<'de> de::Visitor<'de> for MessageCostVisitor {
+            type Value = MessageCost;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("a number (old format) or an object with cost breakdown")
+            }
+
+            fn visit_f64<E: de::Error>(self, value: f64) -> Result<MessageCost, E> {
+                Ok(MessageCost {
+                    total: value,
+                    ..MessageCost::ZERO
+                })
+            }
+
+            fn visit_i64<E: de::Error>(self, value: i64) -> Result<MessageCost, E> {
+                self.visit_f64(value as f64)
+            }
+
+            fn visit_u64<E: de::Error>(self, value: u64) -> Result<MessageCost, E> {
+                self.visit_f64(value as f64)
+            }
+
+            fn visit_map<M: de::MapAccess<'de>>(self, mut map: M) -> Result<MessageCost, M::Error> {
+                let mut input = None;
+                let mut output = None;
+                let mut cache_read = None;
+                let mut cache_write = None;
+                let mut total = None;
+
+                while let Some(key) = map.next_key::<String>()? {
+                    match key.as_str() {
+                        "input" => input = Some(map.next_value()?),
+                        "output" => output = Some(map.next_value()?),
+                        "cacheRead" => cache_read = Some(map.next_value()?),
+                        "cacheWrite" => cache_write = Some(map.next_value()?),
+                        "total" => total = Some(map.next_value()?),
+                        _ => {
+                            let _: serde::de::IgnoredAny = map.next_value()?;
+                        }
+                    }
+                }
+
+                let input = input.unwrap_or(0.0);
+                let output = output.unwrap_or(0.0);
+                let cache_read = cache_read.unwrap_or(0.0);
+                let cache_write = cache_write.unwrap_or(0.0);
+                let total = total.unwrap_or(input + output + cache_read + cache_write);
+
+                Ok(MessageCost {
+                    input,
+                    output,
+                    cache_read,
+                    cache_write,
+                    total,
+                })
+            }
+        }
+
+        deserializer.deserialize_any(MessageCostVisitor)
+    }
+}
+
 /// Base fields shared by all entries.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -173,7 +300,7 @@ pub struct MessageEntry {
     /// Stored per-message so model switches within a session are accurately
     /// reflected. `#[serde(default)]` for backward compat with existing sessions.
     #[serde(default)]
-    pub cost: f64,
+    pub cost: MessageCost,
 }
 
 impl MessageEntry {
@@ -183,7 +310,7 @@ impl MessageEntry {
         parent_id: Option<String>,
         timestamp: String,
         message: AgentMessage,
-        cost: f64,
+        cost: MessageCost,
     ) -> Self {
         Self {
             id,
@@ -649,7 +776,7 @@ impl Session {
 
     /// Append a conversation message. Returns the entry id.
     pub fn append_message(&mut self, message: &yoagent::types::AgentMessage) -> String {
-        self.append_message_with_cost(message, 0.0)
+        self.append_message_with_cost(message, MessageCost::ZERO)
     }
 
     /// Append a conversation message with a pre-computed cost (pi-style).
@@ -657,7 +784,7 @@ impl Session {
     pub fn append_message_with_cost(
         &mut self,
         message: &yoagent::types::AgentMessage,
-        cost: f64,
+        cost: MessageCost,
     ) -> String {
         let entry = SessionEntry::Message(MessageEntry::new(
             self.storage.create_entry_id(),
@@ -1404,7 +1531,7 @@ impl SessionManager {
     pub fn append_message_with_cost(
         &mut self,
         message: &yoagent::types::AgentMessage,
-        cost: f64,
+        cost: MessageCost,
     ) -> String {
         if !self.flushed && self.persist {
             let is_assistant = matches!(
@@ -2063,10 +2190,10 @@ mod tests {
                 None,
                 "2026-06-19T12:00:01Z".to_string(),
                 make_user_msg("hello"),
-                0.0,
+                MessageCost::ZERO,
             )),
             SessionEntry::Message(MessageEntry {
-                cost: 0.0,
+                cost: MessageCost::ZERO,
                 id: "msg2".to_string(),
                 parent_id: Some("msg1".to_string()),
                 timestamp: "2026-06-19T12:00:02Z".to_string(),
@@ -2192,7 +2319,7 @@ mod tests {
             None,
             "2026-06-19T12:00:00Z".to_string(),
             make_user_msg("hello"),
-            0.0,
+            MessageCost::ZERO,
         ));
         assert_eq!(entry.id(), "myid");
     }
@@ -2204,7 +2331,7 @@ mod tests {
             Some("parent".to_string()),
             "2026-06-19T12:00:00Z".to_string(),
             make_user_msg("hello"),
-            0.0,
+            MessageCost::ZERO,
         ));
         assert_eq!(entry.parent_id(), Some("parent"));
     }
@@ -2216,7 +2343,7 @@ mod tests {
             None,
             "2026-06-19T12:00:00Z".to_string(),
             make_user_msg("hello"),
-            0.0,
+            MessageCost::ZERO,
         ));
         assert_eq!(entry.timestamp(), "2026-06-19T12:00:00Z");
     }
@@ -2853,7 +2980,7 @@ mod tests {
             None,
             "2026-01-01T00:00:00Z".to_string(),
             make_user_msg("orphan message"),
-            0.0,
+            MessageCost::ZERO,
         ));
         let json = serde_json::to_string(&entry).unwrap();
         let file_path = sessions_dir.join("no_header.jsonl");

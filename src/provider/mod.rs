@@ -7,7 +7,8 @@
 use std::path::Path;
 
 use anyhow::bail;
-use yoagent::provider::model::ModelConfig;
+use yoagent::provider::model::{CostConfig, ModelConfig};
+use yoagent::types::Usage;
 
 pub mod anthropic;
 pub mod compat;
@@ -332,6 +333,30 @@ impl ProviderRegistry {
             label,
         }
     }
+}
+
+/// Calculate the USD cost components of a usage record given a model's cost config.
+///
+/// Matches pi's `calculateCost()` in `packages/ai/src/models.ts`.
+/// Returns `(input, output, cache_read, cache_write, total)`.
+///
+/// Note: pi also handles Anthropic's 1h cache write pricing (cacheWrite1h),
+/// but yoagent's Usage struct doesn't expose that field, so it's omitted here.
+pub fn calculate_cost(cost_config: &CostConfig, usage: &Usage) -> (f64, f64, f64, f64, f64) {
+    let input_cost = (cost_config.input_per_million / 1_000_000.0) * usage.input as f64;
+    let output_cost = (cost_config.output_per_million / 1_000_000.0) * usage.output as f64;
+    let cache_read_cost =
+        (cost_config.cache_read_per_million / 1_000_000.0) * usage.cache_read as f64;
+    let cache_write_cost =
+        (cost_config.cache_write_per_million / 1_000_000.0) * usage.cache_write as f64;
+    let total = input_cost + output_cost + cache_read_cost + cache_write_cost;
+    (
+        input_cost,
+        output_cost,
+        cache_read_cost,
+        cache_write_cost,
+        total,
+    )
 }
 
 /// Get the agent config directory (~/.rab/agent).

@@ -164,7 +164,7 @@ impl Footer {
                 }
 
                 // Sum pre-computed cost (pi-style: stored per message at creation time)
-                total_cost += msg_entry.cost;
+                total_cost += msg_entry.cost.total();
             }
         }
 

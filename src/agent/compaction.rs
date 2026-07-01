@@ -680,7 +680,7 @@ fn format_message_for_summary(msg: &AgentMessage) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::session::{CompactionEntry, MessageEntry};
+    use crate::agent::session::{CompactionEntry, MessageCost, MessageEntry};
     use crate::agent::types::{assistant_message, tool_result_message, user_message};
     use yoagent::types::{AgentMessage, Content, Message};
 
@@ -849,7 +849,7 @@ mod tests {
             parent_id: None,
             timestamp: String::new(),
             message: user_message(content),
-            cost: 0.0,
+            cost: MessageCost::ZERO,
         })
     }
 
@@ -859,7 +859,7 @@ mod tests {
             parent_id: None,
             timestamp: String::new(),
             message: assistant_message(content),
-            cost: 0.0,
+            cost: MessageCost::ZERO,
         })
     }
 

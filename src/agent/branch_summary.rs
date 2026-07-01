@@ -281,6 +281,7 @@ fn extract_branch_file_ops(entries: &[SessionEntry]) -> Option<serde_json::Value
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::session::MessageCost;
     use crate::agent::session::{BranchSummaryEntry, MessageEntry, SessionEntry, SessionManager};
     use crate::agent::types::{assistant_message, user_message};
     use std::path::Path;
@@ -302,7 +303,7 @@ mod tests {
             parent_id: parent_id.map(|s| s.to_string()),
             timestamp: String::new(),
             message: user_message("test"),
-            cost: 0.0,
+            cost: MessageCost::ZERO,
         })
     }
 
@@ -312,7 +313,7 @@ mod tests {
             parent_id: parent_id.map(|s| s.to_string()),
             timestamp: String::new(),
             message: assistant_message("response"),
-            cost: 0.0,
+            cost: MessageCost::ZERO,
         })
     }
 
