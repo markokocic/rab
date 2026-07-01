@@ -158,6 +158,22 @@ impl SessionEntry {
             SessionEntry::Leaf(e) => &e.timestamp,
         }
     }
+
+    pub fn set_parent_id(&mut self, parent_id: Option<String>) {
+        match self {
+            SessionEntry::Message(m) => m.parent_id = parent_id,
+            SessionEntry::ThinkingLevelChange(m) => m.parent_id = parent_id,
+            SessionEntry::ModelChange(m) => m.parent_id = parent_id,
+            SessionEntry::ActiveToolsChange(m) => m.parent_id = parent_id,
+            SessionEntry::Compaction(m) => m.parent_id = parent_id,
+            SessionEntry::BranchSummary(m) => m.parent_id = parent_id,
+            SessionEntry::SessionInfo(m) => m.parent_id = parent_id,
+            SessionEntry::Label(m) => m.parent_id = parent_id,
+            SessionEntry::Custom(m) => m.parent_id = parent_id,
+            SessionEntry::CustomMessage(m) => m.parent_id = parent_id,
+            SessionEntry::Leaf(m) => m.parent_id = parent_id,
+        }
+    }
 }
 
 /// Cost of a message with full breakdown (pi-style).
@@ -774,6 +790,15 @@ impl Session {
 
     // ── Entry construction (typed append methods) ───────────────
 
+    /// Append an entry and return its id. On storage failure, prints a warning.
+    fn append_entry(&mut self, entry: SessionEntry, kind: &str) -> String {
+        let id = entry.id().to_string();
+        self.storage.append_entry(entry).unwrap_or_else(|e| {
+            eprintln!("Warning: failed to append {}: {}", kind, e);
+        });
+        id
+    }
+
     /// Append a conversation message. Returns the entry id.
     pub fn append_message(&mut self, message: &yoagent::types::AgentMessage) -> String {
         self.append_message_with_cost(message, MessageCost::ZERO)
@@ -793,11 +818,7 @@ impl Session {
             message.clone(),
             cost,
         ));
-        let id = entry.id().to_string();
-        self.storage.append_entry(entry).unwrap_or_else(|e| {
-            eprintln!("Warning: failed to append message: {}", e);
-        });
-        id
+        self.append_entry(entry, "message")
     }
 
     /// Append a thinking level change. Returns the entry id.
@@ -808,11 +829,7 @@ impl Session {
             timestamp: chrono::Utc::now().to_rfc3339(),
             thinking_level: thinking_level.to_string(),
         });
-        let id = entry.id().to_string();
-        self.storage.append_entry(entry).unwrap_or_else(|e| {
-            eprintln!("Warning: failed to append thinking level change: {}", e);
-        });
-        id
+        self.append_entry(entry, "thinking level change")
     }
 
     /// Append a model change. Returns the entry id.
@@ -824,11 +841,7 @@ impl Session {
             provider: provider.to_string(),
             model_id: model_id.to_string(),
         });
-        let id = entry.id().to_string();
-        self.storage.append_entry(entry).unwrap_or_else(|e| {
-            eprintln!("Warning: failed to append model change: {}", e);
-        });
-        id
+        self.append_entry(entry, "model change")
     }
 
     /// Append an active tools change. Returns the entry id.
@@ -839,11 +852,7 @@ impl Session {
             timestamp: chrono::Utc::now().to_rfc3339(),
             active_tool_names: active_tool_names.to_vec(),
         });
-        let id = entry.id().to_string();
-        self.storage.append_entry(entry).unwrap_or_else(|e| {
-            eprintln!("Warning: failed to append active tools change: {}", e);
-        });
-        id
+        self.append_entry(entry, "active tools change")
     }
 
     /// Append a compaction summary. Returns the entry id.
@@ -865,11 +874,7 @@ impl Session {
             details,
             from_hook,
         });
-        let id = entry.id().to_string();
-        self.storage.append_entry(entry).unwrap_or_else(|e| {
-            eprintln!("Warning: failed to append compaction: {}", e);
-        });
-        id
+        self.append_entry(entry, "compaction")
     }
 
     /// Append a session info entry (display name). Returns the entry id.
@@ -882,11 +887,7 @@ impl Session {
             timestamp: chrono::Utc::now().to_rfc3339(),
             name: sanitized,
         });
-        let id = entry.id().to_string();
-        self.storage.append_entry(entry).unwrap_or_else(|e| {
-            eprintln!("Warning: failed to append session info: {}", e);
-        });
-        id
+        self.append_entry(entry, "session info")
     }
 
     /// Append a branch summary. Returns the entry id.
@@ -906,11 +907,7 @@ impl Session {
             details,
             from_hook,
         });
-        let id = entry.id().to_string();
-        self.storage.append_entry(entry).unwrap_or_else(|e| {
-            eprintln!("Warning: failed to append branch summary: {}", e);
-        });
-        id
+        self.append_entry(entry, "branch summary")
     }
 
     /// Append a label change (bookmark/unbookmark). Returns the entry id.
@@ -949,11 +946,7 @@ impl Session {
             custom_type: custom_type.to_string(),
             data,
         });
-        let id = entry.id().to_string();
-        self.storage.append_entry(entry).unwrap_or_else(|e| {
-            eprintln!("Warning: failed to append custom entry: {}", e);
-        });
-        id
+        self.append_entry(entry, "custom entry")
     }
 
     /// Append a custom message entry (pi-compatible extension message). Returns the entry id.
@@ -973,11 +966,7 @@ impl Session {
             display,
             details,
         });
-        let id = entry.id().to_string();
-        self.storage.append_entry(entry).unwrap_or_else(|e| {
-            eprintln!("Warning: failed to append custom message: {}", e);
-        });
-        id
+        self.append_entry(entry, "custom message")
     }
 
     // ── Tree navigation ───────────────────────────────────────────
@@ -1010,11 +999,7 @@ impl Session {
                 details,
                 from_hook,
             });
-            let id = entry.id().to_string();
-            self.storage.append_entry(entry).unwrap_or_else(|e| {
-                eprintln!("Warning: failed to append branch summary: {}", e);
-            });
-            Ok(Some(id))
+            Ok(Some(self.append_entry(entry, "branch summary")))
         } else {
             Ok(None)
         }
@@ -1511,9 +1496,8 @@ impl SessionManager {
         })
     }
 
-    pub fn append_message(&mut self, message: &yoagent::types::AgentMessage) -> String {
-        // Pi-compatible lazy-write: defer file creation until first assistant message.
-        // Before the first assistant, all entries are held in memory only.
+    /// Lazily flush the session to disk when an assistant message is being appended.
+    fn ensure_flushed_on_assistant(&mut self, message: &yoagent::types::AgentMessage) {
         if !self.flushed && self.persist {
             let is_assistant = matches!(
                 message,
@@ -1523,6 +1507,10 @@ impl SessionManager {
                 self.ensure_flushed();
             }
         }
+    }
+
+    pub fn append_message(&mut self, message: &yoagent::types::AgentMessage) -> String {
+        self.ensure_flushed_on_assistant(message);
         self.session.append_message(message)
     }
 
@@ -1533,15 +1521,7 @@ impl SessionManager {
         message: &yoagent::types::AgentMessage,
         cost: MessageCost,
     ) -> String {
-        if !self.flushed && self.persist {
-            let is_assistant = matches!(
-                message,
-                yoagent::types::AgentMessage::Llm(yoagent::types::Message::Assistant { .. })
-            );
-            if is_assistant || self.has_assistant_message() {
-                self.ensure_flushed();
-            }
-        }
+        self.ensure_flushed_on_assistant(message);
         self.session.append_message_with_cost(message, cost)
     }
 
@@ -1700,18 +1680,7 @@ impl SessionManager {
                 continue;
             }
             let mut e = entry.clone();
-            match &mut e {
-                SessionEntry::Message(m) => m.parent_id = path_parent_id.clone(),
-                SessionEntry::ThinkingLevelChange(m) => m.parent_id = path_parent_id.clone(),
-                SessionEntry::ModelChange(m) => m.parent_id = path_parent_id.clone(),
-                SessionEntry::ActiveToolsChange(m) => m.parent_id = path_parent_id.clone(),
-                SessionEntry::Compaction(m) => m.parent_id = path_parent_id.clone(),
-                SessionEntry::BranchSummary(m) => m.parent_id = path_parent_id.clone(),
-                SessionEntry::SessionInfo(m) => m.parent_id = path_parent_id.clone(),
-                SessionEntry::Custom(m) => m.parent_id = path_parent_id.clone(),
-                SessionEntry::CustomMessage(m) => m.parent_id = path_parent_id.clone(),
-                _ => {}
-            }
+            e.set_parent_id(path_parent_id.clone());
             path_parent_id = Some(e.id().to_string());
             path_clean.push(e);
         }
