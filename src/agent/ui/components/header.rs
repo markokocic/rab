@@ -105,18 +105,23 @@ impl HeaderComponent {
     }
 
     fn build_lines(&self, _width: usize) -> Vec<String> {
-        let theme = current_theme();
-        let logo = format!(
-            "{}{}",
-            theme.bold(&theme.fg_key(ThemeKey::Accent, "rab")),
-            theme.fg_key(ThemeKey::Dim, &format!(" v{}", VERSION)),
-        );
+        let logo = {
+            let theme = current_theme();
+            format!(
+                "{}{}",
+                theme.bold(&theme.fg_key(ThemeKey::Accent, "rab")),
+                theme.fg_key(ThemeKey::Dim, &format!(" v{}", VERSION)),
+            )
+        };
 
         // Main onboarding text (matches pi: "Pi can explain its own features...")
-        let onboarding = theme.fg(
-            "dim",
-            "rab can explain its own features and look up its docs. Ask it how to use or extend rab.",
-        );
+        let onboarding = {
+            let theme = current_theme();
+            theme.fg(
+                "dim",
+                "rab can explain its own features and look up its docs. Ask it how to use or extend rab.",
+            )
+        };
 
         if self.expanded {
             // ── Expanded: full keybinding hints + resource sections + onboarding ──
@@ -160,6 +165,7 @@ impl HeaderComponent {
             if !self.context_files.is_empty() {
                 lines.push(String::new());
                 lines.push(section_header("Context"));
+                let theme = current_theme();
                 for cf in &self.context_files {
                     lines.push(theme.fg_key(ThemeKey::Dim, &format!("  {}", cf)));
                 }
@@ -168,6 +174,7 @@ impl HeaderComponent {
             if !self.skills.is_empty() {
                 lines.push(String::new());
                 lines.push(section_header("Skills"));
+                let theme = current_theme();
                 for skill in &self.skills {
                     lines.push(theme.fg_key(ThemeKey::Dim, &format!("  {}", skill)));
                 }
@@ -176,6 +183,7 @@ impl HeaderComponent {
             if !self.prompt_templates.is_empty() {
                 lines.push(String::new());
                 lines.push(section_header("Prompts"));
+                let theme = current_theme();
                 for tmpl in &self.prompt_templates {
                     lines.push(theme.fg_key(ThemeKey::Dim, &format!("  /{}", tmpl)));
                 }
@@ -184,6 +192,7 @@ impl HeaderComponent {
             if !self.extensions.is_empty() {
                 lines.push(String::new());
                 lines.push(section_header("Extensions"));
+                let theme = current_theme();
                 for ext in &self.extensions {
                     lines.push(theme.fg_key(ThemeKey::Dim, &format!("  {}", ext)));
                 }
@@ -192,6 +201,7 @@ impl HeaderComponent {
             if !self.themes.is_empty() {
                 lines.push(String::new());
                 lines.push(section_header("Themes"));
+                let theme = current_theme();
                 for t in &self.themes {
                     lines.push(theme.fg_key(ThemeKey::Dim, &format!("  {}", t)));
                 }
@@ -221,7 +231,10 @@ impl HeaderComponent {
                 raw_key_hint("!", "bash"),
                 key_hint("app.tools.expand", "more"),
             ];
-            let separator = theme.fg_key(ThemeKey::Muted, " · ");
+            let separator = {
+                let theme = current_theme();
+                theme.fg_key(ThemeKey::Muted, " · ")
+            };
             let compact_line = parts.join(&separator);
 
             // Build compact resource summary line (pi-style compact listing)
@@ -252,19 +265,26 @@ impl HeaderComponent {
                 parts
             };
 
-            let compact_onboarding = theme.fg(
-                "dim",
-                &format!(
-                    "Press {} to show full startup help and loaded resources.",
-                    key_text("app.tools.expand"),
-                ),
-            );
+            let compact_onboarding = {
+                let theme = current_theme();
+                theme.fg(
+                    "dim",
+                    &format!(
+                        "Press {} to show full startup help and loaded resources.",
+                        key_text("app.tools.expand"),
+                    ),
+                )
+            };
 
             let mut result = vec![logo, compact_line, String::new()];
 
             // Resource summary line (between hints and onboarding, matching pi layout)
             if !resource_parts.is_empty() {
-                result.push(theme.fg_key(ThemeKey::Dim, &resource_parts.join("  ·  ")));
+                let resource_line = {
+                    let theme = current_theme();
+                    theme.fg_key(ThemeKey::Dim, &resource_parts.join("  ·  "))
+                };
+                result.push(resource_line);
                 result.push(String::new());
             }
 
