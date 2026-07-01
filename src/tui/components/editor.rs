@@ -570,6 +570,9 @@ impl Editor {
     }
 
     /// Get the autocomplete prefix for the current cursor position.
+    /// This MUST return the same prefix that the autocomplete provider returns
+    /// for `get_suggestions()` — i.e., it strips trigger characters (`@`, `#`)
+    /// that are part of the completion syntax but not part of the path.
     fn get_autocomplete_prefix(&self) -> String {
         let line = self
             .lines
@@ -581,7 +584,8 @@ impl Editor {
         if before.starts_with('/') && !before.contains(' ') {
             before.to_string()
         } else if let Some(pos) = before.rfind(['@', '#']) {
-            before[pos..].to_string()
+            // Provider strips @/# from the prefix — match that behavior
+            before[pos + 1..].to_string()
         } else if let Some(pos) = before.rfind(|c: char| c.is_whitespace()) {
             before[pos + 1..].to_string()
         } else {

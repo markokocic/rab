@@ -474,16 +474,22 @@ impl CombinedAutocompleteProvider {
                         format!("{}/{}{}", base_dir, name, suffix)
                     }
                 } else if let Some(rel_part) = prefix.strip_prefix("~/") {
-                    let parent_path = Path::new(rel_part)
-                        .parent()
-                        .map(|p| p.to_string_lossy().to_string())
-                        .unwrap_or_default();
-                    let base =
+                    // When rel_part has a trailing slash (e.g., ".rab/agent/"),
+                    // use it directly as the base to preserve the last folder.
+                    // Path::new().parent() would strip it (e.g., ".rab/agent/" → ".rab").
+                    let base = if rel_part.ends_with('/') {
+                        format!("~/{}", rel_part)
+                    } else {
+                        let parent_path = Path::new(rel_part)
+                            .parent()
+                            .map(|p| p.to_string_lossy().to_string())
+                            .unwrap_or_default();
                         if rel_part.is_empty() || parent_path.is_empty() || parent_path == "." {
                             "~/".to_string()
                         } else {
                             format!("~/{}/", parent_path)
-                        };
+                        }
+                    };
                     format!("{}{}{}", base, name, suffix)
                 } else if prefix == "~" {
                     format!("~/{}{}", name, suffix)
@@ -1075,5 +1081,614 @@ mod tests {
         let suggestions = result.unwrap();
         assert_eq!(suggestions.items.len(), 1);
         assert_eq!(suggestions.items[0].value, "help");
+    }
+
+    // ── Path completion regression tests ──
+
+    /// Create a temp directory structure for path completion tests.
+    /// Structure:
+    ///   temp/
+    ///     src/
+    ///       autocomplete/
+    ///         mod.rs
+    ///       editor.rs
+    ///       components/
+    ///         select_list.rs
+    fn setup_path_test_dir() -> (tempfile::TempDir, String) {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let root = dir.path().to_string_lossy().to_string();
+
+        // Create structure
+        std::fs::create_dir_all(format!("{}/src/autocomplete", root)).unwrap();
+        std::fs::create_dir_all(format!("{}/src/components", root)).unwrap();
+        std::fs::write(format!("{}/src/autocomplete/mod.rs", root), "").unwrap();
+        std::fs::write(format!("{}/src/editor.rs", root), "").unwrap();
+        std::fs::write(format!("{}/src/components/select_list.rs", root), "").unwrap();
+
+        (dir, root)
+    }
+
+    #[test]
+    fn test_get_file_suggestions_relative_path_with_folder() {
+        let (_dir, root) = setup_path_test_dir();
+        let provider = CombinedAutocompleteProvider::new(vec![], root.clone());
+
+        // Typed "src/au" -> should find "src/autocomplete/"
+        let result = provider.get_file_suggestions("src/au");
+        assert!(result.is_some(), "src/au should produce suggestions");
+        let suggestions = result.unwrap();
+        assert_eq!(
+            suggestions.prefix, "src/au",
+            "prefix should be the typed text"
+        );
+        assert!(
+            !suggestions.items.is_empty(),
+            "should have at least one item"
+        );
+
+        // The item value should include the full relative path
+        let has_autocomplete = suggestions
+            .items
+            .iter()
+            .any(|i| i.value == "src/autocomplete/");
+        assert!(
+            has_autocomplete,
+            "should contain src/autocomplete/ as a completion candidate, got: {:?}",
+            suggestions
+                .items
+                .iter()
+                .map(|i| &i.value)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_get_file_suggestions_relative_path_trailing_slash() {
+        let (_dir, root) = setup_path_test_dir();
+        let provider = CombinedAutocompleteProvider::new(vec![], root.clone());
+
+        // Typed "src/" -> should show contents of src/
+        let result = provider.get_file_suggestions("src/");
+        assert!(result.is_some(), "src/ should produce suggestions");
+        let suggestions = result.unwrap();
+        assert_eq!(suggestions.prefix, "src/", "prefix should be src/");
+
+        // Should contain entries like src/autocomplete/, src/editor.rs, src/components/
+        let values: Vec<&str> = suggestions.items.iter().map(|i| i.value.as_str()).collect();
+        assert!(
+            values.contains(&"src/autocomplete/"),
+            "should contain src/autocomplete/, got: {:?}",
+            values
+        );
+        assert!(
+            values.contains(&"src/editor.rs"),
+            "should contain src/editor.rs, got: {:?}",
+            values
+        );
+        assert!(
+            values.contains(&"src/components/"),
+            "should contain src/components/, got: {:?}",
+            values
+        );
+    }
+
+    #[test]
+    fn test_get_file_suggestions_deep_path() {
+        let (_dir, root) = setup_path_test_dir();
+        let provider = CombinedAutocompleteProvider::new(vec![], root.clone());
+
+        // Typed "src/components/s" -> should find "src/components/select_list.rs"
+        let result = provider.get_file_suggestions("src/components/s");
+        assert!(
+            result.is_some(),
+            "src/components/s should produce suggestions"
+        );
+        let suggestions = result.unwrap();
+        assert_eq!(suggestions.prefix, "src/components/s");
+
+        let has_select_list = suggestions
+            .items
+            .iter()
+            .any(|i| i.value == "src/components/select_list.rs");
+        assert!(
+            has_select_list,
+            "should contain src/components/select_list.rs, got: {:?}",
+            suggestions
+                .items
+                .iter()
+                .map(|i| &i.value)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_get_suggestions_force_triggers_file_completion() {
+        let (_dir, root) = setup_path_test_dir();
+        let provider = CombinedAutocompleteProvider::new(vec![], root.clone());
+
+        // Simulate Tab (force=true) with "src/au" typed
+        let lines = vec!["src/au".into()];
+        let result = provider.get_suggestions(&lines, 0, 6, true);
+        assert!(
+            result.is_some(),
+            "Force should trigger file completion for src/au"
+        );
+        let suggestions = result.unwrap();
+        assert_eq!(suggestions.prefix, "src/au");
+
+        let has_autocomplete = suggestions
+            .items
+            .iter()
+            .any(|i| i.value == "src/autocomplete/");
+        assert!(
+            has_autocomplete,
+            "Should suggest src/autocomplete/, got: {:?}",
+            suggestions
+                .items
+                .iter()
+                .map(|i| &i.value)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_get_suggestions_at_prefix_file_completion() {
+        let (_dir, root) = setup_path_test_dir();
+        let provider = CombinedAutocompleteProvider::new(vec![], root.clone());
+
+        // Typed "@src/au" should complete to "@src/autocomplete/"
+        let lines = vec!["@src/au".into()];
+        let result = provider.get_suggestions(&lines, 0, 7, false);
+        assert!(result.is_some(), "@src/au should produce suggestions");
+        let suggestions = result.unwrap();
+        // Prefix should NOT include the @
+        assert_eq!(suggestions.prefix, "src/au", "prefix should not include @");
+
+        let has_autocomplete = suggestions
+            .items
+            .iter()
+            .any(|i| i.value == "src/autocomplete/");
+        assert!(
+            has_autocomplete,
+            "Should suggest src/autocomplete/, got: {:?}",
+            suggestions
+                .items
+                .iter()
+                .map(|i| &i.value)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_apply_completion_relative_path_with_folder() {
+        let (_dir, root) = setup_path_test_dir();
+        let provider = CombinedAutocompleteProvider::new(vec![], root.clone());
+
+        // User typed "src/au", cursor at end. Accept proposal "src/autocomplete/"
+        let item = AutocompleteItem {
+            value: "src/autocomplete/".into(),
+            label: "autocomplete/".into(),
+            description: None,
+        };
+        let lines = vec!["src/au".into()];
+        let (new_lines, new_line, new_col) =
+            provider.apply_completion(&lines, 0, 6, &item, "src/au");
+
+        assert_eq!(
+            new_lines[0], "src/autocomplete/",
+            "Should replace src/au with src/autocomplete/"
+        );
+        assert_eq!(new_line, 0);
+        assert_eq!(new_col, 17); // "src/autocomplete/".len() = 17
+    }
+
+    #[test]
+    fn test_apply_completion_relative_path_trailing_slash() {
+        let (_dir, root) = setup_path_test_dir();
+        let provider = CombinedAutocompleteProvider::new(vec![], root.clone());
+
+        // User typed "src/", cursor at end. Accept proposal "src/autocomplete/"
+        let item = AutocompleteItem {
+            value: "src/autocomplete/".into(),
+            label: "autocomplete/".into(),
+            description: None,
+        };
+        let lines = vec!["src/".into()];
+        let (new_lines, new_line, new_col) = provider.apply_completion(&lines, 0, 4, &item, "src/");
+
+        assert_eq!(
+            new_lines[0], "src/autocomplete/",
+            "Should replace src/ with src/autocomplete/"
+        );
+        assert_eq!(new_line, 0);
+        assert_eq!(new_col, 17);
+    }
+
+    #[test]
+    fn test_apply_completion_at_prefix() {
+        let (_dir, root) = setup_path_test_dir();
+        let provider = CombinedAutocompleteProvider::new(vec![], root.clone());
+
+        // User typed "@src/au", cursor at end. Accept proposal "src/autocomplete/"
+        let item = AutocompleteItem {
+            value: "src/autocomplete/".into(),
+            label: "autocomplete/".into(),
+            description: None,
+        };
+        let lines = vec!["@src/au".into()];
+        // cursor_col = 7 (position after "@src/au"), prefix = "src/au" (without @)
+        let (new_lines, new_line, new_col) =
+            provider.apply_completion(&lines, 0, 7, &item, "src/au");
+
+        assert_eq!(
+            new_lines[0], "@src/autocomplete/",
+            "Should replace src/au with src/autocomplete/, keeping @ prefix"
+        );
+        assert_eq!(new_line, 0);
+        assert_eq!(new_col, 18); // "@src/autocomplete/".len() = 18
+    }
+
+    #[test]
+    fn test_apply_completion_deep_path() {
+        let (_dir, root) = setup_path_test_dir();
+        let provider = CombinedAutocompleteProvider::new(vec![], root.clone());
+
+        // User typed "src/components/s", cursor at end. Accept "src/components/select_list.rs"
+        let item = AutocompleteItem {
+            value: "src/components/select_list.rs".into(),
+            label: "select_list.rs".into(),
+            description: None,
+        };
+        let lines = vec!["src/components/s".into()];
+        let (new_lines, new_line, new_col) =
+            provider.apply_completion(&lines, 0, 16, &item, "src/components/s");
+
+        assert_eq!(
+            new_lines[0], "src/components/select_list.rs ",
+            "Should complete deep path correctly"
+        );
+        assert_eq!(new_line, 0);
+        assert_eq!(new_col, 30); // "src/components/select_list.rs ".len() = 30
+    }
+
+    #[test]
+    fn test_apply_completion_at_prefix_deep_path() {
+        let (_dir, root) = setup_path_test_dir();
+        let provider = CombinedAutocompleteProvider::new(vec![], root.clone());
+
+        // User typed "@src/components/s", cursor at end. Accept "src/components/select_list.rs"
+        let item = AutocompleteItem {
+            value: "src/components/select_list.rs".into(),
+            label: "select_list.rs".into(),
+            description: None,
+        };
+        let lines = vec!["@src/components/s".into()];
+        // cursor_col = 17 (position after "@src/components/s"), prefix = "src/components/s"
+        let (new_lines, new_line, new_col) =
+            provider.apply_completion(&lines, 0, 17, &item, "src/components/s");
+
+        assert_eq!(
+            new_lines[0], "@src/components/select_list.rs ",
+            "Should complete deep @-path correctly"
+        );
+        assert_eq!(new_line, 0);
+        assert_eq!(new_col, 31); // "@src/components/select_list.rs ".len() = 31
+    }
+
+    #[test]
+    fn test_apply_completion_after_folder_completion_then_deeper() {
+        // Regression: after completing src/ -> src/autocomplete/, then typing more to go deeper
+        let (_dir, root) = setup_path_test_dir();
+        let provider = CombinedAutocompleteProvider::new(vec![], root.clone());
+
+        // Step 1: complete src/ -> src/autocomplete/
+        let item1 = AutocompleteItem {
+            value: "src/autocomplete/".into(),
+            label: "autocomplete/".into(),
+            description: None,
+        };
+        let lines = vec!["src/".into()];
+        let (new_lines, _, _) = provider.apply_completion(&lines, 0, 4, &item1, "src/");
+        assert_eq!(new_lines[0], "src/autocomplete/");
+
+        // Step 2: user types more, now text is "src/autocomplete/m"
+        let text = format!("{}m", new_lines[0]);
+        let cursor_col = text.len(); // "src/autocomplete/m" is 18 chars
+        let lines2 = vec![text];
+        // Get suggestions
+        let result = provider.get_suggestions(&lines2, 0, cursor_col, true);
+        assert!(
+            result.is_some(),
+            "src/autocomplete/m should produce suggestions"
+        );
+        let suggestions = result.unwrap();
+        assert_eq!(suggestions.prefix, "src/autocomplete/m");
+
+        // Should find "src/autocomplete/mod.rs"
+        let has_mod = suggestions
+            .items
+            .iter()
+            .any(|i| i.value == "src/autocomplete/mod.rs");
+        assert!(
+            has_mod,
+            "Should suggest src/autocomplete/mod.rs, got: {:?}",
+            suggestions
+                .items
+                .iter()
+                .map(|i| &i.value)
+                .collect::<Vec<_>>()
+        );
+
+        // Step 3: accept the completion
+        let item2 = AutocompleteItem {
+            value: "src/autocomplete/mod.rs".into(),
+            label: "mod.rs".into(),
+            description: None,
+        };
+        let (final_lines, _, _) =
+            provider.apply_completion(&lines2, 0, cursor_col, &item2, "src/autocomplete/m");
+        assert_eq!(
+            final_lines[0], "src/autocomplete/mod.rs ",
+            "After completing deeper, should keep the full path"
+        );
+    }
+
+    /// Test that get_file_suggestions produces item values that, when passed
+    /// back to apply_completion, produce the correct result (round-trip test).
+    #[test]
+    fn test_file_suggestions_roundtrip() {
+        let (_dir, root) = setup_path_test_dir();
+        let provider = CombinedAutocompleteProvider::new(vec![], root.clone());
+
+        // Get suggestions for "src/au"
+        let result = provider.get_file_suggestions("src/au").unwrap();
+        assert_eq!(result.prefix, "src/au");
+
+        // For each suggestion, verify that apply_completion works correctly
+        for item in &result.items {
+            let lines = vec!["src/au".into()];
+            let (new_lines, _, _) = provider.apply_completion(&lines, 0, 6, item, "src/au");
+            let _expected_len = "src/au".len() + item.value.len() - "src/au".len();
+            // The item.value should be the replacement text (replacing the prefix)
+            // Since the prefix is at the start, the result should start with item.value
+            assert!(
+                new_lines[0].starts_with(item.value.trim_end_matches(' ')),
+                "apply_completion({}, {:?}) should produce text starting with '{}', got '{}'",
+                "src/au",
+                item.value,
+                item.value.trim_end_matches(' '),
+                new_lines[0]
+            );
+        }
+    }
+
+    #[test]
+    fn test_at_suggestions_roundtrip() {
+        let (_dir, root) = setup_path_test_dir();
+        let provider = CombinedAutocompleteProvider::new(vec![], root.clone());
+
+        // Get suggestions for "@src/au" (prefix should be "src/au")
+        let lines = vec!["@src/au".into()];
+        let result = provider.get_suggestions(&lines, 0, 7, false).unwrap();
+        assert_eq!(result.prefix, "src/au");
+
+        // For each suggestion, verify that apply_completion works correctly
+        for item in &result.items {
+            let lines = vec!["@src/au".into()];
+            let (new_lines, _, _) = provider.apply_completion(&lines, 0, 7, item, "src/au");
+
+            // The @ should be preserved, followed by the completion value
+            assert!(
+                new_lines[0].starts_with('@'),
+                "apply_completion for @src/au should preserve @ prefix, got '{}'",
+                new_lines[0]
+            );
+            // The @ should be followed by the completion value (minus trailing space)
+            let after_at = &new_lines[0][1..];
+            let trimmed = after_at.trim_end_matches(' ');
+            assert_eq!(
+                trimmed, item.value,
+                "Text after @ should match item.value, got '{}' vs '{}'",
+                trimmed, item.value
+            );
+        }
+    }
+
+    #[test]
+    fn test_tilde_path_completion_does_not_drop_folder() {
+        // Regression: completing ~/.rab/agent/skills must NOT produce ~/.rab/skills/
+        let (_dir, root) = setup_path_test_dir();
+
+        // Create a nested structure matching the user's scenario:
+        //   temp/
+        //     sub/
+        //       deep/
+        //         target/
+        //           file.txt
+        // To test: complete "sub/deep/tar" -> "sub/deep/target/"
+        std::fs::create_dir_all(format!("{}/sub/deep/target", root)).unwrap();
+        std::fs::write(format!("{}/sub/deep/target/file.txt", root), "").unwrap();
+
+        let provider = CombinedAutocompleteProvider::new(vec![], root.clone());
+
+        // Test get_file_suggestions produces correct relative path
+        let result = provider.get_file_suggestions("sub/deep/tar");
+        assert!(result.is_some(), "sub/deep/tar should produce suggestions");
+        let suggestions = result.unwrap();
+        assert_eq!(suggestions.prefix, "sub/deep/tar");
+
+        let has_target = suggestions
+            .items
+            .iter()
+            .any(|i| i.value == "sub/deep/target/");
+        assert!(
+            has_target,
+            "Should suggest sub/deep/target/, not target/ alone. Got: {:?}",
+            suggestions
+                .items
+                .iter()
+                .map(|i| &i.value)
+                .collect::<Vec<_>>()
+        );
+
+        // Test apply_completion produces the full path
+        let item = AutocompleteItem {
+            value: "sub/deep/target/".into(),
+            label: "target/".into(),
+            description: None,
+        };
+        let lines = vec!["sub/deep/tar".into()];
+        let (new_lines, _, _) = provider.apply_completion(&lines, 0, 12, &item, "sub/deep/tar");
+        assert_eq!(
+            new_lines[0], "sub/deep/target/",
+            "Must produce sub/deep/target/ not target/ alone"
+        );
+    }
+
+    #[test]
+    fn test_nested_path_with_get_suggestions_force() {
+        let (_dir, root) = setup_path_test_dir();
+
+        std::fs::create_dir_all(format!("{}/sub/deep/target", root)).unwrap();
+        std::fs::write(format!("{}/sub/deep/target/file.txt", root), "").unwrap();
+
+        let provider = CombinedAutocompleteProvider::new(vec![], root.clone());
+
+        // Simulate Tab (force) with "sub/deep/tar"
+        let lines = vec!["sub/deep/tar".into()];
+        let result = provider.get_suggestions(&lines, 0, 13, true);
+        assert!(
+            result.is_some(),
+            "Force should trigger file completion for sub/deep/tar"
+        );
+        let suggestions = result.unwrap();
+        assert_eq!(suggestions.prefix, "sub/deep/tar");
+
+        let has_target = suggestions
+            .items
+            .iter()
+            .any(|i| i.value == "sub/deep/target/");
+        assert!(
+            has_target,
+            "Force should suggest sub/deep/target/. Got: {:?}",
+            suggestions
+                .items
+                .iter()
+                .map(|i| &i.value)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_nested_path_with_tilde_prefix() {
+        // Test that ~/ path completion preserves nested folders
+        let home = std::env::var("HOME").unwrap_or_default();
+        if home.is_empty() {
+            return;
+        }
+
+        // Create nested dir inside home
+        let test_dir = std::path::Path::new(&home).join(".rab_test_autocomplete");
+        let _ = std::fs::remove_dir_all(&test_dir);
+        std::fs::create_dir_all(test_dir.join("sub/deep/target")).unwrap();
+        std::fs::write(test_dir.join("sub/deep/target/file.txt"), "").unwrap();
+
+        // The CWD doesn't matter for ~/ paths since we use HOME
+        let provider = CombinedAutocompleteProvider::new(vec![], "/tmp".into());
+
+        let tilde_path = format!("~/.rab_test_autocomplete/sub/deep/tar");
+        let result = provider.get_file_suggestions(&tilde_path);
+        assert!(result.is_some(), "~/ path should produce suggestions");
+        let suggestions = result.unwrap();
+        assert_eq!(suggestions.prefix, tilde_path);
+
+        let expected_value = format!("~/.rab_test_autocomplete/sub/deep/target/");
+        let has_target = suggestions.items.iter().any(|i| i.value == expected_value);
+        assert!(
+            has_target,
+            "Should suggest ~/.rab_test_autocomplete/sub/deep/target/, not target/ alone. Got: {:?}",
+            suggestions
+                .items
+                .iter()
+                .map(|i| &i.value)
+                .collect::<Vec<_>>()
+        );
+
+        // Test apply_completion preserves the full ~/ path
+        let item = AutocompleteItem {
+            value: expected_value.clone(),
+            label: "target/".into(),
+            description: None,
+        };
+        let lines = vec![tilde_path.clone()];
+        let cursor_col = tilde_path.len();
+        let (new_lines, _, _) =
+            provider.apply_completion(&lines, 0, cursor_col, &item, &tilde_path);
+        assert_eq!(
+            new_lines[0], expected_value,
+            "Must preserve full ~/ path, not drop folders"
+        );
+
+        // Clean up
+        let _ = std::fs::remove_dir_all(&test_dir);
+    }
+
+    #[test]
+    fn test_tilde_path_with_trailing_slash_preserves_folder() {
+        // Regression: completing "~/.rab/agent/" and selecting "skills"
+        // should produce "~/.rab/agent/skills/", not "~/.rab/skills/"
+        let home = std::env::var("HOME").unwrap_or_default();
+        if home.is_empty() {
+            return;
+        }
+
+        let test_dir = std::path::Path::new(&home).join(".rab_test_trailing");
+        let _ = std::fs::remove_dir_all(&test_dir);
+        // Create: ~/test_trailing/sub/deep/target/
+        std::fs::create_dir_all(test_dir.join("sub/deep/target")).unwrap();
+        std::fs::write(test_dir.join("sub/deep/target/file.txt"), "").unwrap();
+
+        let provider = CombinedAutocompleteProvider::new(vec![], "/tmp".into());
+
+        // User typed "~/.rab_test_trailing/sub/deep/" (trailing slash)
+        let tilde_path = format!("~/.rab_test_trailing/sub/deep/");
+        let result = provider.get_file_suggestions(&tilde_path);
+        assert!(
+            result.is_some(),
+            "~/ path with trailing slash should produce suggestions"
+        );
+        let suggestions = result.unwrap();
+        assert_eq!(suggestions.prefix, tilde_path);
+
+        // The suggestion value should include the full path, not just the last component
+        let expected_value = format!("~/.rab_test_trailing/sub/deep/target/");
+        let has_target = suggestions.items.iter().any(|i| i.value == expected_value);
+        assert!(
+            has_target,
+            "Must suggest full path ~/.rab_test_trailing/sub/deep/target/, not target/ alone. Got: {:?}",
+            suggestions
+                .items
+                .iter()
+                .map(|i| &i.value)
+                .collect::<Vec<_>>()
+        );
+
+        // Test apply_completion with this prefix
+        let item = AutocompleteItem {
+            value: expected_value.clone(),
+            label: "target/".into(),
+            description: None,
+        };
+        let lines = vec![tilde_path.clone()];
+        let cursor_col = tilde_path.len();
+        let (new_lines, _, _) =
+            provider.apply_completion(&lines, 0, cursor_col, &item, &tilde_path);
+        assert_eq!(
+            new_lines[0], expected_value,
+            "Must produce full path, not drop the last folder"
+        );
+
+        // Clean up
+        let _ = std::fs::remove_dir_all(&test_dir);
     }
 }
