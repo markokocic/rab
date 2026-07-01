@@ -2630,25 +2630,18 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
             session_id,
             file_path,
             name,
-            message_count: _,
-            user_messages: _,
-            assistant_messages: _,
-            tool_calls: _,
-            tool_results: _,
-            total_tokens: _,
-            input_tokens: _,
-            output_tokens: _,
-            cache_read_tokens: _,
-            cache_write_tokens: _,
-            cost: _,
+            message_count,
+            user_messages,
+            assistant_messages,
+            tool_calls,
+            tool_results,
+            total_tokens,
+            input_tokens,
+            output_tokens,
+            cache_read_tokens,
+            cache_write_tokens,
+            cost,
         } => {
-            // Compute live stats from session (authoritative store)
-            let msgs = app
-                .session
-                .as_ref()
-                .map(|s| s.session().build_session_context().messages)
-                .unwrap_or_default();
-
             let name_display = name
                 .or_else(|| {
                     app.session
@@ -2669,36 +2662,7 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
                 session_id
             };
 
-            let user_messages = msgs
-                .iter()
-                .filter(|m| crate::agent::types::message_is_user(m))
-                .count();
-            let assistant_messages = msgs
-                .iter()
-                .filter(|m| crate::agent::types::message_is_assistant(m))
-                .count();
-            let tool_results = msgs
-                .iter()
-                .filter(|m| crate::agent::types::message_is_tool_result(m))
-                .count();
-            let tool_calls: usize = msgs
-                .iter()
-                .map(crate::agent::types::message_tool_call_count)
-                .sum();
-            let total_messages = user_messages + assistant_messages + tool_results;
-
-            let mut input_tokens: u64 = 0;
-            let mut output_tokens: u64 = 0;
-            let mut cache_read_tokens: u64 = 0;
-            let cost: f64 = 0.0;
-            for msg in &msgs {
-                if let Some(usage) = crate::agent::types::message_usage(msg) {
-                    input_tokens += usage.input;
-                    output_tokens += usage.output;
-                    cache_read_tokens += usage.cache_read;
-                }
-            }
-            let total_tokens = input_tokens + output_tokens + cache_read_tokens;
+            let total_messages = message_count;
 
             // Build info display matching pi's handleSessionCommand
             let mut info = format!(
@@ -2716,15 +2680,18 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
                  \n\
                  Tokens\n\
                  Input: {}\n\
-                 Output: {}\n\
-                 Total: {}",
+                 Output: {}",
                 format_number(input_tokens),
                 format_number(output_tokens),
-                format_number(total_tokens),
             );
             if cache_read_tokens > 0 {
                 info += &format!("\nCache Read: {}", format_number(cache_read_tokens));
             }
+            if cache_write_tokens > 0 {
+                info += &format!("\nCache Write: {}", format_number(cache_write_tokens));
+            }
+            info += &format!("\nTotal: {}", format_number(total_tokens));
+
             if cost > 0.0 {
                 info += &format!("\n\nCost\nTotal: {:.4}", cost);
             }

@@ -65,7 +65,7 @@ pub fn compute_session_info(session: &Session) -> SessionInfoInternal {
     let mut total_tokens: u64 = 0;
     let mut input_tokens: u64 = 0;
     let mut output_tokens: u64 = 0;
-    let cache_read_tokens: u64 = 0;
+    let mut cache_read_tokens: u64 = 0;
     let mut cache_write_tokens: u64 = 0;
     let mut cost: f64 = 0.0;
 
@@ -82,15 +82,14 @@ pub fn compute_session_info(session: &Session) -> SessionInfoInternal {
                 tool_results += 1;
             }
             if let Some(usage) = message_usage(&m.message) {
-                let inp = usage.input;
-                let outp = usage.output;
-                let cache = usage.cache_read;
-                input_tokens += inp;
-                output_tokens += outp;
-                total_tokens += inp + outp;
-                cache_write_tokens += cache;
+                input_tokens += usage.input;
+                output_tokens += usage.output;
+                cache_read_tokens += usage.cache_read;
+                cache_write_tokens += usage.cache_write;
+                total_tokens += usage.input + usage.output + usage.cache_read + usage.cache_write;
                 // Rough cost estimate: $2/M input, $8/M output (deepseek pricing)
-                cost += inp as f64 * 2.0 / 1_000_000.0 + outp as f64 * 8.0 / 1_000_000.0;
+                cost += usage.input as f64 * 2.0 / 1_000_000.0
+                    + usage.output as f64 * 8.0 / 1_000_000.0;
             }
         }
     }
