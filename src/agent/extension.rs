@@ -868,6 +868,16 @@ pub trait Extension: Send + Sync {
     /// Called when `/reload` is triggered (matching pi's `session_start` with reason "reload").
     /// Extensions can refresh internal state, re-read configs, reconnect, etc.
     fn on_reload(&self) {}
+
+    /// Called before the session is shut down or reloaded (matching pi's `session_shutdown`).
+    /// `reason` is "reload", "quit", "new", "resume", or "fork".
+    /// Extensions should save state, flush buffers, and prepare for teardown.
+    fn on_session_shutdown(&self, _reason: &str) {}
+
+    /// Called after the session starts or reloads (matching pi's `session_start`).
+    /// `reason` is "startup", "reload", "new", "resume", or "fork".
+    /// Extensions should restore state, re-register resources, reconnect.
+    fn on_session_start(&self, _reason: &str) {}
 }
 
 // ── Tests ──────────────────────────────────────────────────────────

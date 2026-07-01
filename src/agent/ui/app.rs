@@ -2686,6 +2686,11 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
         CommandResult::Reloaded => {
             app.refresh_registry();
 
+            // 0. Notify extensions of imminent shutdown (pi-compatible: session_shutdown)
+            for ext in app.extensions.iter() {
+                ext.on_session_shutdown("reload");
+            }
+
             // 1. Reload settings from disk (pi-compatible)
             let mut reload_parts: Vec<&str> = Vec::new();
             match app.settings.reload(&app.cwd) {
@@ -2800,12 +2805,7 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
             reload_parts.push("system prompt");
             reload_parts.push("context files");
 
-            // 6. Notify all extensions of reload (pi-compatible: session_start with reason reload)
-            for ext in app.extensions.iter() {
-                ext.on_reload();
-            }
-
-            // 5. Rebuild slash commands and commands list with updated skills
+            // 6. Rebuild slash commands and commands list with updated skills
             {
                 use crate::tui::autocomplete::SlashCommand as AutoSlashCommand;
                 let mut auto_commands: Vec<AutoSlashCommand> =
@@ -2866,6 +2866,11 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
             for skill in &app.skills {
                 app.commands
                     .push((format!("skill:{}", skill.name), skill.description.clone()));
+            }
+
+            // 7. Notify extensions that reload is complete (pi-compatible: session_start)
+            for ext in app.extensions.iter() {
+                ext.on_session_start("reload");
             }
 
             chat_info(app, format!("{} reloaded.", reload_parts.join(", ")));

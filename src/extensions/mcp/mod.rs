@@ -292,7 +292,10 @@ impl Extension for McpExtension {
         tools
     }
 
-    fn on_reload(&self) {
+    fn on_session_start(&self, reason: &str) {
+        if reason != "reload" {
+            return;
+        }
         // Re-read MCP config from disk (best-effort)
         let cwd = std::path::Path::new(".");
         let new_config = load_mcp_config(cwd);
