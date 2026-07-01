@@ -466,17 +466,8 @@ async fn main() -> anyhow::Result<()> {
         .map(|twm| Box::new(twm) as Box<dyn yoagent::types::AgentTool>)
         .collect();
 
-    // Build system prompt using the new builder
-    let system_prompt = rab::agent::SystemPromptBuilder::new()
-        .tool_snippets(tool_snippets)
-        .guidelines(tool_guidelines)
-        .context_files(context_files)
-        .custom_prompt(custom_system_md)
-        .append_prompt(append_system_md)
-        .cwd(&cwd)
-        .build();
-
     // Load skills for startup display and /skill:name expansion
+    // (load before system prompt so skills section is included)
     let mut skill_dirs = Vec::new();
     skill_dirs.push(agent_dir.join("skills"));
     if let Some(home) = directories::BaseDirs::new().map(|d| d.home_dir().to_path_buf()) {
@@ -498,6 +489,19 @@ async fn main() -> anyhow::Result<()> {
         skill_set.merge(ext.skills());
     }
     let skills: Vec<yoagent::skills::Skill> = skill_set.skills().to_vec();
+
+    // Build system prompt using the new builder
+    let has_read_tool = tool_snippets.iter().any(|t| t.name == "read");
+    let system_prompt = rab::agent::SystemPromptBuilder::new()
+        .tool_snippets(tool_snippets)
+        .guidelines(tool_guidelines)
+        .context_files(context_files)
+        .custom_prompt(custom_system_md)
+        .append_prompt(append_system_md)
+        .skills(skill_set.clone())
+        .has_read_tool(has_read_tool)
+        .cwd(&cwd)
+        .build();
 
     // Determine initial thinking level: prefer session's recorded level, fall back to settings.
     // Pi-compatible: if the session has thinking level change entries, use the resolved level

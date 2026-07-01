@@ -34,6 +34,8 @@ pub struct SystemPromptBuilder {
     context_files: Vec<ContextFile>,
     /// Skills formatted as `<available_skills>` XML.
     skills: SkillSet,
+    /// Whether the `read` tool is available (controls whether skills section is shown).
+    has_read_tool: bool,
     /// Custom system prompt (replaces default). From SYSTEM.md or `--system-prompt`.
     custom_prompt: Option<String>,
     /// Text to append to the system prompt. From APPEND_SYSTEM.md or `--append-system-prompt`.
@@ -44,7 +46,10 @@ pub struct SystemPromptBuilder {
 
 impl SystemPromptBuilder {
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            has_read_tool: true,
+            ..Default::default()
+        }
     }
 
     pub fn tool_snippets(mut self, snippets: Vec<ToolSnippet>) -> Self {
@@ -64,6 +69,11 @@ impl SystemPromptBuilder {
 
     pub fn skills(mut self, skills: SkillSet) -> Self {
         self.skills = skills;
+        self
+    }
+
+    pub fn has_read_tool(mut self, has: bool) -> Self {
+        self.has_read_tool = has;
         self
     }
 
@@ -122,9 +132,23 @@ impl SystemPromptBuilder {
         }
 
         // ── 4. Skills ─────────────────────────────────────────────
-        let skills_section = self.skills.format_for_prompt();
-        if !skills_section.is_empty() {
-            prompt.push_str(&skills_section);
+        // Pi-compatible: only show skills section if read tool is available
+        // (skills are loaded via read tool by the model).
+        if self.has_read_tool && !self.skills.is_empty() {
+            prompt.push_str(
+                "\n\nThe following skills provide specialized instructions for specific tasks.\n",
+            );
+            prompt.push_str(
+                "Use the read tool to load a skill\'s file when the task matches its description.\n",
+            );
+            prompt.push_str(
+                "When a skill file references a relative path, resolve it against the skill directory "
+            );
+            prompt.push_str(
+                "(parent of SKILL.md / dirname of the path) and use that absolute path in tool commands.\n",
+            );
+            prompt.push('\n');
+            prompt.push_str(&self.skills.format_for_prompt());
         }
 
         // ── 5. Date and working directory ─────────────────────────

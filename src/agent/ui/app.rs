@@ -313,7 +313,7 @@ impl App {
         // Collect slash commands with argument completion callbacks
         use crate::tui::autocomplete::AutocompleteItem as AutoAutocompleteItem;
         use crate::tui::autocomplete::SlashCommand as AutoSlashCommand;
-        let auto_commands: Vec<AutoSlashCommand> = config
+        let mut auto_commands: Vec<AutoSlashCommand> = config
             .extensions
             .iter()
             .flat_map(|e| e.commands())
@@ -340,15 +340,32 @@ impl App {
                 }
             })
             .collect();
+
+        // Register /skill:name commands for autocomplete (pi-compatible)
+        for skill in &config.skills {
+            let cmd_name = format!("skill:{}", skill.name);
+            auto_commands.push(AutoSlashCommand {
+                name: cmd_name,
+                description: Some(skill.description.clone()),
+                argument_hint: None,
+                argument_completions: None,
+                get_argument_completions: None,
+            });
+        }
         editor.set_slash_commands(auto_commands);
 
         // Keep commands list for help overlay and unknown-command display.
-        let commands: Vec<(String, String)> = config
+        let mut commands: Vec<(String, String)> = config
             .extensions
             .iter()
             .flat_map(|e| e.commands())
             .map(|c| (c.name, c.description))
             .collect();
+
+        // Add skill commands (pi-compatible: /skill:name is an implicit command)
+        for skill in &config.skills {
+            commands.push((format!("skill:{}", skill.name), skill.description.clone()));
+        }
 
         let editor = Rc::new(RefCell::new(editor));
 
@@ -3897,9 +3914,8 @@ fn read_skill_body(file_path: &std::path::Path) -> Option<String> {
     Some(strip_frontmatter(&content))
 }
 
-fn format_skill_invocation(skill: &yoagent::skills::Skill, extra: Option<&str>) -> String {
-    let body = read_skill_body(&skill.file_path).unwrap_or_default();
-    let base = skill.base_dir.to_string_lossy();
+fn format_skill_invocation(skill: &yoagent::skills::Skill, extra: Option<&str>) -> Option<String> {
+    let body = read_skill_body(&skill.file_path)?;
     let block = format!(
         r#"<skill name="{}" location="{}">
 References are relative to {}.
@@ -3908,13 +3924,13 @@ References are relative to {}.
 </skill>"#,
         xml_escape(&skill.name),
         xml_escape(&skill.file_path.to_string_lossy()),
-        base,
+        xml_escape(&skill.base_dir.to_string_lossy()),
         body
     );
-    match extra {
+    Some(match extra {
         Some(instr) if !instr.is_empty() => format!("{}\n\n{}", block, instr),
         _ => block,
-    }
+    })
 }
 
 fn expand_skill_command(text: &str, skills: &[yoagent::skills::Skill]) -> String {
@@ -3927,7 +3943,50 @@ fn expand_skill_command(text: &str, skills: &[yoagent::skills::Skill]) -> String
         None => (rest, ""),
     };
     match skills.iter().find(|s| s.name == skill_name) {
-        Some(s) => format_skill_invocation(s, if args.is_empty() { None } else { Some(args) }),
+        Some(s) => format_skill_invocation(s, if args.is_empty() { None } else { Some(args) })
+            .unwrap_or_else(|| text.to_string()),
         None => text.to_string(),
     }
+}
+
+/// Parse a skill block from text (pi-compatible).
+/// Returns Some((name, body, user_message)) if the text is a skill block.
+pub fn parse_skill_block(text: &str) -> Option<(&str, &str, Option<&str>)> {
+    let text = text.trim();
+    let after_open = text.strip_prefix("<skill name=\"")?;
+    let (name, rest) = after_open.split_once("\" location=\"")?;
+    let (_location, rest) = rest.split_once("\">\n")?;
+    // Find closing tag to extract body
+    let close_tag = "\n</skill>";
+    let content_end = rest.rfind(close_tag)?;
+    let body = rest[..content_end].trim();
+    let after_close = rest[content_end + close_tag.len()..].trim();
+    let user_message = if after_close.is_empty() {
+        None
+    } else {
+        Some(after_close)
+    };
+    Some((name, body, user_message))
+}
+
+/// Format a skill block for display (prettify XML into a readable form).
+/// Returns None if the text is not a skill block.
+pub fn format_skill_block_for_display(text: &str) -> Option<String> {
+    let (name, body, user_message) = parse_skill_block(text)?;
+    let mut result = String::new();
+    // Markdown bold label: **[skill] name**
+    result.push_str("**[");
+    result.push_str("skill] ");
+    result.push_str(name);
+    result.push_str("**\n\n");
+    // Body content
+    result.push_str(body);
+    result.push('\n');
+    // Append user message if present
+    if let Some(msg) = user_message {
+        result.push_str("\n---\n");
+        result.push_str(msg);
+        result.push('\n');
+    }
+    Some(result)
 }

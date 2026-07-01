@@ -17,7 +17,10 @@ pub struct UserMessageComponent {
 
 impl UserMessageComponent {
     pub fn new(text: impl Into<String>) -> Self {
-        let text = text.into();
+        let raw_text = text.into();
+        // Detect skill blocks and format nicely (pi-compatible)
+        let text =
+            crate::agent::ui::app::format_skill_block_for_display(&raw_text).unwrap_or(raw_text);
         let theme = current_theme();
         let bg_ansi = theme.bg_ansi_key(ThemeKey::UserMessageBg).to_string();
         drop(theme);
