@@ -104,17 +104,118 @@ impl HeaderComponent {
         self.cached_lines = None;
     }
 
+    /// Build collapsed resource sections (compact mode): "[Section]\n  item1, item2"
+    fn collapsed_resource_sections(&self) -> Vec<String> {
+        let mut lines = Vec::new();
+
+        if !self.context_files.is_empty() {
+            lines.push(String::new());
+            lines.push(section_header("Context"));
+            let theme = current_theme();
+            lines.push(theme.fg_key(
+                ThemeKey::Dim,
+                &format!("  {}", self.context_files.join(", ")),
+            ));
+        }
+
+        if !self.skills.is_empty() {
+            lines.push(String::new());
+            lines.push(section_header("Skills"));
+            let theme = current_theme();
+            lines.push(theme.fg_key(ThemeKey::Dim, &format!("  {}", self.skills.join(", "))));
+        }
+
+        if !self.prompt_templates.is_empty() {
+            lines.push(String::new());
+            lines.push(section_header("Prompts"));
+            let theme = current_theme();
+            lines.push(theme.fg_key(
+                ThemeKey::Dim,
+                &format!("  /{}", self.prompt_templates.join(", /")),
+            ));
+        }
+
+        if !self.extensions.is_empty() {
+            lines.push(String::new());
+            lines.push(section_header("Extensions"));
+            let theme = current_theme();
+            lines.push(theme.fg_key(ThemeKey::Dim, &format!("  {}", self.extensions.join(", "))));
+        }
+
+        if !self.themes.is_empty() {
+            lines.push(String::new());
+            lines.push(section_header("Themes"));
+            let theme = current_theme();
+            lines.push(theme.fg_key(ThemeKey::Dim, &format!("  {}", self.themes.join(", "))));
+        }
+
+        lines
+    }
+
+    /// Build expanded resource sections: "[Section]\n  item1\n  item2"
+    fn expanded_resource_sections(&self) -> Vec<String> {
+        let mut lines = Vec::new();
+
+        if !self.context_files.is_empty() {
+            lines.push(String::new());
+            lines.push(section_header("Context"));
+            let theme = current_theme();
+            for cf in &self.context_files {
+                lines.push(theme.fg_key(ThemeKey::Dim, &format!("  {}", cf)));
+            }
+        }
+
+        if !self.skills.is_empty() {
+            lines.push(String::new());
+            lines.push(section_header("Skills"));
+            let theme = current_theme();
+            for skill in &self.skills {
+                lines.push(theme.fg_key(ThemeKey::Dim, &format!("  {}", skill)));
+            }
+        }
+
+        if !self.prompt_templates.is_empty() {
+            lines.push(String::new());
+            lines.push(section_header("Prompts"));
+            let theme = current_theme();
+            for tmpl in &self.prompt_templates {
+                lines.push(theme.fg_key(ThemeKey::Dim, &format!("  /{}", tmpl)));
+            }
+        }
+
+        if !self.extensions.is_empty() {
+            lines.push(String::new());
+            lines.push(section_header("Extensions"));
+            let theme = current_theme();
+            for ext in &self.extensions {
+                lines.push(theme.fg_key(ThemeKey::Dim, &format!("  {}", ext)));
+            }
+        }
+
+        if !self.themes.is_empty() {
+            lines.push(String::new());
+            lines.push(section_header("Themes"));
+            let theme = current_theme();
+            for t in &self.themes {
+                lines.push(theme.fg_key(ThemeKey::Dim, &format!("  {}", t)));
+            }
+        }
+
+        lines
+    }
+
     fn build_lines(&self, _width: usize) -> Vec<String> {
+        // Pi-style: leading space before logo (matching " pi v0.80.3")
         let logo = {
             let theme = current_theme();
             format!(
-                "{}{}",
+                " {}{}",
                 theme.bold(&theme.fg_key(ThemeKey::Accent, "rab")),
                 theme.fg_key(ThemeKey::Dim, &format!(" v{}", VERSION)),
             )
         };
 
-        // Main onboarding text (matches pi: "Pi can explain its own features...")
+        // Main onboarding text (matches pi)
         let onboarding = {
             let theme = current_theme();
             theme.fg(
@@ -123,11 +224,11 @@ impl HeaderComponent {
             )
         };
 
-        if self.expanded {
-            // ── Expanded: full keybinding hints + resource sections + onboarding ──
-            let mut lines: Vec<String> = Vec::new();
-            lines.push(logo);
+        let mut lines: Vec<String> = Vec::new();
+        lines.push(logo);
 
+        if self.expanded {
+            // ── Expanded: each hint on its own line ──
             lines.push(key_hint("app.interrupt", "to interrupt"));
             lines.push(key_hint("app.clear", "to clear"));
             lines.push(raw_key_hint(
@@ -159,69 +260,8 @@ impl HeaderComponent {
                 "to edit all queued messages",
             ));
             lines.push(raw_key_hint("drop files", "to attach"));
-
-            // ── Loaded resources sections (pi-style, expanded only) ──
-            let has_resources = !self.context_files.is_empty()
-                || !self.skills.is_empty()
-                || !self.prompt_templates.is_empty()
-                || !self.extensions.is_empty()
-                || !self.themes.is_empty();
-
-            if has_resources {
-                lines.push(String::new());
-
-                if !self.context_files.is_empty() {
-                    lines.push(section_header("Context"));
-                    let theme = current_theme();
-                    for cf in &self.context_files {
-                        lines.push(theme.fg_key(ThemeKey::Dim, &format!("  {}", cf)));
-                    }
-                }
-
-                if !self.skills.is_empty() {
-                    lines.push(String::new());
-                    lines.push(section_header("Skills"));
-                    let theme = current_theme();
-                    for skill in &self.skills {
-                        lines.push(theme.fg_key(ThemeKey::Dim, &format!("  {}", skill)));
-                    }
-                }
-
-                if !self.prompt_templates.is_empty() {
-                    lines.push(String::new());
-                    lines.push(section_header("Prompts"));
-                    let theme = current_theme();
-                    for tmpl in &self.prompt_templates {
-                        lines.push(theme.fg_key(ThemeKey::Dim, &format!("  /{}", tmpl)));
-                    }
-                }
-
-                if !self.extensions.is_empty() {
-                    lines.push(String::new());
-                    lines.push(section_header("Extensions"));
-                    let theme = current_theme();
-                    for ext in &self.extensions {
-                        lines.push(theme.fg_key(ThemeKey::Dim, &format!("  {}", ext)));
-                    }
-                }
-
-                if !self.themes.is_empty() {
-                    lines.push(String::new());
-                    lines.push(section_header("Themes"));
-                    let theme = current_theme();
-                    for t in &self.themes {
-                        lines.push(theme.fg_key(ThemeKey::Dim, &format!("  {}", t)));
-                    }
-                }
-            }
-
-            // Onboarding text at the end (matches pi placement)
-            lines.push(String::new());
-            lines.push(onboarding);
-
-            lines
         } else {
-            // ── Compact: logo + compact hints + onboarding (pi-style) ──
+            // ── Compact: hints joined by " · " ──
             let parts = [
                 key_hint("app.interrupt", "interrupt"),
                 raw_key_hint(
@@ -236,9 +276,10 @@ impl HeaderComponent {
                 let theme = current_theme();
                 theme.fg_key(ThemeKey::Muted, " · ")
             };
-            let compact_line = parts.join(&separator);
+            lines.push(parts.join(&separator));
 
-            let compact_onboarding = {
+            // Compact onboarding
+            lines.push({
                 let theme = current_theme();
                 theme.fg(
                     "dim",
@@ -247,17 +288,22 @@ impl HeaderComponent {
                         key_text("app.tools.expand"),
                     ),
                 )
-            };
-
-            // Pi format: logo → compactInstructions → compactOnboarding → blank → onboarding
-            vec![
-                logo,
-                compact_line,
-                compact_onboarding,
-                String::new(),
-                onboarding,
-            ]
+            });
         }
+
+        // Pi ordering: onboarding BEFORE resources (with blank line after)
+        lines.push(String::new());
+        lines.push(onboarding);
+        lines.push(String::new()); // extra blank to match pi's spacing before resource sections
+
+        // Resource sections (pi-style: shown in both modes)
+        if self.expanded {
+            lines.extend(self.expanded_resource_sections());
+        } else {
+            lines.extend(self.collapsed_resource_sections());
+        }
+
+        lines
     }
 }
 
