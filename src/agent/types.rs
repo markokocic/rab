@@ -7,7 +7,7 @@ pub use yoagent::types::{AgentMessage, Content, Message};
 // ── Helper functions for working with yoagent types ─────────────────
 
 /// Extract all text content from a `Vec<Content>` as a single string.
-fn content_text(content: &[Content]) -> String {
+pub(crate) fn content_text(content: &[Content]) -> String {
     content
         .iter()
         .filter_map(|c| {

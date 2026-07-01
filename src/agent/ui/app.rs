@@ -31,6 +31,9 @@ use crate::tui::Component;
 use crate::tui::TUI;
 use crate::tui::focusable::Focusable;
 
+/// Pending label changes accumulator (used by tree selector, flushed each frame).
+pub type PendingLabelChanges = Rc<RefCell<Vec<(String, Option<String>)>>>;
+
 /// Result from an overlay lifecycle — checked by the main loop after route_input.
 #[derive(Debug, Clone)]
 pub enum OverlayResult {
@@ -52,6 +55,19 @@ pub enum OverlayResult {
     ImportConfirmed(String),
     /// User cancelled session import.
     ImportCancelled,
+    /// User selected a tree entry to navigate to.
+    TreeNavigateTo(String),
+    /// User cancelled tree navigation.
+    TreeCancelled,
+    /// User chose whether to summarize after tree entry selection.
+    /// `custom_instructions` is set when user chose "Summarize with custom prompt".
+    TreeSummarizeChoice {
+        entry_id: String,
+        summarize: bool,
+        custom_instructions: Option<String>,
+    },
+    /// User wants to reopen the tree selector (from summarization prompt), carrying the entry to select.
+    TreeReopen(String),
 }
 
 use crate::agent::ui::components::oauth_selector::AuthType;
@@ -296,6 +312,8 @@ pub struct App {
     /// Used by `show_status()` to replace consecutive status messages in-place
     /// instead of appending indefinitely.
     last_status_len: Option<usize>,
+    /// Pending label changes from the tree selector (accumulated, flushed each frame).
+    pending_label_changes: PendingLabelChanges,
     // ── Message rendering cache (avoids re-rendering messages every frame) ──
     // Cache fields removed - messages now rendered via Components in chat_container.
 }
@@ -577,6 +595,7 @@ impl App {
             )),
             session_picker: None,
             last_status_len: None,
+            pending_label_changes: Rc::new(RefCell::new(Vec::new())),
         };
 
         // Set resource data on header (pi-style loaded resources display)
@@ -828,6 +847,22 @@ pub async fn run(config: AppConfig, session: AgentSession) -> anyhow::Result<()>
             dirty = true;
         }
 
+        // Flush pending label changes from tree selector to session (without closing overlay).
+        if tui.has_overlays() {
+            let changes = app
+                .pending_label_changes
+                .borrow_mut()
+                .drain(..)
+                .collect::<Vec<_>>();
+            for (entry_id, label) in changes {
+                if let Some(ref mut session) = app.session {
+                    let _ = session
+                        .session_mut()
+                        .append_label_change(&entry_id, label.as_deref());
+                }
+            }
+        }
+
         // Check overlay result signal (set by overlay callbacks when user selects/cancels).
         if tui.has_overlays() {
             let result = app.overlay_result_signal.borrow_mut().take();
@@ -984,6 +1019,90 @@ pub async fn run(config: AppConfig, session: AgentSession) -> anyhow::Result<()>
                     }
                     OverlayResult::ImportCancelled => {
                         chat_info(&mut app, "Import cancelled.");
+                    }
+                    OverlayResult::TreeNavigateTo(entry_id) => {
+                        // User selected an entry — check if it's the current leaf
+                        let current_leaf =
+                            app.session.as_ref().and_then(|s| s.session().get_leaf_id());
+                        if current_leaf.as_deref() == Some(&entry_id) {
+                            app.status_text = Some("Already at this point".to_string());
+                        } else {
+                            // Show summarization choice prompt (matching pi's showExtensionSelector)
+                            show_summarization_prompt(&mut app, &mut tui, &entry_id);
+                        }
+                    }
+                    OverlayResult::TreeCancelled => {
+                        // Just close
+                    }
+                    OverlayResult::TreeSummarizeChoice {
+                        entry_id,
+                        summarize,
+                        custom_instructions,
+                    } => {
+                        // Navigate with or without summary
+                        if summarize {
+                            if let Some(ref mut session) = app.session {
+                                match session
+                                    .set_branch(&entry_id, custom_instructions.as_deref())
+                                    .await
+                                {
+                                    Ok(_) => {
+                                        app.status_text =
+                                            Some("Navigated to selected point".to_string());
+                                        app.rebuild_from_session_context();
+                                    }
+                                    Err(e) => {
+                                        app.status_text = Some(format!("Navigation error: {}", e));
+                                    }
+                                }
+                            }
+                        } else {
+                            // No summary — just move the leaf
+                            if let Some(ref mut session) = app.session {
+                                match session.session_mut().set_leaf_id(Some(&entry_id)) {
+                                    Ok(_) => {
+                                        app.status_text = Some(
+                                            "Navigated to selected point (no summary)".to_string(),
+                                        );
+                                        app.rebuild_from_session_context();
+                                    }
+                                    Err(e) => {
+                                        app.status_text = Some(format!("Navigation error: {}", e));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    OverlayResult::TreeReopen(entry_id) => {
+                        // Re-show the tree selector (user cancelled from summarization prompt)
+                        if let Some(ref session) = app.session {
+                            let tree = session.session_manager().get_tree();
+                            let leaf_id = session.session().get_leaf_id();
+                            let signal_select = app.overlay_result_signal.clone();
+                            let signal_cancel = app.overlay_result_signal.clone();
+                            let label_signal = app.pending_label_changes.clone();
+                            let mut tree_selector = crate::agent::ui::components::TreeSelector::new(
+                                tree,
+                                leaf_id,
+                                rows as usize,
+                                None,
+                            );
+                            // Restore cursor to the entry the user had selected
+                            if !entry_id.is_empty() {
+                                tree_selector.set_initial_selection(&entry_id);
+                            }
+                            tree_selector.on_select = Some(Box::new(move |eid| {
+                                *signal_select.borrow_mut() =
+                                    Some(OverlayResult::TreeNavigateTo(eid));
+                            }));
+                            tree_selector.on_cancel = Some(Box::new(move || {
+                                *signal_cancel.borrow_mut() = Some(OverlayResult::TreeCancelled);
+                            }));
+                            tree_selector.on_label_change = Some(Box::new(move |eid, label| {
+                                label_signal.borrow_mut().push((eid, label));
+                            }));
+                            tui.show_top_overlay(Box::new(tree_selector));
+                        }
                     }
                 }
             }
@@ -1154,6 +1273,37 @@ pub async fn run(config: AppConfig, session: AgentSession) -> anyhow::Result<()>
                             }
                         });
                         tui.show_overlay(confirm, Default::default());
+                    }
+                }
+                CommandResult::SessionTree => {
+                    // Show the tree selector overlay
+                    if let Some(ref session) = app.session {
+                        let tree = session.session_manager().get_tree();
+                        let leaf_id = session.session().get_leaf_id();
+                        let signal_select = app.overlay_result_signal.clone();
+                        let signal_cancel = app.overlay_result_signal.clone();
+                        let label_signal = app.pending_label_changes.clone();
+                        let mut tree_selector = crate::agent::ui::components::TreeSelector::new(
+                            tree,
+                            leaf_id,
+                            rows as usize,
+                            None,
+                        );
+                        tree_selector.on_select = Some(Box::new(move |entry_id| {
+                            *signal_select.borrow_mut() =
+                                Some(OverlayResult::TreeNavigateTo(entry_id));
+                        }));
+                        tree_selector.on_cancel = Some(Box::new(move || {
+                            *signal_cancel.borrow_mut() = Some(OverlayResult::TreeCancelled);
+                        }));
+                        tree_selector.on_label_change = Some(Box::new(move |entry_id, label| {
+                            label_signal.borrow_mut().push((entry_id, label));
+                        }));
+                        use crate::tui::focusable::Focusable;
+                        tree_selector.set_focused(true);
+                        tui.show_top_overlay(Box::new(tree_selector));
+                    } else {
+                        chat_info(&mut app, "No active session.");
                     }
                 }
                 _ => {}
@@ -3416,8 +3566,8 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
             chat_info(app, msg.clone());
         }
         CommandResult::SessionTree => {
-            let msg = "Session tree - not yet implemented.".to_string();
-            chat_info(app, msg.clone());
+            // Needs TUI overlay — defer
+            app.pending_command_result = Some(result);
         }
         CommandResult::TrustDecision { decision } => {
             let msg = format!("Trust decision '{}' saved.", decision);
@@ -3740,6 +3890,215 @@ fn add_assistant_message(chat: &mut crate::tui::Container, text: &str, hide_thin
         asst.set_hide_thinking(true);
     }
     chat.add_child(std::boxed::Box::new(asst));
+}
+
+/// Show a summarization choice prompt after tree entry selection (matching pi's showExtensionSelector).
+/// Shows "No summary", "Summarize", and "Summarize with custom prompt" options.
+fn show_summarization_prompt(app: &mut App, tui: &mut TUI, _entry_id: &str) {
+    use crate::tui::Component;
+    use crate::tui::keybindings::{
+        ACTION_EDITOR_DELETE_CHAR_BACKWARD, ACTION_SELECT_CANCEL, ACTION_SELECT_CONFIRM,
+        ACTION_SELECT_DOWN, ACTION_SELECT_UP, get_keybindings,
+    };
+    use crossterm::event::KeyEvent;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    struct SummarizationPrompt {
+        selected_index: usize,
+        items: [&'static str; 3],
+        signal: Rc<RefCell<Option<OverlayResult>>>,
+        entry_id: String,
+        edit_mode: bool,
+        edit_text: String,
+    }
+
+    impl Component for SummarizationPrompt {
+        fn render(&mut self, width: usize) -> Vec<String> {
+            let theme = crate::agent::ui::theme::current_theme();
+            let mut lines = Vec::new();
+
+            lines.push(theme.fg("muted", &"─".repeat(width.saturating_sub(2))));
+            lines.push(String::new());
+            lines.push(format!("  {}", theme.bold("Summarize branch?")));
+            lines.push(String::new());
+
+            if self.edit_mode {
+                // Show editor for custom summarization instructions
+                lines.push(format!(
+                    "  {}",
+                    theme.fg("muted", "Custom summarization instructions (Enter to submit, Shift/Ctrl+Enter for newline):")
+                ));
+                lines.push(String::new());
+                // Render multi-line text content
+                if self.edit_text.is_empty() {
+                    lines.push(format!(
+                        "  {}",
+                        theme.fg("muted", "<type here, Enter for newline>")
+                    ));
+                } else {
+                    for line in self.edit_text.lines() {
+                        lines.push(format!("  {}", line));
+                    }
+                }
+                lines.push(String::new());
+                lines.push(format!(
+                    "  {}",
+                    theme.fg(
+                        "muted",
+                        "Enter: submit \u{00b7} Shift/Ctrl+Enter: newline \u{00b7} Esc: back"
+                    )
+                ));
+            } else {
+                for (i, item) in self.items.iter().enumerate() {
+                    let prefix = if i == self.selected_index {
+                        theme.fg("accent", "\u{203a} ")
+                    } else {
+                        "  ".to_string()
+                    };
+                    let text = if i == self.selected_index {
+                        theme.fg("accent", item)
+                    } else {
+                        theme.text_color(item)
+                    };
+                    lines.push(format!("{}{}", prefix, text));
+                }
+                lines.push(String::new());
+                lines.push(theme.fg(
+                    "muted",
+                    "  \u{2191}/\u{2193} navigate \u{00b7} Enter select \u{00b7} Esc back to tree",
+                ));
+            }
+
+            lines
+        }
+
+        fn handle_input(&mut self, key: &KeyEvent) -> bool {
+            let kb = get_keybindings();
+
+            if self.edit_mode {
+                if key.code == crossterm::event::KeyCode::Esc {
+                    self.edit_mode = false;
+                    return true;
+                }
+                // Enter submits
+                if key.code == crossterm::event::KeyCode::Enter
+                    && !key
+                        .modifiers
+                        .contains(crossterm::event::KeyModifiers::SHIFT)
+                    && !key.modifiers.contains(crossterm::event::KeyModifiers::ALT)
+                    && !key
+                        .modifiers
+                        .contains(crossterm::event::KeyModifiers::CONTROL)
+                {
+                    let instructions = self.edit_text.trim().to_string();
+                    let ci = if instructions.is_empty() {
+                        None
+                    } else {
+                        Some(instructions)
+                    };
+                    *self.signal.borrow_mut() = Some(OverlayResult::TreeSummarizeChoice {
+                        entry_id: self.entry_id.clone(),
+                        summarize: true,
+                        custom_instructions: ci,
+                    });
+                    return true;
+                }
+                // Shift+Enter, Ctrl+Enter, or Ctrl+J inserts newline
+                if (key.code == crossterm::event::KeyCode::Enter
+                    && (key
+                        .modifiers
+                        .contains(crossterm::event::KeyModifiers::SHIFT)
+                        || key
+                            .modifiers
+                            .contains(crossterm::event::KeyModifiers::CONTROL)))
+                    || (key.code == crossterm::event::KeyCode::Char('j')
+                        && key
+                            .modifiers
+                            .contains(crossterm::event::KeyModifiers::CONTROL))
+                {
+                    self.edit_text.push('\n');
+                    return true;
+                }
+                if kb.matches(key, ACTION_EDITOR_DELETE_CHAR_BACKWARD) {
+                    self.edit_text.pop();
+                    return true;
+                }
+                if let crossterm::event::KeyCode::Char(c) = key.code
+                    && !c.is_control()
+                {
+                    self.edit_text.push(c);
+                    return true;
+                }
+                return true;
+            }
+
+            if kb.matches(key, ACTION_SELECT_UP) {
+                self.selected_index = if self.selected_index == 0 {
+                    self.items.len() - 1
+                } else {
+                    self.selected_index - 1
+                };
+                return true;
+            }
+
+            if kb.matches(key, ACTION_SELECT_DOWN) {
+                self.selected_index = if self.selected_index >= self.items.len() - 1 {
+                    0
+                } else {
+                    self.selected_index + 1
+                };
+                return true;
+            }
+
+            if kb.matches(key, ACTION_SELECT_CONFIRM) {
+                match self.selected_index {
+                    0 => {
+                        *self.signal.borrow_mut() = Some(OverlayResult::TreeSummarizeChoice {
+                            entry_id: self.entry_id.clone(),
+                            summarize: false,
+                            custom_instructions: None,
+                        });
+                    }
+                    1 => {
+                        *self.signal.borrow_mut() = Some(OverlayResult::TreeSummarizeChoice {
+                            entry_id: self.entry_id.clone(),
+                            summarize: true,
+                            custom_instructions: None,
+                        });
+                    }
+                    2 => {
+                        self.edit_mode = true;
+                        self.edit_text.clear();
+                        return true;
+                    }
+                    _ => {}
+                }
+                return true;
+            }
+
+            if kb.matches(key, ACTION_SELECT_CANCEL) {
+                *self.signal.borrow_mut() = Some(OverlayResult::TreeReopen(self.entry_id.clone()));
+                return true;
+            }
+
+            false
+        }
+
+        fn invalidate(&mut self) {}
+    }
+
+    let entry_id = _entry_id.to_string();
+    let prompt = SummarizationPrompt {
+        selected_index: 0,
+        items: ["No summary", "Summarize", "Summarize with custom prompt"],
+        signal: app.overlay_result_signal.clone(),
+        entry_id,
+        edit_mode: false,
+        edit_text: String::new(),
+    };
+
+    tui.show_top_overlay(Box::new(prompt));
 }
 
 /// Show a status message in the chat (pi-style `showStatus`).

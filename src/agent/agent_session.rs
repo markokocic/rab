@@ -638,6 +638,7 @@ impl AgentSession {
         &mut self,
         old_leaf_id: Option<&str>,
         target_id: &str,
+        custom_instructions: Option<&str>,
     ) -> Result<String, String> {
         if self.compaction_api_key.is_none() || self.model_name.is_empty() {
             return Err("No provider configured for summarization".to_string());
@@ -659,14 +660,20 @@ impl AgentSession {
             &self.model_name,
             self.thinking_level,
             self.model_config.clone(),
+            custom_instructions,
         )
         .await
     }
 
     /// Move the leaf pointer to an earlier entry (starts a new branch).
     /// Optionally summarizes the abandoned path if a provider is configured.
+    /// `custom_instructions` are passed to the summarization prompt (pi-compatible).
     /// Returns the branch summary text if summarization was performed.
-    pub async fn set_branch(&mut self, branch_from_id: &str) -> Result<Option<String>, String> {
+    pub async fn set_branch(
+        &mut self,
+        branch_from_id: &str,
+        custom_instructions: Option<&str>,
+    ) -> Result<Option<String>, String> {
         let old_leaf = self.mgr.session().get_leaf_id();
 
         let summary = if self.compaction_api_key.is_some()
@@ -676,7 +683,7 @@ impl AgentSession {
         {
             // Summarize the abandoned path
             match self
-                .summarize_branch_navigation(Some(old), branch_from_id)
+                .summarize_branch_navigation(Some(old), branch_from_id, custom_instructions)
                 .await
             {
                 Ok(s) => Some(s),

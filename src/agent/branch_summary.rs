@@ -125,6 +125,7 @@ pub fn prepare_branch_entries(
 ///
 /// The summary is appended to the session as a `BranchSummaryEntry`.
 /// Returns the summary text, or an error message.
+#[allow(clippy::too_many_arguments)]
 pub async fn generate_branch_summary(
     session: &mut Session,
     entries: &[SessionEntry],
@@ -133,6 +134,7 @@ pub async fn generate_branch_summary(
     model: &str,
     thinking_level: yoagent::types::ThinkingLevel,
     model_config: Option<yoagent::provider::model::ModelConfig>,
+    custom_instructions: Option<&str>,
 ) -> Result<String, String> {
     let settings = CompactionSettings::default();
     let context_window = crate::agent::compaction::get_model_context_window(model);
@@ -162,7 +164,7 @@ pub async fn generate_branch_summary(
         ));
     }
 
-    let prompt = format!(
+    let mut prompt = format!(
         r#"<conversation>
 {conversation_text}
 </conversation>
@@ -191,6 +193,18 @@ Create a structured summary of this branch for context when continuing.
 
 Keep it concise. Preserve exact file paths, function names, and error messages."#
     );
+
+    // Prepend custom instructions if provided (pi-compatible)
+    if let Some(instructions) = custom_instructions {
+        prompt = format!(
+            "{}
+
+## Custom Instructions
+Focus the summary on the following aspects:
+{}",
+            prompt, instructions
+        );
+    }
 
     let summary_msg = user_message(&prompt);
     let system_prompt = "You are a precise summarizer. Summarize the conversation branch above.";

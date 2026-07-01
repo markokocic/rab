@@ -9,6 +9,7 @@ pub mod oauth_selector;
 pub mod scoped_models_selector;
 pub mod session_picker;
 pub mod tool_messages;
+pub mod tree_selector;
 pub mod user_message;
 
 pub use assistant_message::AssistantMessageComponent;
@@ -22,4 +23,5 @@ pub use oauth_selector::OAuthSelector;
 pub use scoped_models_selector::ScopedModelsSelector;
 pub use session_picker::SessionPicker;
 pub use tool_messages::{RcToolExec, ToolExecComponent};
+pub use tree_selector::TreeSelector;
 pub use user_message::UserMessageComponent;

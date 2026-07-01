@@ -207,7 +207,7 @@ impl Extension for CommandsExtension {
             SlashCommand {
                 name: "tree".to_string(),
                 description: "Navigate session tree (switch branches)".to_string(),
-                handler: Box::new(command_not_implemented_handler("tree")),
+                handler: Box::new(TreeCommand),
             },
             SlashCommand {
                 name: "login".to_string(),
@@ -479,6 +479,16 @@ impl CommandHandler for ForkCommand {
                 message_id: Some(msg_id.to_string()),
             })
         }
+    }
+}
+
+// ── /tree ────────────────────────────────────────────────────────
+
+struct TreeCommand;
+
+impl CommandHandler for TreeCommand {
+    fn execute(&self, _args: &str) -> anyhow::Result<CommandResult> {
+        Ok(CommandResult::SessionTree)
     }
 }
 
