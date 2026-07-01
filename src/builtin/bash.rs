@@ -75,6 +75,10 @@ impl Extension for BashExtension {
         "bash".into()
     }
 
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     fn tools(&self) -> Vec<ToolDefinition> {
         vec![ToolDefinition {
             tool: Box::new(BashTool {

@@ -116,6 +116,10 @@ impl Extension for WriteExtension {
         "write".into()
     }
 
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     fn tools(&self) -> Vec<ToolDefinition> {
         vec![ToolDefinition {
             tool: Box::new(WriteTool {

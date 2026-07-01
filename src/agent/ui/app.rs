@@ -2731,6 +2731,21 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
         CommandResult::Reloaded => {
             app.refresh_registry();
 
+            // Refresh cached model list from the updated registry.
+            {
+                let models = app.registry.list_models();
+                app.available_models = models.clone();
+                for ext in app.extensions.iter() {
+                    if let Some(cmd) = ext
+                        .as_any()
+                        .downcast_ref::<crate::builtin::commands::CommandsExtension>()
+                    {
+                        cmd.set_available_models(models.clone());
+                        break;
+                    }
+                }
+            }
+
             // 0. Notify extensions of imminent shutdown (pi-compatible: session_shutdown)
             for ext in app.extensions.iter() {
                 ext.on_session_shutdown("reload");
@@ -2760,6 +2775,17 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
                         app.thinking_level.as_deref(),
                         &app.theme as &dyn crate::tui::Theme,
                     );
+
+                    // Apply reloaded auto_compact setting
+                    app.auto_compact = app.settings.auto_compact.unwrap_or(true);
+                    if let Some(ref mut s) = app.session {
+                        s.set_auto_compact(app.auto_compact);
+                    }
+                    app.footer.borrow_mut().set_auto_compact(app.auto_compact);
+
+                    // Apply reloaded collapse_tool_output setting
+                    app.collapse_tool_output = app.settings.collapse_tool_output.unwrap_or(false);
+                    app.tools_expanded = !app.collapse_tool_output;
 
                     // 2. Re-apply theme from reloaded settings (pi-compatible)
                     if let Some(ref theme_name) = app.settings.theme

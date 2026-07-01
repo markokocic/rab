@@ -15,7 +15,8 @@ use std::sync::{Arc, Mutex};
 /// commands indistinguishable from user-provided commands.
 pub struct CommandsExtension {
     /// Available model identifiers (provider/id), e.g. ["deepseek-v4-flash", "deepseek-v4-pro"]
-    available_models: Vec<String>,
+    /// Wrapped in Mutex so it can be updated via &self on /reload.
+    available_models: std::sync::Mutex<Vec<String>>,
     /// Current session info for /session command.
     pub session_info: Arc<Mutex<Option<SessionInfoInternal>>>,
 }
@@ -42,8 +43,15 @@ pub struct SessionInfoInternal {
 impl CommandsExtension {
     pub fn new(available_models: Vec<String>) -> Self {
         Self {
-            available_models,
+            available_models: std::sync::Mutex::new(available_models),
             session_info: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    /// Update the set of available models (called on /reload after registry refresh).
+    pub fn set_available_models(&self, models: Vec<String>) {
+        if let Ok(mut guard) = self.available_models.lock() {
+            *guard = models;
         }
     }
 
@@ -118,7 +126,18 @@ impl Extension for CommandsExtension {
         "commands".into()
     }
 
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     fn commands(&self) -> Vec<SlashCommand> {
+        // Snapshot the current model list so changes from /reload are visible.
+        let models = self
+            .available_models
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+
         vec![
             SlashCommand {
                 name: "settings".to_string(),
@@ -129,14 +148,14 @@ impl Extension for CommandsExtension {
                 name: "model".to_string(),
                 description: "Select model (opens selector UI)".to_string(),
                 handler: Box::new(ModelCommand {
-                    available_models: self.available_models.clone(),
+                    available_models: models.clone(),
                 }),
             },
             SlashCommand {
                 name: "scoped-models".to_string(),
                 description: "Enable/disable models for cycling".to_string(),
                 handler: Box::new(ScopedModelsCommand {
-                    available_models: self.available_models.clone(),
+                    available_models: models,
                 }),
             },
             SlashCommand {

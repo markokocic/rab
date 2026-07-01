@@ -808,8 +808,11 @@ impl yoagent::types::AgentTool for ToolDefinition {
     }
 }
 
-pub trait Extension: Send + Sync {
+pub trait Extension: Send + Sync + std::any::Any {
     fn name(&self) -> Cow<'static, str>;
+
+    /// Downcast to `&dyn Any` for downcasting to concrete types.
+    fn as_any(&self) -> &dyn std::any::Any;
 
     /// Tools this extension provides (LLM-callable), each with its own prompt metadata.
     fn tools(&self) -> Vec<ToolDefinition> {

@@ -187,18 +187,31 @@ impl ServerManager {
         }
     }
 
-    /// Register a server definition (from config). Does not connect.
+    /// Register or update a server definition (from config). Does not connect.
+    /// If the server already exists, its entry is replaced and the old connection
+    /// is dropped so that next use reconnects with the new config.
     pub fn register(&mut self, name: &str, entry: ServerEntry, config_hash: u64) {
-        self.servers
-            .entry(name.to_string())
-            .or_insert_with(|| ServerConnection {
-                entry,
-                client: None,
-                status: ConnectionStatus::Idle,
-                last_used: Instant::now(),
-                last_failure: None,
-                config_hash,
-            });
+        if let Some(conn) = self.servers.get_mut(name) {
+            // Update existing server: replace entry and drop old client so it
+            // reconnects lazily with the new config on next use.
+            conn.entry = entry;
+            conn.config_hash = config_hash;
+            conn.client = None;
+            conn.status = ConnectionStatus::Idle;
+            conn.last_failure = None;
+        } else {
+            self.servers.insert(
+                name.to_string(),
+                ServerConnection {
+                    entry,
+                    client: None,
+                    status: ConnectionStatus::Idle,
+                    last_used: Instant::now(),
+                    last_failure: None,
+                    config_hash,
+                },
+            );
+        }
     }
 
     /// Ensure a server is connected (lazy connect). Returns true if connected/available.
@@ -344,6 +357,13 @@ impl ServerManager {
     /// Get a list of all registered server names.
     pub fn server_names(&self) -> Vec<String> {
         self.servers.keys().cloned().collect()
+    }
+
+    /// Synchronously remove a server entry, dropping any existing connection.
+    /// The client Arc is dropped; in-flight calls holding a clone of the Arc
+    /// can still complete.
+    pub fn remove(&mut self, name: &str) {
+        self.servers.remove(name);
     }
 
     /// Check if a server should be connected eagerly at startup.

@@ -45,7 +45,9 @@ const MAX_SEARCH_RESULTS: usize = 30;
 /// - Direct tools for servers with `directTools` enabled (optional)
 /// - Tool renderers for MCP tool calls/results
 pub struct McpExtension {
-    config: McpConfig,
+    /// Protected by a std Mutex so it can be hot-reloaded via `on_session_start(&self)`.
+    /// Shared via Arc with McpProxyTool instances so all see config updates.
+    config: Arc<std::sync::Mutex<McpConfig>>,
     manager: Arc<Mutex<ServerManager>>,
     /// Cached tool metadata by server name.
     tool_cache: Arc<Mutex<HashMap<String, Vec<McpToolInfo>>>>,
@@ -68,6 +70,8 @@ impl McpExtension {
             manager.register(name, entry.clone(), config_hash);
         }
 
+        let config = Arc::new(std::sync::Mutex::new(config));
+
         Self {
             config,
             manager: Arc::new(Mutex::new(manager)),
@@ -85,10 +89,20 @@ impl McpExtension {
     /// Should be called once at startup to prime the cache without connecting.
     pub async fn restore_cache(&self) {
         let cache = load_cache();
+
+        // Snapshot config hashes so we don't hold the config lock across await.
+        let config_hashes: HashMap<String, u64> = {
+            let config = self.config.lock().unwrap();
+            config
+                .mcp_servers
+                .iter()
+                .map(|(name, entry)| (name.clone(), config::compute_server_config_hash(entry)))
+                .collect()
+        };
+
         let mut tool_cache = self.tool_cache.lock().await;
         for (server_name, entry) in &cache.servers {
-            let def = self.config.mcp_servers.get(server_name);
-            let ch = def.map(config::compute_server_config_hash).unwrap_or(0);
+            let ch = config_hashes.get(server_name).copied().unwrap_or(0);
             if entry.config_hash != ch {
                 continue;
             }
@@ -117,13 +131,9 @@ impl McpExtension {
     /// or `mcp({{ server: ... }})`) populates the cache; on subsequent startups
     /// direct tools are available automatically.
     pub async fn bootstrap_direct_tools(&self) {
-        let global_direct_tools = self
-            .config
-            .settings
-            .as_ref()
-            .is_some_and(|s| s.direct_tools);
-        let missing_cache: Vec<String> = self
-            .config
+        let config = self.config.lock().unwrap();
+        let global_direct_tools = config.settings.as_ref().is_some_and(|s| s.direct_tools);
+        let missing_cache: Vec<String> = config
             .mcp_servers
             .iter()
             .filter(|(server_name, entry)| {
@@ -141,6 +151,7 @@ impl McpExtension {
             })
             .map(|(name, _)| name.clone())
             .collect();
+        drop(config);
 
         if !missing_cache.is_empty() {
             eprintln!(
@@ -157,7 +168,16 @@ impl Extension for McpExtension {
         "mcp".into()
     }
 
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     fn tools(&self) -> Vec<ToolDefinition> {
+        // Snapshot the current config settings for direct-tool registration.
+        // The proxy tool gets a shared Arc<Mutex> so it sees live config updates.
+        let cfg = self.config.lock().unwrap().clone();
+        drop(self.config.lock());
+
         let mut tools: Vec<ToolDefinition> = Vec::new();
 
         // The proxy mcp tool is always available
@@ -181,20 +201,15 @@ impl Extension for McpExtension {
 
         // Add direct tools for servers with directTools enabled.
         // Per-server directTools takes precedence; falls back to global setting.
-        let global_direct_tools = self
-            .config
-            .settings
-            .as_ref()
-            .is_some_and(|s| s.direct_tools);
+        let global_direct_tools = cfg.settings.as_ref().is_some_and(|s| s.direct_tools);
         let cache = load_cache();
-        let prefix_mode = self
-            .config
+        let prefix_mode = cfg
             .settings
             .as_ref()
             .map(|s| s.tool_prefix.as_str())
             .unwrap_or("server");
 
-        for (server_name, entry) in &self.config.mcp_servers {
+        for (server_name, entry) in &cfg.mcp_servers {
             let direct = entry.direct_tools.as_ref();
             let has_direct = match direct {
                 Some(v) if v.is_boolean() => v.as_bool().unwrap_or(false),
@@ -299,13 +314,28 @@ impl Extension for McpExtension {
         // Re-read MCP config from disk (best-effort)
         let cwd = std::path::Path::new(".");
         let new_config = load_mcp_config(cwd);
+
+        // Update the extension's config so subsequent tools() calls pick up the change.
+        if let Ok(mut cfg) = self.config.lock() {
+            *cfg = new_config.clone();
+        }
+
         // Clear tool cache so it's lazily re-fetched on next access
         if let Ok(mut cache) = self.tool_cache.try_lock() {
             cache.clear();
         }
-        // Disconnect all servers (best-effort)
+
+        // Sync the server manager with the new config.
         if let Ok(mut manager) = self.manager.try_lock() {
-            // Re-register servers from new config (updates config hashes)
+            // 1. Remove servers that are no longer in the config.
+            let current_names: Vec<String> = manager.server_names();
+            for name in &current_names {
+                if !new_config.mcp_servers.contains_key(name) {
+                    manager.remove(name);
+                }
+            }
+
+            // 2. Register / update servers from the new config.
             for (name, entry) in &new_config.mcp_servers {
                 let config_hash = config::compute_server_config_hash(entry);
                 manager.register(name, entry.clone(), config_hash);
@@ -331,7 +361,8 @@ impl Extension for McpExtension {
 /// - `{ action: "auth-start", server: "name" }` — start OAuth (stub)
 /// - `{ action: "auth-complete", server: "name", args: '{"redirectUrl":"..."}' }` — complete OAuth (stub)
 struct McpProxyTool {
-    config: McpConfig,
+    /// Shared config — updated on reload via the same Arc.
+    config: Arc<std::sync::Mutex<McpConfig>>,
     manager: Arc<Mutex<ServerManager>>,
     tool_cache: Arc<Mutex<HashMap<String, Vec<McpToolInfo>>>>,
 }
@@ -354,6 +385,8 @@ impl McpProxyTool {
             if let Ok(tools) = client.list_tools().await {
                 let config_hash = self
                     .config
+                    .lock()
+                    .unwrap()
                     .mcp_servers
                     .get(server_name)
                     .map(config::compute_server_config_hash)
@@ -464,16 +497,23 @@ impl McpProxyTool {
 
     /// Execute the status operation: list all configured servers and their status.
     async fn execute_status(&self) -> ToolResult {
+        // Snapshot config values before async locks.
+        let (server_count, server_names, has_servers) = {
+            let config = self.config.lock().unwrap();
+            (
+                config.mcp_servers.len(),
+                config.mcp_servers.keys().cloned().collect::<Vec<_>>(),
+                !config.mcp_servers.is_empty(),
+            )
+        };
+
         let manager = self.manager.lock().await;
         let tool_cache = self.tool_cache.lock().await;
 
-        let mut lines = vec![format!(
-            "MCP: {} servers configured",
-            self.config.mcp_servers.len()
-        )];
+        let mut lines = vec![format!("MCP: {} servers configured", server_count)];
         lines.push(String::new());
 
-        for name in self.config.mcp_servers.keys() {
+        for name in &server_names {
             let status = manager.status(name);
             let tool_count = tool_cache.get(name).map(|v| v.len()).unwrap_or(0);
             let status_str = match status {
@@ -485,7 +525,7 @@ impl McpProxyTool {
             lines.push(format!("{} {} ({} tools)", status_str, name, tool_count));
         }
 
-        if !self.config.mcp_servers.is_empty() {
+        if has_servers {
             lines.push(String::new());
             lines.push(
                 "mcp({ server: \"name\" }) to list tools, mcp({ search: \"...\" }) to search"
@@ -520,6 +560,8 @@ impl McpProxyTool {
                 if let Ok(tools) = client.list_tools().await {
                     let config_hash = self
                         .config
+                        .lock()
+                        .unwrap()
                         .mcp_servers
                         .get(server_name)
                         .map(config::compute_server_config_hash)
@@ -563,7 +605,13 @@ impl McpProxyTool {
                 }
             }
             _ => {
-                if self.config.mcp_servers.contains_key(server_name) {
+                let server_exists = self
+                    .manager
+                    .lock()
+                    .await
+                    .server_names()
+                    .contains(&server_name.to_string());
+                if server_exists {
                     ToolResult {
                         content: vec![Content::Text {
                             text: format!(
@@ -658,18 +706,21 @@ impl McpProxyTool {
 
     /// Execute the describe operation.
     async fn execute_describe(&self, tool_name: &str) -> ToolResult {
+        let prefix_mode = self
+            .config
+            .lock()
+            .unwrap()
+            .settings
+            .as_ref()
+            .map(|s| s.tool_prefix.clone())
+            .unwrap_or_else(|| "server".to_string());
+
         let tool_cache = self.tool_cache.lock().await;
 
         for (server_name, tools) in tool_cache.iter() {
             for tool in tools {
                 if tool.name == tool_name {
-                    let prefix = self
-                        .config
-                        .settings
-                        .as_ref()
-                        .map(|s| s.tool_prefix.as_str())
-                        .unwrap_or("server");
-                    let full_name = format_tool_name(&tool.name, server_name, prefix);
+                    let full_name = format_tool_name(&tool.name, server_name, &prefix_mode);
 
                     let mut lines = vec![
                         full_name,
@@ -755,16 +806,20 @@ impl McpProxyTool {
 
     /// Execute the connect operation.
     async fn execute_connect(&self, server_name: &str) -> ToolResult {
-        if !self.config.mcp_servers.contains_key(server_name) {
-            return ToolResult {
-                content: vec![Content::Text {
-                    text: format!(
-                        "Server \"{}\" not found. Use mcp({{}}) to see available servers.",
-                        server_name
-                    ),
-                }],
-                details: serde_json::json!({"mode": "connect", "error": "not_found"}),
-            };
+        // Check server existence via the manager (which is kept in sync with config).
+        {
+            let manager = self.manager.lock().await;
+            if !manager.server_names().contains(&server_name.to_string()) {
+                return ToolResult {
+                    content: vec![Content::Text {
+                        text: format!(
+                            "Server \"{}\" not found. Use mcp({{}}) to see available servers.",
+                            server_name
+                        ),
+                    }],
+                    details: serde_json::json!({"mode": "connect", "error": "not_found"}),
+                };
+            }
         }
 
         let connected = self.ensure_connected(server_name).await;
@@ -806,10 +861,12 @@ impl McpProxyTool {
         // Find the server and original tool name
         let prefix_mode = self
             .config
+            .lock()
+            .unwrap()
             .settings
             .as_ref()
-            .map(|s| s.tool_prefix.as_str())
-            .unwrap_or("server");
+            .map(|s| s.tool_prefix.clone())
+            .unwrap_or_else(|| "server".to_string());
 
         let (server_name, original_name) = if let Some(srv) = server_override {
             // Server specified — lookup tool by original name
@@ -820,7 +877,7 @@ impl McpProxyTool {
             let mut found = None;
             for (srv, tools) in tool_cache.iter() {
                 for tool in tools {
-                    let prefixed = format_tool_name(&tool.name, srv, prefix_mode);
+                    let prefixed = format_tool_name(&tool.name, srv, &prefix_mode);
                     if prefixed == tool_name || tool.name == tool_name {
                         found = Some((srv.clone(), tool.name.clone()));
                         break;
