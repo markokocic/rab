@@ -2331,24 +2331,25 @@ fn submit_message(app: &mut App, message: String) {
         return;
     }
 
-    // Handle prompt template expansion (/name) before /skill: (pi-compatible order)
+    // Step 1: Expand /skill:name [args] (pi-style: skill before template)
+    let after_skill = if trimmed.starts_with("/skill:") {
+        expand_skill_command(&trimmed, &app.skills)
+    } else {
+        trimmed.clone()
+    };
+
+    // Step 2: Expand prompt templates (/name) on the result (pi-compatible order)
     let expanded =
-        crate::agent::prompt_templates::expand_prompt_template(&trimmed, &app.prompt_templates);
+        crate::agent::prompt_templates::expand_prompt_template(&after_skill, &app.prompt_templates);
 
-    // If a template matched, submit the expanded content directly (no longer a command)
-    if expanded != trimmed {
-        submit_message(app, expanded);
-        return;
-    }
-
-    // Handle /skill:name [args] expansion (pi-style: before command dispatch)
-    if trimmed.starts_with("/skill:") {
-        let expanded = expand_skill_command(&trimmed, &app.skills);
+    // If anything expanded (skill or template), submit the expanded content
+    if expanded != after_skill || after_skill != trimmed {
+        // Handle streaming for expanded content (same logic as below)
         if app.is_streaming && app.agent.as_ref().is_some_and(|a| a.is_streaming()) {
             let steer_msg = user_agent_message(&expanded);
             if let Some(ref agent) = app.agent {
                 agent.steer(steer_msg);
-                app.status_text = Some("Skill steering message sent".into());
+                app.status_text = Some("Skill/template steering message sent".into());
             }
             return;
         }
