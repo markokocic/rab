@@ -262,6 +262,8 @@ pub struct App {
     skill_dirs: Vec<PathBuf>,
     /// Agent config directory (~/.rab/agent).
     agent_dir: PathBuf,
+    /// Context file paths (AGENTS.md / CLAUDE.md) loaded for the session.
+    context_files: Vec<String>,
     /// Prompt template directories to scan (for /reload support).
     prompt_template_dirs: Vec<PathBuf>,
     /// Prompt templates loaded for the session (/name expansion).
@@ -441,43 +443,58 @@ impl App {
         let context = agent_session.session().build_session_context();
         let history_messages = context.messages.clone();
 
-        // Startup info: context files, skills, tools (pi-style loaded resources listing)
-        let mut resource_parts: Vec<String> = Vec::new();
-        if !config.context_files.is_empty() {
-            let ctx = config.context_files.join(", ");
-            resource_parts.push(format!("Context: {}", ctx));
-        }
-        if !config.skills.is_empty() {
-            let skill_names: Vec<&str> = config.skills.iter().map(|s| s.name.as_str()).collect();
-            resource_parts.push(format!("Skills: {}", skill_names.join(", ")));
-        }
-        if !config.prompt_templates.is_empty() {
-            let template_names: Vec<&str> = config
-                .prompt_templates
-                .iter()
-                .map(|t| t.name.as_str())
-                .collect();
-            resource_parts.push(format!("Prompts: {}", template_names.join(", ")));
-        }
-
         // Build chat_container from AgentMessages directly (matching pi's renderSessionContext).
         // Adjacent toolCall content + toolResult messages are paired into single
         // ToolExecComponent so reloaded sessions look identical to live execution.
         let cwd_string = config.cwd.to_string_lossy().to_string();
+
+        // Collect context file paths for header resource display (pi-style loaded resources).
+        let context_file_paths: Vec<String> = config
+            .context_files
+            .iter()
+            .map(|s| {
+                // Shorten paths for display (relative to cwd or home)
+                if let Some(rel) = s.strip_prefix(&cwd_string) {
+                    if rel.is_empty() {
+                        s.clone()
+                    } else {
+                        format!("./{}", rel.trim_start_matches('/'))
+                    }
+                } else if let Some(home) =
+                    std::env::var_os("HOME").and_then(|h| h.into_string().ok())
+                    && let Some(rel) = s.strip_prefix(&home)
+                {
+                    if rel.is_empty() {
+                        s.clone()
+                    } else {
+                        format!("~/{}", rel.trim_start_matches('/'))
+                    }
+                } else {
+                    s.clone()
+                }
+            })
+            .collect();
+        let skill_names: Vec<String> = config.skills.iter().map(|s| s.name.clone()).collect();
+        let template_names: Vec<String> = config
+            .prompt_templates
+            .iter()
+            .map(|t| t.name.clone())
+            .collect();
+        let extension_names: Vec<String> = config
+            .extensions
+            .iter()
+            .map(|e| e.name().to_string())
+            .collect();
+        // Custom theme names (excluding built-in dark/light), matching pi's showLoadedResources
+        let theme_names: Vec<String> = crate::agent::ui::theme::get_available_themes()
+            .into_iter()
+            .filter(|n| n != "dark" && n != "light")
+            .collect();
+
         let chat_container =
             std::rc::Rc::new(std::cell::RefCell::new(crate::tui::Container::new()));
         {
             let mut chat = chat_container.borrow_mut();
-
-            // Startup info component
-            if !resource_parts.is_empty() {
-                chat.add_child(std::boxed::Box::new(
-                    crate::agent::ui::components::InfoMessageComponent::new(
-                        resource_parts.join("  ·  "),
-                    ),
-                ));
-            }
-
             rebuild_chat_from_messages(
                 &mut chat,
                 &history_messages,
@@ -487,6 +504,8 @@ impl App {
                 &config.extensions,
             );
         }
+
+        let verbose = config.settings.verbose;
 
         let mut result = Self {
             cwd: config.cwd,
@@ -550,12 +569,27 @@ impl App {
             settings: config.settings,
             auto_compact: true,
             status_text: None,
+            context_files: context_file_paths.clone(),
             header: Rc::new(RefCell::new(
-                crate::agent::ui::components::HeaderComponent::new(),
+                crate::agent::ui::components::HeaderComponent::new_with_expanded(
+                    !config.collapse_tool_output || verbose,
+                ),
             )),
             session_picker: None,
             last_status_len: None,
         };
+
+        // Set resource data on header (pi-style loaded resources display)
+        {
+            let mut hdr = result.header.borrow_mut();
+            hdr.set_resource_data(
+                context_file_paths,
+                skill_names,
+                template_names,
+                extension_names,
+                theme_names,
+            );
+        }
 
         // Initial session info for /session command
         result.update_session_info();
@@ -704,11 +738,13 @@ pub async fn run(config: AppConfig, session: AgentSession) -> anyhow::Result<()>
 
     // Set up the component tree in TUI.root (matching pi's TUI.extend(Container))
     // Order: header → chat_container (messages) → pending → status → queued → working → editor → footer
+    tui.root.add_child(std::boxed::Box::new(Spacer::new(1)));
     tui.root.add_child(std::boxed::Box::new(
         crate::tui::components::RcRefCellComponent(
             app.header.clone() as Rc<RefCell<dyn Component>>,
         ),
     ));
+    tui.root.add_child(std::boxed::Box::new(Spacer::new(1)));
     tui.root.add_child(std::boxed::Box::new(
         crate::tui::components::RcRefCellComponent(app.chat_container.clone()
             as std::rc::Rc<std::cell::RefCell<dyn crate::tui::Component>>),
@@ -2873,7 +2909,7 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
 
             let new_system_prompt = crate::agent::SystemPromptBuilder::new()
                 .tool_snippets(tool_snippets)
-                .context_files(context_files)
+                .context_files(context_files.clone())
                 .custom_prompt(custom_system_md)
                 .append_prompt(append_system_md)
                 .skills(new_skill_set)
@@ -2881,6 +2917,58 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
                 .cwd(&app.cwd)
                 .build();
             app.system_prompt = new_system_prompt;
+
+            // Store context files for header resource display
+            let context_file_list: Vec<String> = context_files
+                .iter()
+                .map(|cf| {
+                    let cwd_str = app.cwd.to_string_lossy();
+                    if let Some(rel) = cf.path.to_string_lossy().strip_prefix(&cwd_str as &str) {
+                        if rel.is_empty() {
+                            cf.path.to_string_lossy().to_string()
+                        } else {
+                            format!("./{}", rel.trim_start_matches('/'))
+                        }
+                    } else if let Some(home) =
+                        std::env::var_os("HOME").and_then(|h| h.into_string().ok())
+                        && let Some(rel) = cf.path.to_string_lossy().strip_prefix(&home)
+                    {
+                        if rel.is_empty() {
+                            cf.path.to_string_lossy().to_string()
+                        } else {
+                            format!("~/{}", rel.trim_start_matches('/'))
+                        }
+                    } else {
+                        cf.path.to_string_lossy().to_string()
+                    }
+                })
+                .collect();
+            app.context_files = context_file_list.clone();
+            // Update header resource data
+            {
+                let skill_names: Vec<String> = app.skills.iter().map(|s| s.name.clone()).collect();
+                let template_names: Vec<String> = app
+                    .prompt_templates
+                    .iter()
+                    .map(|t| t.name.clone())
+                    .collect();
+                let extension_names: Vec<String> = app
+                    .extensions
+                    .iter()
+                    .map(|e| e.name().to_string())
+                    .collect();
+                let theme_names: Vec<String> = crate::agent::ui::theme::get_available_themes()
+                    .into_iter()
+                    .filter(|n| n != "dark" && n != "light")
+                    .collect();
+                app.header.borrow_mut().set_resource_data(
+                    context_file_list,
+                    skill_names,
+                    template_names,
+                    extension_names,
+                    theme_names,
+                );
+            }
             reload_parts.push("system prompt");
             reload_parts.push("context files");
 
