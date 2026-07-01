@@ -116,6 +116,10 @@ pub struct AppConfig {
 
     /// Skills loaded for the session (used for /skill:name expansion).
     pub skills: Vec<yoagent::skills::Skill>,
+    /// Skill directories to scan (for /reload support).
+    pub skill_dirs: Vec<PathBuf>,
+    /// Agent config directory (~/.rab/agent).
+    pub agent_dir: PathBuf,
     /// Session info Arc for /session command (shared with CommandsExtension).
     pub session_info: Option<std::sync::Arc<std::sync::Mutex<Option<SessionInfoInternal>>>>,
     /// API key for yoagent provider.
@@ -250,6 +254,10 @@ pub struct App {
     extensions: Arc<Vec<Box<dyn Extension>>>,
     /// Skills loaded for the session (/skill:name expansion).
     skills: Vec<yoagent::skills::Skill>,
+    /// Skill directories to scan (for /reload support).
+    skill_dirs: Vec<PathBuf>,
+    /// Agent config directory (~/.rab/agent).
+    agent_dir: PathBuf,
     /// API key for yoagent provider.
     api_key: String,
     /// Session info updater for /session command.
@@ -500,6 +508,8 @@ impl App {
             extensions: Arc::new(config.extensions),
 
             skills: config.skills,
+            skill_dirs: config.skill_dirs,
+            agent_dir: config.agent_dir,
             session_info: config.session_info,
             api_key: config.api_key,
             scoped_model_ids: config.settings.enabled_models.clone(),
@@ -2675,32 +2685,190 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
         }
         CommandResult::Reloaded => {
             app.refresh_registry();
-            // Reload settings from disk (pi-compatible)
-            if let Err(e) = app.settings.reload(&app.cwd) {
-                app.status_text = Some(format!("Failed to reload settings: {}", e));
-            } else {
-                // Apply reloaded settings to runtime state
-                if let Some(level) = app.settings.default_thinking_level.clone() {
-                    app.thinking_level = Some(level.clone());
-                    if let Some(ref mut s) = app.session {
-                        s.on_thinking_level_change(&level);
-                    }
-                    if let Some(ref s) = app.session {
-                        app.footer.borrow_mut().refresh_from_session(s.session());
-                    }
-                    // yoagent hardcodes ThinkingLevel::High
+
+            // 1. Reload settings from disk (pi-compatible)
+            let mut reload_parts: Vec<&str> = Vec::new();
+            match app.settings.reload(&app.cwd) {
+                Err(e) => {
+                    app.status_text = Some(format!("Failed to reload settings: {}", e));
                 }
-                app.hide_thinking = app.settings.hide_thinking.unwrap_or(true);
-                app.propagate_hide_thinking();
-                app.editor.borrow_mut().update_border_color(
-                    app.thinking_level.as_deref(),
-                    &app.theme as &dyn crate::tui::Theme,
-                );
-                chat_info(
-                    app,
-                    "Settings, extensions, and keybindings reloaded.".to_string(),
-                );
+                Ok(()) => {
+                    reload_parts.push("settings");
+                    // Apply reloaded settings to runtime state
+                    if let Some(level) = app.settings.default_thinking_level.clone() {
+                        app.thinking_level = Some(level.clone());
+                        if let Some(ref mut s) = app.session {
+                            s.on_thinking_level_change(&level);
+                        }
+                        if let Some(ref s) = app.session {
+                            app.footer.borrow_mut().refresh_from_session(s.session());
+                        }
+                    }
+                    app.hide_thinking = app.settings.hide_thinking.unwrap_or(true);
+                    app.propagate_hide_thinking();
+                    app.editor.borrow_mut().update_border_color(
+                        app.thinking_level.as_deref(),
+                        &app.theme as &dyn crate::tui::Theme,
+                    );
+
+                    // 2. Re-apply theme from reloaded settings (pi-compatible)
+                    if let Some(ref theme_name) = app.settings.theme
+                        && crate::agent::ui::theme::set_theme(theme_name).is_ok()
+                    {
+                        app.theme = crate::agent::ui::theme::current_theme().clone();
+                        reload_parts.push("theme");
+                    }
+                }
             }
+
+            // 3. Reload keybindings from disk (pi-compatible)
+            let mut kb = crate::tui::keybindings::Keybindings::with_defaults();
+            if let Some(home) = directories::BaseDirs::new()
+                .map(|d| d.home_dir().join(".rab").join("keybindings.json"))
+                && home.exists()
+            {
+                match crate::tui::keybindings::Keybindings::load(&home) {
+                    Ok(custom) => kb.merge(custom),
+                    Err(e) => {
+                        app.status_text = Some(format!("Failed to load keybindings: {}", e));
+                    }
+                }
+            }
+            crate::tui::keybindings::init_keybindings(kb);
+            reload_parts.push("keybindings");
+
+            // 4. Reload skills from disk (pi-compatible)
+            let new_skill_set =
+                yoagent::skills::SkillSet::load(&app.skill_dirs).unwrap_or_default();
+            app.skills = new_skill_set.skills().to_vec();
+            reload_parts.push("skills");
+
+            // 5. Reload context files (AGENTS.md / CLAUDE.md) and system prompt (pi-compatible)
+            let context_files =
+                crate::agent::context_files::load_context_files(&app.cwd, &app.agent_dir);
+            // Load SYSTEM.md: project `.rab/SYSTEM.md` first, then global
+            let custom_system_md = {
+                let project_path = app.cwd.join(".rab").join("SYSTEM.md");
+                if project_path.exists() {
+                    std::fs::read_to_string(&project_path).ok()
+                } else {
+                    let global_path = app.agent_dir.join("SYSTEM.md");
+                    if global_path.exists() {
+                        std::fs::read_to_string(&global_path).ok()
+                    } else {
+                        None
+                    }
+                }
+            };
+            // Load APPEND_SYSTEM.md: project `.rab/APPEND_SYSTEM.md` first, then global
+            let append_system_md = {
+                let project_path = app.cwd.join(".rab").join("APPEND_SYSTEM.md");
+                if project_path.exists() {
+                    std::fs::read_to_string(&project_path).ok()
+                } else {
+                    let global_path = app.agent_dir.join("APPEND_SYSTEM.md");
+                    if global_path.exists() {
+                        std::fs::read_to_string(&global_path).ok()
+                    } else {
+                        None
+                    }
+                }
+            };
+
+            // Rebuild tool snippets from current extensions
+            let all_tools: Vec<crate::agent::extension::ToolDefinition> =
+                app.extensions.iter().flat_map(|ext| ext.tools()).collect();
+            let tool_snippets: Vec<crate::agent::ToolSnippet> = all_tools
+                .iter()
+                .map(|twm| crate::agent::ToolSnippet {
+                    name: twm.name().to_string(),
+                    description: twm.snippet.to_string(),
+                })
+                .collect();
+            let has_read_tool = tool_snippets.iter().any(|t| t.name == "read");
+
+            let new_system_prompt = crate::agent::SystemPromptBuilder::new()
+                .tool_snippets(tool_snippets)
+                .context_files(context_files)
+                .custom_prompt(custom_system_md)
+                .append_prompt(append_system_md)
+                .skills(new_skill_set)
+                .has_read_tool(has_read_tool)
+                .cwd(&app.cwd)
+                .build();
+            app.system_prompt = new_system_prompt;
+            reload_parts.push("system prompt");
+            reload_parts.push("context files");
+
+            // 6. Notify all extensions of reload (pi-compatible: session_start with reason reload)
+            for ext in app.extensions.iter() {
+                ext.on_reload();
+            }
+
+            // 5. Rebuild slash commands and commands list with updated skills
+            {
+                use crate::tui::autocomplete::SlashCommand as AutoSlashCommand;
+                let mut auto_commands: Vec<AutoSlashCommand> =
+                    app.extensions
+                        .iter()
+                        .flat_map(|e| e.commands())
+                        .map(|cmd| {
+                            let handler = cmd.handler;
+                            AutoSlashCommand {
+                                name: cmd.name,
+                                description: Some(cmd.description),
+                                argument_hint: None,
+                                argument_completions: None,
+                                get_argument_completions: Some(
+                                    std::sync::Arc::new(
+                                        move |prefix: &str| -> Vec<
+                                            crate::tui::autocomplete::AutocompleteItem,
+                                        > {
+                                            handler
+                                                .argument_completions(prefix)
+                                                .into_iter()
+                                                .map(|item| {
+                                                    crate::tui::autocomplete::AutocompleteItem {
+                                                        value: item.value,
+                                                        label: item.label,
+                                                        description: item.description,
+                                                    }
+                                                })
+                                                .collect()
+                                        },
+                                    ),
+                                ),
+                            }
+                        })
+                        .collect();
+
+                // Re-register /skill:name commands
+                for skill in &app.skills {
+                    let cmd_name = format!("skill:{}", skill.name);
+                    auto_commands.push(AutoSlashCommand {
+                        name: cmd_name,
+                        description: Some(skill.description.clone()),
+                        argument_hint: None,
+                        argument_completions: None,
+                        get_argument_completions: None,
+                    });
+                }
+                app.editor.borrow_mut().set_slash_commands(auto_commands);
+            }
+
+            // Rebuild commands list for help overlay
+            app.commands = app
+                .extensions
+                .iter()
+                .flat_map(|e| e.commands())
+                .map(|c| (c.name, c.description))
+                .collect();
+            for skill in &app.skills {
+                app.commands
+                    .push((format!("skill:{}", skill.name), skill.description.clone()));
+            }
+
+            chat_info(app, format!("{} reloaded.", reload_parts.join(", ")));
         }
         CommandResult::NewSession => {
             // Matching pi's handleClearCommand:

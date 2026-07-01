@@ -541,6 +541,8 @@ async fn main() -> anyhow::Result<()> {
             settings,
             context_files: context_file_names,
             skills,
+            skill_dirs,
+            agent_dir: agent_dir.clone(),
             session_info: Some(session_info),
             api_key,
             registry: Arc::new(registry),

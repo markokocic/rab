@@ -864,6 +864,10 @@ pub trait Extension: Send + Sync {
         _cancel: &Cancel,
     ) {
     }
+
+    /// Called when `/reload` is triggered (matching pi's `session_start` with reason "reload").
+    /// Extensions can refresh internal state, re-read configs, reconnect, etc.
+    fn on_reload(&self) {}
 }
 
 // ── Tests ──────────────────────────────────────────────────────────

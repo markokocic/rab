@@ -291,6 +291,24 @@ impl Extension for McpExtension {
 
         tools
     }
+
+    fn on_reload(&self) {
+        // Re-read MCP config from disk (best-effort)
+        let cwd = std::path::Path::new(".");
+        let new_config = load_mcp_config(cwd);
+        // Clear tool cache so it's lazily re-fetched on next access
+        if let Ok(mut cache) = self.tool_cache.try_lock() {
+            cache.clear();
+        }
+        // Disconnect all servers (best-effort)
+        if let Ok(mut manager) = self.manager.try_lock() {
+            // Re-register servers from new config (updates config hashes)
+            for (name, entry) in &new_config.mcp_servers {
+                let config_hash = config::compute_server_config_hash(entry);
+                manager.register(name, entry.clone(), config_hash);
+            }
+        }
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════
