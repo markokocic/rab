@@ -3162,30 +3162,9 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
             // Store context files for header resource display
             let context_file_list: Vec<String> = context_files
                 .iter()
-                .map(|cf| {
-                    let cwd_str = app.cwd.to_string_lossy();
-                    if let Some(rel) = cf.path.to_string_lossy().strip_prefix(&cwd_str as &str) {
-                        if rel.is_empty() {
-                            cf.path.to_string_lossy().to_string()
-                        } else {
-                            format!("./{}", rel.trim_start_matches('/'))
-                        }
-                    } else if let Some(home) =
-                        std::env::var_os("HOME").and_then(|h| h.into_string().ok())
-                        && let Some(rel) = cf.path.to_string_lossy().strip_prefix(&home)
-                    {
-                        if rel.is_empty() {
-                            cf.path.to_string_lossy().to_string()
-                        } else {
-                            format!("~/{}", rel.trim_start_matches('/'))
-                        }
-                    } else {
-                        cf.path.to_string_lossy().to_string()
-                    }
-                })
+                .map(|cf| crate::paths::format_for_display(&cf.path, &app.cwd))
                 .collect();
             app.context_files = context_file_list.clone();
-            // Update header resource data
             {
                 let skill_names: Vec<String> = app.skills.iter().map(|s| s.name.clone()).collect();
                 let template_names: Vec<String> = app

@@ -888,11 +888,7 @@ fn which(name: &str) -> Option<PathBuf> {
 }
 
 fn resolve_path(path: &str, cwd: &Path) -> PathBuf {
-    if Path::new(path).is_absolute() {
-        Path::new(path).to_path_buf()
-    } else {
-        cwd.join(path)
-    }
+    crate::paths::resolve_path(path, cwd)
 }
 
 fn relativize_path(path: &str, search_root: &Path) -> String {
@@ -915,13 +911,7 @@ fn truncate_line(line: &str, max_chars: usize) -> String {
 }
 
 fn shorten_path_str(path: &str) -> String {
-    if let Ok(home) = std::env::var("HOME") {
-        path.replacen(&home, "~", 1)
-    } else if path == "." || path.is_empty() {
-        ".".to_string()
-    } else {
-        path.to_string()
-    }
+    crate::paths::shorten_path(path)
 }
 
 // =====================================================================

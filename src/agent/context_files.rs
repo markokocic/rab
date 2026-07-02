@@ -9,6 +9,8 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crate::paths;
+
 /// A discovered AGENTS.md or CLAUDE.md file with its content.
 #[derive(Debug, Clone)]
 pub struct ContextFile {
@@ -27,7 +29,7 @@ fn load_context_file_from_dir(dir: &Path) -> Option<ContextFile> {
             match fs::read_to_string(&file_path) {
                 Ok(content) => {
                     return Some(ContextFile {
-                        path: fs::canonicalize(&file_path).unwrap_or(file_path),
+                        path: paths::canonicalize(&file_path),
                         content,
                     });
                 }
@@ -47,22 +49,8 @@ fn load_context_file_from_dir(dir: &Path) -> Option<ContextFile> {
 /// The returned vec has global first, then ancestors in root-to-leaf order,
 /// so later entries take precedence when concatenated.
 pub fn load_context_files(cwd: &Path, agent_dir: &Path) -> Vec<ContextFile> {
-    let resolved_cwd = if cwd.is_absolute() {
-        cwd.to_path_buf()
-    } else {
-        match fs::canonicalize(cwd) {
-            Ok(p) => p,
-            Err(_) => cwd.to_path_buf(),
-        }
-    };
-    let resolved_agent = if agent_dir.is_absolute() {
-        agent_dir.to_path_buf()
-    } else {
-        match fs::canonicalize(agent_dir) {
-            Ok(p) => p,
-            Err(_) => agent_dir.to_path_buf(),
-        }
-    };
+    let resolved_cwd = paths::canonicalize(cwd);
+    let resolved_agent = paths::canonicalize(agent_dir);
 
     let mut context_files: Vec<ContextFile> = Vec::new();
     let mut seen_paths = std::collections::HashSet::new();

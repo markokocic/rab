@@ -5,6 +5,7 @@ use crate::agent::footer_data_provider::FooterDataProvider;
 use crate::agent::session::Session;
 use crate::agent::ui::theme::RabTheme;
 use crate::agent::ui::theme::ThemeKey;
+use crate::paths;
 use crate::tui::util::{truncate_to_width, visible_width};
 
 // ── Helpers matching pi's footer.ts ──────────────────────────────
@@ -47,11 +48,10 @@ pub fn format_cwd_for_footer(cwd: &str, home: Option<&str>) -> String {
         None => return cwd.to_string(),
     };
 
-    // Canonicalize both paths to resolve symlinks and `..` (pi uses `resolve`).
+    // Canonicalize both paths to resolve symlinks and `..` (matching pi's `resolve`).
     // Fall back to raw paths if canonicalize fails (e.g. non-existent cwd).
-    let resolved_cwd = std::fs::canonicalize(cwd).unwrap_or_else(|_| std::path::PathBuf::from(cwd));
-    let resolved_home =
-        std::fs::canonicalize(home).unwrap_or_else(|_| std::path::PathBuf::from(home));
+    let resolved_cwd = paths::canonicalize(std::path::Path::new(cwd));
+    let resolved_home = paths::canonicalize(std::path::Path::new(home));
 
     match resolved_cwd.strip_prefix(&resolved_home) {
         Ok(rest) if rest.as_os_str().is_empty() => "~".to_string(),

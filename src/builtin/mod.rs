@@ -6,40 +6,10 @@ pub mod file_mutation_queue;
 pub mod read;
 pub mod write;
 
-use std::path::{Path, PathBuf};
+// Re-export centralized path utilities for backward compatibility.
+pub use crate::paths::{resolve_path, shorten_path};
 
-/// Resolve a path (relative or absolute) against a working directory.
-/// Expands `~` to the user's home directory.
-pub fn resolve_path(path: &str, cwd: &Path) -> PathBuf {
-    // Expand ~ prefix to home directory
-    let expanded = if let Some(rest) = path.strip_prefix("~/").or_else(|| path.strip_prefix("~")) {
-        let home = std::env::var("HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| PathBuf::from("/"));
-        if rest.is_empty() {
-            home
-        } else {
-            home.join(rest.strip_prefix('/').unwrap_or(rest))
-        }
-    } else {
-        Path::new(path).to_path_buf()
-    };
-
-    if expanded.is_absolute() {
-        expanded
-    } else {
-        cwd.join(&expanded)
-    }
-}
-
-/// Shorten a path by replacing home directory with `~`.
-pub fn shorten_path(path: &str) -> String {
-    if let Ok(home) = std::env::var("HOME") {
-        path.replacen(&home, "~", 1)
-    } else {
-        path.to_string()
-    }
-}
+use std::path::Path;
 
 /// Wrap a styled path string in an OSC 8 hyperlink if the terminal supports it.
 /// The `raw_path` is resolved against `cwd` to produce the file:// URL.
