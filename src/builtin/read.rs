@@ -1,5 +1,6 @@
 use crate::agent::extension::{Extension, ToolDefinition};
 use crate::agent::extension::{ToolRenderContext, ToolRenderer};
+use crate::tui::Component;
 use crate::tui::Theme;
 use crate::tui::ThemeKey;
 
@@ -570,10 +571,9 @@ impl ToolRenderer for ReadRenderer {
     fn render_call(
         &self,
         args: &serde_json::Value,
-        _width: usize,
         theme: &dyn Theme,
         ctx: &ToolRenderContext,
-    ) -> Vec<String> {
+    ) -> Box<dyn Component> {
         use std::path::Path;
         let path = args
             .get("file_path")
@@ -617,7 +617,12 @@ impl ToolRenderer for ReadRenderer {
                     let prefix =
                         theme.fg_key(ThemeKey::CustomMessageLabel, "\x1b[1m[skill]\x1b[22m ");
                     let name = theme.fg_key(ThemeKey::CustomMessageText, &label);
-                    vec![format!("{}{}{}{}", prefix, name, range, expand_hint)]
+                    std::boxed::Box::new(crate::tui::components::Text::new(
+                        format!("{}{}{}{}", prefix, name, range, expand_hint),
+                        0,
+                        0,
+                        None,
+                    ))
                 }
                 CompactReadKind::Resource => {
                     // Pi: `read resource  path:range (Ctrl+O to expand)`
@@ -625,10 +630,12 @@ impl ToolRenderer for ReadRenderer {
                     let title_styled =
                         theme.fg_key(ThemeKey::ToolTitle, &theme.bold("read resource"));
                     let path_styled = theme.fg_key(ThemeKey::Accent, &label);
-                    vec![format!(
-                        "{} {}{}{}",
-                        title_styled, path_styled, range, expand_hint
-                    )]
+                    std::boxed::Box::new(crate::tui::components::Text::new(
+                        format!("{} {}{}{}", title_styled, path_styled, range, expand_hint),
+                        0,
+                        0,
+                        None,
+                    ))
                 }
             }
         } else {
@@ -643,29 +650,33 @@ impl ToolRenderer for ReadRenderer {
             } else {
                 theme.fg_key(ThemeKey::Accent, &short)
             };
-            vec![format!(
-                "{} {}{}",
-                theme.fg_key(ThemeKey::ToolTitle, &theme.bold("read")),
-                path_disp,
-                range,
-            )]
+            std::boxed::Box::new(crate::tui::components::Text::new(
+                format!(
+                    "{} {}{}",
+                    theme.fg_key(ThemeKey::ToolTitle, &theme.bold("read")),
+                    path_disp,
+                    range,
+                ),
+                0,
+                0,
+                None,
+            ))
         }
     }
 
     fn render_result(
         &self,
         content: &str,
-        _width: usize,
         theme: &dyn Theme,
         ctx: &ToolRenderContext,
-    ) -> Vec<String> {
+    ) -> Option<Box<dyn Component>> {
         if content.is_empty() {
-            return vec![];
+            return None;
         }
 
         // Pi: return empty when collapsed and not error (result is hidden until expanded)
         if !ctx.expanded && !ctx.is_error {
-            return vec![];
+            return None;
         }
 
         // If this is an image read, show image inline (Kitty protocol) or text fallback
@@ -689,7 +700,7 @@ impl ToolRenderer for ReadRenderer {
             {
                 let kitty_seq =
                     crate::tui::components::markdown::kitty_image_sequence(&binary, mime);
-                return vec![
+                let lines = [
                     String::new(),
                     kitty_seq,
                     theme.fg_key(
@@ -697,15 +708,24 @@ impl ToolRenderer for ReadRenderer {
                         &format!("Read image file [{}] - {} ({})", mime, file_name, size_str),
                     ),
                 ];
+                return Some(std::boxed::Box::new(crate::tui::components::Text::new(
+                    lines.join("\n"),
+                    0,
+                    0,
+                    None,
+                )));
             }
 
             // Fallback: text summary
-            return vec![
-                String::new(),
+            let fallback = format!(
+                "\n{}\n  File: {}\n  Size: {}",
                 theme.fg_key(ThemeKey::ToolOutput, &format!("Read image file [{}]", mime)),
                 theme.fg_key(ThemeKey::ToolOutput, &format!("  File: {}", file_name)),
                 theme.fg_key(ThemeKey::ToolOutput, &format!("  Size: {}", size_str)),
-            ];
+            );
+            return Some(std::boxed::Box::new(crate::tui::components::Text::new(
+                fallback, 0, 0, None,
+            )));
         }
 
         let path = ctx.file_path.as_deref().unwrap_or("");
@@ -828,7 +848,12 @@ impl ToolRenderer for ReadRenderer {
             }
         }
 
-        result
+        Some(std::boxed::Box::new(crate::tui::components::Text::new(
+            result.join("\n"),
+            0,
+            0,
+            None,
+        )))
     }
 }
 

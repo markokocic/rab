@@ -1,5 +1,6 @@
 use crate::agent::extension::{Extension, ToolDefinition};
 use crate::agent::extension::{ToolRenderContext, ToolRenderer};
+use crate::tui::Component;
 use crate::tui::Theme;
 use crate::tui::ThemeKey;
 use async_trait::async_trait;
@@ -1029,19 +1030,12 @@ impl ToolRenderer for EditRenderer {
         true
     }
 
-    fn render_bg_key(&self) -> Option<&'static str> {
-        // The edit tool handles its own bg in render_call now.
-        // This hint is no longer used by the execution component.
-        None
-    }
-
     fn render_call(
         &self,
         args: &serde_json::Value,
-        width: usize,
         theme: &dyn Theme,
         ctx: &ToolRenderContext,
-    ) -> Vec<String> {
+    ) -> Box<dyn Component> {
         let path = args
             .get("file_path")
             .or_else(|| args.get("path"))
@@ -1064,11 +1058,7 @@ impl ToolRenderer for EditRenderer {
             path_disp
         );
 
-        let mut content_lines: Vec<String> = vec![header];
-
-        // Decide what diff to show:
-        // 1. If execution completed and details are available, use actual diff from details
-        // 2. Otherwise, if args are complete and we have a cached preview, show that
+        // Decide what diff to show
         let actual_diff = ctx
             .details
             .as_ref()
@@ -1079,8 +1069,6 @@ impl ToolRenderer for EditRenderer {
         let diff_to_show = if let Some(ref d) = actual_diff {
             Some(d.clone())
         } else if ctx.args_complete {
-            // After execution: use cached preview if available, otherwise show nothing.
-            // Don't spawn async preview computation — the tool already ran.
             self.preview.lock().ok().and_then(|p| {
                 p.as_ref().map(|preview| {
                     if let Some(ref err) = preview.error {
@@ -1091,7 +1079,6 @@ impl ToolRenderer for EditRenderer {
                 })
             })
         } else {
-            // Before execution: try to show or compute cached preview
             let cached = self.preview.lock().ok().and_then(|p| p.clone());
 
             if let Some(preview) = cached {
@@ -1149,21 +1136,10 @@ impl ToolRenderer for EditRenderer {
             }
         };
 
-        if let Some(ref diff) = diff_to_show {
-            if let Some(err_msg) = diff.strip_prefix("error: ") {
-                // Show error in error color (matching pi's theme.fg("error", ...))
-                content_lines.push(String::new());
-                content_lines.push(theme.fg_key(ThemeKey::Error, err_msg));
-            } else if !diff.is_empty() {
-                content_lines.push(String::new());
-                let rendered_lines = crate::tui::components::diff::render_diff(diff, theme);
-                content_lines.extend(rendered_lines);
-            }
-        }
+        // ── Build the component tree ──
+        // Pi: edit tool returns Box(1,1) with bgFn based on preview/error state.
+        // Since this is render_self: true, we wrap content in background-styled text.
 
-        // ── Pad and apply background to match pi's Box(1,1) handling ──
-        // Pi's edit tool returns a Box with bgFn based on preview/error state.
-        // Since rab returns Vec<String>, we pad each line to width and wrap in bg.
         let bg_key = if let Ok(p) = self.preview.lock()
             && let Some(ref preview) = *p
             && preview.error.as_deref() != Some("pending")
@@ -1174,7 +1150,6 @@ impl ToolRenderer for EditRenderer {
                 "toolSuccessBg"
             }
         } else if ctx.is_error {
-            // Execution error (not preview) — matches pi's fallback bgFn
             "toolErrorBg"
         } else if ctx.args_complete && !ctx.is_partial {
             "toolSuccessBg"
@@ -1182,44 +1157,30 @@ impl ToolRenderer for EditRenderer {
             "toolPendingBg"
         };
 
-        // In pi, the edit tool uses Box(1,1) which means:
-        // - padding_x=1 on each side (contentWidth = width - 2)
-        // - left_pad = " "
-        // - applyBg pads to full width
-        // We replicate this here.
-        let left_pad = " ";
-        let content_width = width.saturating_sub(2).max(1);
+        let mut content = header;
 
-        let mut result: Vec<String> = Vec::new();
-        for line in content_lines {
-            // Pad each content line to content_width
-            let vw = crate::tui::util::visible_width(&line);
-            let padded_line = if vw < content_width {
-                format!("{}{}", line, " ".repeat(content_width - vw))
-            } else {
-                line.to_string()
-            };
-            // Add left padding and pad to full width
-            let with_pad = format!("{}{}", left_pad, padded_line);
-            let vw2 = crate::tui::util::visible_width(&with_pad);
-            let fully_padded = if vw2 < width {
-                format!("{}{}", with_pad, " ".repeat(width - vw2))
-            } else {
-                with_pad
-            };
-            result.push(theme.bg(bg_key, &fully_padded));
+        // Diff preview (if available)
+        if let Some(ref diff) = diff_to_show {
+            if let Some(err_msg) = diff.strip_prefix("error: ") {
+                content.push_str(&format!("\n\n{}", theme.fg_key(ThemeKey::Error, err_msg)));
+            } else if !diff.is_empty() {
+                let rendered_diff =
+                    crate::tui::components::diff::render_diff(diff, theme).join("\n");
+                content.push_str(&format!("\n\n{}", rendered_diff));
+            }
         }
 
-        result
+        // Apply background via theme.bg (which wraps text in ANSI bg codes)
+        let styled = theme.bg(bg_key, &content);
+        std::boxed::Box::new(crate::tui::components::Text::new(styled, 0, 0, None))
     }
 
     fn render_result(
         &self,
         content: &str,
-        width: usize,
         theme: &dyn Theme,
         ctx: &ToolRenderContext,
-    ) -> Vec<String> {
+    ) -> Option<Box<dyn Component>> {
         // Result is already shown in the call header (via render_call using ctx.details).
         // If there's an error message not already shown, return it.
         if ctx.is_error && !content.is_empty() {
@@ -1233,20 +1194,21 @@ impl ToolRenderer for EditRenderer {
             if preview_err.as_deref() != Some(msg) {
                 // Pi: renderResult wraps error in Container(Spacer(1) + Text(output, 1, 0)).
                 // Text(1,0) adds 1-space padding on each side.
-                // We return just the error line with 1-space indent (ToolExecComponent adds the spacer).
-                let indent = " ";
-                let error_line = format!("{}{}", indent, theme.fg_key(ThemeKey::Error, msg));
-                // Pad to full width for consistent display
-                let vw = crate::tui::util::visible_width(&error_line);
-                if vw < width {
-                    let padded = format!("{}{}", error_line, " ".repeat(width - vw));
-                    return vec![padded];
-                }
-                return vec![error_line];
+                let mut container = crate::tui::container::Container::new();
+                container.add_child(std::boxed::Box::new(
+                    crate::tui::components::spacer::Spacer::new(1),
+                ));
+                container.add_child(std::boxed::Box::new(crate::tui::components::Text::new(
+                    theme.fg_key(ThemeKey::Error, msg),
+                    1,
+                    0,
+                    None,
+                )));
+                return Some(std::boxed::Box::new(container));
             }
         }
 
-        Vec::new()
+        None
     }
 }
 

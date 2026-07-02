@@ -1,4 +1,5 @@
 /// Extension trait - all capability (built-in or user-provided) comes through this.
+use crate::tui::Component;
 use crate::tui::Theme;
 use std::borrow::Cow;
 use std::sync::{
@@ -672,40 +673,31 @@ pub struct ToolRenderContext {
 /// Tool-specific rendering interface (matching pi's renderCall/renderResult pattern).
 /// Each built-in tool implements this to provide its own visual representation.
 pub trait ToolRenderer: Send + Sync {
-    /// Render the tool call header/title.
-    /// Returns ANSI-styled lines for the call portion (inside the colored box shell).
+    /// Render the tool call portion as a Component.
+    /// The returned component is placed inside a TuiBox (default shell) or
+    /// used directly (self-rendering shell). No width parameter — the
+    /// component handles width when rendered by the execution container.
     fn render_call(
         &self,
         args: &serde_json::Value,
-        width: usize,
         theme: &dyn Theme,
         ctx: &ToolRenderContext,
-    ) -> Vec<String>;
+    ) -> Box<dyn Component>;
 
-    /// Render the tool result body.
-    /// Returns lines to display as the result body, or empty vec for no result.
-    /// When empty, only the call portion is shown (e.g. write success).
+    /// Render the tool result body as a Component.
+    /// Return None when there is no result to display (e.g. write success
+    /// already shown in the call portion).
     fn render_result(
         &self,
         content: &str,
-        width: usize,
         theme: &dyn Theme,
         ctx: &ToolRenderContext,
-    ) -> Vec<String>;
+    ) -> Option<Box<dyn Component>>;
 
     /// Whether this tool uses `renderShell: "self"` (controls its own framing).
     /// When true, ToolExecComponent does NOT wrap the tool in a colored background box.
     fn render_self(&self) -> bool {
         false
-    }
-
-    /// Optional hint for the background color key when `render_self()` is false.
-    /// Return a theme key name (e.g. "toolPendingBg", "toolSuccessBg", "toolErrorBg")
-    /// to override the default background selection. Return None to let the
-    /// ToolExecComponent decide based on is_complete/is_error state.
-    /// Used by edit tool to show success/error bg during preview.
-    fn render_bg_key(&self) -> Option<&'static str> {
-        None
     }
 }
 

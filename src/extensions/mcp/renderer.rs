@@ -5,6 +5,7 @@
 //! that formats the operation type differently.
 
 use crate::agent::extension::{ToolRenderContext, ToolRenderer};
+use crate::tui::Component;
 use crate::tui::Theme;
 use serde_json::Value;
 
@@ -25,39 +26,56 @@ impl ToolRenderer for McpToolRenderer {
     fn render_call(
         &self,
         args: &Value,
-        _width: usize,
         theme: &dyn Theme,
         _ctx: &ToolRenderContext,
-    ) -> Vec<String> {
+    ) -> Box<dyn Component> {
         let title = theme.bold(&self.display_name);
         let header = theme.fg("toolTitle", &title);
         if !has_useful_args(args) {
-            return vec![header];
+            return std::boxed::Box::new(crate::tui::components::Text::new(header, 0, 0, None));
         }
         let args_str = format_jsonish(args);
-        vec![header, theme.fg("muted", &args_str)]
+        std::boxed::Box::new(crate::tui::components::Text::new(
+            format!("{}\n{}", header, theme.fg("muted", &args_str)),
+            0,
+            0,
+            None,
+        ))
     }
 
     fn render_result(
         &self,
         content: &str,
-        _width: usize,
         theme: &dyn Theme,
         ctx: &ToolRenderContext,
-    ) -> Vec<String> {
+    ) -> Option<Box<dyn Component>> {
         if ctx.is_partial {
-            return vec![theme.fg("warning", "Running MCP tool...")];
+            return Some(std::boxed::Box::new(crate::tui::components::Text::new(
+                theme.fg("warning", "Running MCP tool..."),
+                0,
+                0,
+                None,
+            )));
         }
         render_compact_result(content, theme, ctx)
     }
 }
 
-/// Shared result rendering for both proxy and direct MCP tools (matching pi's renderMcpToolResult).
-/// Shows at most 3 lines when collapsed, with an ellipsis and expand hint.
-fn render_compact_result(content: &str, theme: &dyn Theme, ctx: &ToolRenderContext) -> Vec<String> {
+/// Shared result rendering for both proxy and direct MCP tools.
+/// Returns None when there's nothing to show.
+fn render_compact_result(
+    content: &str,
+    theme: &dyn Theme,
+    ctx: &ToolRenderContext,
+) -> Option<Box<dyn Component>> {
     let text_lines: Vec<&str> = content.lines().collect();
     if text_lines.is_empty() || (text_lines.len() == 1 && text_lines[0].is_empty()) {
-        return vec![theme.fg("muted", "(empty result)")];
+        return Some(std::boxed::Box::new(crate::tui::components::Text::new(
+            theme.fg("muted", "(empty result)"),
+            0,
+            0,
+            None,
+        )));
     }
 
     let is_truncated = !ctx.is_error && !ctx.expanded && text_lines.len() > 3;
@@ -77,7 +95,6 @@ fn render_compact_result(content: &str, theme: &dyn Theme, ctx: &ToolRenderConte
     }
 
     if is_truncated {
-        // pi pattern: ellipsis + expand hint
         lines.push(theme.fg("muted", "…"));
         let expand_key = if ctx.expand_key.is_empty() {
             "Ctrl+O"
@@ -87,7 +104,12 @@ fn render_compact_result(content: &str, theme: &dyn Theme, ctx: &ToolRenderConte
         lines.push(theme.fg("muted", &format!("({} to expand)", expand_key)));
     }
 
-    lines
+    Some(std::boxed::Box::new(crate::tui::components::Text::new(
+        lines.join("\n"),
+        0,
+        0,
+        None,
+    )))
 }
 
 /// Renderer for the proxy `mcp` tool (multi-purpose gateway, matching pi's renderMcpProxyToolCall).
@@ -97,24 +119,27 @@ impl ToolRenderer for McpProxyToolRenderer {
     fn render_call(
         &self,
         args: &Value,
-        _width: usize,
         theme: &dyn Theme,
         _ctx: &ToolRenderContext,
-    ) -> Vec<String> {
+    ) -> Box<dyn Component> {
         let line = format_mcp_proxy_call(args);
         let header = theme.fg("toolTitle", &theme.bold(&line));
-        vec![header]
+        std::boxed::Box::new(crate::tui::components::Text::new(header, 0, 0, None))
     }
 
     fn render_result(
         &self,
         content: &str,
-        _width: usize,
         theme: &dyn Theme,
         ctx: &ToolRenderContext,
-    ) -> Vec<String> {
+    ) -> Option<Box<dyn Component>> {
         if ctx.is_partial {
-            return vec![theme.fg("warning", "Running MCP tool...")];
+            return Some(std::boxed::Box::new(crate::tui::components::Text::new(
+                theme.fg("warning", "Running MCP tool..."),
+                0,
+                0,
+                None,
+            )));
         }
         render_compact_result(content, theme, ctx)
     }

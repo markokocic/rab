@@ -6,10 +6,12 @@ use std::time::Instant;
 use crate::agent::extension::{ToolRenderContext, ToolRenderer};
 use crate::agent::ui::theme::{RabTheme, current_theme};
 use crate::tui::Component;
+use crate::tui::Style;
 use crate::tui::component::{RenderCache, RenderCacheKey};
 use crate::tui::components::Text;
 use crate::tui::components::r#box::TuiBox;
-use crate::tui::keybindings;
+use crate::tui::components::spacer::Spacer;
+use crate::tui::container::Container;
 
 /// Maximum preview lines when collapsed.
 const PREVIEW_LINES: usize = 10;
@@ -172,6 +174,41 @@ impl ToolExecComponent {
         self.output.hash(&mut hasher);
         hasher.finish()
     }
+
+    /// Compute the background color key based on execution state.
+    fn bg_key(&self) -> &'static str {
+        if !self.is_complete {
+            "toolPendingBg"
+        } else if self.is_error {
+            "toolErrorBg"
+        } else {
+            "toolSuccessBg"
+        }
+    }
+
+    /// Build the ToolRenderContext from current state.
+    fn build_context(&self) -> ToolRenderContext {
+        let expand_key = format_key_hint(crate::tui::keybindings::ACTION_APP_TOOLS_EXPAND);
+        ToolRenderContext {
+            expanded: self.expanded,
+            args_complete: self.is_complete,
+            is_partial: !self.is_complete,
+            is_error: self.is_error,
+            tool_call_id: self.tool_call_id.clone(),
+            execution_started: self.started_at.is_some(),
+            cwd: self.cwd.clone(),
+            duration_secs: self.live_duration(),
+            exit_code: None,
+            cancelled: false,
+            was_truncated: false,
+            full_output_path: None,
+            file_path: None,
+            expand_key,
+            details: self.details.clone(),
+            state: self.state.clone(),
+            invalidate: self.invalidate_tx.clone(),
+        }
+    }
 }
 
 impl Component for ToolExecComponent {
@@ -224,106 +261,55 @@ impl Component for ToolExecComponent {
 
 impl ToolExecComponent {
     /// Render using the tool-specific renderer.
+    /// Builds a proper component tree — no string manipulation here.
     fn render_with_renderer(
         &self,
         renderer: &dyn ToolRenderer,
         theme: &RabTheme,
         width: usize,
     ) -> Vec<String> {
-        let is_partial = !self.is_complete;
+        // Pi-style: Spacer(1) before every tool execution
+        let mut outer = Container::new();
+        outer.add_child(std::boxed::Box::new(Spacer::new(1)));
 
-        let expand_key = format_key_hint(crate::tui::keybindings::ACTION_APP_TOOLS_EXPAND);
-        let ctx = ToolRenderContext {
-            expanded: self.expanded,
-            args_complete: self.is_complete,
-            is_partial,
-            is_error: self.is_error,
-            tool_call_id: self.tool_call_id.clone(),
-            execution_started: self.started_at.is_some(),
-            cwd: self.cwd.clone(),
-            duration_secs: self.live_duration(),
-            exit_code: None,
-            cancelled: false,
-            was_truncated: false,
-            full_output_path: None,
-            file_path: None,
-            expand_key,
-            details: self.details.clone(),
-            state: self.state.clone(),
-            invalidate: self.invalidate_tx.clone(),
-        };
+        let ctx = self.build_context();
 
-        // Self-shell: tool controls its own framing (e.g. edit with diff preview).
-        // Pi: no outer Box — the tool's render_call and render_result handle their own
-        // background/framing. We just pass through their lines unchanged and add the leading
-        // spacer. No padding or background is applied by the execution component.
         if renderer.render_self() {
-            let mut lines: Vec<String> = Vec::new();
-            lines.push(String::new()); // Leading spacer (matching pi's Spacer(1))
+            // ── Self-rendering: tool controls its own framing ──
+            outer.add_child(renderer.render_call(&self.args, theme, &ctx));
+            if let Some(ref output) = self.output
+                && let Some(result_comp) = renderer.render_result(output, theme, &ctx)
+            {
+                outer.add_child(result_comp);
+            }
+        } else {
+            // ── Default shell: colored box wrapping ──
+            let bg_key = self.bg_key();
+            let bg_ansi = theme.bg_ansi(bg_key);
+            let mut msg_box = TuiBox::new(1, 1, Some(Style::new().bg(bg_ansi)));
 
-            // Call render_call at full width (pi passes width to the component directly)
-            let call_lines = renderer.render_call(&self.args, width, theme, &ctx);
+            msg_box.add_child(renderer.render_call(&self.args, theme, &ctx));
 
-            let mut all_lines: Vec<String> = Vec::new();
-            if !call_lines.is_empty() {
-                all_lines.extend(call_lines);
+            if let Some(ref output) = self.output
+                && let Some(result_comp) = renderer.render_result(output, theme, &ctx)
+            {
+                msg_box.add_child(result_comp);
             }
 
-            if let Some(ref output) = self.output {
-                let result_lines = renderer.render_result(output, width, theme, &ctx);
-                if !result_lines.is_empty() {
-                    if !all_lines.is_empty() {
-                        all_lines.push(String::new());
-                    }
-                    all_lines.extend(result_lines);
-                }
-            }
-
-            if !all_lines.is_empty() {
-                // Pass through lines as rendered by the tool (no bg/padding added here).
-                lines.extend(all_lines);
-            }
-
-            return lines;
+            outer.add_child(std::boxed::Box::new(msg_box));
         }
 
-        // ── Default shell: colored box wrapping ──
-        let mut lines: Vec<String> = Vec::new();
-        lines.push(String::new()); // Leading spacer (matching pi's Spacer(1))
-
-        let bg_key = self.compute_bg_key(Some(renderer));
-        let bg_ansi = theme.bg_ansi(bg_key).to_string();
-        let theme_clone = theme.clone();
-
-        let padding_x = 1;
-        let content_width = width.saturating_sub(2 * padding_x).max(1);
-        let mut msg_box = TuiBox::new(1, 1, Some(crate::tui::Style::new().bg(bg_ansi)));
-
-        let call_lines = renderer.render_call(&self.args, content_width, &theme_clone, &ctx);
-        let header_text = Text::new(call_lines.join("\n"), 0, 0, None);
-        msg_box.add_child(std::boxed::Box::new(header_text));
-
-        if let Some(ref output) = self.output {
-            let result_lines = renderer.render_result(output, content_width, &theme_clone, &ctx);
-            if !result_lines.is_empty() {
-                let result_text = Text::new(result_lines.join("\n"), 0, 0, None);
-                msg_box.add_child(std::boxed::Box::new(result_text));
-            }
-        }
-
-        lines.extend(msg_box.render(width));
-        lines
+        outer.render(width)
     }
 
     /// Generic fallback rendering for tools with no renderer.
-    /// Shows tool name, JSON args, and output text (collapsed if long).
     fn render_generic(&self, theme: &RabTheme, width: usize) -> Vec<String> {
-        let mut lines: Vec<String> = Vec::new();
-        lines.push(String::new()); // Leading spacer (matching pi's Spacer(1))
+        let mut outer = Container::new();
+        outer.add_child(std::boxed::Box::new(Spacer::new(1)));
 
-        let bg_key = self.compute_bg_key(None);
-        let bg_ansi = theme.bg_ansi(bg_key).to_string();
-        let mut msg_box = TuiBox::new(1, 1, Some(crate::tui::Style::new().bg(bg_ansi)));
+        let bg_key = self.bg_key();
+        let bg_ansi = theme.bg_ansi(bg_key);
+        let mut msg_box = TuiBox::new(1, 1, Some(Style::new().bg(bg_ansi)));
 
         // Header: bold tool name + JSON args
         let args_str = serde_json::to_string(&self.args).unwrap_or_default();
@@ -336,8 +322,7 @@ impl ToolExecComponent {
                 theme.fg("muted", &args_str),
             )
         };
-        let header_text = Text::new(header, 0, 0, None);
-        msg_box.add_child(std::boxed::Box::new(header_text));
+        msg_box.add_child(std::boxed::Box::new(Text::new(header, 0, 0, None)));
 
         // Output text (collapsed if longer than PREVIEW_LINES, no tool-specific formatting)
         if let Some(ref output) = self.output {
@@ -352,7 +337,7 @@ impl ToolExecComponent {
                         preview,
                         theme.fg(
                             "muted",
-                            &format!("... ({} more lines)", lines.len() - PREVIEW_LINES)
+                            &format!("... ({} more lines)", lines.len() - PREVIEW_LINES),
                         ),
                     )
                 } else {
@@ -372,33 +357,17 @@ impl ToolExecComponent {
                 })
                 .collect::<Vec<_>>()
                 .join("\n");
-            let result_text = Text::new(styled, 0, 0, None);
-            msg_box.add_child(std::boxed::Box::new(result_text));
+            msg_box.add_child(std::boxed::Box::new(Text::new(styled, 0, 0, None)));
         }
 
-        lines.extend(msg_box.render(width));
-        lines
-    }
-
-    fn compute_bg_key(&self, renderer: Option<&dyn ToolRenderer>) -> &'static str {
-        if let Some(r) = renderer
-            && let Some(hint) = r.render_bg_key()
-        {
-            return hint;
-        }
-        if !self.is_complete {
-            "toolPendingBg"
-        } else if self.is_error {
-            "toolErrorBg"
-        } else {
-            "toolSuccessBg"
-        }
+        outer.add_child(std::boxed::Box::new(msg_box));
+        outer.render(width)
     }
 }
 
 /// Format a keybinding action as a concise key hint string.
 fn format_key_hint(action_id: &str) -> String {
-    let keys = keybindings::get_keybindings().get_keys(action_id);
+    let keys = crate::tui::keybindings::get_keybindings().get_keys(action_id);
     if keys.is_empty() {
         return String::new();
     }

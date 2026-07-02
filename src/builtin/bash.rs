@@ -1,5 +1,6 @@
 use crate::agent::extension::{Cancel, Extension, ToolDefinition};
 use crate::agent::extension::{ToolRenderContext, ToolRenderer};
+use crate::tui::Component;
 use crate::tui::Theme;
 use crate::tui::ThemeKey;
 use crate::tui::visual_truncate::truncate_to_visual_lines;
@@ -454,10 +455,9 @@ impl ToolRenderer for BashRenderer {
     fn render_call(
         &self,
         args: &serde_json::Value,
-        _width: usize,
         theme: &dyn Theme,
         _ctx: &ToolRenderContext,
-    ) -> Vec<String> {
+    ) -> Box<dyn Component> {
         let cmd = args
             .get("command")
             .and_then(|v| v.as_str())
@@ -467,91 +467,115 @@ impl ToolRenderer for BashRenderer {
             .map(|t| theme.fg_key(ThemeKey::Muted, &format!(" (timeout {}s)", t)))
             .unwrap_or_default();
 
-        vec![format!(
+        let line = format!(
             "{}{}",
             theme.fg_key(ThemeKey::ToolTitle, &theme.bold(&format!("$ {}", cmd))),
             timeout_suffix
-        )]
+        );
+
+        std::boxed::Box::new(crate::tui::components::Text::new(line, 0, 0, None))
     }
 
     fn render_result(
         &self,
         content: &str,
-        width: usize,
         theme: &dyn Theme,
         ctx: &ToolRenderContext,
-    ) -> Vec<String> {
-        let mut lines: Vec<String> = Vec::new();
-
+    ) -> Option<Box<dyn Component>> {
         let clean = strip_context_truncation_footer(content)
             .trim_end()
             .to_string();
         let all_lines: Vec<&str> = clean.lines().collect();
 
         if all_lines.is_empty() || (all_lines.len() == 1 && all_lines[0].is_empty()) {
-            return lines;
+            return None;
         }
 
+        // Need width for truncation — use a reasonable default, the
+        // Container will re-render with actual width through the tree.
+        let preview_width = 80;
         let preview_count = 5;
         let (preview_lines, hidden_line_count) = if ctx.expanded {
             (all_lines.clone(), 0)
         } else {
-            truncate_to_visual_lines(&all_lines, width, preview_count)
+            truncate_to_visual_lines(&all_lines, preview_width, preview_count)
         };
 
-        // ── Preview hint with dim/muted styling (matching pi's keyHint) ──
+        let mut container = crate::tui::container::Container::new();
+
+        // ── Preview hint ──
         if !ctx.expanded && hidden_line_count > 0 {
-            if ctx.expand_key.is_empty() {
-                lines.push(theme.fg_key(
+            let hint = if ctx.expand_key.is_empty() {
+                theme.fg_key(
                     ThemeKey::Muted,
                     &format!("... {} earlier lines", hidden_line_count),
-                ));
+                )
             } else {
-                // Pi pattern: muted prefix + dim key + muted suffix
-                // e.g. "... (12 earlier lines, \x1b[2mctrl+o\x1b[22m to expand)"
                 let prefix = theme.fg_key(
                     ThemeKey::Muted,
                     &format!("... ({} earlier lines, ", hidden_line_count),
                 );
                 let key_styled = theme.fg("dim", &ctx.expand_key);
                 let suffix = theme.fg_key(ThemeKey::Muted, " to expand)");
-                lines.push(format!("{}{}{}", prefix, key_styled, suffix));
-            }
+                format!("{}{}{}", prefix, key_styled, suffix)
+            };
+            container.add_child(std::boxed::Box::new(crate::tui::components::Text::new(
+                hint, 0, 0, None,
+            )));
         }
 
+        // ── Output lines ──
         let fg_key = if ctx.is_error { "error" } else { "toolOutput" };
         for line in &preview_lines {
             if line.is_empty() {
-                lines.push(String::new());
+                container.add_child(std::boxed::Box::new(crate::tui::components::Text::new(
+                    String::new(),
+                    0,
+                    0,
+                    None,
+                )));
             } else {
-                lines.push(theme.fg(fg_key, line));
+                container.add_child(std::boxed::Box::new(crate::tui::components::Text::new(
+                    theme.fg(fg_key, line),
+                    0,
+                    0,
+                    None,
+                )));
             }
         }
 
+        // ── Duration ──
         if let Some(secs) = ctx.duration_secs {
-            if !lines.is_empty() {
-                lines.push(String::new());
-            }
             let is_complete = ctx.exit_code.is_some() || ctx.cancelled;
             let label = if is_complete { "Took" } else { "Elapsed" };
-            lines.push(theme.fg_key(ThemeKey::Muted, &format!("{} {:.1}s", label, secs)));
+            container.add_child(std::boxed::Box::new(crate::tui::components::Text::new(
+                theme.fg_key(ThemeKey::Muted, &format!("{} {:.1}s", label, secs)),
+                0,
+                0,
+                None,
+            )));
         }
 
+        // ── Truncation warning ──
         if ctx.was_truncated {
-            if !lines.is_empty() {
-                lines.push(String::new());
-            }
-            if let Some(ref path) = ctx.full_output_path {
-                lines.push(theme.fg(
+            let warning = if let Some(ref path) = ctx.full_output_path {
+                theme.fg(
                     "warning",
                     &format!("Output truncated. Full output: {}", path),
-                ));
+                )
             } else {
-                lines.push(theme.fg_key(ThemeKey::Warning, "Output truncated."));
-            }
+                theme.fg_key(ThemeKey::Warning, "Output truncated.")
+            };
+            container.add_child(std::boxed::Box::new(crate::tui::components::Text::new(
+                warning, 0, 0, None,
+            )));
         }
 
-        lines
+        if container.is_empty() {
+            None
+        } else {
+            Some(std::boxed::Box::new(container))
+        }
     }
 }
 

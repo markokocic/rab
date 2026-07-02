@@ -1,6 +1,7 @@
 use crate::agent::extension::{Extension, ToolDefinition};
 use crate::agent::extension::{ToolRenderContext, ToolRenderer};
 use crate::builtin;
+use crate::tui::Component;
 use crate::tui::Theme;
 use crate::tui::ThemeKey;
 
@@ -423,10 +424,9 @@ impl ToolRenderer for WriteRenderer {
     fn render_call(
         &self,
         args: &serde_json::Value,
-        _width: usize,
         theme: &dyn Theme,
         ctx: &ToolRenderContext,
-    ) -> Vec<String> {
+    ) -> Box<dyn Component> {
         let raw_path = args
             .get("file_path")
             .or_else(|| args.get("path"))
@@ -434,7 +434,6 @@ impl ToolRenderer for WriteRenderer {
         let content = args.get("content");
 
         // ── Path display with hyperlink ──
-        // Pi: renderToolPath(rawPath, theme, cwd) → linkPath(theme.fg("accent", shortenPath(value)), value, cwd)
         let path_display = if let Some(p) = raw_path {
             let short = builtin::shorten_path(p);
             let cwd = if ctx.cwd.is_empty() {
@@ -469,18 +468,15 @@ impl ToolRenderer for WriteRenderer {
             }
             Some("") => {}
             Some(text) => {
-                // ── Update incremental highlight cache ──
                 let mut cache_guard = self.cache.lock().unwrap();
                 *cache_guard =
                     update_highlight_cache_incremental(cache_guard.take(), raw_path, text);
 
                 let lang = raw_path.and_then(crate::tui::components::path_to_language);
 
-                // Get rendered lines from cache or fallback
                 let rendered_lines: Vec<String> = if let Some(ref cache) = *cache_guard {
                     cache.highlighted_lines.clone()
                 } else if lang.is_some() {
-                    // Lang but no cache (shouldn't happen, but fallback)
                     let normalized = text.replace('\r', "").replace('\t', "   ");
                     #[cfg(feature = "syntect")]
                     {
@@ -496,7 +492,6 @@ impl ToolRenderer for WriteRenderer {
                         normalized.lines().map(|l| l.to_string()).collect()
                     }
                 } else {
-                    // No language → plain text lines (not highlighted)
                     text.replace('\r', "")
                         .split('\n')
                         .map(|l| l.to_string())
@@ -532,10 +527,6 @@ impl ToolRenderer for WriteRenderer {
                     lines.push(styled);
                 }
 
-                // Pi-style truncation hint with total line count
-                // Matching pi's: theme.fg("muted", "... (X more, Y total, ") +
-                //   keyHint("app.tools.expand", "to expand") + theme.fg("muted", ")")
-                // where keyHint = theme.fg("dim", key) + theme.fg("muted", " description")
                 if remaining > 0 {
                     let dim_key = theme.fg_key(ThemeKey::Dim, &ctx.expand_key);
                     let muted_rest = theme.fg_key(
@@ -552,22 +543,31 @@ impl ToolRenderer for WriteRenderer {
             }
         }
 
-        lines
+        std::boxed::Box::new(crate::tui::components::Text::new(
+            lines.join("\n"),
+            0,
+            0,
+            None,
+        ))
     }
 
     fn render_result(
         &self,
         content: &str,
-        _width: usize,
         theme: &dyn Theme,
         ctx: &ToolRenderContext,
-    ) -> Vec<String> {
+    ) -> Option<Box<dyn Component>> {
         // On success, pi shows no result output (just the background color transition).
         // On error, show the error text.
         if !ctx.is_error || content.is_empty() {
-            return vec![];
+            return None;
         }
-        vec![theme.fg_key(ThemeKey::Error, content)]
+        Some(std::boxed::Box::new(crate::tui::components::Text::new(
+            theme.fg_key(ThemeKey::Error, content),
+            0,
+            0,
+            None,
+        )))
     }
 }
 

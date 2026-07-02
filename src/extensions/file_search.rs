@@ -1,4 +1,5 @@
 use crate::agent::extension::{Extension, ToolDefinition, ToolRenderContext, ToolRenderer};
+use crate::tui::Component;
 use crate::tui::Theme;
 use crate::tui::ThemeKey;
 use async_trait::async_trait;
@@ -972,10 +973,9 @@ impl ToolRenderer for ListRenderer {
     fn render_call(
         &self,
         args: &serde_json::Value,
-        _width: usize,
         theme: &dyn Theme,
         _ctx: &ToolRenderContext,
-    ) -> Vec<String> {
+    ) -> Box<dyn Component> {
         let search_path = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
         let limit = args.get("limit").and_then(|v| v.as_u64());
         let path_display = shorten_path_str(search_path);
@@ -1001,26 +1001,30 @@ impl ToolRenderer for ListRenderer {
             text.push_str(&theme.fg_key(ThemeKey::ToolOutput, &format!(" limit {}", l)));
         }
 
-        vec![text]
+        std::boxed::Box::new(crate::tui::components::Text::new(text, 0, 0, None))
     }
 
     fn render_result(
         &self,
         content: &str,
-        _width: usize,
         theme: &dyn Theme,
         ctx: &ToolRenderContext,
-    ) -> Vec<String> {
+    ) -> Option<Box<dyn Component>> {
         if content.is_empty() {
-            return vec![];
+            return None;
         }
         if !ctx.expanded && !ctx.is_error {
-            return vec![];
+            return None;
         }
 
         let output = content.trim();
         if output.is_empty() || output == self.no_results_text {
-            return vec![theme.fg_key(ThemeKey::ToolOutput, output)];
+            return Some(std::boxed::Box::new(crate::tui::components::Text::new(
+                theme.fg_key(ThemeKey::ToolOutput, output),
+                0,
+                0,
+                None,
+            )));
         }
 
         let lines: Vec<&str> = output.lines().collect();
@@ -1032,9 +1036,9 @@ impl ToolRenderer for ListRenderer {
         let display: Vec<&str> = lines.iter().copied().take(max_lines).collect();
         let remaining = lines.len().saturating_sub(display.len());
 
-        let mut result = vec![String::new()];
+        let mut all_lines = vec![String::new()];
         for line in &display {
-            result.push(theme.fg_key(ThemeKey::ToolOutput, line));
+            all_lines.push(theme.fg_key(ThemeKey::ToolOutput, line));
         }
         if remaining > 0 {
             let hint = if !ctx.expand_key.is_empty() {
@@ -1045,8 +1049,14 @@ impl ToolRenderer for ListRenderer {
             } else {
                 format!("... ({} more lines)", remaining)
             };
-            result.push(theme.fg_key(ThemeKey::Muted, &hint));
+            all_lines.push(theme.fg_key(ThemeKey::Muted, &hint));
         }
-        result
+
+        Some(std::boxed::Box::new(crate::tui::components::Text::new(
+            all_lines.join("\n"),
+            0,
+            0,
+            None,
+        )))
     }
 }
