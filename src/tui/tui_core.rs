@@ -412,10 +412,11 @@ impl TUI {
             .render(lines.clone(), width as u16, height as u16, writer)?;
 
         if let Some((row, col)) = cursor_pos {
-            // Position hardware cursor at the marker location
+            // Position hardware cursor at the marker location (needed for IME)
             self.position_hard_cursor(row, col, writer)?;
-            // Show cursor at the marker position
-            write!(writer, "\x1b[?25h")?;
+            // Keep cursor hidden — the visual block cursor is already rendered
+            // by the editor via ANSI inversion. Showing both creates a double
+            // cursor (block + blinking underscore).
         } else if self.has_overlays() {
             // Keep cursor hidden when overlays are active (pi-style)
             // (already hidden above)
