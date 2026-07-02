@@ -87,9 +87,10 @@ pub trait Component {
     /// Store render output in cache.
     fn set_cached_render(&mut self, _cache: RenderCache) {}
 
-    /// Whether this component wants focus (for IME cursor positioning).
-    fn is_focusable(&self) -> bool {
-        false
+    /// Return a `&mut dyn Focusable` if this component can receive keyboard focus.
+    /// Default returns None. Override for components that implement Focusable.
+    fn as_focusable(&mut self) -> Option<&mut dyn Focusable> {
+        None
     }
 
     /// Toggle expanded/collapsed state. No-op by default.
@@ -99,10 +100,4 @@ pub trait Component {
     /// Toggle thinking block visibility. No-op by default.
     /// Override for components that display thinking content (AssistantMessageComponent).
     fn set_hide_thinking(&mut self, _hide: bool) {}
-
-    /// Return a `&mut dyn Focusable` if this component can receive keyboard focus.
-    /// Default returns None. Override for components that implement Focusable.
-    fn as_focusable(&mut self) -> Option<&mut dyn Focusable> {
-        None
-    }
 }

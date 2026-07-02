@@ -1874,10 +1874,6 @@ impl Component for Editor {
         Editor::handle_paste(self, text);
     }
 
-    fn is_focusable(&self) -> bool {
-        true
-    }
-
     fn as_focusable(&mut self) -> Option<&mut dyn crate::tui::Focusable> {
         Some(self)
     }
