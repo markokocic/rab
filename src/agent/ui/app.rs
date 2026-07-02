@@ -759,6 +759,16 @@ pub async fn run(config: AppConfig, session: AgentSession) -> anyhow::Result<()>
             editor_rc.borrow_mut().editor.set_focused(focused);
         }));
     }
+    // Register cursor callback for immediate show/hide on overlay lifecycle
+    tui.register_cursor_callback(Box::new(move |visible| {
+        use std::io::Write;
+        if visible {
+            let _ = write!(std::io::stdout(), "\x1b[?25h");
+        } else {
+            let _ = write!(std::io::stdout(), "\x1b[?25l");
+        }
+        let _ = std::io::stdout().flush();
+    }));
     tui.set_focus(crate::tui::FocusTarget::Editor);
 
     // Set up the component tree in TUI.root (matching pi's TUI.extend(Container))

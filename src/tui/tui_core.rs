@@ -11,6 +11,23 @@ use crate::tui::util::normalize_terminal_output;
 /// Cursor marker constant (matches pi: APC pi:c ST)
 pub const CURSOR_MARKER: &str = "\x1b_pi:c\x07";
 
+/// Result from an input listener — matches pi's `InputListenerResult`.
+/// Listeners are checked before normal input routing.
+pub enum InputAction {
+    /// The listener handled the key — stop processing.
+    Consumed,
+    /// Continue routing the original key through the component tree.
+    Continue,
+    /// Continue routing with a transformed key.
+    Transform(KeyEvent),
+}
+
+/// Unique ID for a registered input listener.
+pub type ListenerId = u64;
+
+/// An input listener callback — receives a KeyEvent, returns an action.
+type InputListenerFn = Box<dyn FnMut(&KeyEvent) -> InputAction>;
+
 // =============================================================================
 // TUI — Main class for managing terminal UI with differential rendering
 // and overlay compositing. Wraps Screen and adds overlay stack, focus
@@ -40,6 +57,13 @@ pub struct TUI {
     /// The editor is behind Rc<RefCell<>> and can't be accessed through
     /// the Component trait's as_focusable(), so we use this callback.
     set_editor_focus: Option<Box<dyn FnMut(bool)>>,
+    /// Callback to control hardware cursor visibility outside of render.
+    /// Called when overlays are shown/hidden to immediately hide/show cursor.
+    set_cursor_visible: Option<Box<dyn FnMut(bool)>>,
+    /// Registered input listeners (checked before normal routing).
+    input_listeners: Vec<(ListenerId, InputListenerFn)>,
+    /// Next unique ID for input listener registration.
+    next_listener_id: ListenerId,
 }
 
 impl TUI {
@@ -52,10 +76,20 @@ impl TUI {
             dirty: true,
             focused: crate::tui::FocusTarget::None,
             set_editor_focus: None,
+            set_cursor_visible: None,
+            input_listeners: Vec::new(),
+            next_listener_id: 0,
         }
     }
 
     // ── Focus management ──────────────────────────────────────────
+
+    /// Register a callback to control hardware cursor visibility outside of render.
+    /// Called immediately when overlays are shown/hidden, not waiting for the
+    /// next render cycle. Matches pi's `terminal.hideCursor()` in overlay lifecycle.
+    pub fn register_cursor_callback(&mut self, callback: Box<dyn FnMut(bool)>) {
+        self.set_cursor_visible = Some(callback);
+    }
 
     /// Register a callback to set/unset focus on the editor.
     /// Called during app initialization before showing any overlays.
@@ -174,6 +208,11 @@ impl TUI {
             self.focused = crate::tui::FocusTarget::Overlay(id);
         }
 
+        // Hide cursor immediately when overlay is shown (pi-style)
+        if let Some(ref mut cb) = self.set_cursor_visible {
+            cb(false);
+        }
+
         self.dirty = true;
         id
     }
@@ -203,6 +242,12 @@ impl TUI {
         if let Some(target) = pre_focus {
             self.set_focus(target);
         }
+        // Show cursor when overlay stack is empty (pi-style)
+        if !self.has_overlays()
+            && let Some(ref mut cb) = self.set_cursor_visible
+        {
+            cb(true);
+        }
     }
 
     /// Hide the topmost overlay and restore the focus that was active before
@@ -216,6 +261,12 @@ impl TUI {
         if let Some(target) = pre_focus {
             self.set_focus(target);
         }
+        // Show cursor when overlay stack is empty (pi-style)
+        if !self.has_overlays()
+            && let Some(ref mut cb) = self.set_cursor_visible
+        {
+            cb(true);
+        }
     }
 
     pub fn has_overlays(&self) -> bool {
@@ -224,11 +275,38 @@ impl TUI {
 
     // ── Input routing ──────────────────────────────────────────────
 
-    /// Route a keyboard event through the overlay input pipeline.
-    /// Should be called BEFORE the application handles the key itself,
-    /// so overlays get first crack at input.
+    /// Register an input listener. The listener is called for every key event
+    /// before normal routing. It can consume, transform, or pass through the key.
+    /// Returns a `ListenerId` for later removal.
+    /// Matches pi's `TUI.addInputListener()`.
+    pub fn add_input_listener(&mut self, listener: InputListenerFn) -> ListenerId {
+        let id = self.next_listener_id;
+        self.next_listener_id += 1;
+        self.input_listeners.push((id, listener));
+        id
+    }
+
+    /// Remove a previously registered input listener by ID.
+    pub fn remove_input_listener(&mut self, id: ListenerId) {
+        self.input_listeners.retain(|(i, _)| *i != id);
+    }
+
+    /// Route a keyboard event through input listeners, then the overlay
+    /// input pipeline. Should be called BEFORE the application handles
+    /// the key itself.
     pub fn route_input(&mut self, key: &KeyEvent) -> bool {
-        self.root.handle_input(key)
+        // Check input listeners first (pi-style)
+        let mut current = *key;
+        for (_, listener) in &mut self.input_listeners {
+            match listener(&current) {
+                InputAction::Consumed => return true,
+                InputAction::Continue => {}
+                InputAction::Transform(k) => current = k,
+            }
+        }
+
+        // Route through component tree (overlays first, then children)
+        self.root.handle_input(&current)
     }
 
     /// Route a paste event to overlays or root.
