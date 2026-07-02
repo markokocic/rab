@@ -97,10 +97,11 @@ impl AuthStorage {
 
 // ── File locking helpers ────────────────────────────────────────
 
-/// Acquire an exclusive file lock (blocking with retry) and run the closure.
-/// Uses `fs2::FileExt::try_lock_exclusive` for cross-process safety,
-/// matching pi's `proper-lockfile` pattern.
-fn with_exclusive_lock<T>(path: &PathBuf, f: impl FnOnce() -> T) -> T {
+/// Acquire an exclusive file lock (blocking with retry) and run the closure,
+/// passing a mutable reference to the locked file handle.
+/// The closure can read/write through this handle, avoiding a second open
+/// for writing which would fail on Windows (sharing violation).
+fn with_exclusive_lock<T>(path: &PathBuf, f: impl FnOnce(&mut std::fs::File) -> T) -> T {
     use fs2::FileExt;
 
     // Ensure parent dir exists
@@ -108,9 +109,8 @@ fn with_exclusive_lock<T>(path: &PathBuf, f: impl FnOnce() -> T) -> T {
         let _ = std::fs::create_dir_all(parent);
     }
 
-    // Open or create the auth file itself (no truncate — we're just getting
-    // a fd for locking; actual reads/writes are done separately).
-    let file = std::fs::OpenOptions::new()
+    // Open or create the auth file itself
+    let mut file = std::fs::OpenOptions::new()
         .create(true)
         .truncate(false)
         .write(true)
@@ -125,19 +125,8 @@ fn with_exclusive_lock<T>(path: &PathBuf, f: impl FnOnce() -> T) -> T {
             Ok(()) => break,
             Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                 attempts += 1;
-                // Stale lock detection: if the lock is held for >10s, it's stale
                 if attempts >= 200 {
                     break; // Give up and proceed anyway
-                }
-                if attempts > 5
-                    && let Ok(metadata) = path.metadata()
-                    && let Ok(modified) = metadata.modified()
-                    && let Ok(elapsed) = modified.elapsed()
-                    && elapsed > Duration::from_secs(10)
-                {
-                    // Stale lock — break it by unlocking and retrying
-                    let _ = file.unlock();
-                    continue;
                 }
                 std::thread::sleep(Duration::from_millis(50));
             }
@@ -145,7 +134,7 @@ fn with_exclusive_lock<T>(path: &PathBuf, f: impl FnOnce() -> T) -> T {
         }
     }
 
-    let result = f();
+    let result = f(&mut file);
     let _ = file.unlock();
     result
 }
@@ -165,27 +154,42 @@ fn read_json_file(path: &PathBuf) -> anyhow::Result<Option<String>> {
 }
 
 /// Read-modify-write the auth file under an exclusive lock.
+/// Writes through the locked file handle to avoid sharing violations on Windows.
 fn modify_auth_file(
     path: &PathBuf,
     f: impl FnOnce(HashMap<String, AuthCredential>) -> (HashMap<String, AuthCredential>, bool),
 ) -> anyhow::Result<()> {
-    with_exclusive_lock(path, || {
-        let auth: HashMap<String, AuthCredential> = match read_json_file(path) {
-            Ok(Some(c)) => serde_json::from_str(&c).unwrap_or_default(),
-            _ => HashMap::new(),
+    with_exclusive_lock(path, |file| -> anyhow::Result<()> {
+        use std::io::{Read, Seek, Write};
+
+        // Read current content through the locked handle
+        let content = {
+            let mut s = String::new();
+            file.rewind()?;
+            file.read_to_string(&mut s)?;
+            if s.is_empty() { None } else { Some(s) }
+        };
+
+        let auth: HashMap<String, AuthCredential> = match content {
+            Some(c) => serde_json::from_str(&c)?,
+            None => HashMap::new(),
         };
 
         let (result, changed) = f(auth);
         if changed {
             if let Some(parent) = path.parent() {
-                let _ = std::fs::create_dir_all(parent);
+                std::fs::create_dir_all(parent)?;
             }
-            if let Ok(content) = serde_json::to_string_pretty(&result) {
-                let _ = std::fs::write(path, &content);
-            }
+            let content = serde_json::to_string_pretty(&result)?;
+            // Write through the already-open handle to avoid opening a
+            // second handle, which would cause a sharing violation on Windows.
+            file.set_len(0)?;
+            file.rewind()?;
+            file.write_all(content.as_bytes())?;
+            file.flush()?;
         }
-    });
-    Ok(())
+        Ok(())
+    })
 }
 
 // ── Helper ────────────────────────────────────────────────────
@@ -236,10 +240,20 @@ pub fn logout(provider: Option<&str>) -> anyhow::Result<bool> {
         return Ok(false);
     }
 
-    let result = with_exclusive_lock(&path, || -> bool {
-        let auth: HashMap<String, AuthCredential> = match read_json_file(&path) {
-            Ok(Some(c)) => serde_json::from_str(&c).unwrap_or_default(),
-            _ => return false,
+    with_exclusive_lock(&path, |file| -> anyhow::Result<bool> {
+        use std::io::{Read, Seek, Write};
+
+        // Read current content through the locked handle
+        let content = {
+            let mut s = String::new();
+            file.rewind()?;
+            file.read_to_string(&mut s)?;
+            if s.is_empty() { None } else { Some(s) }
+        };
+
+        let auth: HashMap<String, AuthCredential> = match content {
+            Some(c) => serde_json::from_str(&c)?,
+            None => return Ok(false),
         };
 
         let (new_auth, removed) = match provider {
@@ -256,16 +270,16 @@ pub fn logout(provider: Option<&str>) -> anyhow::Result<bool> {
 
         if removed {
             if let Some(parent) = path.parent() {
-                let _ = std::fs::create_dir_all(parent);
+                std::fs::create_dir_all(parent)?;
             }
-            if let Ok(content) = serde_json::to_string_pretty(&new_auth) {
-                let _ = std::fs::write(&path, &content);
-            }
+            let content = serde_json::to_string_pretty(&new_auth)?;
+            file.set_len(0)?;
+            file.rewind()?;
+            file.write_all(content.as_bytes())?;
+            file.flush()?;
         }
-        removed
-    });
-
-    Ok(result)
+        Ok(removed)
+    })
 }
 
 /// List all providers that have credentials stored.
