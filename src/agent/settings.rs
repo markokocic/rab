@@ -135,6 +135,26 @@ impl Settings {
             .insert("compactKeepRecentTokens".into());
     }
 
+    /// Set default_provider and mark it as modified.
+    pub fn set_default_provider(&mut self, value: Option<String>) {
+        self.default_provider = value;
+        self.modified_fields.insert("defaultProvider".into());
+    }
+
+    /// Set default_model and mark it as modified.
+    pub fn set_default_model(&mut self, value: Option<String>) {
+        self.default_model = value;
+        self.modified_fields.insert("defaultModel".into());
+    }
+
+    /// Set both default_provider and default_model in one call (pi-compatible).
+    pub fn set_default_model_and_provider(&mut self, provider: &str, model: &str) {
+        self.default_provider = Some(provider.to_string());
+        self.default_model = Some(model.to_string());
+        self.modified_fields.insert("defaultProvider".into());
+        self.modified_fields.insert("defaultModel".into());
+    }
+
     /// Mark a field as modified (for use with the setters or external callers).
     /// The field name must match the camelCase JSON key (e.g. "hideThinkingBlock").
     #[doc(hidden)]

@@ -380,12 +380,14 @@ impl crate::tui::Component for Footer {
             None => model_name.clone(),
         };
 
-        // Always prepend provider in parentheses if available
-        let pname = self
-            .provider
-            .borrow()
-            .get_model_provider()
-            .map(|s| s.to_string());
+        // Always prepend provider in parentheses if available (non-empty provider name).
+        let pname = self.provider.borrow().get_model_provider().and_then(|s| {
+            if s.is_empty() {
+                None
+            } else {
+                Some(s.to_string())
+            }
+        });
         let right_side = if let Some(ref pname) = pname {
             format!("({}) {}", pname, right_side_without_provider)
         } else {

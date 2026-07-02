@@ -889,10 +889,22 @@ pub async fn run(config: AppConfig, session: AgentSession) -> anyhow::Result<()>
                                 .split_once('/')
                                 .map(|(p, m)| (p.to_string(), m.to_string()))
                                 .unwrap_or_else(|| (String::new(), full_id.clone()));
-                            app.current_provider = provider;
+                            app.current_provider = provider.clone();
                             app.model = model_id.clone();
                             app.record_model_change(&model_id);
-                            app.status_text = Some(format!("Model: {}", full_id));
+                            // Persist model/provider to settings (pi-compatible)
+                            if !provider.is_empty() {
+                                app.settings
+                                    .set_default_model_and_provider(&provider, &model_id);
+                            } else {
+                                app.settings.set_default_model(Some(model_id.clone()));
+                            }
+                            if let Err(e) = app.settings.save() {
+                                app.status_text =
+                                    Some(format!("Failed to save default model: {}", e));
+                            } else {
+                                app.status_text = Some(format!("Model: {}", full_id));
+                            }
                         }
                     }
                     OverlayResult::ScopedModelsAccepted(ids) => {
@@ -1684,6 +1696,17 @@ fn handle_model_cycle(app: &mut App, dir: isize) {
         .provider_for_model(&model, Some(&app.current_provider))
         .unwrap_or_default();
     app.record_model_change(&model);
+    // Persist model/provider to settings (pi-compatible)
+    let provider = &app.current_provider;
+    if !provider.is_empty() {
+        app.settings
+            .set_default_model_and_provider(provider, &model);
+    } else {
+        app.settings.set_default_model(Some(model.clone()));
+    }
+    if let Err(e) = app.settings.save() {
+        eprintln!("Warning: failed to save default model: {}", e);
+    }
     show_status(app, format!("Model: {}", app.model));
 }
 
