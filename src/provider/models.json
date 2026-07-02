@@ -382,6 +382,31 @@
             "supportsReasoningEffort": false,
             "supportsStore": false
           },
+          "contextWindow": 1000000,
+          "cost": {
+            "cacheRead": 0.2,
+            "cacheWrite": 2.5,
+            "input": 2.0,
+            "output": 10.0
+          },
+          "id": "claude-sonnet-5",
+          "input": [
+            "text",
+            "image"
+          ],
+          "maxTokens": 128000,
+          "name": "Claude Sonnet 5",
+          "reasoning": true
+        },
+        {
+          "api": "openai-completions",
+          "baseUrl": "https://api.individual.githubcopilot.com",
+          "compat": {
+            "maxTokensField": "max_tokens",
+            "supportsDeveloperRole": false,
+            "supportsReasoningEffort": false,
+            "supportsStore": false
+          },
           "contextWindow": 128000,
           "cost": {
             "cacheRead": 0.125,
@@ -729,6 +754,25 @@
           ],
           "maxTokens": 32000,
           "name": "Big Pickle",
+          "reasoning": true
+        },
+        {
+          "api": "anthropic-messages",
+          "baseUrl": "https://opencode.ai/zen",
+          "contextWindow": 1000000,
+          "cost": {
+            "cacheRead": 1.0,
+            "cacheWrite": 12.5,
+            "input": 10.0,
+            "output": 50.0
+          },
+          "id": "claude-fable-5",
+          "input": [
+            "text",
+            "image"
+          ],
+          "maxTokens": 128000,
+          "name": "Claude Fable 5",
           "reasoning": true
         },
         {
@@ -2011,7 +2055,7 @@
             "image"
           ],
           "maxTokens": 131072,
-          "name": "MiniMax-M3 (3x usage)",
+          "name": "MiniMax-M3",
           "reasoning": true
         },
         {

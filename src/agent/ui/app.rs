@@ -1115,7 +1115,10 @@ pub async fn run(config: AppConfig, session: AgentSession) -> anyhow::Result<()>
                             tree_selector.on_label_change = Some(Box::new(move |eid, label| {
                                 label_signal.borrow_mut().push((eid, label));
                             }));
-                            tui.show_top_overlay(Box::new(tree_selector));
+                            tui.show_positioned_overlay(
+                                Box::new(tree_selector),
+                                crate::tui::OverlayPosition::Bottom,
+                            );
                         }
                     }
                 }
@@ -1313,7 +1316,10 @@ pub async fn run(config: AppConfig, session: AgentSession) -> anyhow::Result<()>
                         tree_selector.on_label_change = Some(Box::new(move |entry_id, label| {
                             label_signal.borrow_mut().push((entry_id, label));
                         }));
-                        tui.show_top_overlay(Box::new(tree_selector));
+                        tui.show_positioned_overlay(
+                            Box::new(tree_selector),
+                            crate::tui::OverlayPosition::Bottom,
+                        );
                     } else {
                         chat_info(&mut app, "No active session.");
                     }
@@ -2025,7 +2031,7 @@ fn show_login_provider_selector(app: &mut App, tui: &mut TUI, auth_type: Option<
     });
     selector.on_cancel(|| {});
 
-    tui.show_top_overlay(Box::new(selector));
+    tui.show_positioned_overlay(Box::new(selector), crate::tui::OverlayPosition::Bottom);
 }
 
 /// Show the API key input dialog for a specific provider.
@@ -2058,7 +2064,7 @@ fn show_api_key_login_dialog(app: &mut App, tui: &mut TUI, provider_id: &str) {
 
     dialog.show_prompt("Enter API key:", Some("sk-..."));
 
-    tui.show_top_overlay(Box::new(dialog));
+    tui.show_positioned_overlay(Box::new(dialog), crate::tui::OverlayPosition::Bottom);
 }
 
 /// Show the OAuth login dialog for a specific provider.
@@ -2309,7 +2315,7 @@ fn show_auth_type_selector(app: &mut App, tui: &mut TUI) {
         signal: signal.clone(),
     };
 
-    tui.show_top_overlay(Box::new(overlay));
+    tui.show_positioned_overlay(Box::new(overlay), crate::tui::OverlayPosition::Bottom);
 }
 
 /// Show auth type selector or go directly to provider list depending on
@@ -2387,7 +2393,7 @@ fn show_logout_provider_selector(app: &mut App, tui: &mut TUI) {
     });
     selector.on_cancel(|| {});
 
-    tui.show_top_overlay(Box::new(selector));
+    tui.show_positioned_overlay(Box::new(selector), crate::tui::OverlayPosition::Bottom);
 }
 
 /// Post-login completion: auto-select default model for the provider.
@@ -2465,7 +2471,7 @@ fn open_model_selector(app: &mut App, tui: &mut TUI) {
         current_full_id,
         callbacks,
     );
-    tui.show_top_overlay(Box::new(selector));
+    tui.show_positioned_overlay(Box::new(selector), crate::tui::OverlayPosition::Bottom);
 }
 
 /// Open the scoped-models selector overlay.
@@ -2507,7 +2513,7 @@ fn open_scoped_models_selector(app: &mut App, tui: &mut TUI) {
     };
 
     let selector = ScopedModelsSelector::new(config, callbacks);
-    tui.show_top_overlay(Box::new(selector));
+    tui.show_positioned_overlay(Box::new(selector), crate::tui::OverlayPosition::Bottom);
 }
 
 fn show_help_overlay(app: &mut App, tui: &mut TUI) {
@@ -4110,7 +4116,7 @@ fn show_summarization_prompt(app: &mut App, tui: &mut TUI, _entry_id: &str) {
         edit_text: String::new(),
     };
 
-    tui.show_top_overlay(Box::new(prompt));
+    tui.show_positioned_overlay(Box::new(prompt), crate::tui::OverlayPosition::Bottom);
 }
 
 /// Show a status message in the chat (pi-style `showStatus`).

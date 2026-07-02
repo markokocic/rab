@@ -4,7 +4,7 @@ use crossterm::event::KeyEvent;
 
 use crate::tui::Component;
 use crate::tui::container::Container;
-use crate::tui::overlay::OverlayOptions;
+use crate::tui::overlay::{OverlayOptions, OverlayPosition};
 use crate::tui::screen::Screen;
 use crate::tui::terminal_colors::{TerminalColorScheme, parse_osc11_background_color};
 use crate::tui::util::normalize_terminal_output;
@@ -221,15 +221,28 @@ impl TUI {
         id
     }
 
-    /// Convenience: show an overlay anchored at top-left, full width.
-    /// The pattern used by most agent UI overlays (model selector, auth dialogs, etc.).
-    pub fn show_top_overlay(&mut self, component: Box<dyn Component>) -> u64 {
+    /// Position for full-width overlays — top (row 0) or bottom
+    /// (just above the footer/editor area).
+    pub fn show_positioned_overlay(
+        &mut self,
+        component: Box<dyn Component>,
+        position: OverlayPosition,
+    ) -> u64 {
         use crate::tui::overlay::{OverlayAnchor, OverlayOptions, SizeValue};
+        let anchor = match position {
+            OverlayPosition::Top => OverlayAnchor::TopLeft,
+            OverlayPosition::Bottom => OverlayAnchor::BottomLeft,
+        };
+        let offset_y = match position {
+            OverlayPosition::Top => None,
+            OverlayPosition::Bottom => Some(-2), // just above the footer (2 rows)
+        };
         self.show_overlay(
             component,
             OverlayOptions {
                 width: Some(SizeValue::Percent(100.0)),
-                anchor: Some(OverlayAnchor::TopLeft),
+                anchor: Some(anchor),
+                offset_y,
                 ..Default::default()
             },
         )

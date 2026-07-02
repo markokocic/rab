@@ -46,7 +46,8 @@ pub use keys::{
     Key, decode_kitty_printable, is_key_release, is_key_repeat, match_key_id, matches_key,
 };
 pub use overlay::{
-    OverlayAnchor, OverlayEntry, OverlayLayout, OverlayMargin, OverlayOptions, SizeValue,
+    OverlayAnchor, OverlayEntry, OverlayLayout, OverlayMargin, OverlayOptions, OverlayPosition,
+    SizeValue,
 };
 pub use screen::Screen;
 pub use terminal::{ProcessTerminal, TerminalTrait};

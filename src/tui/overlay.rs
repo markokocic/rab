@@ -115,3 +115,11 @@ pub struct OverlayLayout {
     pub col: usize,
     pub max_height: Option<usize>,
 }
+
+/// Vertical position for full-width overlays.
+/// Top = row 0, Bottom = just above the editor + footer area.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OverlayPosition {
+    Top,
+    Bottom,
+}
