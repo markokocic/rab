@@ -1540,13 +1540,18 @@ impl Component for Editor {
                     )
                 } else if !before.is_empty() {
                     // Cursor at end: show a block cursor after the last character.
+                    // Place CURSOR_MARKER BEFORE the block cursor so the hardware
+                    // cursor and the inverted-block visual cursor overlap at the
+                    // same column (not adjacent — which looked like two cursors).
                     let cursor_block = "\x1b[7m \x1b[0m";
                     (
-                        format!("{}{}{}", before, cursor_block, marker),
+                        format!("{}{}{}", before, marker, cursor_block),
                         visible_width(text) + 1,
                     )
                 } else {
                     // Empty text: show block cursor
+                    // Marker is already placed before the block cursor (above),
+                    // matching the "cursor at end" fix.
                     let cursor = "\x1b[7m \x1b[0m";
                     (
                         format!("{}{}{}", before, marker, cursor),

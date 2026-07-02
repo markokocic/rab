@@ -379,6 +379,10 @@ impl TUI {
 
     /// Render the root component tree (including composited overlays),
     /// then diff-render to screen via Screen.
+    ///
+    /// Hides the hardware cursor during the diff render to prevent flickering
+    /// (cursor movements as lines are cleared and re-written), then shows and
+    /// positions it at the cursor marker location afterwards.
     pub fn render(
         &mut self,
         width: usize,
@@ -397,6 +401,11 @@ impl TUI {
             *line = normalize_terminal_output(line);
         }
 
+        // Hide cursor before diff render to avoid flicker from cursor movement
+        // during line clears and rewrites. The cursor will be shown at the
+        // correct position after positioning.
+        write!(writer, "\x1b[?25l")?;
+
         // Diff render via Screen (extracts cursor markers internally)
         let cursor_pos = self
             .screen
@@ -405,11 +414,16 @@ impl TUI {
         if let Some((row, col)) = cursor_pos {
             // Position hardware cursor at the marker location
             self.position_hard_cursor(row, col, writer)?;
+            // Show cursor at the marker position
+            write!(writer, "\x1b[?25h")?;
         } else if self.has_overlays() {
-            // Hide hardware cursor when overlays are active (pi-style)
-            write!(writer, "\x1b[?25l")?;
-            writer.flush()?;
+            // Keep cursor hidden when overlays are active (pi-style)
+            // (already hidden above)
+        } else {
+            // No marker found — show cursor at current position anyway
+            write!(writer, "\x1b[?25h")?;
         }
+        writer.flush()?;
 
         self.dirty = false;
         Ok(())
