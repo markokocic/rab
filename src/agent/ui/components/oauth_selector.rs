@@ -49,11 +49,9 @@ pub enum SelectorMode {
 // ── Internal provider item ─────────────────────────────────────────
 
 #[derive(Clone)]
-#[allow(dead_code)]
 struct ProviderItem {
     id: String,
     name: String,
-    auth_type: AuthType,
     /// Whether the provider has matching credentials stored.
     has_stored: bool,
     /// Whether some other auth is available (env var, runtime, etc.)
@@ -129,7 +127,6 @@ impl OAuthSelector {
                 ProviderItem {
                     id,
                     name,
-                    auth_type,
                     has_stored,
                     has_other_auth,
                     status_label,

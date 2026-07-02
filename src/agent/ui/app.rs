@@ -291,9 +291,6 @@ pub struct App {
     /// Session info updater for /session command.
     session_info: Option<std::sync::Arc<std::sync::Mutex<Option<SessionInfoInternal>>>>,
 
-    /// Pending rename from session picker (path, new_name).
-    pending_rename: Option<(PathBuf, String)>,
-
     /// Auto-compact toggle state.
     auto_compact: bool,
 
@@ -563,7 +560,6 @@ impl App {
             forward_handle: None,
             oauth_join_handle: None,
             pending_oauth_provider: None,
-            pending_rename: None,
             pending_command_result: if config.open_session_picker {
                 Some(CommandResult::OpenSessionSelector)
             } else {

@@ -30,16 +30,6 @@ fn client_id() -> String {
     .expect("valid utf8")
 }
 
-#[allow(dead_code)]
-fn decode(s: &str) -> String {
-    String::from_utf8(
-        base64::engine::general_purpose::STANDARD
-            .decode(s)
-            .unwrap_or_default(),
-    )
-    .unwrap_or_default()
-}
-
 pub fn normalize_domain(input: &str) -> Option<String> {
     let trimmed = input.trim();
     if trimmed.is_empty() {
@@ -91,27 +81,6 @@ pub fn get_copilot_base_url(token: Option<&str>, enterprise_domain: Option<&str>
 async fn fetch_json(url: &str, headers: &[(&str, &str)]) -> Result<serde_json::Value, String> {
     let client = reqwest::Client::new();
     let mut req = client.get(url);
-    for (k, v) in headers {
-        req = req.header(*k, *v);
-    }
-    let resp = req.send().await.map_err(|e| format!("HTTP error: {}", e))?;
-    let status = resp.status();
-    if !status.is_success() {
-        let text = resp.text().await.unwrap_or_default();
-        return Err(format!("HTTP {}: {}", status, text));
-    }
-    resp.json().await.map_err(|e| format!("JSON error: {}", e))
-}
-
-/// Post JSON-encoded body to a URL.
-#[allow(dead_code)]
-async fn post_json(
-    url: &str,
-    headers: &[(&str, &str)],
-    body: &serde_json::Value,
-) -> Result<serde_json::Value, String> {
-    let client = reqwest::Client::new();
-    let mut req = client.post(url).json(body);
     for (k, v) in headers {
         req = req.header(*k, *v);
     }

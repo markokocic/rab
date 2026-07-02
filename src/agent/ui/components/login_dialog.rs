@@ -22,7 +22,6 @@ use crate::tui::keybindings::{
 use crossterm::event::{KeyCode, KeyEvent};
 
 /// Internal state for what the dialog is currently doing.
-#[allow(dead_code)]
 enum DialogState {
     /// Showing informational text (no input).
     Info { lines: Vec<String> },
@@ -49,8 +48,6 @@ enum DialogState {
     Progress { messages: Vec<String> },
     /// Manual input prompt (for paste redirect URL).
     ManualInput { prompt: String },
-    /// Dialog is done.
-    Done,
 }
 
 /// Login dialog — replaces editor area during login (matching pi's LoginDialogComponent).
@@ -308,9 +305,6 @@ impl Component for LoginDialog {
                 ));
                 lines.push(String::new());
                 lines.push(format!("  {}", theme.dim("Enter: submit · Esc: cancel")));
-            }
-            DialogState::Done => {
-                lines.push(format!("  {}", theme.dim("Login complete.")));
             }
         }
 

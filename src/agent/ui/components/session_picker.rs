@@ -250,9 +250,10 @@ impl SessionPicker {
                 let name = self.rename_buffer.trim().to_string();
                 if !name.is_empty()
                     && let Some(idx) = self.rename_target
-                        && let Some(path) = self.sessions.get(idx).map(|gs| gs.info.path.clone()) {
-                            self.pending_rename = Some((path, name));
-                        }
+                    && let Some(path) = self.sessions.get(idx).map(|gs| gs.info.path.clone())
+                {
+                    self.pending_rename = Some((path, name));
+                }
                 self.rename_mode = false;
                 self.rename_buffer.clear();
                 self.rename_target = None;

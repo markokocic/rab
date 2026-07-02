@@ -50,7 +50,6 @@ struct ModelDef {
     #[serde(default)]
     reasoning: bool,
     #[serde(default)]
-    #[allow(dead_code)]
     thinking_level_map: Option<HashMap<String, serde_json::Value>>,
     #[serde(default)]
     input: Option<Vec<String>>,
