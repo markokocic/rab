@@ -9,6 +9,7 @@ pub mod kill_ring;
 pub mod overlay;
 pub mod screen;
 pub mod terminal;
+pub mod terminal_colors;
 pub mod theme;
 pub mod tui_core;
 pub mod undo_stack;

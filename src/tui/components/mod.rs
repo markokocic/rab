@@ -2,6 +2,7 @@ pub mod r#box;
 pub mod diff;
 pub mod dynamic_lines;
 pub mod editor;
+pub mod image;
 pub mod loader;
 pub mod markdown;
 pub mod rc_ref_cell_component;
@@ -16,6 +17,7 @@ pub mod text;
 pub use r#box::TuiBox as Box;
 pub use dynamic_lines::DynamicLines;
 pub use editor::Editor;
+pub use image::{Image, ImageOptions};
 pub use loader::Loader;
 
 pub use select_list::{SelectItem, SelectList};

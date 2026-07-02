@@ -6,6 +6,7 @@ use crate::tui::Component;
 use crate::tui::container::Container;
 use crate::tui::overlay::OverlayOptions;
 use crate::tui::screen::Screen;
+use crate::tui::terminal_colors::{TerminalColorScheme, parse_osc11_background_color};
 use crate::tui::util::normalize_terminal_output;
 
 /// Cursor marker constant (matches pi: APC pi:c ST)
@@ -64,6 +65,8 @@ pub struct TUI {
     input_listeners: Vec<(ListenerId, InputListenerFn)>,
     /// Next unique ID for input listener registration.
     next_listener_id: ListenerId,
+    /// Listeners for terminal color scheme changes (OSC 11 / DEC 2031).
+    terminal_color_scheme_listeners: Vec<Box<dyn FnMut(TerminalColorScheme)>>,
 }
 
 impl TUI {
@@ -79,6 +82,7 @@ impl TUI {
             set_cursor_visible: None,
             input_listeners: Vec::new(),
             next_listener_id: 0,
+            terminal_color_scheme_listeners: Vec::new(),
         }
     }
 
@@ -271,6 +275,43 @@ impl TUI {
 
     pub fn has_overlays(&self) -> bool {
         self.root.has_overlays()
+    }
+
+    // ── Terminal color scheme detection (pi-style) ───────────────
+
+    /// Register a listener for terminal color scheme changes.
+    /// Listeners are called when an OSC 11 response or DEC 2031 report
+    /// is detected in the input stream.
+    pub fn on_terminal_color_scheme_change(
+        &mut self,
+        listener: Box<dyn FnMut(TerminalColorScheme)>,
+    ) {
+        self.terminal_color_scheme_listeners.push(listener);
+    }
+
+    /// Feed raw terminal data for OSC response parsing.
+    /// Returns true if the data was consumed as an OSC response.
+    /// Call this from the input pipeline when raw data is available.
+    pub fn feed_raw_terminal_data(&mut self, data: &str) -> bool {
+        // Check for OSC 11 background color response
+        if crate::tui::terminal_colors::is_osc11_background_color_response(data) {
+            if let Some(color) = parse_osc11_background_color(data) {
+                let scheme = crate::tui::terminal_colors::color_scheme_from_background(&color);
+                for listener in &mut self.terminal_color_scheme_listeners {
+                    listener(scheme);
+                }
+            }
+            return true;
+        }
+        // Check for DEC 2031 color scheme report
+        if let Some(scheme) = crate::tui::terminal_colors::parse_terminal_color_scheme_report(data)
+        {
+            for listener in &mut self.terminal_color_scheme_listeners {
+                listener(scheme);
+            }
+            return true;
+        }
+        false
     }
 
     // ── Input routing ──────────────────────────────────────────────
