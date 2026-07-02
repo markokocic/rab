@@ -12,8 +12,8 @@ use crate::tui::keybindings::{
     ACTION_APP_CLEAR, ACTION_APP_COMPACT_TOGGLE, ACTION_APP_EDITOR_EXTERNAL, ACTION_APP_ESCAPE,
     ACTION_APP_EXIT, ACTION_APP_HELP, ACTION_APP_MESSAGE_DEQUEUE, ACTION_APP_MESSAGE_FOLLOW_UP,
     ACTION_APP_MODEL_CYCLE_BACKWARD, ACTION_APP_MODEL_CYCLE_FORWARD, ACTION_APP_MODEL_SELECTOR,
-    ACTION_APP_THINKING_CYCLE, ACTION_APP_TOGGLE_THINKING, ACTION_APP_TOOLS_EXPAND,
-    ACTION_INPUT_SUBMIT, ACTION_SELECT_CANCEL, get_keybindings,
+    ACTION_APP_SESSION_RESUME, ACTION_APP_THINKING_CYCLE, ACTION_APP_TOGGLE_THINKING,
+    ACTION_APP_TOOLS_EXPAND, ACTION_INPUT_SUBMIT, ACTION_SELECT_CANCEL, get_keybindings,
 };
 
 /// Actions that ChatEditor can signal to the app layer.
@@ -53,6 +53,8 @@ pub enum InputAction {
     Dequeue,
     /// Ctrl+Shift+C pressed (app should toggle auto-compact)
     CompactToggle,
+    /// Keybinding for app.session.resume pressed (app should open session picker)
+    SessionResume,
 }
 
 /// Rab-specific chat editor that wraps the core tui::Editor.
@@ -294,6 +296,11 @@ impl ChatEditor {
         // ── Ctrl+Shift+C: toggle auto-compact ──
         if kb.matches(key, ACTION_APP_COMPACT_TOGGLE) {
             return InputAction::CompactToggle;
+        }
+
+        // ── app.session.resume: open session picker ──
+        if kb.matches(key, ACTION_APP_SESSION_RESUME) {
+            return InputAction::SessionResume;
         }
 
         // ═══════════════════════════════════════════════════════════════════

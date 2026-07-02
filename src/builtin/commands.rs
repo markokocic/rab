@@ -232,7 +232,7 @@ impl Extension for CommandsExtension {
             SlashCommand {
                 name: "resume".to_string(),
                 description: "Resume a different session".to_string(),
-                handler: Box::new(command_not_implemented_handler("resume")),
+                handler: Box::new(ResumeCommand),
             },
             SlashCommand {
                 name: "reload".to_string(),
@@ -256,6 +256,16 @@ struct QuitCommand;
 impl CommandHandler for QuitCommand {
     fn execute(&self, _args: &str) -> anyhow::Result<CommandResult> {
         Ok(CommandResult::Quit)
+    }
+}
+
+// ── /resume ──────────────────────────────────────────────────────
+
+struct ResumeCommand;
+
+impl CommandHandler for ResumeCommand {
+    fn execute(&self, _args: &str) -> anyhow::Result<CommandResult> {
+        Ok(CommandResult::OpenSessionSelector)
     }
 }
 

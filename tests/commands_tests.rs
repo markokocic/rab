@@ -145,17 +145,15 @@ fn new_ignores_args() {
 // ── /resume ───────────────────────────────────────────────────────
 
 #[test]
-fn resume_command_returns_not_implemented() {
+fn resume_command_opens_session_selector() {
     let ext = CommandsExtension::new(vec![]);
     let cmds = ext.commands();
     let cmd = cmds.iter().find(|c| c.name == "resume").unwrap();
     let result = cmd.handler.execute("");
     assert!(result.is_ok());
     match result.unwrap() {
-        CommandResult::Info(msg) => {
-            assert!(msg.contains("not implemented"), "unexpected info: {}", msg);
-        }
-        other => panic!("Expected Info(not implemented), got {:?}", other),
+        CommandResult::OpenSessionSelector => {}
+        other => panic!("Expected OpenSessionSelector, got {:?}", other),
     }
 }
 
@@ -167,10 +165,8 @@ fn resume_ignores_args() {
     let result = cmd.handler.execute("some args");
     assert!(result.is_ok());
     match result.unwrap() {
-        CommandResult::Info(msg) => {
-            assert!(msg.contains("not implemented"), "unexpected info: {}", msg);
-        }
-        other => panic!("Expected Info(not implemented), got {:?}", other),
+        CommandResult::OpenSessionSelector => {}
+        other => panic!("Expected OpenSessionSelector, got {:?}", other),
     }
 }
 

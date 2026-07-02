@@ -323,8 +323,7 @@ async fn main() -> anyhow::Result<()> {
             }
         }
     } else if resume_session {
-        // Pi-compatible: --resume opens interactive session picker
-        // For now, fall back to continue_recent
+        // Pi-compatible: --resume opens interactive session picker at startup
         rab::agent::AgentSession::continue_recent(&cwd, session_dir.as_deref())
     } else if continue_session {
         rab::agent::AgentSession::continue_recent(&cwd, session_dir.as_deref())
@@ -567,6 +566,7 @@ async fn main() -> anyhow::Result<()> {
             session_info: Some(session_info),
             api_key,
             registry: Arc::new(registry),
+            open_session_picker: resume_session,
         };
         ui::run(config, session).await
     } else {

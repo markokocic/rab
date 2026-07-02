@@ -146,6 +146,8 @@ pub struct AppConfig {
     pub api_key: String,
     /// Provider registry for model resolution and provider dispatch.
     pub registry: Arc<ProviderRegistry>,
+    /// If true, open the session picker immediately on startup (for --resume CLI).
+    pub open_session_picker: bool,
 }
 
 /// Main application state.
@@ -288,6 +290,9 @@ pub struct App {
     api_key: String,
     /// Session info updater for /session command.
     session_info: Option<std::sync::Arc<std::sync::Mutex<Option<SessionInfoInternal>>>>,
+
+    /// Pending rename from session picker (path, new_name).
+    pending_rename: Option<(PathBuf, String)>,
 
     /// Auto-compact toggle state.
     auto_compact: bool,
@@ -558,7 +563,12 @@ impl App {
             forward_handle: None,
             oauth_join_handle: None,
             pending_oauth_provider: None,
-            pending_command_result: None,
+            pending_rename: None,
+            pending_command_result: if config.open_session_picker {
+                Some(CommandResult::OpenSessionSelector)
+            } else {
+                None
+            },
             overlay_result_signal: Rc::new(RefCell::new(None)),
             pending_scoped_ids: Rc::new(RefCell::new(None)),
             hide_thinking: config.hide_thinking,
@@ -1238,10 +1248,14 @@ pub async fn run(config: AppConfig, session: AgentSession) -> anyhow::Result<()>
                     show_help_overlay(&mut app, &mut tui);
                 }
                 CommandResult::OpenSessionSelector => {
-                    // Open session picker
+                    // Open session picker with current-project context
                     let mut picker = crate::agent::ui::components::SessionPicker::new();
                     let repo = crate::agent::DefaultSessionRepo::new();
-                    picker.load_sessions(&repo);
+                    let session_dir = app
+                        .session
+                        .as_ref()
+                        .map(|s| s.session_manager().session_dir().to_path_buf());
+                    picker.load_sessions_with_cwd(&repo, Some(&app.cwd), session_dir.as_deref());
                     app.session_picker = Some(picker);
                     app.status_text = None;
                 }
@@ -1588,6 +1602,9 @@ fn handle_input(app: &mut App, tui: &mut TUI, term: &mut ProcessTerminal, key: &
         }
         InputAction::CompactToggle => {
             handle_compact_toggle(app);
+        }
+        InputAction::SessionResume => {
+            app.pending_command_result = Some(CommandResult::OpenSessionSelector);
         }
     }
 }
@@ -2851,6 +2868,33 @@ fn handle_session_picker_input(app: &mut App, key: &crossterm::event::KeyEvent) 
         return;
     };
 
+    // Handle rename mode input first
+    if picker.is_rename_mode() {
+        match key.code {
+            KeyCode::Esc => {
+                picker.cancel_rename();
+            }
+            KeyCode::Enter => {
+                picker.handle_rename_char('\n');
+                // Process pending rename — open the target session, write name, drop
+                if let Some((path, name)) = picker.take_pending_rename() {
+                    let mut session =
+                        crate::agent::session::SessionManager::open(&path, None, Some(&app.cwd));
+                    session.session_mut().append_session_info(&name);
+                    app.status_text = Some(format!("Session renamed to: {}", name));
+                }
+            }
+            KeyCode::Char(c) => {
+                picker.handle_rename_char(c);
+            }
+            KeyCode::Backspace => {
+                picker.handle_rename_char('\x7f');
+            }
+            _ => {}
+        }
+        return;
+    }
+
     match key.code {
         KeyCode::Esc => {
             app.session_picker = None;
@@ -2873,6 +2917,10 @@ fn handle_session_picker_input(app: &mut App, key: &crossterm::event::KeyEvent) 
         }
         KeyCode::Char('/') => {
             picker.set_filter("");
+        }
+        KeyCode::Char(c) if c == 'r' || c == 'R' => {
+            // Start rename mode for selected session
+            picker.start_rename();
         }
         KeyCode::Char(c) => {
             let mut filter = picker.filter().to_string();
