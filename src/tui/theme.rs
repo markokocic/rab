@@ -112,7 +112,29 @@ impl Style {
             suffix.push_str("\x1b[27m");
         }
 
-        format!("{}{}{}", prefix, text, suffix)
+        // Handle \x1b[0m (full reset) inside text by re-inserting the prefix
+        // after each reset, so our styles survive embedded ANSI codes
+        // (e.g. from syntect highlighting which uses full reset between tokens).
+        if text.contains("\x1b[0m") {
+            let mut result = String::new();
+            result.push_str(&prefix);
+            for segment in text.split_inclusive("\x1b[0m") {
+                result.push_str(segment);
+                if segment.ends_with("\x1b[0m") {
+                    result.push_str(&prefix);
+                }
+            }
+            // Remove trailing prefix if text ends with \x1b[0m (suffix will follow)
+            if text.ends_with("\x1b[0m") {
+                let prefix_len = prefix.len();
+                let result_len = result.len();
+                result.truncate(result_len.saturating_sub(prefix_len));
+            }
+            result.push_str(&suffix);
+            result
+        } else {
+            format!("{}{}{}", prefix, text, suffix)
+        }
     }
 
     /// Apply this style to text, padding to `width` visible columns.
