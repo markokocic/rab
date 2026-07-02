@@ -7,11 +7,13 @@
   </picture>
 </p>
 
-> ⚠️ **Work in Progress** — This project is under active development. APIs, features, and documentation are subject to change.
+> ⚠️ **Work in Progress** — This project is under active development, but already usable with some caveats. APIs, features, and configuration are subject to change.
 
 **rab** is a lightweight, extensible, Rust-based coding agent.
 
 Inspired by [pi coding agent](https://pi.dev).
+
+rab uses [yoagent](https://crates.io/crates/yoagent) as its core agentic loop and provider framework. Model and provider metadata is fetched from [models.dev](https://models.dev) via the `rab generate-models` command — see [Generating models](#-generating-models) below.
 
 ## 📛 Name
 
@@ -55,6 +57,16 @@ Or to install the binary:
 cargo install --path .
 rab
 ```
+
+## 🧩 Generating Models
+
+Model and provider information (base URLs, model costs, capabilities, etc.) is sourced from [models.dev](https://models.dev). To update the local catalog:
+
+```bash
+cargo run -- generate-models
+```
+
+This fetches provider/model data for GitHub Copilot, OpenCode (Zen), OpenCode Go, and DeepSeek, applies corrections, and writes it to `src/provider/models.json`.
 
 ## ⚖️ License
 

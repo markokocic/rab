@@ -313,7 +313,7 @@ impl Settings {
 /// Falls back to an unlocked read if the lock file cannot be opened.
 fn read_file_with_shared_lock(path: &std::path::Path) -> anyhow::Result<String> {
     let lock_path = path.with_extension("json.lock");
-    if let Ok(lock_file) = std::fs::OpenOptions::new()
+    if let Ok(_lock_file) = std::fs::OpenOptions::new()
         .create(true)
         .truncate(false)
         .read(true)
@@ -324,7 +324,7 @@ fn read_file_with_shared_lock(path: &std::path::Path) -> anyhow::Result<String> 
         {
             use std::os::unix::io::AsRawFd;
             unsafe {
-                libc::flock(lock_file.as_raw_fd(), libc::LOCK_SH);
+                libc::flock(_lock_file.as_raw_fd(), libc::LOCK_SH);
             }
         }
         let content = std::fs::read_to_string(path)
@@ -333,7 +333,7 @@ fn read_file_with_shared_lock(path: &std::path::Path) -> anyhow::Result<String> 
         {
             use std::os::unix::io::AsRawFd;
             unsafe {
-                libc::flock(lock_file.as_raw_fd(), libc::LOCK_UN);
+                libc::flock(_lock_file.as_raw_fd(), libc::LOCK_UN);
             }
         }
         Ok(content)
@@ -380,7 +380,7 @@ fn atomic_write_with_lock(path: &std::path::Path, content: &str) -> anyhow::Resu
 
     // Open (or create) the lock file and acquire an exclusive lock.
     let lock_path = path.with_extension("json.lock");
-    let lock_file = std::fs::OpenOptions::new()
+    let _lock_file = std::fs::OpenOptions::new()
         .create(true)
         .truncate(false)
         .read(true)
@@ -391,7 +391,7 @@ fn atomic_write_with_lock(path: &std::path::Path, content: &str) -> anyhow::Resu
     #[cfg(unix)]
     {
         use std::os::unix::io::AsRawFd;
-        if unsafe { libc::flock(lock_file.as_raw_fd(), libc::LOCK_EX) } != 0 {
+        if unsafe { libc::flock(_lock_file.as_raw_fd(), libc::LOCK_EX) } != 0 {
             let err = std::io::Error::last_os_error();
             anyhow::bail!("Failed to lock {}: {}", lock_path.display(), err);
         }
@@ -416,12 +416,12 @@ fn atomic_write_with_lock(path: &std::path::Path, content: &str) -> anyhow::Resu
         let _ = f.sync_all();
     }
 
-    // Release the lock (also happens on drop of lock_file).
+    // Release the lock (also happens on drop of _lock_file).
     #[cfg(unix)]
     {
         use std::os::unix::io::AsRawFd;
         unsafe {
-            libc::flock(lock_file.as_raw_fd(), libc::LOCK_UN);
+            libc::flock(_lock_file.as_raw_fd(), libc::LOCK_UN);
         }
     }
 
