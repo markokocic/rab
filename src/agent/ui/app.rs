@@ -75,7 +75,7 @@ use crate::agent::ui::theme::ThemeKey;
 use crate::tui::components::Spacer;
 use crate::tui::components::Text;
 use crate::tui::terminal::{self, ProcessTerminal, TerminalTrait};
-use crossterm::event::KeyEvent;
+use crossterm::event::{KeyEvent, KeyEventKind};
 use tokio::sync::mpsc;
 
 /// Thinking level cycle order (matching pi's thinking level enum). Cycles from
@@ -833,6 +833,12 @@ pub async fn run(config: AppConfig, session: AgentSession) -> anyhow::Result<()>
         loop {
             match terminal::try_recv_terminal_event() {
                 Some(terminal::TerminalEvent::Key(key)) => {
+                    // Ignore key release events (crossterm on Windows reports both
+                    // Press and Release for every keystroke — processing both would
+                    // duplicate every character).
+                    if key.kind == KeyEventKind::Release {
+                        continue;
+                    }
                     // TUI overlay routing first (overlays get first crack at input)
                     if !tui.route_input(&key) {
                         handle_input(&mut app, &mut tui, &mut term, &key);
