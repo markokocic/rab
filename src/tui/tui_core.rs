@@ -128,6 +128,34 @@ impl TUI {
         self.dirty
     }
 
+    // ── Child management (pi-style: TUI extends Container) ──────
+
+    /// Add a child component to the root container.
+    /// Matches pi's `tui.addChild(component)`.
+    pub fn add_child(&mut self, component: Box<dyn Component>) {
+        self.root.add_child(component);
+    }
+
+    /// Remove a child component from the root container.
+    pub fn remove_child(&mut self, component: &dyn Component) {
+        self.root.remove_child(component);
+    }
+
+    /// Remove all children from the root container.
+    pub fn clear(&mut self) {
+        self.root.clear();
+    }
+
+    /// Get a reference to all children.
+    pub fn children(&self) -> &[Box<dyn Component>] {
+        self.root.children()
+    }
+
+    /// Get a mutable reference to all children.
+    pub fn children_mut(&mut self) -> &mut [Box<dyn Component>] {
+        self.root.children_mut()
+    }
+
     // ── Overlay system (delegates to Container, manages focus) ────
 
     /// Show an overlay. Captures current focus as `pre_focus` in the overlay
@@ -242,9 +270,13 @@ impl TUI {
             .screen
             .render(lines.clone(), width as u16, height as u16, writer)?;
 
-        // Position hardware cursor if marker was found
         if let Some((row, col)) = cursor_pos {
+            // Position hardware cursor at the marker location
             self.position_hard_cursor(row, col, writer)?;
+        } else if self.has_overlays() {
+            // Hide hardware cursor when overlays are active (pi-style)
+            write!(writer, "\x1b[?25l")?;
+            writer.flush()?;
         }
 
         self.dirty = false;
@@ -298,6 +330,24 @@ impl TUI {
 impl Default for TUI {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+// ── Component implementation (delegates to root Container) ─────────
+// Pi-style: TUI extends Container, so it implements Component by
+// delegating to its internal root Container.
+
+impl Component for TUI {
+    fn render(&mut self, width: usize) -> Vec<String> {
+        self.root.render(width)
+    }
+
+    fn handle_input(&mut self, key: &KeyEvent) -> bool {
+        self.root.handle_input(key)
+    }
+
+    fn invalidate(&mut self) {
+        self.root.invalidate();
     }
 }
 

@@ -763,29 +763,27 @@ pub async fn run(config: AppConfig, session: AgentSession) -> anyhow::Result<()>
 
     // Set up the component tree in TUI.root (matching pi's TUI.extend(Container))
     // Order: header → chat_container (messages) → pending → status → queued → working → editor → footer
-    tui.root.add_child(std::boxed::Box::new(Spacer::new(1)));
-    tui.root.add_child(std::boxed::Box::new(
+    tui.add_child(std::boxed::Box::new(Spacer::new(1)));
+    tui.add_child(std::boxed::Box::new(
         crate::tui::components::RcRefCellComponent(
             app.header.clone() as Rc<RefCell<dyn Component>>,
         ),
     ));
-    tui.root.add_child(std::boxed::Box::new(Spacer::new(1)));
-    tui.root.add_child(std::boxed::Box::new(
+    tui.add_child(std::boxed::Box::new(Spacer::new(1)));
+    tui.add_child(std::boxed::Box::new(
         crate::tui::components::RcRefCellComponent(app.chat_container.clone()
             as std::rc::Rc<std::cell::RefCell<dyn crate::tui::Component>>),
     ));
-    tui.root.add_child(std::boxed::Box::new(
+    tui.add_child(std::boxed::Box::new(
         crate::tui::components::RcRefCellComponent(app.status_section.clone()
             as std::rc::Rc<std::cell::RefCell<dyn crate::tui::Component>>),
     ));
-    tui.root.add_child(std::boxed::Box::new(
+    tui.add_child(std::boxed::Box::new(
         crate::tui::components::RcRefCellComponent(app.working_section.clone()
             as std::rc::Rc<std::cell::RefCell<dyn crate::tui::Component>>),
     ));
-    tui.root
-        .add_child(std::boxed::Box::new(EditorComponent(app.editor.clone())));
-    tui.root
-        .add_child(std::boxed::Box::new(FooterComponent(app.footer.clone())));
+    tui.add_child(std::boxed::Box::new(EditorComponent(app.editor.clone())));
+    tui.add_child(std::boxed::Box::new(FooterComponent(app.footer.clone())));
 
     // Initialize editor border color
     app.editor.borrow_mut().update_border_color(
@@ -1483,7 +1481,7 @@ fn handle_input(app: &mut App, tui: &mut TUI, term: &mut ProcessTerminal, key: &
     // Root children (header → chat_container → pending → etc.) get a chance
     // to handle input before the editor. Components that don't consume the
     // event return false so it flows through to the editor.
-    if tui.root.handle_input(key) {
+    if tui.handle_input(key) {
         return;
     }
 
