@@ -20,7 +20,7 @@ pub mod components;
 
 pub use component::{Component, RenderCache, RenderCacheKey};
 pub use container::Container;
-pub use focusable::{CURSOR_MARKER, Focusable};
+pub use focusable::{CURSOR_MARKER, FocusTarget, Focusable};
 pub use fuzzy::{FuzzyMatch, fuzzy_filter, fuzzy_match};
 pub use keybindings::{
     ACTION_APP_CLEAR, ACTION_APP_COMPACT_TOGGLE, ACTION_APP_EDITOR_EXTERNAL, ACTION_APP_ESCAPE,

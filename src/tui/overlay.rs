@@ -102,6 +102,9 @@ pub struct OverlayEntry {
     pub focus_order: u64,
     /// Unique ID for this overlay
     pub id: u64,
+    /// Focus target that was active before this overlay was shown.
+    /// Restored when the overlay is dismissed.
+    pub pre_focus: crate::tui::FocusTarget,
 }
 
 /// Resolved overlay layout

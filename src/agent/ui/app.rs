@@ -753,7 +753,13 @@ pub async fn run(config: AppConfig, session: AgentSession) -> anyhow::Result<()>
     let mut app = App::new(config, session);
 
     // Focus the editor so it emits the cursor marker for Screen tracking
-    app.editor.borrow_mut().editor.set_focused(true);
+    {
+        let editor_rc = app.editor.clone();
+        tui.register_editor_focus(Box::new(move |focused| {
+            editor_rc.borrow_mut().editor.set_focused(focused);
+        }));
+    }
+    tui.set_focus(crate::tui::FocusTarget::Editor);
 
     // Set up the component tree in TUI.root (matching pi's TUI.extend(Container))
     // Order: header → chat_container (messages) → pending → status → queued → working → editor → footer
@@ -1299,8 +1305,6 @@ pub async fn run(config: AppConfig, session: AgentSession) -> anyhow::Result<()>
                         tree_selector.on_label_change = Some(Box::new(move |entry_id, label| {
                             label_signal.borrow_mut().push((entry_id, label));
                         }));
-                        use crate::tui::focusable::Focusable;
-                        tree_selector.set_focused(true);
                         tui.show_top_overlay(Box::new(tree_selector));
                     } else {
                         chat_info(&mut app, "No active session.");

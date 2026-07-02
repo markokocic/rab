@@ -1,5 +1,6 @@
 use crossterm::event::KeyEvent;
 
+use super::Focusable;
 use crate::tui::util::visible_width;
 
 /// Key for render caching — components return this to indicate when cache is valid.
@@ -98,4 +99,10 @@ pub trait Component {
     /// Toggle thinking block visibility. No-op by default.
     /// Override for components that display thinking content (AssistantMessageComponent).
     fn set_hide_thinking(&mut self, _hide: bool) {}
+
+    /// Return a `&mut dyn Focusable` if this component can receive keyboard focus.
+    /// Default returns None. Override for components that implement Focusable.
+    fn as_focusable(&mut self) -> Option<&mut dyn Focusable> {
+        None
+    }
 }

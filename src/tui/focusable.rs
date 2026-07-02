@@ -10,3 +10,15 @@ pub trait Focusable: Component {
 /// Components emit this at the cursor position when focused.
 /// The Screen finds and strips this marker, then positions the hardware cursor there.
 pub const CURSOR_MARKER: &str = "\x1b_pi:c\x07";
+
+/// Identifies which component is currently focused.
+/// Used by TUI for centralized focus tracking.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FocusTarget {
+    /// No component has focus.
+    None,
+    /// The editor component has focus.
+    Editor,
+    /// An overlay component (by overlay ID) has focus.
+    Overlay(u64),
+}

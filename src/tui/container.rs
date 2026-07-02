@@ -123,7 +123,14 @@ impl Container {
     // ── Overlay management ──
 
     /// Show an overlay. Returns the overlay ID for later removal.
-    pub fn show_overlay(&mut self, component: Box<dyn Component>, options: OverlayOptions) -> u64 {
+    /// `pre_focus` records which focus target was active before showing this overlay
+    /// and will be restored when the overlay is dismissed.
+    pub fn show_overlay(
+        &mut self,
+        component: Box<dyn Component>,
+        options: OverlayOptions,
+        pre_focus: crate::tui::FocusTarget,
+    ) -> u64 {
         let id = self.overlay_stack.len() as u64;
         self.overlay_stack.push(OverlayEntry {
             component,
@@ -131,18 +138,25 @@ impl Container {
             hidden: false,
             focus_order: id,
             id,
+            pre_focus,
         });
         id
     }
 
-    /// Hide an overlay by ID.
-    pub fn hide_overlay(&mut self, id: u64) {
-        self.overlay_stack.retain(|e| e.id != id);
+    /// Hide an overlay by ID. Returns the pre_focus target that was stored
+    /// with that overlay, so the TUI can restore focus.
+    pub fn hide_overlay(&mut self, id: u64) -> Option<crate::tui::FocusTarget> {
+        let idx = self.overlay_stack.iter().position(|e| e.id == id);
+        idx.map(|i| {
+            let entry = self.overlay_stack.remove(i);
+            entry.pre_focus
+        })
     }
 
-    /// Hide the topmost overlay.
-    pub fn pop_overlay(&mut self) {
-        self.overlay_stack.pop();
+    /// Hide the topmost overlay. Returns the pre_focus target that was stored
+    /// with that overlay, so the TUI can restore focus.
+    pub fn pop_overlay(&mut self) -> Option<crate::tui::FocusTarget> {
+        self.overlay_stack.pop().map(|e| e.pre_focus)
     }
 
     /// Check if there are any visible overlays.
@@ -162,6 +176,19 @@ impl Container {
 
     pub fn overlay_stack_mut(&mut self) -> &mut Vec<OverlayEntry> {
         &mut self.overlay_stack
+    }
+
+    /// Set the `focused` flag on an overlay component (by its overlay ID).
+    /// Called by TUI when focus transitions to/from an overlay.
+    /// Returns true if the overlay was found and the focus was set.
+    pub fn set_overlay_focused(&mut self, id: u64, focused: bool) -> bool {
+        if let Some(entry) = self.overlay_stack.iter_mut().find(|e| e.id == id)
+            && let Some(f) = entry.component.as_mut().as_focusable()
+        {
+            f.set_focused(focused);
+            return true;
+        }
+        false
     }
 }
 

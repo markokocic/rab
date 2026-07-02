@@ -1623,6 +1623,10 @@ impl Component for TreeSelector {
     }
 
     fn invalidate(&mut self) {}
+
+    fn as_focusable(&mut self) -> Option<&mut dyn crate::tui::Focusable> {
+        Some(self)
+    }
 }
 
 impl Focusable for TreeSelector {

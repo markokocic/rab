@@ -32,6 +32,14 @@ pub struct TUI {
     height: usize,
     /// Whether content changed since last render
     dirty: bool,
+
+    // ── Centralized focus management (matching pi's TUI) ──────────
+    /// Currently focused target.
+    focused: crate::tui::FocusTarget,
+    /// Callback to set/unset focus on the editor component.
+    /// The editor is behind Rc<RefCell<>> and can't be accessed through
+    /// the Component trait's as_focusable(), so we use this callback.
+    set_editor_focus: Option<Box<dyn FnMut(bool)>>,
 }
 
 impl TUI {
@@ -42,6 +50,49 @@ impl TUI {
             width: 80,
             height: 24,
             dirty: true,
+            focused: crate::tui::FocusTarget::None,
+            set_editor_focus: None,
+        }
+    }
+
+    // ── Focus management ──────────────────────────────────────────
+
+    /// Register a callback to set/unset focus on the editor.
+    /// Called during app initialization before showing any overlays.
+    pub fn register_editor_focus(&mut self, callback: Box<dyn FnMut(bool)>) {
+        self.set_editor_focus = Some(callback);
+    }
+
+    /// Set focus to a specific target. Handles clearing old focus and
+    /// setting new focus through the appropriate channel.
+    pub fn set_focus(&mut self, target: crate::tui::FocusTarget) {
+        self.clear_focused();
+        match target {
+            crate::tui::FocusTarget::None => {}
+            crate::tui::FocusTarget::Editor => {
+                if let Some(ref mut cb) = self.set_editor_focus {
+                    cb(true);
+                }
+            }
+            crate::tui::FocusTarget::Overlay(id) => {
+                self.root.set_overlay_focused(id, true);
+            }
+        }
+        self.focused = target;
+    }
+
+    /// Clear the currently focused component's `focused` flag.
+    fn clear_focused(&mut self) {
+        match self.focused {
+            crate::tui::FocusTarget::None => {}
+            crate::tui::FocusTarget::Editor => {
+                if let Some(ref mut cb) = self.set_editor_focus {
+                    cb(false);
+                }
+            }
+            crate::tui::FocusTarget::Overlay(id) => {
+                self.root.set_overlay_focused(id, false);
+            }
         }
     }
 
@@ -77,10 +128,24 @@ impl TUI {
         self.dirty
     }
 
-    // ── Overlay system (delegates to Container) ───────────────────
+    // ── Overlay system (delegates to Container, manages focus) ────
 
+    /// Show an overlay. Captures current focus as `pre_focus` in the overlay
+    /// entry. If the overlay component is Focusable and the overlay is not
+    /// `non_capturing`, gives focus to the overlay.
     pub fn show_overlay(&mut self, component: Box<dyn Component>, options: OverlayOptions) -> u64 {
-        let id = self.root.show_overlay(component, options);
+        let non_capturing = options.non_capturing;
+        let pre_focus = self.focused;
+        let id = self.root.show_overlay(component, options, pre_focus);
+
+        if !non_capturing {
+            // Unfocus current component
+            self.clear_focused();
+            // Give focus to the overlay
+            self.root.set_overlay_focused(id, true);
+            self.focused = crate::tui::FocusTarget::Overlay(id);
+        }
+
         self.dirty = true;
         id
     }
@@ -99,14 +164,30 @@ impl TUI {
         )
     }
 
+    /// Hide an overlay by ID and restore the focus that was active before
+    /// the overlay was shown.
     pub fn hide_overlay(&mut self, id: u64) {
-        self.root.hide_overlay(id);
+        if self.focused == crate::tui::FocusTarget::Overlay(id) {
+            self.clear_focused();
+        }
+        let pre_focus = self.root.hide_overlay(id);
         self.dirty = true;
+        if let Some(target) = pre_focus {
+            self.set_focus(target);
+        }
     }
 
+    /// Hide the topmost overlay and restore the focus that was active before
+    /// the overlay was shown.
     pub fn pop_overlay(&mut self) {
-        self.root.pop_overlay();
+        if let crate::tui::FocusTarget::Overlay(_id) = self.focused {
+            self.clear_focused();
+        }
+        let pre_focus = self.root.pop_overlay();
         self.dirty = true;
+        if let Some(target) = pre_focus {
+            self.set_focus(target);
+        }
     }
 
     pub fn has_overlays(&self) -> bool {
@@ -320,7 +401,11 @@ mod tests {
         let mut c = Container::new();
         c.set_term_height(24);
         let child = crate::tui::components::Text::new("test", 0, 0, None);
-        c.show_overlay(Box::new(child), OverlayOptions::default());
+        c.show_overlay(
+            Box::new(child),
+            OverlayOptions::default(),
+            crate::tui::FocusTarget::None,
+        );
         let lines = c.render(80);
         assert!(!lines.is_empty());
     }
@@ -336,6 +421,7 @@ mod tests {
                 width: Some(SizeValue::Percent(50.0)),
                 ..Default::default()
             },
+            crate::tui::FocusTarget::None,
         );
         let lines = c.render(80);
         assert!(!lines.is_empty());
@@ -358,6 +444,7 @@ mod tests {
                 anchor: Some(OverlayAnchor::TopLeft),
                 ..Default::default()
             },
+            crate::tui::FocusTarget::None,
         );
         let lines = c.render(80);
         assert!(!lines.is_empty());

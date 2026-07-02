@@ -1877,6 +1877,10 @@ impl Component for Editor {
     fn is_focusable(&self) -> bool {
         true
     }
+
+    fn as_focusable(&mut self) -> Option<&mut dyn crate::tui::Focusable> {
+        Some(self)
+    }
 }
 
 impl Focusable for Editor {
