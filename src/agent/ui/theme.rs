@@ -392,6 +392,10 @@ impl Theme for RabTheme {
     fn fg_ansi_key(&self, key: ThemeKey) -> &str {
         self.fg_ansi_key(key)
     }
+
+    fn bg_ansi(&self, color: &str) -> &str {
+        self.bg_ansi(color)
+    }
 }
 
 // ── Global Theme State ───────────────────────────────────────────

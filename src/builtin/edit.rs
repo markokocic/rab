@@ -3,6 +3,8 @@ use crate::agent::extension::{ToolRenderContext, ToolRenderer};
 use crate::tui::Component;
 use crate::tui::Theme;
 use crate::tui::ThemeKey;
+use crate::tui::components::spacer::Spacer;
+use crate::tui::container::Container;
 use async_trait::async_trait;
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
@@ -1015,12 +1017,16 @@ struct EditRenderer {
     /// Cached diff preview, computed from file system during render_call.
     /// Protected by Mutex for interior mutability in a Sync trait impl.
     preview: std::sync::Arc<Mutex<Option<EditPreview>>>,
+    /// Whether the execution settled with an error (pi's settledError).
+    /// Set in render_result, used by render_call for background color.
+    settled_error: std::sync::Arc<Mutex<bool>>,
 }
 
 impl EditRenderer {
     fn new() -> Self {
         Self {
             preview: std::sync::Arc::new(Mutex::new(None)),
+            settled_error: std::sync::Arc::new(Mutex::new(false)),
         }
     }
 }
@@ -1058,7 +1064,10 @@ impl ToolRenderer for EditRenderer {
             path_disp
         );
 
-        // Decide what diff to show
+        // Decide what diff to show (pi-compatible ordering)
+        // 1. Actual diff from result details (if available)
+        // 2. Cached preview (if available)
+        // 3. None
         let actual_diff = ctx
             .details
             .as_ref()
@@ -1066,80 +1075,69 @@ impl ToolRenderer for EditRenderer {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
+        // When args_complete and no cached preview yet, start async computation
+        // (pi: context.argsComplete && previewInput && !component.preview && !component.previewPending)
+        if actual_diff.is_none()
+            && ctx.args_complete
+            && self.preview.lock().ok().is_none_or(|p| p.is_none())
+            && let Some((path_str, edits)) = parse_path_edits(args)
+        {
+            // Mark as pending to avoid re-starting computation
+            if let Ok(mut p) = self.preview.lock()
+                && p.is_none()
+            {
+                *p = Some(EditPreview {
+                    diff: String::new(),
+                    error: Some("pending".to_string()),
+                });
+            }
+
+            let preview_arc = self.preview.clone();
+            let path_owned = path_str;
+            let edits_owned = edits;
+            let cwd_owned = ctx.cwd.clone();
+            let invalidate_tx = ctx.invalidate.clone();
+            tokio::spawn(async move {
+                let result =
+                    compute_edits_diff(&path_owned, &edits_owned, std::path::Path::new(&cwd_owned));
+                let (diff, error) = match result {
+                    Ok(d) => (d, None),
+                    Err(e) => (String::new(), Some(e)),
+                };
+                if let Ok(mut p) = preview_arc.lock() {
+                    *p = Some(EditPreview { diff, error });
+                }
+                if let Some(ref tx) = invalidate_tx {
+                    let _ = tx.send(());
+                }
+            });
+        }
+
         let diff_to_show = if let Some(ref d) = actual_diff {
             Some(d.clone())
         } else if ctx.args_complete {
+            // Use cached preview (pi: context.argsComplete branch)
             self.preview.lock().ok().and_then(|p| {
                 p.as_ref().map(|preview| {
                     if let Some(ref err) = preview.error {
-                        format!("error: {}", err)
+                        if err == "pending" {
+                            // Still computing, show nothing yet
+                            String::new()
+                        } else {
+                            format!("error: {}", err)
+                        }
                     } else {
                         preview.diff.clone()
                     }
                 })
             })
         } else {
-            let cached = self.preview.lock().ok().and_then(|p| p.clone());
-
-            if let Some(preview) = cached {
-                if let Some(ref err) = preview.error {
-                    Some(format!("error: {}", err))
-                } else {
-                    Some(preview.diff.clone())
-                }
-            } else if let Some((path_str, edits)) = parse_path_edits(args) {
-                let mut preview_lock = self.preview.lock().unwrap();
-                if preview_lock.is_some() {
-                    drop(preview_lock);
-                    let cached = self.preview.lock().ok().and_then(|p| p.clone());
-                    cached.map(|preview| {
-                        if let Some(ref err) = preview.error {
-                            format!("error: {}", err)
-                        } else {
-                            preview.diff.clone()
-                        }
-                    })
-                } else {
-                    *preview_lock = Some(EditPreview {
-                        diff: String::new(),
-                        error: Some("pending".to_string()),
-                    });
-                    drop(preview_lock);
-
-                    let preview_arc = self.preview.clone();
-                    let path_owned = path_str.clone();
-                    let edits_owned = edits.clone();
-                    let cwd_owned = ctx.cwd.clone();
-                    let invalidate_tx = ctx.invalidate.clone();
-                    tokio::spawn(async move {
-                        let result = compute_edits_diff(
-                            &path_owned,
-                            &edits_owned,
-                            std::path::Path::new(&cwd_owned),
-                        );
-                        let (diff, error) = match result {
-                            Ok(d) => (d, None),
-                            Err(e) => (String::new(), Some(e)),
-                        };
-                        if let Ok(mut p) = preview_arc.lock() {
-                            *p = Some(EditPreview { diff, error });
-                        }
-                        if let Some(ref tx) = invalidate_tx {
-                            let _ = tx.send(());
-                        }
-                    });
-
-                    None
-                }
-            } else {
-                None
-            }
+            None
         };
 
-        // ── Build the component tree ──
-        // Pi: edit tool returns Box(1,1) with bgFn based on preview/error state.
-        // Since this is render_self: true, we wrap content in background-styled text.
-
+        // ── Compute background color (pi-compatible) ──
+        // Precedence: preview (error/success) → settled_error → pending
+        let settled = self.settled_error.lock().map(|g| *g).unwrap_or(false);
         let bg_key = if let Ok(p) = self.preview.lock()
             && let Some(ref preview) = *p
             && preview.error.as_deref() != Some("pending")
@@ -1149,30 +1147,53 @@ impl ToolRenderer for EditRenderer {
             } else {
                 "toolSuccessBg"
             }
-        } else if ctx.is_error {
+        } else if settled || ctx.is_error {
             "toolErrorBg"
-        } else if ctx.args_complete && !ctx.is_partial {
-            "toolSuccessBg"
         } else {
             "toolPendingBg"
         };
+        let _ = settled;
 
-        let mut content = header;
+        // ── Build the component tree (pi-compatible) ──
+        // Pi: Box(1,1, bgFn) containing Text(header, 0, 0) + [Spacer(1) + Text(body, 0, 0)]
+        let bg_ansi = theme.bg_ansi(bg_key);
+        let mut edit_box = crate::tui::components::r#box::TuiBox::new(
+            1,
+            1,
+            Some(crate::tui::Style::new().bg(bg_ansi.to_string())),
+        );
 
-        // Diff preview (if available)
+        edit_box.add_child(std::boxed::Box::new(crate::tui::components::Text::new(
+            header, 0, 0, None,
+        )));
+
         if let Some(ref diff) = diff_to_show {
-            if let Some(err_msg) = diff.strip_prefix("error: ") {
-                content.push_str(&format!("\n\n{}", theme.fg_key(ThemeKey::Error, err_msg)));
-            } else if !diff.is_empty() {
+            if diff.is_empty() {
+                // No diff to show (still computing or no preview input)
+            } else if let Some(err_msg) = diff.strip_prefix("error: ") {
+                // Error preview: add spacer + error text
+                edit_box.add_child(std::boxed::Box::new(Spacer::new(1)));
+                edit_box.add_child(std::boxed::Box::new(crate::tui::components::Text::new(
+                    theme.fg_key(ThemeKey::Error, err_msg),
+                    0,
+                    0,
+                    None,
+                )));
+            } else {
+                // Diff preview: add spacer + rendered diff
                 let rendered_diff =
                     crate::tui::components::diff::render_diff(diff, theme).join("\n");
-                content.push_str(&format!("\n\n{}", rendered_diff));
+                edit_box.add_child(std::boxed::Box::new(Spacer::new(1)));
+                edit_box.add_child(std::boxed::Box::new(crate::tui::components::Text::new(
+                    rendered_diff,
+                    0,
+                    0,
+                    None,
+                )));
             }
         }
 
-        // Apply background via theme.bg (which wraps text in ANSI bg codes)
-        let styled = theme.bg(bg_key, &content);
-        std::boxed::Box::new(crate::tui::components::Text::new(styled, 0, 0, None))
+        std::boxed::Box::new(edit_box)
     }
 
     fn render_result(
@@ -1181,23 +1202,23 @@ impl ToolRenderer for EditRenderer {
         theme: &dyn Theme,
         ctx: &ToolRenderContext,
     ) -> Option<Box<dyn Component>> {
-        // Result is already shown in the call header (via render_call using ctx.details).
-        // If there's an error message not already shown, return it.
+        // Pi: track settledError for background transition in renderCall
+        if let Ok(mut s) = self.settled_error.lock() {
+            *s = ctx.is_error;
+        }
+
+        // Pi: formatEditResult returns undefined if error already shown in preview
         if ctx.is_error && !content.is_empty() {
             let msg = content;
-            // Check if this error is already shown as preview
             let preview_err = self
                 .preview
                 .lock()
                 .ok()
                 .and_then(|p| p.as_ref().and_then(|preview| preview.error.clone()));
             if preview_err.as_deref() != Some(msg) {
-                // Pi: renderResult wraps error in Container(Spacer(1) + Text(output, 1, 0)).
-                // Text(1,0) adds 1-space padding on each side.
-                let mut container = crate::tui::container::Container::new();
-                container.add_child(std::boxed::Box::new(
-                    crate::tui::components::spacer::Spacer::new(1),
-                ));
+                // Pi: Container(Spacer(1) + Text(error, 1, 0))
+                let mut container = Container::new();
+                container.add_child(std::boxed::Box::new(Spacer::new(1)));
                 container.add_child(std::boxed::Box::new(crate::tui::components::Text::new(
                     theme.fg_key(ThemeKey::Error, msg),
                     1,

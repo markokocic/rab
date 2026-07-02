@@ -348,6 +348,12 @@ pub trait Theme {
         ""
     }
 
+    /// Return the ANSI escape code for a background color (without text).
+    /// Default implementation returns empty string — override in concrete themes.
+    fn bg_ansi(&self, _color: &str) -> &str {
+        ""
+    }
+
     /// Return the ANSI escape code for a `ThemeKey` color (without text).
     fn fg_ansi_key(&self, key: ThemeKey) -> &str {
         self.fg_ansi(key.as_str())

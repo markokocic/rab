@@ -469,8 +469,14 @@ impl ToolRenderer for WriteRenderer {
             Some("") => {}
             Some(text) => {
                 let mut cache_guard = self.cache.lock().unwrap();
-                *cache_guard =
-                    update_highlight_cache_incremental(cache_guard.take(), raw_path, text);
+
+                // Pi: when argsComplete, do full rebuild; otherwise incremental
+                if ctx.args_complete {
+                    *cache_guard = rebuild_highlight_cache(raw_path, text);
+                } else {
+                    *cache_guard =
+                        update_highlight_cache_incremental(cache_guard.take(), raw_path, text);
+                }
 
                 let lang = raw_path.and_then(crate::tui::components::path_to_language);
 
@@ -557,16 +563,13 @@ impl ToolRenderer for WriteRenderer {
         theme: &dyn Theme,
         ctx: &ToolRenderContext,
     ) -> Option<Box<dyn Component>> {
-        // On success, pi shows no result output (just the background color transition).
-        // On error, show the error text.
+        // Pi: formatWriteResult prepends \n before error text
         if !ctx.is_error || content.is_empty() {
             return None;
         }
+        let error_text = format!("\n{}", theme.fg_key(ThemeKey::Error, content));
         Some(std::boxed::Box::new(crate::tui::components::Text::new(
-            theme.fg_key(ThemeKey::Error, content),
-            0,
-            0,
-            None,
+            error_text, 0, 0, None,
         )))
     }
 }

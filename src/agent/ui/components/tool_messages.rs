@@ -189,6 +189,16 @@ impl ToolExecComponent {
     /// Build the ToolRenderContext from current state.
     fn build_context(&self) -> ToolRenderContext {
         let expand_key = format_key_hint(crate::tui::keybindings::ACTION_APP_TOOLS_EXPAND);
+
+        // Extract file path from args for syntax highlighting (read/write tools).
+        // Pi passes the full args in ToolRenderContext; we extract the common path field.
+        let file_path = self
+            .args
+            .get("file_path")
+            .or_else(|| self.args.get("path"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
         ToolRenderContext {
             expanded: self.expanded,
             args_complete: self.is_complete,
@@ -202,7 +212,7 @@ impl ToolExecComponent {
             cancelled: false,
             was_truncated: false,
             full_output_path: None,
-            file_path: None,
+            file_path,
             expand_key,
             details: self.details.clone(),
             state: self.state.clone(),
