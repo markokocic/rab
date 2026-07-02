@@ -20,6 +20,8 @@ impl DynamicLines {
     /// Set the lines for this component.
     pub fn set_lines(&mut self, new_lines: Vec<String>) {
         self.lines = new_lines;
+        // Invalidate cache so the Container re-renders this component.
+        self.last_hash = 0;
     }
 
     /// Clear the lines.

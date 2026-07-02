@@ -1146,8 +1146,8 @@ pub async fn run(config: AppConfig, session: AgentSession) -> anyhow::Result<()>
                         }
                     }
                 }
+                dirty = true;
             }
-            dirty = true;
         }
 
         // Re-drain agent events that arrived during terminal event processing.
@@ -1407,7 +1407,7 @@ pub async fn run(config: AppConfig, session: AgentSession) -> anyhow::Result<()>
         // Idle backpressure: sleep briefly so we don't busy-wait when idle.
         // Active frames (dirty, streaming, working spinner) run at ~60fps;
         // idle frames pace at ~20fps to save CPU/battery.
-        tokio::time::sleep(if dirty || app.is_streaming || app.working.should_show() {
+        tokio::time::sleep(if dirty || app.is_streaming || app.working.active {
             Duration::from_millis(16)
         } else {
             Duration::from_millis(50)

@@ -403,8 +403,8 @@ impl Container {
             Self::resolve_anchor_col(anchor, width, avail_width, margin_left)
         };
 
-        let row = (row as isize + options.offset_y.unwrap_or(0)) as usize;
-        let col = (col as isize + options.offset_x.unwrap_or(0)) as usize;
+        let row = ((row as isize + options.offset_y.unwrap_or(0)).max(0)) as usize;
+        let col = ((col as isize + options.offset_x.unwrap_or(0)).max(0)) as usize;
 
         OverlayLayout {
             width,

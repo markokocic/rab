@@ -1438,26 +1438,38 @@ impl SessionManager {
             );
         }
 
-        let child_edges: Vec<(Option<String>, String)> = entries
-            .iter()
-            .map(|e| (e.parent_id().map(|s| s.to_string()), e.id().to_string()))
-            .collect();
-
-        let mut child_additions: Vec<(String, SessionTreeNode)> = Vec::new();
+        // Build parent-child edges: (parent_id, child_id)
+        let mut child_edges: Vec<(String, String)> = Vec::new();
         let mut roots: Vec<String> = Vec::new();
-        for (parent_id, child_id) in &child_edges {
-            if let Some(pid) = parent_id {
-                if !node_map.contains_key(pid) {
-                    roots.push(child_id.clone());
-                } else if let Some(child) = node_map.get(child_id) {
-                    child_additions.push((pid.clone(), child.clone()));
+        for entry in &entries {
+            let id = entry.id().to_string();
+            match entry.parent_id().map(|s| s.to_string()) {
+                None => {
+                    // No parent → root
+                    roots.push(id);
                 }
-            } else {
-                roots.push(child_id.clone());
+                Some(ref pid) if pid == &id => {
+                    // Self-reference → root
+                    roots.push(id);
+                }
+                Some(pid) => {
+                    if node_map.contains_key(&pid) {
+                        child_edges.push((pid, id));
+                    } else {
+                        // Orphan (parent not found) → treat as root
+                        roots.push(id);
+                    }
+                }
             }
         }
-        for (pid, child) in child_additions {
-            if let Some(parent) = node_map.get_mut(&pid) {
+
+        // Process edges in REVERSE order (leaves → roots) so children get
+        // moved into parents before parents are themselves moved upward.
+        // This avoids the cloning issue where grandchildren would be lost.
+        for (pid, cid) in child_edges.into_iter().rev() {
+            if let Some(child) = node_map.remove(&cid)
+                && let Some(parent) = node_map.get_mut(&pid)
+            {
                 parent.children.push(child);
             }
         }

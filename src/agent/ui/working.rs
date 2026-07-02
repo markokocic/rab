@@ -79,8 +79,11 @@ impl WorkingIndicator {
     }
 
     /// Returns true if the indicator should be shown (active or show_once).
-    pub fn should_show(&self) -> bool {
-        (self.active || self.show_once) && !self.options.frames.is_empty()
+    /// Clears show_once after the first check so idle frames don't stay at 16ms.
+    pub fn should_show(&mut self) -> bool {
+        let show = (self.active || self.show_once) && !self.options.frames.is_empty();
+        self.show_once = false;
+        show
     }
 
     /// Configure the indicator frames and interval.
