@@ -70,17 +70,15 @@ fn test_model_argument_completions() {
 // ── /hotkeys ──────────────────────────────────────────────────────
 
 #[test]
-fn hotkeys_command_returns_not_implemented() {
+fn hotkeys_command_returns_show_help() {
     let ext = CommandsExtension::new(vec![]);
     let cmds = ext.commands();
     let cmd = cmds.iter().find(|c| c.name == "hotkeys").unwrap();
     let result = cmd.handler.execute("");
     assert!(result.is_ok());
     match result.unwrap() {
-        CommandResult::Info(msg) => {
-            assert!(msg.contains("not implemented"), "unexpected info: {}", msg);
-        }
-        other => panic!("Expected Info(not implemented), got {:?}", other),
+        CommandResult::ShowHelp => {}
+        other => panic!("Expected ShowHelp, got {:?}", other),
     }
 }
 
@@ -92,10 +90,8 @@ fn hotkeys_ignores_args() {
     let result = cmd.handler.execute("anything");
     assert!(result.is_ok());
     match result.unwrap() {
-        CommandResult::Info(msg) => {
-            assert!(msg.contains("not implemented"), "unexpected info: {}", msg);
-        }
-        other => panic!("Expected Info(not implemented), got {:?}", other),
+        CommandResult::ShowHelp => {}
+        other => panic!("Expected ShowHelp, got {:?}", other),
     }
 }
 

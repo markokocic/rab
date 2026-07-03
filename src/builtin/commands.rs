@@ -192,7 +192,7 @@ impl Extension for CommandsExtension {
             SlashCommand {
                 name: "hotkeys".to_string(),
                 description: "Show all keyboard shortcuts".to_string(),
-                handler: Box::new(command_not_implemented_handler("hotkeys")),
+                handler: Box::new(HotkeysCommand),
             },
             SlashCommand {
                 name: "fork".to_string(),
@@ -485,6 +485,16 @@ impl CommandHandler for CloneCommand {
     }
 }
 
+// ── /hotkeys ──────────────────────────────────────────────────────
+
+struct HotkeysCommand;
+
+impl CommandHandler for HotkeysCommand {
+    fn execute(&self, _args: &str) -> anyhow::Result<CommandResult> {
+        Ok(CommandResult::ShowHelp)
+    }
+}
+
 // ── /fork ─────────────────────────────────────────────────────────
 
 struct ForkCommand;
@@ -524,26 +534,5 @@ impl CommandHandler for CompactCommand {
             Some(args.trim().to_string())
         };
         Ok(CommandResult::CompactSession(custom_instructions))
-    }
-}
-
-// ── Not Implemented handler factory ──────────────────────────────
-
-struct NotImplementedHandler {
-    name: String,
-}
-
-impl CommandHandler for NotImplementedHandler {
-    fn execute(&self, _args: &str) -> anyhow::Result<CommandResult> {
-        Ok(CommandResult::Info(format!(
-            "/{} - not implemented yet.",
-            self.name
-        )))
-    }
-}
-
-fn command_not_implemented_handler(name: &str) -> NotImplementedHandler {
-    NotImplementedHandler {
-        name: name.to_string(),
     }
 }
