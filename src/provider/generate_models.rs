@@ -271,7 +271,16 @@ fn resolve_api_and_base_url<'a>(
         Some("@ai-sdk/anthropic") => ("anthropic-messages", Some(base_path.into())),
         Some("@ai-sdk/google") => ("google-generative-ai", Some(format!("{}/v1", base_path))),
         _ => {
-            // GitHub Copilot's openai-completions API is at the root, not under /v1
+            // GitHub Copilot: Claude Anthropic models (haiku, sonnet, opus) use the
+            // Anthropic Messages API. claude-fable-* uses openai-completions.
+            // models.dev does not set npm for Copilot models, so detect by ID.
+            if provider_key == "github-copilot"
+                && model_id.starts_with("claude-")
+                && !model_id.contains("fable")
+            {
+                return ("anthropic-messages", Some(base_path.into()));
+            }
+            // All other GitHub Copilot models use openai-completions at the root (no /v1).
             if provider_key == "github-copilot" {
                 return ("openai-completions", Some(base_path.into()));
             }
@@ -288,6 +297,28 @@ fn resolve_api_and_base_url<'a>(
     }
 }
 
+fn is_anthropic_adaptive_thinking_model(model_id: &str) -> bool {
+    model_id.contains("opus-4-6")
+        || model_id.contains("opus-4.6")
+        || model_id.contains("opus-4-7")
+        || model_id.contains("opus-4.7")
+        || model_id.contains("opus-4-8")
+        || model_id.contains("opus-4.8")
+        || model_id.contains("sonnet-4-6")
+        || model_id.contains("sonnet-4.6")
+        || model_id.contains("sonnet-5")
+        || model_id.contains("sonnet.5")
+        || model_id.contains("fable-5")
+}
+
+fn is_anthropic_temperature_unsupported(model_id: &str) -> bool {
+    let id = model_id.to_lowercase();
+    id.contains("opus-4-7")
+        || id.contains("opus-4.7")
+        || id.contains("opus-4-8")
+        || id.contains("opus-4.8")
+}
+
 /// Apply pi-style corrections to a model entry.
 fn apply_corrections(
     provider_key: &str,
@@ -298,6 +329,61 @@ fn apply_corrections(
     _obj: &serde_json::Map<String, Value>,
     _npm: Option<&str>,
 ) {
+    // ── Anthropic Messages corrections ────────────────────────────────────
+    if api == "anthropic-messages" {
+        let mut compat = serde_json::Map::new();
+
+        // forceAdaptiveThinking for extended-thinking models
+        if is_anthropic_adaptive_thinking_model(model_id) {
+            compat.insert("forceAdaptiveThinking".into(), Value::Bool(true));
+        }
+
+        // supportsTemperature: false for opus-4.7 / opus-4.8
+        if is_anthropic_temperature_unsupported(model_id) {
+            compat.insert("supportsTemperature".into(), Value::Bool(false));
+        }
+
+        // supportsEagerToolInputStreaming: false for specific GitHub Copilot models
+        let copilot_eager_unsupported = matches!(
+            (provider_key, model_id),
+            ("github-copilot", "claude-haiku-4.5")
+                | ("github-copilot", "claude-sonnet-4")
+                | ("github-copilot", "claude-sonnet-4.5")
+        );
+        if copilot_eager_unsupported {
+            compat.insert("supportsEagerToolInputStreaming".into(), Value::Bool(false));
+        }
+
+        if !compat.is_empty() {
+            entry["compat"] = Value::Object(compat);
+        }
+
+        // thinkingLevelMap overrides for GitHub Copilot Claude models
+        if provider_key == "github-copilot" {
+            let override_map: Option<Value> = match model_id {
+                "claude-opus-4.6" | "claude-opus-4-6" => {
+                    Some(serde_json::json!({ "xhigh": "max" }))
+                }
+                "claude-opus-4.7" | "claude-opus-4-7" => {
+                    Some(serde_json::json!({ "xhigh": "xhigh", "minimal": "low" }))
+                }
+                "claude-opus-4.8" | "claude-opus-4-8" => {
+                    Some(serde_json::json!({ "xhigh": "xhigh", "minimal": "low" }))
+                }
+                "claude-sonnet-4.6" | "claude-sonnet-4-6" => {
+                    Some(serde_json::json!({ "minimal": "low", "xhigh": "max" }))
+                }
+                _ => None,
+            };
+            if let Some(map) = override_map {
+                entry["thinkingLevelMap"] = map;
+            }
+        }
+
+        return;
+    }
+
+    // ── OpenAI Completions corrections ───────────────────────────────────
     if api != "openai-completions" {
         return;
     }
@@ -354,13 +440,23 @@ fn apply_corrections(
         });
     }
 
-    if provider_key == "opencode-go" && (model_id.starts_with("qwen3")) {
+    if provider_key == "opencode-go" && model_id.starts_with("qwen3") {
         compat["thinkingFormat"] = Value::String("qwen".into());
     }
 
-    // GitHub Copilot: openai-completions models need standard Copilot compat
+    // GitHub Copilot: openai-completions models
     if provider_key == "github-copilot" {
         compat["supportsReasoningEffort"] = Value::Bool(false);
+        // gpt-5.x models need minimal: "low" in thinkingLevelMap
+        if model_id.starts_with("gpt-5") {
+            entry["thinkingLevelMap"] = match entry.get("thinkingLevelMap").cloned() {
+                Some(Value::Object(mut map)) => {
+                    map.insert("minimal".into(), Value::String("low".into()));
+                    Value::Object(map)
+                }
+                _ => serde_json::json!({ "minimal": "low" }),
+            };
+        }
     }
 
     entry["compat"] = compat;

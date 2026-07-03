@@ -174,13 +174,10 @@
           "reasoning": true
         },
         {
-          "api": "openai-completions",
+          "api": "anthropic-messages",
           "baseUrl": "https://api.individual.githubcopilot.com",
           "compat": {
-            "maxTokensField": "max_tokens",
-            "supportsDeveloperRole": false,
-            "supportsReasoningEffort": false,
-            "supportsStore": false
+            "supportsEagerToolInputStreaming": false
           },
           "contextWindow": 200000,
           "cost": {
@@ -199,14 +196,8 @@
           "reasoning": true
         },
         {
-          "api": "openai-completions",
+          "api": "anthropic-messages",
           "baseUrl": "https://api.individual.githubcopilot.com",
-          "compat": {
-            "maxTokensField": "max_tokens",
-            "supportsDeveloperRole": false,
-            "supportsReasoningEffort": false,
-            "supportsStore": false
-          },
           "contextWindow": 200000,
           "cost": {
             "cacheRead": 0.5,
@@ -224,13 +215,10 @@
           "reasoning": true
         },
         {
-          "api": "openai-completions",
+          "api": "anthropic-messages",
           "baseUrl": "https://api.individual.githubcopilot.com",
           "compat": {
-            "maxTokensField": "max_tokens",
-            "supportsDeveloperRole": false,
-            "supportsReasoningEffort": false,
-            "supportsStore": false
+            "forceAdaptiveThinking": true
           },
           "contextWindow": 200000,
           "cost": {
@@ -246,16 +234,17 @@
           ],
           "maxTokens": 32000,
           "name": "Claude Opus 4.6",
-          "reasoning": true
+          "reasoning": true,
+          "thinkingLevelMap": {
+            "xhigh": "max"
+          }
         },
         {
-          "api": "openai-completions",
+          "api": "anthropic-messages",
           "baseUrl": "https://api.individual.githubcopilot.com",
           "compat": {
-            "maxTokensField": "max_tokens",
-            "supportsDeveloperRole": false,
-            "supportsReasoningEffort": false,
-            "supportsStore": false
+            "forceAdaptiveThinking": true,
+            "supportsTemperature": false
           },
           "contextWindow": 200000,
           "cost": {
@@ -271,16 +260,18 @@
           ],
           "maxTokens": 32000,
           "name": "Claude Opus 4.7",
-          "reasoning": true
+          "reasoning": true,
+          "thinkingLevelMap": {
+            "minimal": "low",
+            "xhigh": "xhigh"
+          }
         },
         {
-          "api": "openai-completions",
+          "api": "anthropic-messages",
           "baseUrl": "https://api.individual.githubcopilot.com",
           "compat": {
-            "maxTokensField": "max_tokens",
-            "supportsDeveloperRole": false,
-            "supportsReasoningEffort": false,
-            "supportsStore": false
+            "forceAdaptiveThinking": true,
+            "supportsTemperature": false
           },
           "contextWindow": 200000,
           "cost": {
@@ -296,16 +287,17 @@
           ],
           "maxTokens": 64000,
           "name": "Claude Opus 4.8",
-          "reasoning": true
+          "reasoning": true,
+          "thinkingLevelMap": {
+            "minimal": "low",
+            "xhigh": "xhigh"
+          }
         },
         {
-          "api": "openai-completions",
+          "api": "anthropic-messages",
           "baseUrl": "https://api.individual.githubcopilot.com",
           "compat": {
-            "maxTokensField": "max_tokens",
-            "supportsDeveloperRole": false,
-            "supportsReasoningEffort": false,
-            "supportsStore": false
+            "supportsEagerToolInputStreaming": false
           },
           "contextWindow": 216000,
           "cost": {
@@ -324,13 +316,10 @@
           "reasoning": true
         },
         {
-          "api": "openai-completions",
+          "api": "anthropic-messages",
           "baseUrl": "https://api.individual.githubcopilot.com",
           "compat": {
-            "maxTokensField": "max_tokens",
-            "supportsDeveloperRole": false,
-            "supportsReasoningEffort": false,
-            "supportsStore": false
+            "supportsEagerToolInputStreaming": false
           },
           "contextWindow": 200000,
           "cost": {
@@ -349,13 +338,10 @@
           "reasoning": true
         },
         {
-          "api": "openai-completions",
+          "api": "anthropic-messages",
           "baseUrl": "https://api.individual.githubcopilot.com",
           "compat": {
-            "maxTokensField": "max_tokens",
-            "supportsDeveloperRole": false,
-            "supportsReasoningEffort": false,
-            "supportsStore": false
+            "forceAdaptiveThinking": true
           },
           "contextWindow": 200000,
           "cost": {
@@ -371,16 +357,17 @@
           ],
           "maxTokens": 32000,
           "name": "Claude Sonnet 4.6",
-          "reasoning": true
+          "reasoning": true,
+          "thinkingLevelMap": {
+            "minimal": "low",
+            "xhigh": "max"
+          }
         },
         {
-          "api": "openai-completions",
+          "api": "anthropic-messages",
           "baseUrl": "https://api.individual.githubcopilot.com",
           "compat": {
-            "maxTokensField": "max_tokens",
-            "supportsDeveloperRole": false,
-            "supportsReasoningEffort": false,
-            "supportsStore": false
+            "forceAdaptiveThinking": true
           },
           "contextWindow": 1000000,
           "cost": {
@@ -546,7 +533,10 @@
           ],
           "maxTokens": 64000,
           "name": "GPT-5 Mini",
-          "reasoning": true
+          "reasoning": true,
+          "thinkingLevelMap": {
+            "minimal": "low"
+          }
         },
         {
           "api": "openai-completions",
@@ -571,7 +561,10 @@
           ],
           "maxTokens": 128000,
           "name": "GPT-5.2",
-          "reasoning": true
+          "reasoning": true,
+          "thinkingLevelMap": {
+            "minimal": "low"
+          }
         },
         {
           "api": "openai-completions",
@@ -596,7 +589,10 @@
           ],
           "maxTokens": 128000,
           "name": "GPT-5.2 Codex",
-          "reasoning": true
+          "reasoning": true,
+          "thinkingLevelMap": {
+            "minimal": "low"
+          }
         },
         {
           "api": "openai-completions",
@@ -621,7 +617,10 @@
           ],
           "maxTokens": 128000,
           "name": "GPT-5.3 Codex",
-          "reasoning": true
+          "reasoning": true,
+          "thinkingLevelMap": {
+            "minimal": "low"
+          }
         },
         {
           "api": "openai-completions",
@@ -646,7 +645,10 @@
           ],
           "maxTokens": 128000,
           "name": "GPT-5.4",
-          "reasoning": true
+          "reasoning": true,
+          "thinkingLevelMap": {
+            "minimal": "low"
+          }
         },
         {
           "api": "openai-completions",
@@ -671,7 +673,10 @@
           ],
           "maxTokens": 128000,
           "name": "GPT-5.4 mini",
-          "reasoning": true
+          "reasoning": true,
+          "thinkingLevelMap": {
+            "minimal": "low"
+          }
         },
         {
           "api": "openai-completions",
@@ -696,7 +701,10 @@
           ],
           "maxTokens": 128000,
           "name": "GPT-5.4 nano",
-          "reasoning": true
+          "reasoning": true,
+          "thinkingLevelMap": {
+            "minimal": "low"
+          }
         },
         {
           "api": "openai-completions",
@@ -721,6 +729,58 @@
           ],
           "maxTokens": 128000,
           "name": "GPT-5.5",
+          "reasoning": true,
+          "thinkingLevelMap": {
+            "minimal": "low"
+          }
+        },
+        {
+          "api": "openai-completions",
+          "baseUrl": "https://api.individual.githubcopilot.com",
+          "compat": {
+            "maxTokensField": "max_tokens",
+            "supportsDeveloperRole": false,
+            "supportsReasoningEffort": false,
+            "supportsStore": false
+          },
+          "contextWindow": 256000,
+          "cost": {
+            "cacheRead": 0.19,
+            "cacheWrite": 0.0,
+            "input": 0.95,
+            "output": 4.0
+          },
+          "id": "kimi-k2.7-code",
+          "input": [
+            "text",
+            "image"
+          ],
+          "maxTokens": 32000,
+          "name": "Kimi K2.7 Code",
+          "reasoning": true
+        },
+        {
+          "api": "openai-completions",
+          "baseUrl": "https://api.individual.githubcopilot.com",
+          "compat": {
+            "maxTokensField": "max_tokens",
+            "supportsDeveloperRole": false,
+            "supportsReasoningEffort": false,
+            "supportsStore": false
+          },
+          "contextWindow": 256000,
+          "cost": {
+            "cacheRead": 0.075,
+            "cacheWrite": 0.0,
+            "input": 0.75,
+            "output": 4.5
+          },
+          "id": "mai-code-1-flash-picker",
+          "input": [
+            "text"
+          ],
+          "maxTokens": 128000,
+          "name": "MAI-Code-1-Flash",
           "reasoning": true
         }
       ],
@@ -759,6 +819,9 @@
         {
           "api": "anthropic-messages",
           "baseUrl": "https://opencode.ai/zen",
+          "compat": {
+            "forceAdaptiveThinking": true
+          },
           "contextWindow": 1000000,
           "cost": {
             "cacheRead": 1.0,
@@ -835,6 +898,9 @@
         {
           "api": "anthropic-messages",
           "baseUrl": "https://opencode.ai/zen",
+          "compat": {
+            "forceAdaptiveThinking": true
+          },
           "contextWindow": 1000000,
           "cost": {
             "cacheRead": 0.5,
@@ -854,6 +920,10 @@
         {
           "api": "anthropic-messages",
           "baseUrl": "https://opencode.ai/zen",
+          "compat": {
+            "forceAdaptiveThinking": true,
+            "supportsTemperature": false
+          },
           "contextWindow": 1000000,
           "cost": {
             "cacheRead": 0.5,
@@ -873,6 +943,10 @@
         {
           "api": "anthropic-messages",
           "baseUrl": "https://opencode.ai/zen",
+          "compat": {
+            "forceAdaptiveThinking": true,
+            "supportsTemperature": false
+          },
           "contextWindow": 1000000,
           "cost": {
             "cacheRead": 0.5,
@@ -930,6 +1004,9 @@
         {
           "api": "anthropic-messages",
           "baseUrl": "https://opencode.ai/zen",
+          "compat": {
+            "forceAdaptiveThinking": true
+          },
           "contextWindow": 1000000,
           "cost": {
             "cacheRead": 0.3,
@@ -949,6 +1026,9 @@
         {
           "api": "anthropic-messages",
           "baseUrl": "https://opencode.ai/zen",
+          "compat": {
+            "forceAdaptiveThinking": true
+          },
           "contextWindow": 1000000,
           "cost": {
             "cacheRead": 0.2,

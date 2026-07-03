@@ -34,7 +34,7 @@ impl StreamProvider for RabAnthropicProvider {
         let is_oauth = config.api_key.contains("sk-ant-oat");
         // GitHub Copilot tokens use Bearer auth (not x-api-key).
         let is_copilot = config.api_key.contains("proxy-ep=");
-        let body = build_request_body(&config, is_oauth);
+        let body = build_request_body(&config, model_config, is_oauth);
         debug!(
             "RabAnthropic request: model={} url={} oauth={} copilot={}",
             config.model, url, is_oauth, is_copilot
@@ -215,6 +215,15 @@ impl StreamProvider for RabAnthropicProvider {
                         }
                         Some(Err(e)) => {
                             let provider_err = classify_eventsource_error(e).await;
+                            // HTTP 421 Misdirected Request: caused by HTTP/2 connection
+                            // coalescing right after login. Reclassify as retryable so
+                            // the agent retries on a fresh connection.
+                            let provider_err = match &provider_err {
+                                ProviderError::Api(msg) if msg.contains("421") => {
+                                    ProviderError::Network(msg.clone())
+                                }
+                                _ => provider_err,
+                            };
                             warn!("SSE error: {}", provider_err);
                             return Err(provider_err);
                         }
@@ -251,7 +260,11 @@ impl StreamProvider for RabAnthropicProvider {
 // Anthropic API request/response types
 // ---------------------------------------------------------------------------
 
-fn build_request_body(config: &StreamConfig, is_oauth: bool) -> serde_json::Value {
+fn build_request_body(
+    config: &StreamConfig,
+    model_config: &yoagent::provider::model::ModelConfig,
+    is_oauth: bool,
+) -> serde_json::Value {
     let mut messages: Vec<serde_json::Value> = Vec::new();
 
     for msg in &config.messages {
@@ -334,7 +347,7 @@ fn build_request_body(config: &StreamConfig, is_oauth: bool) -> serde_json::Valu
 
     let mut body = serde_json::json!({
         "model": config.model,
-        "max_tokens": config.max_tokens.unwrap_or(8192),
+        "max_tokens": config.max_tokens.unwrap_or(model_config.max_tokens),
         "stream": true,
         "messages": messages,
     });
@@ -392,13 +405,17 @@ fn build_request_body(config: &StreamConfig, is_oauth: bool) -> serde_json::Valu
     }
 
     if config.thinking_level != ThinkingLevel::Off {
-        let budget = match config.thinking_level {
-            ThinkingLevel::Minimal => 128,
-            ThinkingLevel::Low => 512,
-            ThinkingLevel::Medium => 2048,
-            ThinkingLevel::High => 8192,
+        // Pi-compatible budget values (minimal=1024, low=2048, medium=8192, high=16384).
+        // Cap budget to max_tokens - 1024 to guarantee max_tokens > budget_tokens.
+        let budget_base: u32 = match config.thinking_level {
+            ThinkingLevel::Minimal => 1024,
+            ThinkingLevel::Low => 2048,
+            ThinkingLevel::Medium => 8192,
+            ThinkingLevel::High => 16384,
             ThinkingLevel::Off => 0,
         };
+        let max_tokens = config.max_tokens.unwrap_or(model_config.max_tokens);
+        let budget = budget_base.min(max_tokens.saturating_sub(1024));
         body["thinking"] = serde_json::json!({
             "type": "enabled",
             "budget_tokens": budget,
