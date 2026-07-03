@@ -24,6 +24,7 @@ use crate::agent::ui::components::EditorComponent;
 use crate::agent::ui::components::FooterComponent;
 use crate::agent::ui::components::InfoMessageComponent;
 use crate::agent::ui::footer::Footer;
+use crate::agent::ui::theme;
 use crate::agent::ui::theme::RabTheme;
 use crate::agent::ui::working::WorkingIndicator;
 use crate::builtin::commands::SessionInfoInternal;
@@ -276,6 +277,10 @@ pub struct App {
 
     /// Pending scoped model changes from ScopedModelsSelector (session-only, no close).
     pending_scoped_ids: Rc<RefCell<Option<Vec<String>>>>,
+
+    /// Pending settings changes from SettingsSelector: (id, new_value).
+    /// Checked and consumed by the main loop after overlay input processing.
+    pending_settings_change: Rc<RefCell<Option<(String, String)>>>,
 
     /// Agent tools (for tool execution).
     /// Extensions.
@@ -573,6 +578,7 @@ impl App {
             },
             overlay_result_signal: Rc::new(RefCell::new(None)),
             pending_scoped_ids: Rc::new(RefCell::new(None)),
+            pending_settings_change: Rc::new(RefCell::new(None)),
             hide_thinking: config.hide_thinking,
             collapse_tool_output: config.collapse_tool_output,
             tools_expanded: !config.collapse_tool_output,
@@ -877,6 +883,16 @@ pub async fn run(config: AppConfig, session: AgentSession) -> anyhow::Result<()>
                 app.scoped_model_ids = Some(ids);
             }
             dirty = true;
+        }
+
+        // Check pending settings changes from SettingsSelector.
+        // Applied immediately without closing the overlay.
+        {
+            let change = app.pending_settings_change.borrow_mut().take();
+            if let Some((id, new_value)) = change {
+                apply_settings_change(&mut app, &id, &new_value);
+                dirty = true;
+            }
         }
 
         // Flush pending label changes from tree selector to session (without closing overlay).
@@ -1351,7 +1367,7 @@ pub async fn run(config: AppConfig, session: AgentSession) -> anyhow::Result<()>
                     open_model_selector(&mut app, &mut tui);
                 }
                 CommandResult::OpenSettings => {
-                    chat_info(&mut app, "Settings menu - not yet implemented.");
+                    open_settings(&mut app, &mut tui);
                 }
                 CommandResult::ScopedModels => {
                     open_scoped_models_selector(&mut app, &mut tui);
@@ -2666,6 +2682,302 @@ fn open_model_selector(app: &mut App, tui: &mut TUI) {
         callbacks,
     );
     tui.show_positioned_overlay(Box::new(selector), crate::tui::OverlayPosition::Bottom);
+}
+
+/// Open the settings overlay.
+fn open_settings(app: &mut App, tui: &mut TUI) {
+    use crate::agent::ui::components::settings_selector::{SettingsCallbacks, SettingsSelector};
+
+    let available_themes = theme::get_available_themes();
+
+    let items = SettingsSelector::build_items(
+        app.auto_compact,
+        app.hide_thinking,
+        app.collapse_tool_output,
+        &app.thinking_level,
+        &app.theme.name,
+        &available_themes,
+        &app.settings.default_provider,
+        &app.model,
+        &app.settings.transport,
+        &app.settings.steering_mode,
+        &app.settings.follow_up_mode,
+        &app.settings.quiet_startup,
+        &app.settings.collapse_changelog,
+        &app.settings.enable_skill_commands,
+        &app.settings.enable_install_telemetry,
+        &app.settings.double_escape_action,
+        &app.settings.tree_filter_mode,
+        &app.settings.show_hardware_cursor,
+        &app.settings.editor_padding_x,
+        &app.settings.output_pad,
+        &app.settings.autocomplete_max_visible,
+        app.settings.verbose,
+        &app.settings.default_project_trust,
+        &app.settings.http_idle_timeout_ms,
+        &app.settings
+            .terminal
+            .as_ref()
+            .and_then(|t| t.clear_on_shrink),
+        &app.settings
+            .terminal
+            .as_ref()
+            .and_then(|t| t.show_terminal_progress),
+        &app.settings
+            .warnings
+            .as_ref()
+            .and_then(|w| w.anthropic_extra_usage),
+        &app.settings.shell_command_prefix,
+        &app.settings.shell_path,
+        &app.settings.external_editor,
+        &app.settings.http_proxy,
+        &app.settings.session_dir,
+    );
+
+    let change_signal = app.pending_settings_change.clone();
+    let close_signal = app.overlay_result_signal.clone();
+
+    let callbacks = SettingsCallbacks {
+        on_change: Box::new({
+            let cs = change_signal.clone();
+            move |id: String, new_value: String| {
+                *cs.borrow_mut() = Some((id, new_value));
+            }
+        }),
+        on_cancel: Box::new({
+            let signal = close_signal.clone();
+            move || {
+                *signal.borrow_mut() = Some(OverlayResult::Dismiss);
+            }
+        }),
+    };
+
+    let selector = SettingsSelector::new(items, callbacks);
+    tui.show_positioned_overlay(Box::new(selector), crate::tui::OverlayPosition::Bottom);
+}
+
+/// Apply a setting change from the settings menu.
+/// Updates app state and persists to settings.
+fn apply_settings_change(app: &mut App, id: &str, new_value: &str) {
+    match id {
+        "autocompact" => {
+            app.auto_compact = new_value == "true";
+            app.footer.borrow_mut().set_auto_compact(app.auto_compact);
+            if let Some(ref mut s) = app.session {
+                s.set_auto_compact(app.auto_compact);
+            }
+            app.settings.set_auto_compact(Some(app.auto_compact));
+            if let Err(e) = app.settings.save() {
+                app.status_text = Some(format!("Failed to save auto-compact: {}", e));
+            }
+        }
+        "hide-thinking" => {
+            app.hide_thinking = new_value == "true";
+            app.propagate_hide_thinking();
+            app.settings.set_hide_thinking(Some(app.hide_thinking));
+            if let Err(e) = app.settings.save() {
+                app.status_text = Some(format!("Failed to save hide thinking: {}", e));
+            }
+        }
+        "collapse-tool-output" => {
+            app.collapse_tool_output = new_value == "true";
+            app.tools_expanded = !app.collapse_tool_output;
+            app.header.borrow_mut().set_expanded(app.tools_expanded);
+            {
+                let mut chat = app.chat_container.borrow_mut();
+                for child in chat.children_mut().iter_mut() {
+                    child.set_expanded(app.tools_expanded);
+                }
+            }
+            app.settings
+                .set_collapse_tool_output(Some(app.collapse_tool_output));
+            if let Err(e) = app.settings.save() {
+                app.status_text = Some(format!("Failed to save tool output setting: {}", e));
+            }
+        }
+        "thinking-level" => {
+            let level = if new_value == "off" {
+                None
+            } else {
+                Some(new_value.to_string())
+            };
+            app.thinking_level = level.clone();
+            app.footer.borrow_mut().set_thinking_level(level.clone());
+            app.settings.set_default_thinking_level(level);
+            if let Err(e) = app.settings.save() {
+                app.status_text = Some(format!("Failed to save thinking level: {}", e));
+            }
+        }
+        "theme" => {
+            if theme::set_theme(new_value).is_ok() {
+                app.theme = theme::current_theme().clone();
+                // Persist to settings + save
+                app.settings.theme = Some(new_value.to_string());
+                app.settings.mark_modified("theme");
+                if let Err(e) = app.settings.save() {
+                    app.status_text = Some(format!("Failed to save theme: {}", e));
+                }
+                app.status_text = Some(format!("Theme: {}", new_value));
+            }
+        }
+        "transport" => {
+            app.settings.transport = Some(new_value.to_string());
+            app.settings.mark_modified("transport");
+            if let Err(e) = app.settings.save() {
+                app.status_text = Some(format!("Failed to save transport: {}", e));
+            }
+        }
+        "steering-mode" => {
+            app.settings.steering_mode = Some(new_value.to_string());
+            app.settings.mark_modified("steeringMode");
+            if let Err(e) = app.settings.save() {
+                app.status_text = Some(format!("Failed to save steering mode: {}", e));
+            }
+        }
+        "follow-up-mode" => {
+            app.settings.follow_up_mode = Some(new_value.to_string());
+            app.settings.mark_modified("followUpMode");
+            if let Err(e) = app.settings.save() {
+                app.status_text = Some(format!("Failed to save follow-up mode: {}", e));
+            }
+        }
+        "quiet-startup" => {
+            app.settings.quiet_startup = Some(new_value == "true");
+            app.settings.mark_modified("quietStartup");
+            if let Err(e) = app.settings.save() {
+                app.status_text = Some(format!("Failed to save quiet startup: {}", e));
+            }
+        }
+        "collapse-changelog" => {
+            app.settings.collapse_changelog = Some(new_value == "true");
+            app.settings.mark_modified("collapseChangelog");
+            if let Err(e) = app.settings.save() {
+                app.status_text = Some(format!("Failed to save collapse changelog: {}", e));
+            }
+        }
+        "verbose" => {
+            app.settings.verbose = new_value == "true";
+            app.settings.mark_modified("verbose");
+            if let Err(e) = app.settings.save() {
+                app.status_text = Some(format!("Failed to save verbose: {}", e));
+            }
+        }
+        "double-escape-action" => {
+            app.settings.double_escape_action = Some(new_value.to_string());
+            app.settings.mark_modified("doubleEscapeAction");
+            if let Err(e) = app.settings.save() {
+                app.status_text = Some(format!("Failed to save double-escape action: {}", e));
+            }
+        }
+        "tree-filter-mode" => {
+            app.settings.tree_filter_mode = Some(new_value.to_string());
+            app.settings.mark_modified("treeFilterMode");
+            if let Err(e) = app.settings.save() {
+                app.status_text = Some(format!("Failed to save tree filter mode: {}", e));
+            }
+        }
+        "show-hardware-cursor" => {
+            app.settings.show_hardware_cursor = Some(new_value == "true");
+            app.settings.mark_modified("showHardwareCursor");
+            if let Err(e) = app.settings.save() {
+                app.status_text = Some(format!("Failed to save hardware cursor: {}", e));
+            }
+        }
+        "editor-padding" => {
+            if let Ok(v) = new_value.parse::<i32>() {
+                app.settings.editor_padding_x = Some(v);
+                app.settings.mark_modified("editorPaddingX");
+                if let Err(e) = app.settings.save() {
+                    app.status_text = Some(format!("Failed to save editor padding: {}", e));
+                }
+            }
+        }
+        "output-padding" => {
+            if let Ok(v) = new_value.parse::<i32>() {
+                app.settings.output_pad = Some(v);
+                app.settings.mark_modified("outputPad");
+                if let Err(e) = app.settings.save() {
+                    app.status_text = Some(format!("Failed to save output padding: {}", e));
+                }
+            }
+        }
+        "autocomplete-max-visible" => {
+            if let Ok(v) = new_value.parse::<i32>() {
+                app.settings.autocomplete_max_visible = Some(v);
+                app.settings.mark_modified("autocompleteMaxVisible");
+                if let Err(e) = app.settings.save() {
+                    app.status_text = Some(format!("Failed to save autocomplete max: {}", e));
+                }
+            }
+        }
+        "skill-commands" => {
+            app.settings.enable_skill_commands = Some(new_value == "true");
+            app.settings.mark_modified("enableSkillCommands");
+            if let Err(e) = app.settings.save() {
+                app.status_text = Some(format!("Failed to save skill commands: {}", e));
+            }
+        }
+        "install-telemetry" => {
+            app.settings.enable_install_telemetry = Some(new_value == "true");
+            app.settings.mark_modified("enableInstallTelemetry");
+            if let Err(e) = app.settings.save() {
+                app.status_text = Some(format!("Failed to save install telemetry: {}", e));
+            }
+        }
+        "default-project-trust" => {
+            app.settings.default_project_trust = Some(new_value.to_string());
+            app.settings.mark_modified("defaultProjectTrust");
+            if let Err(e) = app.settings.save() {
+                app.status_text = Some(format!("Failed to save project trust: {}", e));
+            }
+        }
+        "http-idle-timeout" => {
+            let ms = match new_value {
+                "30 sec" => 30_000u64,
+                "1 min" => 60_000,
+                "2 min" => 120_000,
+                "5 min" => 300_000,
+                "disabled" => 0,
+                _ => 30_000,
+            };
+            app.settings.http_idle_timeout_ms = Some(ms);
+            app.settings.mark_modified("httpIdleTimeoutMs");
+            if let Err(e) = app.settings.save() {
+                app.status_text = Some(format!("Failed to save HTTP idle timeout: {}", e));
+            }
+        }
+        "clear-on-shrink" => {
+            let val = new_value == "true";
+            let terminal = app.settings.terminal.get_or_insert_with(Default::default);
+            terminal.clear_on_shrink = Some(val);
+            app.settings
+                .mark_nested_modified("terminal", "clearOnShrink");
+            if let Err(e) = app.settings.save() {
+                app.status_text = Some(format!("Failed to save clear on shrink: {}", e));
+            }
+        }
+        "terminal-progress" => {
+            let val = new_value == "true";
+            let terminal = app.settings.terminal.get_or_insert_with(Default::default);
+            terminal.show_terminal_progress = Some(val);
+            app.settings
+                .mark_nested_modified("terminal", "showTerminalProgress");
+            if let Err(e) = app.settings.save() {
+                app.status_text = Some(format!("Failed to save terminal progress: {}", e));
+            }
+        }
+        "warnings-anthropic-extra-usage" => {
+            let val = new_value == "true";
+            let warnings = app.settings.warnings.get_or_insert_with(Default::default);
+            warnings.anthropic_extra_usage = Some(val);
+            app.settings
+                .mark_nested_modified("warnings", "anthropicExtraUsage");
+            if let Err(e) = app.settings.save() {
+                app.status_text = Some(format!("Failed to save warning setting: {}", e));
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Open the scoped-models selector overlay.
