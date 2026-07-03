@@ -1,10 +1,10 @@
 # rab Architecture
 
 A lightweight, extensible Rust coding agent inspired by [pi-coding-agent](https://pi.dev).
-rab delegates the core agent loop, types, and provider abstraction to the **yoagent** crate,
-providing the session layer, TUI, built-in tools, slash commands, file search tools (grep/find/ls),
-file mutation queue, lifecycle management, and a **custom provider layer** with a model registry
-and rich OpenAI-compatible streaming support.
+rab delegates the core agent loop, types, and provider abstraction to the **yoagent** crate
+(MIT, git dependency), providing the session layer, TUI, built-in tools, slash commands,
+file search tools (grep/find/ls), file mutation queue, lifecycle management, and a
+**custom provider layer** with a model registry and rich OpenAI-compatible streaming support.
 
 ---
 
@@ -19,7 +19,7 @@ and rich OpenAI-compatible streaming support.
 │  │  arg parsing, env reading, session init,                     │   │
 │  │  mode dispatch (print / interactive), extension gating,      │   │
 │  │  context file loading, skills, auth, provider resolution     │   │
-│  │  subcommand: rab update-models                               │   │
+│  │  subcommand: rab generate-models                             │   │
 │  └────────────────────┬─────────────────────────────────────────┘   │
 │                       │                                              │
 │  ┌────────────────────▼─────────────────────────────────────────┐   │
@@ -39,12 +39,14 @@ and rich OpenAI-compatible streaming support.
 │  │  High-level API wrapping SessionStorage. Pi-compatible:      │   │
 │  │  append_*, build_context, move_to, metadata.                │   │
 │  │  SessionError, SessionTreeNode, SessionManager (internal)   │   │
+│  │  ~3182 lines                                                │   │
 │  └──────────┬───────────────────────────────────────────────────┘   │
 │             │                                                       │
 │  ┌──────────▼───────────────────────────────────────────────────┐   │
 │  │              SessionStorage (agent/session/storage.rs)        │   │
 │  │  Low-level CRUD: leaf mgmt, labels, path queries.            │   │
 │  │  Impls: InMemorySessionStorage, JsonlSessionStorage          │   │
+│  │  ~710 lines                                                  │   │
 │  └──────────────────────────────────────────────────────────────┘   │
 │                                                                      │
 │  ┌────▼──┐ ┌────▼──┐ ┌────▼──┐ ┌────▼──┐ ┌────▼──┐ ┌────▼──┐      │
@@ -53,7 +55,7 @@ and rich OpenAI-compatible streaming support.
 │  │write  │ │ ui/    │ │22 slash│ ┌──────────────┐ │~/.rab/ │ │API    │
 │  │edit   │ │screen  │ │commands│ │file_search (3)│ │settings│ │keys,  │
 │  │bash   │ │editor  │ │        │ │mcp/ (6 mods,  │ │AGENTS  │ │OAuth  │
-│  │file_  │ │list    │ │        │ │ 2K lines)     │ │.md     │ │       │
+│  │file_  │ │list    │ │        │ │ ~2160 lines)  │ │.md     │ │       │
 │  │mutation│ └───────┘ │        │ │AGENTS.md       │ │skills  │ │       │
 │  │_queue │            │        │ │skills          │ │        │ │       │
 │  │cancel │            │        │ │prompts/        │ │        │ │       │
@@ -122,6 +124,7 @@ and rich OpenAI-compatible streaming support.
 │  │  │  unlike yoagent's hardcoded AnthropicProvider.       │   │   │
 │  │  │  Enables GitHub Copilot (and other proxies) to serve │   │   │
 │  │  │  Anthropic-format models through their own endpoints. │   │   │
+│  │  │  OAuth token refresh on each turn.                   │   │   │
 │  │  └──────────────────────────────────────────────────────┘   │   │
 │  │  ┌──────────────────────────────────────────────────────┐   │   │
 │  │  │           OAuth device flow (oauth/)                  │   │   │
@@ -132,16 +135,20 @@ and rich OpenAI-compatible streaming support.
 │  │  │    model fetch and API key derivation               │   │   │
 │  │  └──────────────────────────────────────────────────────┘   │   │
 │  │  ┌──────────────────────────────────────────────────────┐   │   │
-│  │  │           update.rs (rab update-models subcommand)    │   │   │
+│  │  │       generate_models.rs (rab generate-models)        │   │   │
 │  │  │  Fetches https://models.dev/api.json                │   │   │
-│  │  │  Applies pi-style corrections (DeepSeek, Qwen, etc) │   │   │
+│  │  │  Targets: github-copilot, opencode, opencode-go,    │   │   │
+│  │  │           deepseek                                  │   │   │
+│  │  │  Applies pi-style corrections (DeepSeek, Qwen,      │   │   │
+│  │  │   Grok, Kimi, Anthropic, GitHub Copilot)            │   │   │
+│  │  │  Preserves user edits to non-target providers       │   │   │
 │  │  │  Writes src/provider/models.json                    │   │   │
 │  │  └──────────────────────────────────────────────────────┘   │   │
 │  │                                                              │   │
 │  └──────────────────────────────────────────────────────────────┘   │
 │                       │                                              │
 │  ┌────────────────────▼─────────────────────────────────────────┐   │
-│  │                   yoagent 0.8.4 (MIT)                        │   │
+│  │                   yoagent (MIT, git dep)                      │   │
 │  │                                                              │   │
 │  │  ┌──────────────────────────────────────────────────────┐   │   │
 │  │  │           yoagent::types                             │   │   │
@@ -172,16 +179,20 @@ and rich OpenAI-compatible streaming support.
 │  │  OpenCode Go (opencode.ai/zen/go/v1) — default               │   │
 │  │  OpenCode (opencode.ai/zen/v1)                               │   │
 │  │  Anthropic — auto-detected by model API config               │   │
-│  │  OpenAI — auto-detected by model API config                  │   │
+│  │  OpenAI — auto-detected by model API config (via npm)        │   │
 │  │  Google / Ollama — auto-detected by model API config         │   │
+│  │  GitHub Copilot (api.individual.githubcopilot.com)           │   │
+│  │  DeepSeek (api.deepseek.com)                                 │   │
 │  └──────────────────────────────────────────────────────────────┘   │
 │                                                                      │
 │  ┌──────────────────────────────────────────────────────────────┐   │
-│  │  TUI (src/tui/ + src/agent/ui/) — 55+ modules, ~700+ tests  │   │
+│  │  TUI (src/tui/ + src/agent/ui/) — 101 source modules,        │   │
+│  │  ~57.8K lines, ~766 tests                                    │   │
 │  │  Direct Rust port on crossterm 0.29                          │   │
 │  │  Image (Kitty protocol), TerminalColors (OSC 11 detection),  │   │
 │  │  TreeSelector, ConfirmOverlay, LoginDialog, OAuthSelector,   │   │
-│  │  ScopedModelsSelector                                         │   │
+│  │  ScopedModelsSelector, ForkSelector, SettingsList,           │   │
+│  │  SettingsSelector                                             │   │
 │  └──────────────────────────────────────────────────────────────┘   │
 └──────────────────────────────────────────────────────────────────────┘
 ```
@@ -189,9 +200,10 @@ and rich OpenAI-compatible streaming support.
 ## Key architectural decisions
 
 - **yoagent is the core dependency**, not genai. rab delegates the agent loop,
-  provider abstraction, and message types to yoagent. rab provides the session layer,
-  TUI, built-in tools, file search tools, slash commands, lifecycle management,
-  and a custom provider layer on top.
+  provider abstraction, and message types to yoagent (git dependency, not a
+  published crate version). rab provides the session layer, TUI, built-in tools,
+  file search tools, slash commands, lifecycle management, and a custom provider
+  layer on top.
 
 - **Custom provider layer over yoagent** — rab has its own `ProviderRegistry` that
   loads a built-in model catalog (`src/provider/models.json`) merged with user
@@ -203,11 +215,15 @@ and rich OpenAI-compatible streaming support.
   - `RabAnthropicProvider` — custom Anthropic Messages API provider that respects
     `model_config.base_url` and `model_config.headers`, unlike yoagent's hardcoded
     `AnthropicProvider`. Enables GitHub Copilot (and other proxies) to serve
-    Anthropic-format models through their own endpoints.
+    Anthropic-format models through their own endpoints. Performs OAuth token
+    refresh on each turn and reclassifies HTTP 421 as retryable.
 
-- **`rab update-models` subcommand** — fetches `https://models.dev/api.json`,
-  applies pi-style corrections (DeepSeek, Qwen, Grok, Kimi), and writes
+- **`rab generate-models` subcommand** — fetches `https://models.dev/api.json`,
+  applies pi-style corrections (DeepSeek, Qwen, Grok, Kimi, Anthropic Messages API
+  compat flags for GitHub Copilot Claude models), and writes
   `src/provider/models.json`. All-or-nothing: any error aborts before writing.
+  Preserves user edits to non-target providers (currently targets: github-copilot,
+  opencode, opencode-go, deepseek).
 
 - **Multi-protocol agent selection** — `main.rs` resolves the model via
   `ProviderRegistry`, then selects the appropriate yoagent provider based on
@@ -235,7 +251,8 @@ and rich OpenAI-compatible streaming support.
 
 - **OAuth support** — `src/provider/oauth/` implements pi's `OAuthProviderInterface`
   with device code flow (RFC 8628) for headless authentication. The GitHub Copilot
-  OAuth provider fetches available models after login and auto-enables them.
+  OAuth provider fetches available models after login and auto-enables them. OAuth
+  tokens are refreshed on each agent turn.
 
 - **Agent loop lives in yoagent** — rab has no `loop.rs`. yoagent's `Agent`
   struct handles streaming, tool execution, and event emission. rab subscribes
@@ -256,12 +273,12 @@ and rich OpenAI-compatible streaming support.
 
 | pi component | rab equivalent | Status |
 |---|---|---|
-| `pi-tui` (terminal UI, components, editor) | `src/tui/` + `src/agent/ui/` | ✅ Complete — 55+ modules, ~700+ tests. Direct Rust port on crossterm 0.29. Includes Image (Kitty), TerminalColors (OSC 11), TreeSelector, ConfirmOverlay, LoginDialog, OAuthSelector, ScopedModelsSelector. |
-| `pi-agent-core` (agent loop, session, compaction, skills) | Delegated to **yoagent** (agent loop, types, provider, skills) + rab's `AgentSession` (session lifecycle, compaction, branching) | ✅ Agent loop in yoagent (`yoagent::agent::Agent`). ✅ Session in `session/model.rs` (~3200+ lines). ✅ SessionStorage in `session/storage.rs` (~660 lines). ✅ Compaction in `compaction.rs` (~1140 lines). ✅ Branch summarization in `branch_summary.rs` (~440 lines). ✅ Skills loaded via `yoagent::skills::SkillSet`. |
-| `coding-agent` (CLI, extensions, tools, settings, commands) | `main.rs`, `builtin/`, `extensions/`, `settings.rs`, `auth.rs`, `commands.rs`, `prompt_templates.rs`, `export.rs` | ✅ Tools (read/write/edit/bash/grep/find/ls), settings, auth, CLI done. ✅ 22+ slash commands including `/export`, `/import`, `/share`. ✅ Prompt templates as `/name` commands. ✅ Extension trait with tools, commands, renderers, skills, hooks. |
+| `pi-tui` (terminal UI, components, editor) | `src/tui/` + `src/agent/ui/` | ✅ Complete — 101 source modules, ~57.8K lines, ~766 tests. Direct Rust port on crossterm 0.29. Includes Image (Kitty), TerminalColors (OSC 11), TreeSelector, ConfirmOverlay, LoginDialog, OAuthSelector, ScopedModelsSelector, ForkSelector, SettingsList, SettingsSelector. |
+| `pi-agent-core` (agent loop, session, compaction, skills) | Delegated to **yoagent** (agent loop, types, provider, skills) + rab's `AgentSession` (session lifecycle, compaction, branching) | ✅ Agent loop in yoagent (`yoagent::agent::Agent`). ✅ Session in `session/model.rs` (~3182 lines). ✅ SessionStorage in `session/storage.rs` (~710 lines). ✅ Compaction in `compaction.rs` (~1132 lines). ✅ Branch summarization in `branch_summary.rs` (~455 lines). ✅ Skills loaded via `yoagent::skills::SkillSet`. |
+| `coding-agent` (CLI, extensions, tools, settings, commands) | `main.rs`, `builtin/`, `extensions/`, `settings.rs`, `auth.rs`, `commands.rs`, `prompt_templates.rs`, `export.rs` | ✅ Tools (read/write/edit/bash/grep/find/ls), settings, auth, CLI done. ✅ 22+ slash commands including `/export`, `/import`, `/share`, `/fork`, `/clone`, `/settings`, `/hotkeys`, `/session`, `/tree`, `/compact`, `/resume`. ✅ Prompt templates as `/name` commands. ✅ Extension trait with tools, commands, renderers, skills, hooks. |
 | `GrepTool`, `FindTool`, `LsTool` (pi agent tools) | `src/extensions/file_search.rs` | ✅ grep (ripgrep/grep fallback), find (fd/find fallback), ls — all with pluggable operations. |
-| provider registry + model catalog | `src/provider/` | ✅ `ProviderRegistry` loading built-in + user models.json. ✅ `RabOpenAiCompatProvider` for rich OpenAI-compatible streaming. ✅ `RabAnthropicProvider` for custom Anthropic API. ✅ OAuth support (device code flow, GitHub Copilot). ✅ `rab update-models` subcommand. |
-| MCP adapter (pi-mcp-adapter) | `src/extensions/mcp/` (6 modules, ~2040 lines) | ✅ Proxy `mcp` tool, direct tool adapters, SSE-aware HTTP transport, config loading (global+project merge), server lifecycle (lazy connect, idle timeout), persistent metadata cache, tool renderers. |
+| provider registry + model catalog | `src/provider/` | ✅ `ProviderRegistry` loading built-in + user models.json. ✅ `RabOpenAiCompatProvider` for rich OpenAI-compatible streaming. ✅ `RabAnthropicProvider` for custom Anthropic API. ✅ OAuth support (device code flow, GitHub Copilot). ✅ `rab generate-models` subcommand (targets github-copilot, opencode, opencode-go, deepseek). |
+| MCP adapter (pi-mcp-adapter) | `src/extensions/mcp/` (6 modules, ~2160 lines) | ✅ Proxy `mcp` tool, direct tool adapters, SSE-aware HTTP transport, config loading (global+project merge), server lifecycle (lazy connect, idle timeout), persistent metadata cache, tool renderers. |
 | provider | `yoagent::provider::*` + `rab::provider::RabOpenAiCompatProvider` + `rab::provider::RabAnthropicProvider` | ✅ Multi-protocol: RabOpenAiCompatProvider (OpenAiCompletions), RabAnthropicProvider (AnthropicMessages), OpenAiResponsesProvider, GoogleProvider. Auto-detection by model config's `ApiProtocol`. |
 | `beforeToolCall` / `afterToolCall` | `ToolDefinition.before_tool_call` / `.after_tool_call` | ✅ Per-tool hooks for blocking/preprocessing/postprocessing |
 | `validateToolArguments` | `extension::validate_tool_arguments()` | ✅ Full JSON Schema validation with pi-compatible error paths |
@@ -271,13 +288,16 @@ and rich OpenAI-compatible streaming support.
 | Skills | `yoagent::skills::SkillSet` + `SystemPromptBuilder.skills()` | ✅ Skill loading, frontmatter, prompt formatting, /skill:name expansion |
 | Image support (Kitty protocol) | `src/tui/components/image.rs` + markdown.rs hyperlinks | ✅ Image display via Kitty protocol with dedicated Image component. Input (clipboard paste) TBD. |
 | Config files | `~/.rab/` | ✅ Same schema as pi. Auth at `~/.rab/agent/auth.json`. |
-| Footer data (git branch, extensions) | `src/agent/footer_data_provider.rs` | ✅ Git branch resolution (worktree/reftable support), extension statuses, provider count |
+| Footer data (git branch, extensions) | `src/agent/footer_data_provider.rs` | ✅ Git branch resolution (worktree/reftable support), extension statuses, provider count. Ⱀ icon styled with `ThemeKey::Accent`. |
 | File mutation queue | `src/builtin/file_mutation_queue.rs` | ✅ Per-file serialization using tokio::sync::Notify, same pattern as pi |
-| MCP extension | `src/extensions/mcp/` | ✅ Proxy `mcp` tool, direct tools, config loading, server lifecycle, cache, renderers |
+| MCP extension | `src/extensions/mcp/` (6 mods, ~2160 lines) | ✅ Proxy `mcp` tool, direct tools, config loading, server lifecycle, cache, renderers |
 | Export/Import | `src/builtin/export.rs` | ✅ `/export` (HTML/JSONL), `/import`, `/share` with embedded template assets |
 | Prompt templates | `src/agent/prompt_templates.rs` | ✅ `/name` commands from `.md` files, frontmatter, placeholder expansion |
 | Path utilities | `src/paths.rs` | ✅ Canonicalization, resolution, display (cross-platform) |
-| OAuth | `src/provider/oauth/` | ✅ Device code flow (RFC 8628), GitHub Copilot provider, credential storage |
+| OAuth | `src/provider/oauth/` | ✅ Device code flow (RFC 8628), GitHub Copilot provider, credential storage. Token refresh on each turn. |
+| Interactive fork /settings menu | `fork_selector.rs`, `settings_list.rs`, `settings_selector.rs` | ✅ `/fork` with interactive message selector overlay. `/settings` with SettingsSelector overlay listing all configurable fields. |
+| Settings deep merge | `settings.rs` — `DeepMerge` trait, nested config structs | ✅ Full pi-compatible settings with nested blocks: `compaction`, `terminal`, `images`, `retry`, `markdown`, `warnings`, `branchSummary`, `thinkingBudgets`, `packages`. Deep merge with field-level tracking for partial writes. |
+| Auth backend pattern | `auth.rs` — `AuthStorageBackend` enum (File/InMemory) | ✅ Lock-based read-modify-write semantics, pi-compatible `AuthStorageBackend` pattern. |
 | WASM plugin system | Not started | ⬜ Phase 2 |
 
 ---
@@ -411,7 +431,7 @@ agent_session.check_auto_compact().await;
 
 ---
 
-## Session layer (`src/agent/session/`) — `mod.rs` + `model.rs`, ~3200+ lines
+## Session layer (`src/agent/session/`) — `mod.rs` + `model.rs`, ~3182 lines
 
 Pi-compatible three-layer architecture:
 
@@ -481,13 +501,14 @@ pub enum SessionEntry {
 
 ### Versioning
 
-Current session version: **3**. Each entry has a unique `id` and optional
-`parentId`, forming a tree. Branching writes a persistent `LeafEntry`
+Current session version: **3**. Rab only produces v3 sessions (no migration
+path for v1/v2 — rab never created them). Each entry has a unique `id` and
+optional `parentId`, forming a tree. Branching writes a persistent `LeafEntry`
 (pi-compatible durability — leaf position survives crashes).
 
 ---
 
-## Session storage (`src/agent/session/storage.rs`) — ~660 lines
+## Session storage (`src/agent/session/storage.rs`) — ~710 lines
 
 Pi-compatible `SessionStorage` trait with full CRUD operations.
 Both implementations fully own their state (entries, by_id, labels, leaf_id).
@@ -547,7 +568,7 @@ cwd filtering for the session picker UI.
 
 ---
 
-## Compaction (`src/agent/compaction.rs`) — ~1140 lines ✅ IMPLEMENTED
+## Compaction (`src/agent/compaction.rs`) — ~1132 lines ✅ IMPLEMENTED
 
 When the conversation approaches the model's context window, older messages
 are summarized to free space. Ported from pi's compaction algorithm.
@@ -572,16 +593,19 @@ are summarized to free space. Ported from pi's compaction algorithm.
 
 ### Settings
 
-```rust
-pub struct CompactionSettings {
-    pub enabled: bool,
-    pub reserve_tokens: u64,       // tokens reserved for system + response
-    pub keep_recent_tokens: u64,   // newest tokens always kept
+Compaction settings are now nested under `settings.json → compaction`:
+
+```json
+{
+  "compaction": {
+    "enabled": true,
+    "reserveTokens": 16384,
+    "keepRecentTokens": 20000
+  }
 }
 ```
 
-Defaults: enabled, 16K reserve, 20K keep recent. Configurable via settings
-(`autoCompact`, `compactReserveTokens`, `compactKeepRecentTokens`).
+Defaults: enabled, 16K reserve, 20K keep recent.
 
 ### Manual trigger
 
@@ -596,7 +620,7 @@ generate summaries.
 
 ---
 
-## Branch summarization (`src/agent/branch_summary.rs`) — ~440 lines ✅ IMPLEMENTED
+## Branch summarization (`src/agent/branch_summary.rs`) — ~455 lines ✅ IMPLEMENTED
 
 When the user navigates to a different branch in the session tree, the
 abandoned branch is summarized so context is preserved.
@@ -616,6 +640,17 @@ abandoned branch is summarized so context is preserved.
    Append a `BranchSummaryEntry` with file operation details (readFiles,
    modifiedFiles extracted from tool calls).
 
+Branch summary settings are nested under `settings.json → branchSummary`:
+
+```json
+{
+  "branchSummary": {
+    "reserveTokens": 4000,
+    "skipPrompt": false
+  }
+}
+```
+
 ---
 
 ## Provider layer (`src/provider/`)
@@ -629,7 +664,7 @@ compat flags, pricing, context window) and the API key.
 
 ```rust
 pub struct ProviderRegistry {
-    entries: Vec<ProviderEntry>,
+    entries: Vec<models::ProviderEntry>,
     auth_storage: crate::auth::AuthStorage,
 }
 
@@ -748,7 +783,8 @@ Custom Anthropic Messages API provider that uses `model_config.base_url`
 and forwards `model_config.headers` — unlike yoagent's `AnthropicProvider`
 which hardcodes `https://api.anthropic.com` and ignores headers.
 This allows GitHub Copilot (and other proxies) to serve Anthropic-format
-models through their own endpoints.
+models through their own endpoints. OAuth tokens are refreshed on each
+agent turn. HTTP 421 responses are reclassified as retryable.
 
 ### OAuth (`oauth/`)
 
@@ -760,19 +796,27 @@ Generic OAuth provider trait and registry matching pi's `OAuthProviderInterface`
 | `oauth/device_code.rs` | RFC 8628 device code flow poller with timeout, slow-down handling, cancellation |
 | `oauth/github_copilot.rs` | GitHub Copilot OAuth: device code login, model fetch, auto-enable |
 
-### update.rs — `rab update-models` subcommand
+### generate_models.rs — `rab generate-models` subcommand
 
 Fetches `https://models.dev/api.json`, processes target providers
-(currently `opencode` and `opencode-go`), applies pi-style corrections:
+(currently: `github-copilot`, `opencode`, `opencode-go`, `deepseek`),
+applies pi-style corrections, and writes `src/provider/models.json`.
+
+Preserves existing file contents (non-target providers not overwritten).
+
+Corrections applied:
 
 | Model | Correction |
 |-------|-----------|
 | `deepseek-v4*` | `requiresReasoningContentOnAssistantMessages: true`, `thinkingFormat: deepseek`, `supportsReasoningEffort: false`, `thinkingLevelMap` with `high`/`max` mapping |
-| `kimi-k2.6` | `thinkingFormat: deepseek`, `supportsReasoningEffort: false` |
+| `deepseek-reasoner` | Same as deepseek-v4* + `supportsThinkingControl: true` |
+| `kimi-k2.6` | `thinkingFormat: deepseek`, `supportsReasoningEffort: false`, `supportsLongCacheRetention: false` |
 | `kimi-k2.5` | `supportsLongCacheRetention: false` |
 | `minimax-m2.7` | `supportsLongCacheRetention: false` |
 | `grok-build-0.1` | `supportsReasoningEffort: false`, `thinkingLevelMap` limiting levels |
 | `qwen3*` (opencode-go) | `thinkingFormat: qwen` |
+| Anthropic Messages (GitHub Copilot) | `forceAdaptiveThinking` for extended-thinking models, `supportsTemperature: false` for opus-4.7/4.8, `thinkingLevelMap` overrides per model |
+| GitHub Copilot `gpt-5.x` | `minimal: "low"` in thinkingLevelMap |
 
 ---
 
@@ -903,7 +947,7 @@ Template assets (`template.html`, `template.css`, `template.js`, `marked.min.js`
 |---------|--------|-------------|
 | `/quit` | `Quit` | Graceful shutdown |
 | `/model <name>` | `ModelChanged(name)` / `Info` | Switch model; no args lists available |
-| `/settings` | `OpenSettings` | Open settings menu overlay |
+| `/settings` | `OpenSettings` | Open interactive settings menu overlay |
 | `/scoped-models` | `ScopedModels` | Enable/disable models for Ctrl+P cycling |
 | `/export [path]` | `ExportSession { path }` | Export session (HTML or .jsonl) |
 | `/import <path>` | `ImportSession { path }` | Import and resume a session |
@@ -912,9 +956,9 @@ Template assets (`template.html`, `template.css`, `template.js`, `marked.min.js`
 | `/name <name>` | `SessionNamed { name }` | Set session display name |
 | `/session` | `SessionInfo { ... }` | Show session info and stats |
 | `/changelog` | `ShowChangelog` | Show changelog entries |
-| `/hotkeys` | `ShowHelp` | Show keyboard shortcuts |
-| `/fork [msg-id]` | `ForkSession { message_id }` | Fork from a previous message |
-| `/clone` | `CloneSession` | Duplicate the current session |
+| `/hotkeys` | `ShowHelp` | Show keyboard shortcuts (dismiss on any key) |
+| `/fork [msg-id]` | `ForkSession { message_id }` | Fork from a previous message (interactive selector if no ID) |
+| `/clone` | `CloneSession` | Duplicate the current session at current position |
 | `/tree` | `SessionTree` | Navigate session tree |
 | `/trust <decision>` | `TrustDecision { decision }` | Save project trust decision |
 | `/login [provider]` | `Login { provider }` | Configure provider auth |
@@ -961,16 +1005,33 @@ pub async fn with_file_mutation_queue<T, E, F, Fut>(
 
 ## Auth (`src/auth.rs`)
 
-API key and OAuth credential storage, loaded from `~/.rab/agent/auth.json`.
+Pi-compatible credential store using the `AuthStorageBackend` pattern
+(File / InMemory variants) with file locking and OAuth auto-refresh.
 
 ```rust
 pub enum AuthCredential {
     ApiKey { key: String },
-    Oauth { access: String, refresh: Option<String>, expires: Option<i64>, enterprise_url: Option<String> },
+    Oauth {
+        access: String,
+        refresh: Option<String>,
+        expires: Option<i64>,
+        enterprise_url: Option<String>,
+    },
 }
 
-pub struct AuthStorage(HashMap<String, AuthCredential>);
+pub enum AuthStorageBackend {
+    File(FileAuthStorageBackend),
+    InMemory(InMemoryAuthStorageBackend),
+}
+
+pub struct AuthStorage {
+    backend: Mutex<AuthStorageBackend>,
+}
 ```
+
+Every access (read or write) goes through a locked path, ensuring atomic
+read-modify-write semantics. This prevents race conditions where a lock-free
+read observes a truncated/partial file during a concurrent write.
 
 Load order: `~/.rab/agent/auth.json`. Supports multiple providers (api_key
 or oauth). Methods: `api_key(provider)`, `oauth_token(provider)`.
@@ -1011,7 +1072,7 @@ Centralized path handling matching pi's `packages/coding-agent/src/utils/paths.t
 - `resolve_path()` — resolve relative/absolute paths, expand `~`
 - `display_path()` — display path relative to cwd or home
 
-## Settings (`src/agent/settings.rs`) — ~800 lines
+## Settings (`src/agent/settings.rs`) — ~1796 lines
 
 Same file names and format as pi, under `~/.rab/agent/`.
 
@@ -1030,22 +1091,75 @@ Same file names and format as pi, under `~/.rab/agent/`.
 | `~/.pi/agent/skills/` | `~/.rab/skills/` | ✅ |
 | `~/.pi/agent/themes/` | `~/.rab/themes/` + embedded | ✅ |
 
-### `settings.json` format
+### `settings.json` format (pi-compatible nested schema)
 
 ```json
 {
-    "defaultModel": "deepseek-v4-flash",
-    "defaultThinkingLevel": "high",
-    "defaultProvider": "opencode_go",
-    "tools": ["read", "write", "edit", "bash"],
-    "excludeTools": [],
-    "theme": "dark",
-    "verbose": false,
-    "hideThinkingBlock": true,
-    "collapseToolOutput": true,
-    "autoCompact": true,
-    "compactReserveTokens": 16384,
-    "compactKeepRecentTokens": 20000
+  "defaultModel": "deepseek-v4-flash",
+  "defaultThinkingLevel": "high",
+  "defaultProvider": "opencode_go",
+  "tools": ["read", "write", "edit", "bash"],
+  "excludeTools": [],
+  "theme": "dark",
+  "verbose": false,
+  "hideThinkingBlock": true,
+  "collapseToolOutput": true,
+  "compaction": {
+    "enabled": true,
+    "reserveTokens": 16384,
+    "keepRecentTokens": 20000
+  },
+  "terminal": {
+    "showImages": true,
+    "imageWidthCells": null,
+    "clearOnShrink": true,
+    "showTerminalProgress": true
+  },
+  "images": {
+    "autoResize": true,
+    "blockImages": false
+  },
+  "retry": {
+    "enabled": true,
+    "maxRetries": 3,
+    "baseDelayMs": 1000,
+    "provider": {
+      "timeoutMs": 30000,
+      "maxRetries": 2,
+      "maxRetryDelayMs": 30000
+    }
+  },
+  "markdown": {
+    "codeBlockIndent": "  "
+  },
+  "warnings": {
+    "anthropicExtraUsage": true
+  },
+  "branchSummary": {
+    "reserveTokens": 4000,
+    "skipPrompt": false
+  },
+  "thinkingBudgets": {
+    "minimal": 2000,
+    "low": 4000,
+    "medium": 8000,
+    "high": 16000
+  },
+  "shellPath": null,
+  "shellCommandPrefix": "shopt -s expand_aliases",
+  "externalEditor": null,
+  "enabledModels": ["deepseek-v4-*", "claude-sonnet-4*"],
+  "httpProxy": null,
+  "httpIdleTimeoutMs": 30000,
+  "sessionDir": null,
+  "packages": [
+    "npm:@rab/extension-example",
+    {
+      "source": "git:https://github.com/user/repo.git",
+      "extensions": ["my-ext"],
+      "skills": ["my-skill"]
+    }
+  ]
 }
 ```
 
@@ -1054,6 +1168,9 @@ overlays. CLI flags (`--model`, `--thinking`, `--no-context-files`, etc.) take
 precedence over both. Settings modifications during a session (Ctrl+T, Ctrl+O,
 Ctrl+Shift+C toggles) are tracked via `modified_fields` and only written
 back for fields that were explicitly changed (preserving project-level overrides).
+
+Nested configs use a `DeepMerge` trait for recursive field-by-field merging.
+Arrays are replaced entirely (not merged element-by-element).
 
 ---
 
@@ -1091,7 +1208,7 @@ and registers them as `/name` commands. Follows pi's prompt template system:
 rab [MESSAGE]...
 
 Subcommands:
-  rab update-models          Fetch and update built-in model catalog
+  rab generate-models         Fetch and update built-in model catalog
 
 Session:
   -c, --continue             Continue most recent session in cwd
@@ -1099,6 +1216,7 @@ Session:
   --session PATH             Open specific session file (path or partial ID)
   --session-id ID            Create/open session with explicit ID
   --fork PATH                Fork a session from another session file
+                              (supports interactive message selector via ui)
   --export PATH              Export session and exit (⚠ not yet implemented)
   --no-session               Ephemeral, don't save
   -n, --name <name>          Set session name
@@ -1171,7 +1289,7 @@ stdout. Uses `yoagent::agent::Agent::prompt_with_sender()` with event channels.
 
 ---
 
-## TUI (`src/tui/` + `src/agent/ui/`) — 55+ modules, ~700+ tests
+## TUI (`src/tui/` + `src/agent/ui/`) — 101 source modules, ~57.8K lines, ~766 tests
 
 The TUI library is a direct Rust port of pi's `@earendil-works/pi-tui`.
 
@@ -1203,7 +1321,7 @@ The TUI library is a direct Rust port of pi's `@earendil-works/pi-tui`.
 | Module | Description |
 |--------|-------------|
 | `editor.rs` | Multi-line editor — word-wrap, undo stack, kill ring, paste markers, bracketed paste, history recall, character jump, sticky column, border_color, autocomplete |
-| `markdown.rs` | comrak-based renderer with syntax highlighting, tables, code blocks, Kitty hyperlinks |
+| `markdown.rs` | comrak-based renderer with syntax highlighting, tables, code blocks, Kitty hyperlinks, blank lines between list items |
 | `diff.rs` | Unified diff with colored +/lines and intra-line character-level inverse |
 | `image.rs` | Inline image via Kitty terminal protocol, fallback to text summary |
 | `box.rs` | `Box` component with render cache, borders, backgrounds |
@@ -1218,13 +1336,13 @@ The TUI library is a direct Rust port of pi's `@earendil-works/pi-tui`.
 
 | Module | Description |
 |--------|-------------|
-| `app.rs` | Main `App` struct — event handler, agent loop management, message queuing, compose_ui, bang commands (!/!!), skills expansion |
+| `app.rs` | Main `App` struct — event handler, agent loop management, message queuing, compose_ui, bang commands (!/!!), skills expansion, overlay lifecycle |
 | `chat_editor.rs` | `ChatEditor` wrapper — input processing, slash command dispatch, /skill:name expansion. `InputAction` enum with `Handled`, `Escape`, `Clear`, `Exit`, `ThinkingCycle`, `ModelSelector`, `ModelCycleForward`, `ModelCycleBackward`, `ToggleThinking`, `ToolsExpand`, `EditorExternal`, `Help`, `Submit`, `FollowUp`, `Dequeue`, `CompactToggle` |
 | `theme.rs` | `RabTheme` — JSON theme resolution, fallback, color detection, 130+ theme keys |
 | `working.rs` | `WorkingIndicator` — timer-based working animation |
 | `model_selector.rs` | `ModelSelector` — Ctrl+P model cycling with scoped-models support |
 | `footer.rs` | `Footer` — cwd, git branch, token usage, model, auto-compact indicator |
-| `help.rs` | Help overlay with keybinding display |
+| `help.rs` | Help overlay with keybinding display (dismissed on any key press) |
 | `render_utils.rs` | Shared rendering utilities |
 | `components/header.rs` | Header — "rab" logo, keybinding hints |
 | `components/footer_component.rs` | Footer component |
@@ -1239,6 +1357,9 @@ The TUI library is a direct Rust port of pi's `@earendil-works/pi-tui`.
 | `components/login_dialog.rs` | Login dialog for OAuth flows (prompt, device code, auth URL) |
 | `components/oauth_selector.rs` | Provider selector with search and auth status display |
 | `components/scoped_models_selector.rs` | Enable/disable models for Ctrl+P cycling |
+| `components/fork_selector.rs` | User message selector overlay for `/fork` command (matching pi's `UserMessageSelectorComponent`) |
+| `components/settings_list.rs` | `SettingsList` component — label/value layout, optional search, value cycling (Enter/Space) |
+| `components/settings_selector.rs` | `SettingsSelector` — main settings menu overlay, lists all configurable settings, wires changes to App state and persistence |
 | `components/mod.rs` | Component re-exports |
 
 ### Layout (component tree)
@@ -1328,7 +1449,7 @@ use `status_section` that appears for one frame then clears.
 ```
 ~/.rab/
 ├── agent/
-│   ├── settings.json          # global settings
+│   ├── settings.json          # global settings (nested pi-compatible format)
 │   ├── auth.json              # API keys and OAuth credentials
 │   ├── models.json            # user provider/model overrides (merged with built-in)
 │   ├── SYSTEM.md              # custom system prompt (full override)
@@ -1336,7 +1457,6 @@ use `status_section` that appears for one frame then clears.
 │   ├── AGENTS.md              # global context file
 │   ├── mcp.json               # MCP server configuration
 │   └── prompts/               # prompt templates (.md files)
-├── models.json                # ⬜ deprecated, use agent/models.json
 ├── keybindings.json           # custom keybindings
 ├── extensions/                # ⬜ WASM plugins (Phase 2)
 ├── skills/                    # agent skills (SKILL.md files)
@@ -1361,34 +1481,34 @@ use `status_section` that appears for one frame then clears.
 
 ```
 rab (EPL-2.0)
-├── yoagent 0.8.4         (MIT)        - agent loop, provider, types, skills
-│   └── reqwest           (Apache 2.0) - HTTP client (inside yoagent)
-├── tokio 1               (MIT)        - async runtime
-├── tokio-util 0.7        (MIT)        - CancellationToken
-├── serde + serde_json 1  (MIT)        - JSON serialization
-├── uuid 1                (MIT)        - message/session IDs
-├── chrono 0.4            (MIT)        - timestamps
-├── directories 6         (MIT)        - XDG paths
-├── anyhow 1              (MIT)        - error handling
-├── futures 0.3           (MIT)        - StreamExt
-├── async-trait 0.1       (MIT)        - trait async fn
-├── colored 3             (MPL-2.0)    - terminal colors
-├── crossterm 0.29        (MIT)        - terminal I/O
-├── unicode-segmentation 1 (MIT)       - grapheme-aware cursor movement
-├── unicode-width 0.2     (MIT)        - character display width
-├── unicode-normalization 0.1 (MIT)    - Unicode normalization
-├── comrak 0.52           (MIT)        - markdown parsing (GFM)
-├── syntect 5.3           (MIT)        - syntax highlighting (optional feature)
-├── base64 0.22           (MIT)        - image data URL encoding
-├── async-stream 0.3      (MIT)        - async stream generation
-├── regex 1.12            (MIT)        - regex
-├── reqwest 0.12          (MIT/Apache 2.0) - HTTP client (rustls-tls, socks)
-├── reqwest-eventsource 0.6 (Apache 2.0) - SSE streaming for OpenAI API
-├── tracing 0.1           (MIT)        - diagnostic logging
-├── openssl-sys 0.9       (MIT)        - vendored OpenSSL
-├── libc 0.2              (MIT)        - system calls
-├── url 2.5               (MIT)        - URL parsing
-├── fs2 0.4               (MIT)        - cross-platform file locks
+├── yoagent              (MIT, git rev a98d007) - agent loop, provider, types, skills
+│   └── reqwest          (Apache 2.0)           - HTTP client (inside yoagent)
+├── tokio 1              (MIT)                  - async runtime
+├── tokio-util 0.7       (MIT)                  - CancellationToken
+├── serde + serde_json 1 (MIT)                  - JSON serialization
+├── uuid 1               (MIT)                  - message/session IDs
+├── chrono 0.4           (MIT)                  - timestamps
+├── directories 6        (MIT)                  - XDG paths
+├── anyhow 1             (MIT)                  - error handling
+├── futures 0.3          (MIT)                  - StreamExt
+├── async-trait 0.1      (MIT)                  - trait async fn
+├── colored 3            (MPL-2.0)              - terminal colors
+├── crossterm 0.29       (MIT)                  - terminal I/O
+├── unicode-segmentation 1 (MIT)                - grapheme-aware cursor movement
+├── unicode-width 0.2    (MIT)                  - character display width
+├── unicode-normalization 0.1 (MIT)             - Unicode normalization
+├── comrak 0.53          (MIT)                  - markdown parsing (GFM)
+├── syntect 5.3          (MIT, optional)        - syntax highlighting
+├── base64 0.22          (MIT)                  - image data URL encoding
+├── async-stream 0.3     (MIT)                  - async stream generation
+├── regex 1.12           (MIT)                  - regex
+├── reqwest 0.13         (MIT/Apache 2.0)       - HTTP client (rustls-tls, socks)
+├── kameleoon-reqwest-eventsource 0.6 (Apache 2.0) - SSE streaming
+├── tracing 0.1          (MIT)                  - diagnostic logging
+├── rustls-platform-verifier (patched)          - Android/Termux fix
+├── libc 0.2             (MIT)                  - system calls
+├── url 2.5              (MIT)                  - URL parsing
+├── fs2 0.4              (MIT)                  - cross-platform file locks
 # wasmtime 26+ (Phase 2, Apache 2.0)
 # notify 7    (Phase 2, CC0-1.0)
 # rmcp 1      (Phase 2, MIT)
@@ -1397,6 +1517,13 @@ rab (EPL-2.0)
 No GPL dependencies. All permissive (MIT / Apache 2.0 / MPL-2.0), fully
 compatible with EPL-2.0. Phase 2 dependencies (wasmtime, notify, rmcp) are
 gated behind Cargo features: `plugins` and `mcp`. MVP compiles without them.
+
+Key dependency changes from earlier versions:
+- `reqwest` upgraded from 0.12 to 0.13 (rustls-tls, socks)
+- `reqwest-eventsource` replaced with `kameleoon-reqwest-eventsource` 0.6
+- `openssl-sys` removed (fully rustls-based)
+- `rustls-platform-verifier` patched with `webpki-roots` to fix Android/Termux panic
+- `yoagent` is a git dependency at rev `a98d00769373908b59bce5fbc09c76d3349a4daa`
 
 ---
 
@@ -1410,7 +1537,7 @@ bindings. Hot reload via file watcher.
 
 ### MCP adapter — ✅ IMPLEMENTED
 
-The `src/extensions/mcp/` module (6 modules, ~2040 lines) provides a full MCP
+The `src/extensions/mcp/` module (6 modules, ~2160 lines) provides a full MCP
 adapter matching pi-mcp-adapter's architecture. Configured via `~/.rab/agent/mcp.json`
 (global) and `.rab/mcp.json` (project-local overrides).
 
@@ -1437,9 +1564,9 @@ adapter matching pi-mcp-adapter's architecture. Configured via `~/.rab/agent/mcp
 ### models.json — ✅ IMPLEMENTED
 
 Custom provider/model definitions are now supported via `~/.rab/agent/models.json`,
-merged with the built-in catalog (`src/provider/models.json`, ~1300 lines).
+merged with the built-in catalog (`src/provider/models.json`, ~60K / ~1300 lines).
 User entries with the same provider ID replace built-in entries entirely.
-The `rab update-models` subcommand fetches the latest models from `models.dev`
+The `rab generate-models` subcommand fetches the latest models from `models.dev`
 and updates the built-in catalog.
 
 ### User extensions (compile-time)
