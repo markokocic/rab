@@ -465,13 +465,16 @@ impl Component for SettingsSelector {
     fn render(&mut self, width: usize) -> Vec<String> {
         self.poll_submenu();
 
-        let theme = current_theme();
+        // Scope theme guard so it's dropped before settings_list.render()
+        // which also calls current_theme(). Otherwise the non-reentrant mutex
+        // deadlocks.
         let mut lines: Vec<String> = Vec::new();
-
-        // Title bar
-        let title = theme.bold_accent("  Settings");
-        lines.push(truncate_to_width(&title, width, "", true));
-        lines.push(theme.dim(&"─".repeat(width.saturating_sub(2))));
+        {
+            let theme = current_theme();
+            let title = theme.bold_accent("  Settings");
+            lines.push(truncate_to_width(&title, width, "", true));
+            lines.push(theme.dim(&"─".repeat(width.saturating_sub(2))));
+        }
         lines.push(String::new());
 
         // Settings list
