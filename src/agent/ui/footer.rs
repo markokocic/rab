@@ -279,16 +279,18 @@ impl crate::tui::Component for Footer {
 
         // ── Line 1: pwd (git branch) • session-name ──
         let home = std::env::var("HOME").ok();
-        let mut pwd = format!("Ⱀ {}", format_cwd_for_footer(&self.cwd, home.as_deref()));
+        let icon = theme.bold(&theme.fg_key(ThemeKey::Accent, "Ⱀ"));
+        let dir = format_cwd_for_footer(&self.cwd, home.as_deref());
+        let mut pwd = format!("{} {}", icon, theme.fg_key(ThemeKey::Dim, &dir));
 
         if let Some(ref branch) = git_branch {
-            pwd = format!("{} ({})", pwd, branch);
+            pwd = format!("{} ({})", pwd, theme.fg_key(ThemeKey::Dim, branch));
         }
         if let Some(ref name) = self.session_name {
-            pwd = format!("{} • {}", pwd, name);
+            pwd = format!("{} • {}", pwd, theme.fg_key(ThemeKey::Dim, name));
         }
         let pwd_line = truncate_to_width(
-            &theme.fg_key(ThemeKey::Dim, &pwd),
+            &pwd,
             w,
             &theme.fg_key(ThemeKey::Dim, "..."),
             false, // pi: no padding
