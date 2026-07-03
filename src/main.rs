@@ -162,7 +162,7 @@ async fn main() -> anyhow::Result<()> {
     // Load settings and auth
     let settings = Settings::load(&cwd)?;
     let model = model_override.unwrap_or_else(|| settings.model().to_string());
-    let auth = rab::auth::AuthStorage::load()?;
+    let auth = rab::auth::AuthStorage::create()?;
 
     // Load provider registry (built-in + ~/.rab/agent/models.json)
     let agent_dir = get_agent_dir();

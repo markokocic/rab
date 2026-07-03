@@ -46,7 +46,7 @@ impl ProviderRegistry {
         let user = models::load_user(&user_path)?;
 
         let entries = models::merge(builtin, user);
-        let auth_storage = crate::auth::AuthStorage::load()?;
+        let auth_storage = crate::auth::AuthStorage::create()?;
 
         Ok(Self {
             entries,

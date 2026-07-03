@@ -1,6 +1,7 @@
 //! Auth storage — read/write `~/.rab/agent/auth.json`.
 //!
 //! Pi-compatible credential store with file locking and OAuth auto-refresh.
+//! Inspired by pi's `AuthStorage` + `AuthStorageBackend` pattern.
 //!
 //! Format (pi-compatible):
 //! ```json
@@ -10,9 +11,11 @@
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::io::Read;
 use std::path::PathBuf;
+use std::sync::Mutex;
 use std::time::Duration;
+
+// ── Credential types ─────────────────────────────────────────────
 
 /// Credential for a provider (mirrors pi's auth.json schema).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -30,55 +33,277 @@ pub enum AuthCredential {
     },
 }
 
-/// Auth storage loaded from ~/.rab/auth.json.
-#[derive(Debug, Clone, Default, Deserialize)]
-pub struct AuthStorage(HashMap<String, AuthCredential>);
+// ── Backend enum (pi's AuthStorageBackend pattern) ────────────
 
-impl AuthStorage {
-    /// Load auth from `~/.rab/agent/auth.json`. Returns empty if file doesn't exist.
-    pub fn load() -> anyhow::Result<Self> {
-        Self::load_from(Self::path()?)
-    }
+/// Pluggable storage backend for `AuthStorage`.
+///
+/// Every access (read or write) goes through `with_lock`, ensuring
+/// atomic read-modify-write semantics. This prevents the race where
+/// a lock-free read observes a truncated/partial file during a write.
+pub enum AuthStorageBackend {
+    File(FileAuthStorageBackend),
+    InMemory(InMemoryAuthStorageBackend),
+}
 
-    /// Load auth from an explicit path (for testing).
-    pub fn load_from(path: std::path::PathBuf) -> anyhow::Result<Self> {
-        let content = read_json_file(&path)?;
-        match content {
-            Some(c) => serde_json::from_str(&c)
-                .with_context(|| format!("Failed to parse {}", path.display())),
-            None => Ok(Self::default()),
+impl AuthStorageBackend {
+    /// Execute `f` under exclusive lock.
+    ///
+    /// * `current` — current raw file content (`None` if file doesn't exist / empty).
+    /// * Return — `(T, Option<String>)` where the second element is the new
+    ///   content to write, or `None` to leave the file unchanged.
+    fn with_lock<T>(&self, f: impl FnOnce(Option<String>) -> (T, Option<String>)) -> T {
+        match self {
+            AuthStorageBackend::File(b) => b.with_lock(f),
+            AuthStorageBackend::InMemory(b) => b.with_lock(f),
         }
     }
+}
 
-    /// Get the path to the auth file.
-    pub fn path() -> anyhow::Result<PathBuf> {
+// ── File backend ──────────────────────────────────────────────
+
+/// File-based backend backed by `~/.rab/agent/auth.json` (or a custom path).
+///
+/// Uses `fs2` for exclusive file locking. Every access (read and write) is
+/// performed under the lock, preventing the race condition where a concurrent
+/// read observes a truncated or partially-written file.
+pub struct FileAuthStorageBackend {
+    path: PathBuf,
+}
+
+impl FileAuthStorageBackend {
+    /// Create a new file backend at the given path.
+    pub fn new(path: PathBuf) -> Self {
+        Self { path }
+    }
+
+    /// Create a file backend at the default `~/.rab/agent/auth.json`.
+    pub fn default_path() -> anyhow::Result<PathBuf> {
         let dir = directories::BaseDirs::new().context("Could not determine home directory")?;
         Ok(dir.home_dir().join(".rab").join("agent").join("auth.json"))
     }
 
+    fn with_exclusive_lock<T>(&self, f: impl FnOnce(&mut std::fs::File) -> T) -> T {
+        use fs2::FileExt;
+
+        // Ensure parent dir exists
+        if let Some(parent) = self.path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+
+        // Open or create the auth file
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .read(true)
+            .open(&self.path)
+            .expect("Failed to open auth file");
+
+        // Retry loop for lock acquisition (pi-compatible)
+        let mut attempts = 0;
+        loop {
+            match file.try_lock_exclusive() {
+                Ok(()) => break,
+                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    attempts += 1;
+                    if attempts >= 200 {
+                        break; // Give up and proceed anyway
+                    }
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                Err(e) => panic!("Failed to lock auth file: {}", e),
+            }
+        }
+
+        let result = f(&mut file);
+        let _ = file.unlock();
+        result
+    }
+}
+
+impl FileAuthStorageBackend {
+    fn with_lock<T>(&self, f: impl FnOnce(Option<String>) -> (T, Option<String>)) -> T {
+        use std::io::{Read, Seek, Write};
+
+        self.with_exclusive_lock(|file| {
+            // Read current content through the locked handle
+            let content = {
+                let mut s = String::new();
+                let _ = file.rewind();
+                match file.read_to_string(&mut s) {
+                    Ok(_) if s.is_empty() => None,
+                    Ok(_) => Some(s),
+                    Err(_) => None,
+                }
+            };
+
+            let (result, next) = f(content);
+            if let Some(new_content) = next {
+                // Write through the already-open handle to avoid a second
+                // open which would cause a sharing violation on Windows.
+                file.set_len(0).ok();
+                file.rewind().ok();
+                file.write_all(new_content.as_bytes()).ok();
+                file.flush().ok();
+            }
+            result
+        })
+    }
+}
+
+// ── In-memory backend (for testing) ────────────────────────────
+
+/// In-memory backend for testing. Never touches the filesystem.
+pub struct InMemoryAuthStorageBackend {
+    data: Mutex<Option<String>>,
+}
+
+impl InMemoryAuthStorageBackend {
+    /// Create an empty in-memory backend.
+    pub fn new() -> Self {
+        Self {
+            data: Mutex::new(None),
+        }
+    }
+
+    /// Create an in-memory backend seeded with initial data.
+    pub fn with_data(data: &str) -> Self {
+        Self {
+            data: Mutex::new(Some(data.to_string())),
+        }
+    }
+
+    fn with_lock<T>(&self, f: impl FnOnce(Option<String>) -> (T, Option<String>)) -> T {
+        let mut guard = self.data.lock().unwrap();
+        let (result, next) = f(guard.clone());
+        if let Some(new_content) = next {
+            *guard = Some(new_content);
+        }
+        result
+    }
+}
+
+impl Default for InMemoryAuthStorageBackend {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// ── AuthStorage ────────────────────────────────────────────────
+
+/// Credential store backed by a pluggable `AuthStorageBackend`.
+///
+/// All read/write operations go through the backend's `with_lock`,
+/// ensuring atomic read-modify-write semantics.
+///
+/// # Examples
+///
+/// ```ignore
+/// // File-backed (real usage)
+/// let storage = AuthStorage::create()?;
+///
+/// // In-memory (testing)
+/// let storage = AuthStorage::in_memory();
+/// storage.set("my-provider", AuthCredential::ApiKey { key: "sk-..." });
+/// ```
+pub struct AuthStorage {
+    backend: AuthStorageBackend,
+    // Cache: populated on construction / reload, updated on writes.
+    cache: Mutex<HashMap<String, AuthCredential>>,
+}
+
+impl AuthStorage {
+    /// Create a file-backed `AuthStorage` at the default path.
+    pub fn create() -> anyhow::Result<Self> {
+        let path = FileAuthStorageBackend::default_path()?;
+        Ok(Self::from_backend(AuthStorageBackend::File(
+            FileAuthStorageBackend::new(path),
+        )))
+    }
+
+    /// Create a file-backed `AuthStorage` at an explicit path.
+    pub fn with_path(path: PathBuf) -> Self {
+        Self::from_backend(AuthStorageBackend::File(FileAuthStorageBackend::new(path)))
+    }
+
+    /// Create an in-memory `AuthStorage` (for testing).
+    pub fn in_memory() -> Self {
+        Self::from_backend(AuthStorageBackend::InMemory(
+            InMemoryAuthStorageBackend::new(),
+        ))
+    }
+
+    /// Create an in-memory `AuthStorage` seeded with a JSON string (for testing).
+    pub fn in_memory_with(data: &str) -> Self {
+        Self::from_backend(AuthStorageBackend::InMemory(
+            InMemoryAuthStorageBackend::with_data(data),
+        ))
+    }
+
+    /// Create an `AuthStorage` from a custom backend.
+    pub fn from_backend(backend: AuthStorageBackend) -> Self {
+        let storage = Self {
+            backend,
+            cache: Mutex::new(HashMap::new()),
+        };
+        storage.reload();
+        storage
+    }
+
+    // ── Load / reload ──────────────────────────────────────────
+
+    /// Reload credentials from the backend.
+    /// All reads go through `with_lock`, ensuring we never see partial writes.
+    pub fn reload(&self) {
+        let result: anyhow::Result<HashMap<String, AuthCredential>> =
+            self.backend.with_lock(|content| {
+                let data = match content {
+                    Some(c) if !c.is_empty() => {
+                        serde_json::from_str(&c).with_context(|| "Failed to parse auth.json")
+                    }
+                    _ => Ok(HashMap::new()),
+                };
+                (data, None)
+            });
+
+        if let Ok(data) = result {
+            *self.cache.lock().unwrap() = data;
+        }
+    }
+
+    // ── Read operations (from cache) ───────────────────────────
+
     /// Get the API key for a provider. Returns None if not configured or if OAuth.
     pub fn api_key(&self, provider: &str) -> Option<String> {
-        self.0.get(provider).and_then(|cred| match cred {
-            AuthCredential::ApiKey { key } => Some(key.clone()),
-            AuthCredential::Oauth { .. } => None,
-        })
+        self.cache
+            .lock()
+            .unwrap()
+            .get(provider)
+            .and_then(|cred| match cred {
+                AuthCredential::ApiKey { key } => Some(key.clone()),
+                AuthCredential::Oauth { .. } => None,
+            })
     }
 
     /// Get the OAuth access token for a provider.
     /// Returns None if not configured, if API key, or if the token is expired
     /// (past the buffered expiration).
     pub fn oauth_token(&self, provider: &str) -> Option<String> {
-        self.0.get(provider).and_then(|cred| match cred {
-            AuthCredential::Oauth {
-                access, expires, ..
-            } => {
-                if is_expired(*expires) {
-                    return None;
+        self.cache
+            .lock()
+            .unwrap()
+            .get(provider)
+            .and_then(|cred| match cred {
+                AuthCredential::Oauth {
+                    access, expires, ..
+                } => {
+                    if is_expired(*expires) {
+                        return None;
+                    }
+                    Some(access.clone())
                 }
-                Some(access.clone())
-            }
-            AuthCredential::ApiKey { .. } => None,
-        })
+                AuthCredential::ApiKey { .. } => None,
+            })
     }
 
     /// Get the OAuth access token even if past the buffer, as long as it's
@@ -89,135 +314,200 @@ impl AuthStorage {
     /// expiry. Returns None if the token is fully expired, not configured, or
     /// if the credential is an API key.
     pub fn oauth_token_past_buffer(&self, provider: &str) -> Option<String> {
-        self.0.get(provider).and_then(|cred| match cred {
-            AuthCredential::Oauth {
-                access, expires, ..
-            } => {
-                // The stored expires already has the 5-min buffer subtracted.
-                // Restore it to get the actual API-side expiration.
-                let actual = expires.map(|e| e + 300_000);
-                if is_expired(actual) {
-                    return None;
+        self.cache
+            .lock()
+            .unwrap()
+            .get(provider)
+            .and_then(|cred| match cred {
+                AuthCredential::Oauth {
+                    access, expires, ..
+                } => {
+                    // The stored expires already has the 5-min buffer subtracted.
+                    // Restore it to get the actual API-side expiration.
+                    let actual = expires.map(|e| e + 300_000);
+                    if is_expired(actual) {
+                        return None;
+                    }
+                    Some(access.clone())
                 }
-                Some(access.clone())
-            }
-            AuthCredential::ApiKey { .. } => None,
-        })
+                AuthCredential::ApiKey { .. } => None,
+            })
     }
 
     /// Get the stored credential for a provider, if it's an OAuth credential.
     /// Returns None for API key credentials or missing entries.
     pub fn oauth_credential(&self, provider: &str) -> Option<AuthCredential> {
-        self.0.get(provider).cloned().and_then(|cred| match cred {
-            AuthCredential::Oauth { .. } => Some(cred),
-            AuthCredential::ApiKey { .. } => None,
-        })
+        self.cache
+            .lock()
+            .unwrap()
+            .get(provider)
+            .cloned()
+            .and_then(|cred| match cred {
+                AuthCredential::Oauth { .. } => Some(cred),
+                AuthCredential::ApiKey { .. } => None,
+            })
     }
 
     /// Get all stored credentials.
-    pub fn all_credentials(&self) -> &HashMap<String, AuthCredential> {
-        &self.0
-    }
-}
-
-// ── File locking helpers ────────────────────────────────────────
-
-/// Acquire an exclusive file lock (blocking with retry) and run the closure,
-/// passing a mutable reference to the locked file handle.
-/// The closure can read/write through this handle, avoiding a second open
-/// for writing which would fail on Windows (sharing violation).
-fn with_exclusive_lock<T>(path: &PathBuf, f: impl FnOnce(&mut std::fs::File) -> T) -> T {
-    use fs2::FileExt;
-
-    // Ensure parent dir exists
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
+    pub fn all_credentials(&self) -> HashMap<String, AuthCredential> {
+        self.cache.lock().unwrap().clone()
     }
 
-    // Open or create the auth file itself
-    let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .read(true)
-        .open(path)
-        .expect("Failed to open auth file");
+    /// Get raw credential for a provider (both API key and OAuth).
+    pub fn get(&self, provider: &str) -> Option<AuthCredential> {
+        self.cache.lock().unwrap().get(provider).cloned()
+    }
 
-    // Retry loop for lock acquisition (pi-compatible)
-    let mut attempts = 0;
-    loop {
-        match file.try_lock_exclusive() {
-            Ok(()) => break,
-            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                attempts += 1;
-                if attempts >= 200 {
-                    break; // Give up and proceed anyway
+    /// List all providers with stored credentials.
+    pub fn list(&self) -> Vec<String> {
+        self.cache.lock().unwrap().keys().cloned().collect()
+    }
+
+    // ── Write operations (through backend lock) ────────────────
+
+    /// Set an API key credential for a provider.
+    pub fn set_api_key(&self, provider: &str, api_key: &str) -> anyhow::Result<()> {
+        let p = provider.to_string();
+        let k = api_key.to_string();
+        self.modify_all(move |auth| {
+            let mut map = auth;
+            map.insert(p, AuthCredential::ApiKey { key: k });
+            map
+        })
+    }
+
+    /// Set an OAuth credential for a provider.
+    pub fn set_oauth(&self, provider: &str, cred: &AuthCredential) -> anyhow::Result<()> {
+        let p = provider.to_string();
+        let c = cred.clone();
+        self.modify_all(move |auth| {
+            let mut map = auth;
+            map.insert(p, c);
+            map
+        })
+    }
+
+    /// Remove a provider's credential. Returns true if something was removed.
+    pub fn remove(&self, provider: &str) -> anyhow::Result<bool> {
+        let p = provider.to_string();
+        let removed = self.backend.with_lock(|current| {
+            let data: HashMap<String, AuthCredential> = match &current {
+                Some(c) if !c.is_empty() => match serde_json::from_str(c) {
+                    Ok(d) => d,
+                    Err(e) => return (Err(anyhow::Error::from(e)), None),
+                },
+                _ => HashMap::new(),
+            };
+            let mut updated = data;
+            let removed = updated.remove(&p).is_some();
+            if removed {
+                let next = if updated.is_empty() {
+                    // Write empty object, not empty file, to keep valid JSON
+                    Some("{}".to_string())
+                } else {
+                    Some(serde_json::to_string_pretty(&updated).unwrap())
+                };
+                (Ok(removed), next)
+            } else {
+                (Ok(false), None)
+            }
+        })?;
+        if removed {
+            self.reload();
+        }
+        Ok(removed)
+    }
+
+    /// Remove all credentials. Returns true if anything was removed.
+    pub fn clear(&self) -> anyhow::Result<bool> {
+        let cleared = self.backend.with_lock(|current| {
+            let data: HashMap<String, AuthCredential> = match &current {
+                Some(c) if !c.is_empty() => match serde_json::from_str(c) {
+                    Ok(d) => d,
+                    Err(e) => return (Err(anyhow::Error::from(e)), None),
+                },
+                _ => HashMap::new(),
+            };
+            let had = !data.is_empty();
+            if had {
+                (Ok(true), Some("{}".to_string()))
+            } else {
+                (Ok(false), None)
+            }
+        })?;
+        if cleared {
+            self.reload();
+        }
+        Ok(cleared)
+    }
+
+    /// Atomically modify a provider's credential (pi-compatible `CredentialStore.modify()`).
+    /// `f` receives the current credential (None if missing), returns the new
+    /// credential, or None to delete the entry.
+    pub fn modify(
+        &self,
+        provider: &str,
+        f: impl FnOnce(Option<AuthCredential>) -> Option<AuthCredential>,
+    ) -> anyhow::Result<()> {
+        let p = provider.to_string();
+        let result = self.backend.with_lock(|current| {
+            let mut data: HashMap<String, AuthCredential> = match &current {
+                Some(c) if !c.is_empty() => match serde_json::from_str(c) {
+                    Ok(d) => d,
+                    Err(e) => return (Err(anyhow::Error::from(e)), None),
+                },
+                _ => HashMap::new(),
+            };
+
+            let current_cred = data.get(&p).cloned();
+            let next = f(current_cred);
+            let changed = match &next {
+                Some(cred) => {
+                    data.insert(p.clone(), cred.clone());
+                    true
                 }
-                std::thread::sleep(Duration::from_millis(50));
+                None => data.remove(&p).is_some(),
+            };
+
+            if changed {
+                let content = serde_json::to_string_pretty(&data).unwrap();
+                (Ok(()), Some(content))
+            } else {
+                (Ok(()), None)
             }
-            Err(e) => panic!("Failed to lock auth file: {}", e),
-        }
-    }
+        });
 
-    let result = f(&mut file);
-    let _ = file.unlock();
-    result
-}
-
-/// Read JSON from a file (no locking — caller should use exclusive lock for writes).
-/// Returns None if the file doesn't exist.
-fn read_json_file(path: &PathBuf) -> anyhow::Result<Option<String>> {
-    if !path.exists() {
-        return Ok(None);
-    }
-    let mut s = String::new();
-    let mut file =
-        std::fs::File::open(path).with_context(|| format!("Failed to open {}", path.display()))?;
-    file.read_to_string(&mut s)
-        .with_context(|| format!("Failed to read {}", path.display()))?;
-    Ok(Some(s))
-}
-
-/// Read-modify-write the auth file under an exclusive lock.
-/// Writes through the locked file handle to avoid sharing violations on Windows.
-fn modify_auth_file(
-    path: &PathBuf,
-    f: impl FnOnce(HashMap<String, AuthCredential>) -> (HashMap<String, AuthCredential>, bool),
-) -> anyhow::Result<()> {
-    with_exclusive_lock(path, |file| -> anyhow::Result<()> {
-        use std::io::{Read, Seek, Write};
-
-        // Read current content through the locked handle
-        let content = {
-            let mut s = String::new();
-            file.rewind()?;
-            file.read_to_string(&mut s)?;
-            if s.is_empty() { None } else { Some(s) }
-        };
-
-        let auth: HashMap<String, AuthCredential> = match content {
-            Some(c) => serde_json::from_str(&c)?,
-            None => HashMap::new(),
-        };
-
-        let (result, changed) = f(auth);
-        if changed {
-            if let Some(parent) = path.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            let content = serde_json::to_string_pretty(&result)?;
-            // Write through the already-open handle to avoid opening a
-            // second handle, which would cause a sharing violation on Windows.
-            file.set_len(0)?;
-            file.rewind()?;
-            file.write_all(content.as_bytes())?;
-            file.flush()?;
-        }
+        result?;
+        self.reload();
         Ok(())
-    })
+    }
+
+    // ── Internal helpers ───────────────────────────────────────
+
+    /// Internal: replace all credentials (used by `set_api_key`, `set_oauth`).
+    fn modify_all(
+        &self,
+        f: impl FnOnce(HashMap<String, AuthCredential>) -> HashMap<String, AuthCredential>,
+    ) -> anyhow::Result<()> {
+        self.backend.with_lock(|current| {
+            let data: HashMap<String, AuthCredential> = match &current {
+                Some(c) if !c.is_empty() => match serde_json::from_str(c) {
+                    Ok(d) => d,
+                    Err(e) => return (Err(anyhow::Error::from(e)), None),
+                },
+                _ => HashMap::new(),
+            };
+            let updated = f(data);
+            let content = serde_json::to_string_pretty(&updated).unwrap();
+            (Ok(()), Some(content))
+        })?;
+
+        self.reload();
+        Ok(())
+    }
 }
 
-// ── Helper ────────────────────────────────────────────────────
+// ── Helpers ────────────────────────────────────────────────────
 
 fn is_expired(expires: Option<i64>) -> bool {
     match expires {
@@ -232,134 +522,51 @@ fn is_expired(expires: Option<i64>) -> bool {
     }
 }
 
-// ── Write operations ─────────────────────────────────────────────
+// ── Free functions (backward-compatible thin wrappers) ──────────
+
+use std::sync::OnceLock;
+
+fn default_storage() -> &'static AuthStorage {
+    static STORAGE: OnceLock<AuthStorage> = OnceLock::new();
+    STORAGE.get_or_init(|| AuthStorage::create().unwrap_or_else(|_| AuthStorage::in_memory()))
+}
 
 /// Login a provider by storing its API key in auth.json.
 pub fn login(provider: &str, api_key: &str) -> anyhow::Result<()> {
-    let path = AuthStorage::path()?;
-    let p = provider.to_string();
-    let k = api_key.to_string();
-    modify_auth_file(&path, |mut auth| {
-        auth.insert(p, AuthCredential::ApiKey { key: k });
-        (auth, true)
-    })
+    default_storage().set_api_key(provider, api_key)
 }
 
 /// Login a provider by storing its OAuth credentials in auth.json.
 pub fn login_oauth(provider: &str, cred: &AuthCredential) -> anyhow::Result<()> {
-    let path = AuthStorage::path()?;
-    let p = provider.to_string();
-    let c = cred.clone();
-    modify_auth_file(&path, |mut auth| {
-        auth.insert(p, c);
-        (auth, true)
-    })
+    default_storage().set_oauth(provider, cred)
 }
 
 /// Logout a provider by removing its credential from auth.json.
 /// If `provider` is `None`, clears all credentials.
 /// Returns true if something was actually removed.
 pub fn logout(provider: Option<&str>) -> anyhow::Result<bool> {
-    let path = AuthStorage::path()?;
-    if !path.exists() {
-        return Ok(false);
+    match provider {
+        Some(p) => default_storage().remove(p),
+        None => default_storage().clear(),
     }
-
-    with_exclusive_lock(&path, |file| -> anyhow::Result<bool> {
-        use std::io::{Read, Seek, Write};
-
-        // Read current content through the locked handle
-        let content = {
-            let mut s = String::new();
-            file.rewind()?;
-            file.read_to_string(&mut s)?;
-            if s.is_empty() { None } else { Some(s) }
-        };
-
-        let auth: HashMap<String, AuthCredential> = match content {
-            Some(c) => serde_json::from_str(&c)?,
-            None => return Ok(false),
-        };
-
-        let (new_auth, removed) = match provider {
-            Some(prov) => {
-                let mut a = auth;
-                let removed = a.remove(prov).is_some();
-                (a, removed)
-            }
-            None => {
-                let removed = !auth.is_empty();
-                (HashMap::new(), removed)
-            }
-        };
-
-        if removed {
-            if let Some(parent) = path.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            let content = serde_json::to_string_pretty(&new_auth)?;
-            file.set_len(0)?;
-            file.rewind()?;
-            file.write_all(content.as_bytes())?;
-            file.flush()?;
-        }
-        Ok(removed)
-    })
 }
 
 /// List all providers that have credentials stored.
 pub fn list_logged_in() -> anyhow::Result<Vec<String>> {
-    let path = AuthStorage::path()?;
-    let content = read_json_file(&path)?;
-    match content {
-        Some(c) => {
-            let auth: HashMap<String, AuthCredential> = serde_json::from_str(&c)
-                .with_context(|| format!("Failed to parse {}", path.display()))?;
-            Ok(auth.keys().cloned().collect())
-        }
-        None => Ok(Vec::new()),
-    }
+    Ok(default_storage().list())
 }
-
-// ── Enhanced credential read ──────────────────────────────────────
 
 /// Read a credential from auth.json. Returns None if the provider has no stored credential.
 pub fn read_credential(provider: &str) -> anyhow::Result<Option<AuthCredential>> {
-    let path = AuthStorage::path()?;
-    let content = read_json_file(&path)?;
-    match content {
-        Some(c) => {
-            let auth: HashMap<String, AuthCredential> = serde_json::from_str(&c)
-                .with_context(|| format!("Failed to parse {}", path.display()))?;
-            Ok(auth.get(provider).cloned())
-        }
-        None => Ok(None),
-    }
+    Ok(default_storage().get(provider))
 }
 
 /// Atomically modify a single provider's credential (pi-compatible `CredentialStore.modify()`).
-/// `f` receives the current credential (None if missing), returns the new
-/// credential, or None to delete the entry.
 pub fn modify_credential(
     provider: &str,
     f: impl FnOnce(Option<AuthCredential>) -> Option<AuthCredential>,
 ) -> anyhow::Result<()> {
-    let path = AuthStorage::path()?;
-    let p = provider.to_string();
-    modify_auth_file(&path, |auth| {
-        let current = auth.get(&p).cloned();
-        let next = f(current);
-        let mut updated = auth;
-        match next {
-            Some(cred) => {
-                updated.insert(p, cred);
-            }
-            None => {
-                updated.remove(&p);
-            }
-        }
-        (updated, true)
-    })
+    default_storage().modify(provider, f)
 }
 
 /// Refresh an expired OAuth token using the registered OAuth provider.
