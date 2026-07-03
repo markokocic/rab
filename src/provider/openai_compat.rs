@@ -214,6 +214,15 @@ impl StreamProvider for RabOpenAiCompatProvider {
                         }
                         Some(Err(e)) => {
                             let provider_err = classify_eventsource_error(e).await;
+                            // HTTP 421 Misdirected Request: caused by HTTP/2 connection
+                            // coalescing right after login. Reclassify as retryable so
+                            // the agent retries on a fresh connection.
+                            let provider_err = match &provider_err {
+                                ProviderError::Api(msg) if msg.contains("421") => {
+                                    ProviderError::Network(msg.clone())
+                                }
+                                _ => provider_err,
+                            };
                             warn!("OpenAI SSE error: {}", provider_err);
                             return Err(provider_err);
                         }

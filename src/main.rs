@@ -577,6 +577,20 @@ async fn main() -> anyhow::Result<()> {
             .map(|r| r.api_key.clone())
             .or_else(|| auth.api_key("opencode-go"))
             .unwrap_or_default();
+        // Refresh OAuth token if expired (e.g. GitHub Copilot tokens live ~15 min).
+        let api_key = {
+            let provider = resolved
+                .as_ref()
+                .map(|r| r.model_config.provider.as_str())
+                .unwrap_or("");
+            if api_key.is_empty() && rab::provider::oauth::is_built_in(provider) {
+                rab::auth::refresh_oauth_token(provider)
+                    .await
+                    .unwrap_or(api_key)
+            } else {
+                api_key
+            }
+        };
         let mc = resolved
             .as_ref()
             .map(|r| r.model_config.clone())

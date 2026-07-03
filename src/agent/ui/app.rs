@@ -2678,6 +2678,7 @@ fn build_fresh_agent(
     let api_key = resolved
         .as_ref()
         .map(|r| r.api_key.as_str())
+        .filter(|k| !k.is_empty())
         .unwrap_or(api_key);
 
     let tools: Vec<Box<dyn yoagent::types::AgentTool>> = extensions
@@ -2758,11 +2759,27 @@ async fn start_agent_loop(app: &mut App, message: String) {
         session.on_thinking_level_change(app.thinking_level.as_deref().unwrap_or("off"));
     }
 
+    // Refresh OAuth token if expired (e.g. GitHub Copilot tokens live ~15 min).
+    // This covers both the first turn (token expired before rab started) and
+    // subsequent turns (token expired mid-session).
+    let fresh_oauth_key = {
+        let provider = app.current_provider.clone();
+        if crate::provider::oauth::is_built_in(&provider) {
+            crate::auth::refresh_oauth_token(&provider).await
+        } else {
+            None
+        }
+    };
+
     let agent: &mut yoagent::agent::Agent = match &mut app.agent {
         Some(existing) => {
             // Reuse existing agent — messages are already correct from
             // agent.finish(). Compaction sync is handled separately by
             // handle_auto_compact / handle_compact_command.
+            // Update api_key in case the OAuth token was just refreshed.
+            if let Some(ref key) = fresh_oauth_key {
+                existing.api_key = key.clone();
+            }
             existing
         }
         None => {
@@ -2771,10 +2788,11 @@ async fn start_agent_loop(app: &mut App, message: String) {
             } else {
                 app.settings.default_provider.as_deref()
             };
+            let fallback_key = fresh_oauth_key.as_deref().unwrap_or(&app.api_key);
             app.agent = Some(build_fresh_agent(
                 &app.registry,
                 &app.model,
-                &app.api_key,
+                fallback_key,
                 &app.system_prompt,
                 thinking,
                 msgs,
