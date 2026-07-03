@@ -684,6 +684,15 @@ impl Markdown {
         let indent_str = "    ".repeat(depth.min(8));
         let start_number = lst.start.max(1);
         let mut item_index: u64 = 0;
+        let item_count = children
+            .iter()
+            .filter(|c| {
+                matches!(
+                    c.data.borrow().value,
+                    NodeValue::Item(_) | NodeValue::TaskItem(_)
+                )
+            })
+            .count();
 
         for child in &children {
             let cv = child.data.borrow();
@@ -779,6 +788,10 @@ impl Markdown {
 
             if !rendered_any {
                 result.push(bullet_prefix);
+            }
+
+            if !lst.tight && item_index < item_count as u64 {
+                result.push(String::new());
             }
         }
 
