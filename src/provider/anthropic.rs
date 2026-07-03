@@ -32,10 +32,12 @@ impl StreamProvider for RabAnthropicProvider {
         let url = format!("{}/v1/messages", base_url);
 
         let is_oauth = config.api_key.contains("sk-ant-oat");
+        // GitHub Copilot tokens use Bearer auth (not x-api-key).
+        let is_copilot = config.api_key.contains("proxy-ep=");
         let body = build_request_body(&config, is_oauth);
         debug!(
-            "RabAnthropic request: model={} url={} oauth={}",
-            config.model, url, is_oauth
+            "RabAnthropic request: model={} url={} oauth={} copilot={}",
+            config.model, url, is_oauth, is_copilot
         );
 
         let client = reqwest::Client::new();
@@ -44,7 +46,7 @@ impl StreamProvider for RabAnthropicProvider {
             .header("anthropic-version", "2023-06-01")
             .header("content-type", "application/json");
 
-        if is_oauth {
+        if is_oauth || is_copilot {
             builder = builder
                 .header("authorization", format!("Bearer {}", config.api_key))
                 .header(

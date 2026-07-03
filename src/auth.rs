@@ -65,13 +65,38 @@ impl AuthStorage {
     }
 
     /// Get the OAuth access token for a provider.
-    /// Returns None if not configured, if API key, or if the token is expired.
+    /// Returns None if not configured, if API key, or if the token is expired
+    /// (past the buffered expiration).
     pub fn oauth_token(&self, provider: &str) -> Option<String> {
         self.0.get(provider).and_then(|cred| match cred {
             AuthCredential::Oauth {
                 access, expires, ..
             } => {
                 if is_expired(*expires) {
+                    return None;
+                }
+                Some(access.clone())
+            }
+            AuthCredential::ApiKey { .. } => None,
+        })
+    }
+
+    /// Get the OAuth access token even if past the buffer, as long as it's
+    /// not truly expired (past the actual `expires_at`).
+    ///
+    /// The stored `expires` already has a 5-minute buffer subtracted, so this
+    /// adds the buffer back before checking: token is accepted until the real
+    /// expiry. Returns None if the token is fully expired, not configured, or
+    /// if the credential is an API key.
+    pub fn oauth_token_past_buffer(&self, provider: &str) -> Option<String> {
+        self.0.get(provider).and_then(|cred| match cred {
+            AuthCredential::Oauth {
+                access, expires, ..
+            } => {
+                // The stored expires already has the 5-min buffer subtracted.
+                // Restore it to get the actual API-side expiration.
+                let actual = expires.map(|e| e + 300_000);
+                if is_expired(actual) {
                     return None;
                 }
                 Some(access.clone())

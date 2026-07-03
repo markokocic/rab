@@ -89,6 +89,11 @@ impl ProviderRegistry {
                         self.auth_storage.oauth_token(&entry.id)
                     })
                     .or_else(|| {
+                        // Even if past the 5-minute buffer, still use the token
+                        // as long as it's not truly expired.
+                        self.auth_storage.oauth_token_past_buffer(&entry.id)
+                    })
+                    .or_else(|| {
                         // Fallback: check environment variable
                         let env_var = entry.env_var_name();
                         std::env::var(env_var).ok()
@@ -141,6 +146,11 @@ impl ProviderRegistry {
             .or_else(|| {
                 // Check for valid OAuth access token
                 self.auth_storage.oauth_token(provider_id)
+            })
+            .or_else(|| {
+                // Even if past the 5-minute buffer, still use the token
+                // as long as it's not truly expired.
+                self.auth_storage.oauth_token_past_buffer(provider_id)
             })
             .or_else(|| {
                 let env_var = entry.env_var_name();
