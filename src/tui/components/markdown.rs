@@ -512,22 +512,22 @@ impl Markdown {
     /// removes most artifical nesting, but genuine nested lists remain).
     /// Determine whether to add a blank line between two consecutive block-level siblings.
     /// Determine whether to add a blank line between two consecutive block-level siblings.
-    /// Matches pi's per-block-type behavior:
-    ///   - Paragraph: add blank unless next is List
-    ///   - List: never add trailing blank
-    ///   - Heading, CodeBlock, BlockQuote, Table, ThematicBreak: always add blank
-    ///   - HtmlBlock, FrontMatter, other: never add blank
-    fn should_add_block_spacing(current: &NodeValue, next: &NodeValue) -> bool {
-        match current {
-            NodeValue::Paragraph => !matches!(next, NodeValue::List(_)),
-            NodeValue::List(_) => false,
-            NodeValue::Heading(_)
-            | NodeValue::CodeBlock(_)
-            | NodeValue::BlockQuote
-            | NodeValue::Table(_)
-            | NodeValue::ThematicBreak => true,
-            _ => false,
-        }
+    /// Pi delegates list spacing to the parser's "space" tokens from blank lines
+    /// in the source. Comrak does not emit space tokens, so we must add spacing
+    /// synthetically for all block types that should be visually separated.
+    /// See also: pi's `renderToken` where List never adds blank (defers to space)
+    /// but all other block types always add blank unless a space token follows.
+    fn should_add_block_spacing(current: &NodeValue, _next: &NodeValue) -> bool {
+        matches!(
+            current,
+            NodeValue::Paragraph
+                | NodeValue::List(_)
+                | NodeValue::Heading(_)
+                | NodeValue::CodeBlock(_)
+                | NodeValue::BlockQuote
+                | NodeValue::Table(_)
+                | NodeValue::ThematicBreak
+        )
     }
 
     fn render_node_lines<'a>(
