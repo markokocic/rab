@@ -72,6 +72,8 @@ pub enum OverlayResult {
     ForkMessageSelected(String),
     /// User cancelled fork message selection.
     ForkCancelled,
+    /// Generic dismiss (no action needed, close the overlay).
+    Dismiss,
 }
 
 use crate::agent::ui::components::oauth_selector::AuthType;
@@ -1137,6 +1139,9 @@ pub async fn run(config: AppConfig, session: AgentSession) -> anyhow::Result<()>
                         }
                     }
                     OverlayResult::ForkCancelled => {
+                        // Just close
+                    }
+                    OverlayResult::Dismiss => {
                         // Just close
                     }
                     OverlayResult::TreeNavigateTo(entry_id) => {
@@ -2708,6 +2713,7 @@ fn open_scoped_models_selector(app: &mut App, tui: &mut TUI) {
 fn show_help_overlay(app: &mut App, tui: &mut TUI) {
     let mut overlay = crate::agent::ui::help::HelpOverlay::new(&app.theme);
     overlay.set_commands(app.commands.clone());
+    overlay.set_dismiss_signal(app.overlay_result_signal.clone());
     tui.show_overlay(Box::new(overlay), Default::default());
 }
 

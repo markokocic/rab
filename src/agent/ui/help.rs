@@ -1,3 +1,7 @@
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use crate::agent::ui::app::OverlayResult;
 use crate::agent::ui::theme::RabTheme;
 use crate::tui::Component;
 
@@ -5,6 +9,7 @@ use crate::tui::Component;
 pub struct HelpOverlay {
     theme: RabTheme,
     commands: Vec<(String, String)>,
+    dismiss_signal: Rc<RefCell<Option<OverlayResult>>>,
 }
 
 impl HelpOverlay {
@@ -12,11 +17,16 @@ impl HelpOverlay {
         Self {
             theme: theme.clone(),
             commands: Vec::new(),
+            dismiss_signal: Rc::new(RefCell::new(None)),
         }
     }
 
     pub fn set_commands(&mut self, commands: Vec<(String, String)>) {
         self.commands = commands;
+    }
+
+    pub fn set_dismiss_signal(&mut self, signal: Rc<RefCell<Option<OverlayResult>>>) {
+        self.dismiss_signal = signal;
     }
 }
 
@@ -88,6 +98,7 @@ impl Component for HelpOverlay {
 
     fn handle_input(&mut self, _key: &crossterm::event::KeyEvent) -> bool {
         // Any key closes help
+        *self.dismiss_signal.borrow_mut() = Some(OverlayResult::Dismiss);
         true
     }
 }
