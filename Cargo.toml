@@ -49,6 +49,9 @@ yoagent = { git = "https://github.com/markokocic/yoagent.git", rev = "a98d007693
 reqwest = { version = "0.13", default-features = false, features = ["json", "stream", "rustls", "socks", "form"] }
 url = "2.5.8"
 
+[patch.crates-io]
+rustls-platform-verifier = { path = "patches/rustls-platform-verifier" }
+
 [features]
 default = ["syntect"]
 syntect = ["dep:syntect"]
