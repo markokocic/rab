@@ -3650,8 +3650,77 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
             }
         }
         CommandResult::CloneSession => {
-            let msg = "Clone session - not yet implemented.".to_string();
-            chat_info(app, msg.clone());
+            // Clone the session at the current position (like fork with position "at").
+            let source_path = app
+                .session
+                .as_ref()
+                .and_then(|s| s.session().session_file());
+            let session_dir = app.session.as_ref().map(|s| s.session_dir().to_path_buf());
+            let leaf_id = app.session.as_ref().and_then(|s| s.session().get_leaf_id());
+            let cwd = app.cwd.clone();
+
+            let leaf_id = match leaf_id {
+                Some(id) if !id.is_empty() => id,
+                _ => {
+                    let msg = "Nothing to clone yet".to_string();
+                    chat_info(app, msg);
+                    return;
+                }
+            };
+
+            match (source_path, session_dir) {
+                (Some(ref source), Some(ref target_dir)) => {
+                    match crate::agent::session::fork_session(
+                        source,
+                        target_dir,
+                        Some(&leaf_id),
+                        Some("at"),
+                    ) {
+                        Ok(new_id) => {
+                            let dir_entries = std::fs::read_dir(target_dir).ok();
+                            let new_path = dir_entries.and_then(|entries| {
+                                entries
+                                    .flatten()
+                                    .find(|e| {
+                                        let filename = e.file_name();
+                                        filename.to_string_lossy().contains(&new_id)
+                                    })
+                                    .map(|e| e.path())
+                            });
+
+                            match new_path {
+                                Some(ref path) => {
+                                    let new_session =
+                                        crate::agent::AgentSession::open(path, None, Some(&cwd));
+                                    app.switch_to_session(new_session);
+
+                                    let styled = app.theme.fg(
+                                        "accent",
+                                        &format!("✓ Cloned session: {}", path.display()),
+                                    );
+                                    chat_add(
+                                        app,
+                                        std::boxed::Box::new(Text::new(styled, 1, 1, None)),
+                                    );
+                                }
+                                None => {
+                                    let msg =
+                                        format!("Clone created but new file not found: {}", new_id);
+                                    chat_info(app, msg);
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            let msg = format!("Clone failed: {}", e);
+                            chat_info(app, msg.clone());
+                        }
+                    }
+                }
+                _ => {
+                    let msg = "No active session to clone".to_string();
+                    chat_info(app, msg.clone());
+                }
+            }
         }
         CommandResult::SessionTree => {
             // Needs TUI overlay — defer

@@ -202,7 +202,7 @@ impl Extension for CommandsExtension {
             SlashCommand {
                 name: "clone".to_string(),
                 description: "Duplicate the current session at the current position".to_string(),
-                handler: Box::new(command_not_implemented_handler("clone")),
+                handler: Box::new(CloneCommand),
             },
             SlashCommand {
                 name: "tree".to_string(),
@@ -472,6 +472,16 @@ impl CommandHandler for LogoutCommand {
                 Some(provider.to_string())
             },
         })
+    }
+}
+
+// ── /clone ────────────────────────────────────────────────────────
+
+struct CloneCommand;
+
+impl CommandHandler for CloneCommand {
+    fn execute(&self, _args: &str) -> anyhow::Result<CommandResult> {
+        Ok(CommandResult::CloneSession)
     }
 }
 
