@@ -3,7 +3,10 @@ use rab::agent::session::SessionRepo;
 use rab::agent::settings::Settings;
 use rab::agent::ui;
 use rab::builtin::{
-    bash::BashExtension, commands::CommandsExtension, edit::EditExtension, read::ReadExtension,
+    bash::{BashExtension, BashToolOptions},
+    commands::CommandsExtension,
+    edit::EditExtension,
+    read::ReadExtension,
     write::WriteExtension,
 };
 use std::io::Write;
@@ -403,7 +406,15 @@ async fn main() -> anyhow::Result<()> {
         extensions.push(Box::new(EditExtension::new(cwd.clone())));
     }
     if is_extension_active("bash", &settings) {
-        extensions.push(Box::new(BashExtension::new(cwd.clone())));
+        let bash_options = BashToolOptions {
+            command_prefix: settings.shell_command_prefix.clone(),
+            shell_path: settings.shell_path.clone(),
+            operations: None,
+        };
+        extensions.push(Box::new(BashExtension::with_options(
+            cwd.clone(),
+            bash_options,
+        )));
     }
     if is_extension_active("grep", &settings)
         || is_extension_active("find", &settings)

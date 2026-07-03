@@ -347,7 +347,7 @@ impl App {
             Some(model_config),
         );
         agent_session.set_registry(config.registry.clone());
-        agent_session.set_auto_compact(config.settings.auto_compact.unwrap_or(true));
+        agent_session.set_auto_compact(config.settings.get_auto_compact());
         let (tx, rx) = mpsc::unbounded_channel();
         use crate::agent::ui::theme::current_theme;
         let theme = current_theme().clone();
@@ -3248,7 +3248,7 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
                     );
 
                     // Apply reloaded auto_compact setting
-                    app.auto_compact = app.settings.auto_compact.unwrap_or(true);
+                    app.auto_compact = app.settings.get_auto_compact();
                     if let Some(ref mut s) = app.session {
                         s.set_auto_compact(app.auto_compact);
                     }

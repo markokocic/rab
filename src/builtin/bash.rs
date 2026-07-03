@@ -33,6 +33,7 @@ pub trait BashOperations: Send + Sync {
     ) -> Result<Option<i32>, anyhow::Error>;
 }
 
+/// Pluggable options for the bash tool.
 #[derive(Clone, Default)]
 pub struct BashToolOptions {
     /// Custom operations for command execution. Default: local shell.
