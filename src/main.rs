@@ -176,6 +176,11 @@ async fn main() -> anyhow::Result<()> {
 
     // Available models from registry
     let available_models: Vec<String> = registry.list_models();
+    let provider_models: Vec<(String, String)> = registry
+        .list_model_provider_tuples()
+        .into_iter()
+        .map(|(p, m, _)| (p, m))
+        .collect();
 
     // Load custom keybindings from ~/.rab/keybindings.json, merging with defaults
     let mut keybindings = Keybindings::with_defaults();
@@ -366,7 +371,7 @@ async fn main() -> anyhow::Result<()> {
     let context = session.session().build_session_context();
 
     // Build extensions with session info for /session command
-    let commands_ext = CommandsExtension::new(available_models.clone());
+    let commands_ext = CommandsExtension::new(available_models.clone(), provider_models.clone());
     let session_info = commands_ext.session_info.clone();
 
     // Conditionally build extensions based on settings.

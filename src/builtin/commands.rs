@@ -14,9 +14,11 @@ use std::sync::{Arc, Mutex};
 /// Uses the same Extension trait as all other extensions, making built-in
 /// commands indistinguishable from user-provided commands.
 pub struct CommandsExtension {
-    /// Available model identifiers (provider/id), e.g. ["deepseek-v4-flash", "deepseek-v4-pro"]
+    /// Available model identifiers (e.g. "deepseek-v4-flash")
     /// Wrapped in Mutex so it can be updated via &self on /reload.
     available_models: std::sync::Mutex<Vec<String>>,
+    /// Available (provider, model_id) pairs for "provider/model" completion.
+    provider_models: std::sync::Mutex<Vec<(String, String)>>,
     /// Current session info for /session command.
     pub session_info: Arc<Mutex<Option<SessionInfoInternal>>>,
 }
@@ -41,9 +43,10 @@ pub struct SessionInfoInternal {
 }
 
 impl CommandsExtension {
-    pub fn new(available_models: Vec<String>) -> Self {
+    pub fn new(available_models: Vec<String>, provider_models: Vec<(String, String)>) -> Self {
         Self {
             available_models: std::sync::Mutex::new(available_models),
+            provider_models: std::sync::Mutex::new(provider_models),
             session_info: Arc::new(Mutex::new(None)),
         }
     }
@@ -51,6 +54,13 @@ impl CommandsExtension {
     /// Update the set of available models (called on /reload after registry refresh).
     pub fn set_available_models(&self, models: Vec<String>) {
         if let Ok(mut guard) = self.available_models.lock() {
+            *guard = models;
+        }
+    }
+
+    /// Update the provider/model pairs (called on /reload after registry refresh).
+    pub fn set_provider_models(&self, models: Vec<(String, String)>) {
+        if let Ok(mut guard) = self.provider_models.lock() {
             *guard = models;
         }
     }
@@ -138,6 +148,11 @@ impl Extension for CommandsExtension {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clone();
+        let provider_models = self
+            .provider_models
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
 
         vec![
             SlashCommand {
@@ -150,6 +165,7 @@ impl Extension for CommandsExtension {
                 description: "Select model (opens selector UI)".to_string(),
                 handler: Box::new(ModelCommand {
                     available_models: models.clone(),
+                    provider_models: provider_models.clone(),
                 }),
             },
             SlashCommand {
@@ -273,38 +289,91 @@ impl CommandHandler for ResumeCommand {
 
 struct ModelCommand {
     available_models: Vec<String>,
+    provider_models: Vec<(String, String)>, // (provider, model_id) pairs
 }
 
 impl CommandHandler for ModelCommand {
     fn execute(&self, args: &str) -> anyhow::Result<CommandResult> {
-        let model = args.trim();
-        if model.is_empty() {
+        let input = args.trim();
+        if input.is_empty() {
             Ok(CommandResult::OpenModelSelector)
-        } else {
-            // Validate model exists
-            if self.available_models.iter().any(|m| m == model) {
-                Ok(CommandResult::ModelChanged(model.to_string()))
+        } else if let Some((provider, model_id)) = input.split_once('/') {
+            // Handle "provider/model" format
+            let provider = provider.trim();
+            let model_id = model_id.trim();
+            if self
+                .provider_models
+                .iter()
+                .any(|(p, m)| p == provider && m == model_id)
+            {
+                // Return ModelChanged with "provider/model" so app can parse both
+                Ok(CommandResult::ModelChanged(format!(
+                    "{}/{}",
+                    provider, model_id
+                )))
             } else {
                 Ok(CommandResult::Info(format!(
-                    "Unknown model: {}. Available: {}",
-                    model,
-                    self.available_models.join(", ")
+                    "Unknown provider/model: {}. Use 'provider/model' format or just model name",
+                    input
                 )))
             }
+        } else if self.available_models.iter().any(|m| m == input) {
+            // Plain model name - resolve provider automatically
+            Ok(CommandResult::ModelChanged(input.to_string()))
+        } else {
+            Ok(CommandResult::Info(format!(
+                "Unknown model: {}. Available: {}",
+                input,
+                self.available_models.join(", ")
+            )))
         }
     }
 
     fn argument_completions(&self, prefix: &str) -> Vec<AutocompleteItem> {
         let lower = prefix.to_lowercase();
-        self.available_models
-            .iter()
-            .filter(|m| m.to_lowercase().contains(&lower))
-            .map(|m| AutocompleteItem {
-                value: m.clone(),
-                label: m.clone(),
-                description: None,
-            })
-            .collect()
+        let has_slash = prefix.contains('/');
+
+        if has_slash {
+            // Complete "provider/model" format
+            self.provider_models
+                .iter()
+                .map(|(p, m)| format!("{}/{}", p, m))
+                .filter(|full_id| full_id.to_lowercase().contains(&lower))
+                .map(|full_id| AutocompleteItem {
+                    value: full_id.clone(),
+                    label: full_id,
+                    description: None,
+                })
+                .collect()
+        } else {
+            // Complete by model name or "provider/" prefix
+            let mut items: Vec<AutocompleteItem> = self
+                .available_models
+                .iter()
+                .filter(|m| m.to_lowercase().contains(&lower))
+                .map(|m| AutocompleteItem {
+                    value: m.clone(),
+                    label: m.clone(),
+                    description: None,
+                })
+                .collect();
+            // Also offer provider/ prefix completions
+            let providers: std::collections::HashSet<String> = self
+                .provider_models
+                .iter()
+                .map(|(p, _)| p.clone())
+                .collect();
+            for provider in &providers {
+                if provider.to_lowercase().contains(&lower) {
+                    items.push(AutocompleteItem {
+                        value: format!("{}/", provider),
+                        label: format!("{}/", provider),
+                        description: None,
+                    });
+                }
+            }
+            items
+        }
     }
 }
 

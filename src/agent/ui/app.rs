@@ -3499,13 +3499,22 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
             app.should_quit = true;
         }
         CommandResult::ModelChanged(model) => {
-            app.model = model.clone();
-            app.current_provider = app
-                .registry
-                .provider_for_model(&model, Some(&app.current_provider))
-                .unwrap_or_default();
-            app.record_model_change(&model);
-            app.status_text = Some(format!("Model: {}", model));
+            // Handle "provider/model" format (e.g., "deepseek/deepseek-v4-flash")
+            if let Some((provider, model_id)) = model.split_once('/') {
+                let provider = provider.trim();
+                let model_id = model_id.trim();
+                app.current_provider = provider.to_string();
+                app.model = model_id.to_string();
+            } else {
+                app.model = model.clone();
+                app.current_provider = app
+                    .registry
+                    .provider_for_model(&model, Some(&app.current_provider))
+                    .unwrap_or_default();
+            }
+            let model_ref = app.model.clone();
+            app.record_model_change(&model_ref);
+            app.status_text = Some(format!("Model: {}/{}", app.current_provider, app.model));
         }
         CommandResult::ShowHelp => {
             // Needs TUI overlay - defer
@@ -3517,6 +3526,12 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
             // Refresh cached model list from the updated registry.
             {
                 let models = app.registry.list_models();
+                let provider_models: Vec<(String, String)> = app
+                    .registry
+                    .list_model_provider_tuples()
+                    .into_iter()
+                    .map(|(p, m, _)| (p, m))
+                    .collect();
                 app.available_models = models.clone();
                 for ext in app.extensions.iter() {
                     if let Some(cmd) = ext
@@ -3524,6 +3539,7 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
                         .downcast_ref::<crate::builtin::commands::CommandsExtension>()
                     {
                         cmd.set_available_models(models.clone());
+                        cmd.set_provider_models(provider_models.clone());
                         break;
                     }
                 }
