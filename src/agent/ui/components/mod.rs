@@ -2,6 +2,7 @@ pub mod assistant_message;
 pub mod confirm_overlay;
 pub mod editor_component;
 pub mod footer_component;
+pub mod fork_selector;
 pub mod header;
 pub mod info_message;
 pub mod login_dialog;

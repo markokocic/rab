@@ -68,6 +68,10 @@ pub enum OverlayResult {
     },
     /// User wants to reopen the tree selector (from summarization prompt), carrying the entry to select.
     TreeReopen(String),
+    /// User selected a message to fork from.
+    ForkMessageSelected(String),
+    /// User cancelled fork message selection.
+    ForkCancelled,
 }
 
 use crate::agent::ui::components::oauth_selector::AuthType;
@@ -1058,6 +1062,83 @@ pub async fn run(config: AppConfig, session: AgentSession) -> anyhow::Result<()>
                     OverlayResult::ImportCancelled => {
                         chat_info(&mut app, "Import cancelled.");
                     }
+                    OverlayResult::ForkMessageSelected(entry_id) => {
+                        // User selected a message to fork from
+                        let source_path = app
+                            .session
+                            .as_ref()
+                            .and_then(|s| s.session().session_file());
+                        let session_dir =
+                            app.session.as_ref().map(|s| s.session_dir().to_path_buf());
+                        let cwd = app.cwd.clone();
+
+                        match (source_path, session_dir) {
+                            (Some(ref source), Some(ref target_dir)) => {
+                                match crate::agent::session::fork_session(
+                                    source,
+                                    target_dir,
+                                    Some(&entry_id),
+                                    None,
+                                ) {
+                                    Ok(new_id) => {
+                                        let dir_entries = std::fs::read_dir(target_dir).ok();
+                                        let new_path = dir_entries.and_then(|entries| {
+                                            entries
+                                                .flatten()
+                                                .find(|e| {
+                                                    let filename = e.file_name();
+                                                    filename.to_string_lossy().contains(&new_id)
+                                                })
+                                                .map(|e| e.path())
+                                        });
+
+                                        match new_path {
+                                            Some(ref path) => {
+                                                let new_session = crate::agent::AgentSession::open(
+                                                    path,
+                                                    None,
+                                                    Some(&cwd),
+                                                );
+                                                app.switch_to_session(new_session);
+
+                                                let styled = app.theme.fg(
+                                                    "accent",
+                                                    &format!(
+                                                        "✓ Forked session: {}",
+                                                        path.display()
+                                                    ),
+                                                );
+                                                chat_add(
+                                                    &mut app,
+                                                    std::boxed::Box::new(Text::new(
+                                                        styled, 1, 1, None,
+                                                    )),
+                                                );
+                                            }
+                                            None => {
+                                                let msg = format!(
+                                                    "Fork created but new file not found: {}",
+                                                    new_id
+                                                );
+                                                chat_info(&mut app, msg);
+                                            }
+                                        }
+                                    }
+                                    Err(e) => {
+                                        let msg = format!("Fork failed: {}", e);
+                                        chat_info(&mut app, msg.clone());
+                                    }
+                                }
+                            }
+                            _ => {
+                                let msg = "No active session to fork".to_string();
+                                chat_info(&mut app, msg.clone());
+                            }
+                        }
+                    }
+                    OverlayResult::ForkCancelled => {
+                        // Just close
+                    }
                     OverlayResult::TreeNavigateTo(entry_id) => {
                         // User selected an entry — check if it's the current leaf
                         let current_leaf =
@@ -1350,6 +1431,72 @@ pub async fn run(config: AppConfig, session: AgentSession) -> anyhow::Result<()>
                         );
                     } else {
                         chat_info(&mut app, "No active session.");
+                    }
+                }
+                CommandResult::ForkSession { message_id: None } => {
+                    // Show user message selector for forking
+                    let user_messages: Vec<
+                        crate::agent::ui::components::fork_selector::UserMessageItem,
+                    > = app
+                        .session
+                        .as_ref()
+                        .map(|s| {
+                            s.session()
+                                .get_entries()
+                                .iter()
+                                .filter_map(|entry| {
+                                    if let crate::agent::session::SessionEntry::Message(m) = entry {
+                                        if crate::agent::types::message_is_user(&m.message) {
+                                            Some((m.id.clone(), m.message.clone()))
+                                        } else {
+                                            None
+                                        }
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .enumerate()
+                                .map(|(i, (id, msg))| {
+                                    crate::agent::ui::components::fork_selector::UserMessageItem {
+                                        id,
+                                        text: crate::agent::types::message_text(&msg),
+                                        index: i,
+                                        total: 0, // will be set after collect
+                                    }
+                                })
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default();
+
+                    let total = user_messages.len();
+                    let user_messages: Vec<_> = user_messages
+                        .into_iter()
+                        .map(|mut m| {
+                            m.total = total;
+                            m
+                        })
+                        .collect();
+
+                    if user_messages.is_empty() {
+                        chat_info(&mut app, "No messages to fork from".to_string());
+                    } else {
+                        let signal_select = app.overlay_result_signal.clone();
+                        let signal_cancel = app.overlay_result_signal.clone();
+                        let mut selector =
+                            crate::agent::ui::components::fork_selector::ForkSelector::new(
+                                user_messages,
+                            );
+                        selector.on_select = Some(Box::new(move |entry_id| {
+                            *signal_select.borrow_mut() =
+                                Some(OverlayResult::ForkMessageSelected(entry_id));
+                        }));
+                        selector.on_cancel = Some(Box::new(move || {
+                            *signal_cancel.borrow_mut() = Some(OverlayResult::ForkCancelled);
+                        }));
+                        tui.show_positioned_overlay(
+                            Box::new(selector),
+                            crate::tui::OverlayPosition::Bottom,
+                        );
                     }
                 }
                 _ => {}
@@ -2829,6 +2976,13 @@ async fn handle_compact_command(app: &mut App, custom_instructions: Option<Strin
         return;
     }
 
+    // Pi-compatible: disconnect from agent and abort streaming before compact.
+    // This ensures compact runs in a consistent state (pi's compact() calls
+    // _disconnectFromAgent() + abort() as its first internal steps).
+    if app.is_streaming {
+        interrupt_streaming(app);
+    }
+
     let agent_session = app.session.as_mut().unwrap();
 
     app.working.start();
@@ -2837,11 +2991,27 @@ async fn handle_compact_command(app: &mut App, custom_instructions: Option<Strin
         .run_manual_compact(custom_instructions.as_deref())
         .await
     {
-        Ok(_summary) => {
+        Ok(summary) => {
             app.working.stop();
             app.status_text = None;
-            app.rebuild_from_session_context();
-            show_status(app, "Compaction completed".to_string());
+            if summary.is_empty() {
+                // Nothing was compacted — check why (matching pi)
+                let entries = agent_session.session().get_entries();
+                let reason = if entries.is_empty() {
+                    "Nothing to compact (session too small)"
+                } else if matches!(
+                    entries.last(),
+                    Some(crate::agent::session::SessionEntry::Compaction(_))
+                ) {
+                    "Already compacted"
+                } else {
+                    "Nothing to compact (session too small)"
+                };
+                chat_info(app, reason.to_string());
+            } else {
+                app.rebuild_from_session_context();
+                show_status(app, "Compaction completed".to_string());
+            }
         }
         Err(e) => {
             app.working.stop();
@@ -3584,68 +3754,76 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
             let msg = "Changelog - not yet implemented.".to_string();
             chat_info(app, msg.clone());
         }
-        CommandResult::ForkSession { message_id } => {
-            // Clone the session info before modifying app.session
-            let source_path = app
-                .session
-                .as_ref()
-                .and_then(|s| s.session().session_file());
-            let session_dir = app.session.as_ref().map(|s| s.session_dir().to_path_buf());
-            let cwd = app.cwd.clone();
+        CommandResult::ForkSession { ref message_id } => {
+            if message_id.is_none() {
+                // No message ID provided — defer to show message selector overlay
+                app.pending_command_result = Some(result);
+            } else {
+                // Clone the session info before modifying app.session
+                let source_path = app
+                    .session
+                    .as_ref()
+                    .and_then(|s| s.session().session_file());
+                let session_dir = app.session.as_ref().map(|s| s.session_dir().to_path_buf());
+                let cwd = app.cwd.clone();
 
-            match (source_path, session_dir) {
-                (Some(ref source), Some(ref target_dir)) => {
-                    match crate::agent::session::fork_session(
-                        source,
-                        target_dir,
-                        message_id.as_deref(),
-                        None,
-                    ) {
-                        Ok(new_id) => {
-                            // Find the new session file
-                            let dir_entries = std::fs::read_dir(target_dir).ok();
-                            let new_path = dir_entries.and_then(|entries| {
-                                entries
-                                    .flatten()
-                                    .find(|e| {
-                                        let filename = e.file_name();
-                                        filename.to_string_lossy().contains(&new_id)
-                                    })
-                                    .map(|e| e.path())
-                            });
+                match (source_path, session_dir) {
+                    (Some(ref source), Some(ref target_dir)) => {
+                        match crate::agent::session::fork_session(
+                            source,
+                            target_dir,
+                            message_id.as_deref(),
+                            None,
+                        ) {
+                            Ok(new_id) => {
+                                let dir_entries = std::fs::read_dir(target_dir).ok();
+                                let new_path = dir_entries.and_then(|entries| {
+                                    entries
+                                        .flatten()
+                                        .find(|e| {
+                                            let filename = e.file_name();
+                                            filename.to_string_lossy().contains(&new_id)
+                                        })
+                                        .map(|e| e.path())
+                                });
 
-                            match new_path {
-                                Some(ref path) => {
-                                    // Open the new session and replace the current one
-                                    let new_session =
-                                        crate::agent::AgentSession::open(path, None, Some(&cwd));
-                                    app.switch_to_session(new_session);
+                                match new_path {
+                                    Some(ref path) => {
+                                        let new_session = crate::agent::AgentSession::open(
+                                            path,
+                                            None,
+                                            Some(&cwd),
+                                        );
+                                        app.switch_to_session(new_session);
 
-                                    let styled = app.theme.fg(
-                                        "accent",
-                                        &format!("✓ Forked session: {}", path.display()),
-                                    );
-                                    chat_add(
-                                        app,
-                                        std::boxed::Box::new(Text::new(styled, 1, 1, None)),
-                                    );
-                                }
-                                None => {
-                                    let msg =
-                                        format!("Fork created but new file not found: {}", new_id);
-                                    chat_info(app, msg);
+                                        let styled = app.theme.fg(
+                                            "accent",
+                                            &format!("✓ Forked session: {}", path.display()),
+                                        );
+                                        chat_add(
+                                            app,
+                                            std::boxed::Box::new(Text::new(styled, 1, 1, None)),
+                                        );
+                                    }
+                                    None => {
+                                        let msg = format!(
+                                            "Fork created but new file not found: {}",
+                                            new_id
+                                        );
+                                        chat_info(app, msg);
+                                    }
                                 }
                             }
-                        }
-                        Err(e) => {
-                            let msg = format!("Fork failed: {}", e);
-                            chat_info(app, msg.clone());
+                            Err(e) => {
+                                let msg = format!("Fork failed: {}", e);
+                                chat_info(app, msg.clone());
+                            }
                         }
                     }
-                }
-                _ => {
-                    let msg = "No active session to fork".to_string();
-                    chat_info(app, msg.clone());
+                    _ => {
+                        let msg = "No active session to fork".to_string();
+                        chat_info(app, msg.clone());
+                    }
                 }
             }
         }
@@ -3750,10 +3928,6 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
             }
         }
         CommandResult::CompactSession(custom_instructions) => {
-            // If streaming, interrupt first
-            if app.is_streaming {
-                interrupt_streaming(app);
-            }
             app.pending_compact = Some(custom_instructions);
         }
     }
