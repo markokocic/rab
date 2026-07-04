@@ -179,6 +179,7 @@ fn parse_provider(id: &str, def: ProviderDef) -> anyhow::Result<ProviderEntry> {
             cost,
             headers,
             compat: yoagent_compat,
+            anthropic: None,
         };
 
         models.push(model);
