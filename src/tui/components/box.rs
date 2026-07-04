@@ -131,6 +131,52 @@ mod tests {
     use crate::tui::components::Text;
 
     #[test]
+    fn test_wrapped_line_background_fills_full_width() {
+        // When a tool title wraps inside a TuiBox, each wrapped line
+        // must have the background color extending to the full terminal width.
+        use crate::tui::util::visible_width;
+
+        let bg_ansi = "\x1b[48;2;50;50;50m";
+        let mut b = TuiBox::new(1, 1, Some(Style::new().bg(bg_ansi)));
+
+        // Long styled title simulating a wrapped read tool title
+        // Must actually wrap: visible chars need to exceed content_width (78)
+        // "read " = 5 + "/very/long/path/that/actually/wraps/because/it/is/super/duper/long/file_name.config.rs" = 80 => 85 total
+        let title = format!(
+            "\x1b[1mread\x1b[22m \x1b[38;2;100;100;200m/very/long/path/that/actually/wraps/because/it/is/super/duper/long/file_name.config.rs\x1b[39m"
+        );
+        b.add_child(Box::new(Text::new(title, 0, 1, None)));
+
+        let width = 80;
+        let lines = b.render(width);
+        eprintln!("TuiBox wrapped lines (width={}):", width);
+        for (i, line) in lines.iter().enumerate() {
+            let vw = visible_width(line);
+            // Every line must be exactly `width` wide
+            assert_eq!(
+                vw, width,
+                "line {} visible width {} != expected {}: {:?}",
+                i, vw, width, line
+            );
+            // Every line must start with the bg prefix
+            assert!(
+                line.starts_with(bg_ansi),
+                "line {} missing bg prefix: {:?}",
+                i,
+                line
+            );
+            // Every line must contain a bg reset
+            assert!(
+                line.contains("\x1b[49m"),
+                "line {} missing bg reset: {:?}",
+                i,
+                line
+            );
+            eprintln!("  line {}: vis={} ✓", i, vw);
+        }
+    }
+
+    #[test]
     fn test_box_render() {
         let mut b = TuiBox::new(1, 1, None);
         b.add_child(Box::new(Text::new("hello", 0, 0, None)));
