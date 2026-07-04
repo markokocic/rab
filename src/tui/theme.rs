@@ -75,6 +75,13 @@ impl Style {
     /// Apply this style to text, returning ANSI-wrapped string.
     /// The text is wrapped with opening escape sequences at the start
     /// and closing sequences at the end.
+    ///
+    /// Handles embedded reset codes:
+    /// - `\x1b[0m` (full reset) — re-inserts the entire prefix
+    /// - `\x1b[49m` (bg reset) — re-inserts the background code
+    /// - `\x1b[39m` (fg reset) — re-inserts the foreground code
+    /// - `\x1b[22m` (bold/dim reset) — re-inserts bold if set
+    /// - `\x1b[23m`, `\x1b[24m`, `\x1b[27m`, `\x1b[29m` — similar handling
     pub fn apply(&self, text: &str) -> String {
         let mut prefix = String::new();
         let mut suffix = String::new();
@@ -112,29 +119,90 @@ impl Style {
             suffix.push_str("\x1b[27m");
         }
 
-        // Handle \x1b[0m (full reset) inside text by re-inserting the prefix
-        // after each reset, so our styles survive embedded ANSI codes
-        // (e.g. from syntect highlighting which uses full reset between tokens).
-        if text.contains("\x1b[0m") {
-            let mut result = String::new();
-            result.push_str(&prefix);
-            for segment in text.split_inclusive("\x1b[0m") {
-                result.push_str(segment);
-                if segment.ends_with("\x1b[0m") {
-                    result.push_str(&prefix);
+        // Fast path: no reset codes that would clear our styles
+        // Check \x1b[0m (full reset) and any attribute-specific reset that
+        // we have set in the prefix.
+        let has_reset = text.contains("\x1b[0m")
+            || (self.bg.is_some() && text.contains("\x1b[49m"))
+            || (self.fg.is_some() && text.contains("\x1b[39m"))
+            || (self.bold && text.contains("\x1b[22m"))
+            || (self.italic && text.contains("\x1b[23m"))
+            || (self.underline && text.contains("\x1b[24m"))
+            || (self.strikethrough && text.contains("\x1b[29m"))
+            || (self.reverse && text.contains("\x1b[27m"));
+
+        if !has_reset && !prefix.is_empty() {
+            return format!("{}{}{}", prefix, text, suffix);
+        }
+        if prefix.is_empty() {
+            return text.to_string();
+        }
+
+        // Walk through text, re-inserting style codes after each reset
+        // that would otherwise clear our attributes.
+        let mut result = String::with_capacity(prefix.len() + text.len() + suffix.len() + 64);
+        result.push_str(&prefix);
+
+        let mut i = 0;
+        let bytes = text.as_bytes();
+        while i < bytes.len() {
+            if bytes[i] == 0x1b
+                && let Some(ansi) = crate::tui::util::extract_ansi_code_at(text, i)
+            {
+                result.push_str(ansi);
+                match ansi {
+                    "\x1b[0m" => {
+                        // Full reset — re-insert entire prefix
+                        result.push_str(&prefix);
+                    }
+                    "\x1b[49m" if self.bg.is_some() => {
+                        // Background reset — re-insert bg code
+                        if let Some(ref bg) = self.bg {
+                            result.push_str(bg);
+                        }
+                    }
+                    "\x1b[39m" if self.fg.is_some() => {
+                        // Foreground reset — re-insert fg code
+                        if let Some(ref fg) = self.fg {
+                            result.push_str(fg);
+                        }
+                    }
+                    "\x1b[22m" if self.bold || self.dim => {
+                        // Bold/dim reset — re-insert bold if bold was set
+                        if self.bold {
+                            result.push_str("\x1b[1m");
+                        }
+                    }
+                    "\x1b[23m" if self.italic => {
+                        result.push_str("\x1b[3m");
+                    }
+                    "\x1b[24m" if self.underline => {
+                        result.push_str("\x1b[4m");
+                    }
+                    "\x1b[27m" if self.reverse => {
+                        result.push_str("\x1b[7m");
+                    }
+                    "\x1b[29m" if self.strikethrough => {
+                        result.push_str("\x1b[9m");
+                    }
+                    _ => {}
+                }
+                i += ansi.len();
+            } else {
+                // Not the start of an ANSI sequence; push a char at a time.
+                // Using chars() to handle multi-byte UTF-8 correctly.
+                let rest = &text[i..];
+                if let Some(ch) = rest.chars().next() {
+                    result.push(ch);
+                    i += ch.len_utf8();
+                } else {
+                    i += 1;
                 }
             }
-            // Remove trailing prefix if text ends with \x1b[0m (suffix will follow)
-            if text.ends_with("\x1b[0m") {
-                let prefix_len = prefix.len();
-                let result_len = result.len();
-                result.truncate(result_len.saturating_sub(prefix_len));
-            }
-            result.push_str(&suffix);
-            result
-        } else {
-            format!("{}{}{}", prefix, text, suffix)
         }
+
+        result.push_str(&suffix);
+        result
     }
 
     /// Apply this style to text, padding to `width` visible columns.

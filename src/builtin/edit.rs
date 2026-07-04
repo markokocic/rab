@@ -4,7 +4,6 @@ use crate::tui::Component;
 use crate::tui::Theme;
 use crate::tui::ThemeKey;
 use crate::tui::components::spacer::Spacer;
-use crate::tui::container::Container;
 use async_trait::async_trait;
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
@@ -1216,16 +1215,22 @@ impl ToolRenderer for EditRenderer {
                 .ok()
                 .and_then(|p| p.as_ref().and_then(|preview| preview.error.clone()));
             if preview_err.as_deref() != Some(msg) {
-                // Pi: Container(Spacer(1) + Text(error, 1, 0))
-                let mut container = Container::new();
-                container.add_child(std::boxed::Box::new(Spacer::new(1)));
-                container.add_child(std::boxed::Box::new(crate::tui::components::Text::new(
+                // Show the actual error in a TuiBox matching render_call's styling.
+                // Pi: Container(Spacer(1) + Text(error, 1, 0)), but we use a TuiBox
+                // with background for visual consistency with the render_call header.
+                let bg_ansi = theme.bg_ansi("toolErrorBg");
+                let mut result_box = crate::tui::components::r#box::TuiBox::new(
+                    1,
+                    0,
+                    Some(crate::tui::Style::new().bg(bg_ansi.to_string())),
+                );
+                result_box.add_child(std::boxed::Box::new(crate::tui::components::Text::new(
                     theme.fg_key(ThemeKey::Error, msg),
                     1,
                     0,
                     None,
                 )));
-                return Some(std::boxed::Box::new(container));
+                return Some(std::boxed::Box::new(result_box));
             }
         }
 

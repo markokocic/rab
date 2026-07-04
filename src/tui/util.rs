@@ -115,7 +115,7 @@ fn is_zero_width_char(c: char) -> bool {
 
 /// Extract an ANSI escape sequence from a string at the given byte position.
 /// Returns the code string and its byte length, or None if not an ANSI sequence.
-fn extract_ansi_code_at(str: &str, pos: usize) -> Option<&str> {
+pub(crate) fn extract_ansi_code_at(str: &str, pos: usize) -> Option<&str> {
     let bytes = str.as_bytes();
     if pos >= bytes.len() || bytes[pos] != 0x1b {
         return None;
