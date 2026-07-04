@@ -284,10 +284,18 @@ impl crate::tui::Component for Footer {
         let mut pwd = format!("{} {}", icon, theme.fg_key(ThemeKey::Dim, &dir));
 
         if let Some(ref branch) = git_branch {
-            pwd = format!("{} ({})", pwd, theme.fg_key(ThemeKey::Dim, branch));
+            pwd = format!(
+                "{} {}",
+                pwd,
+                theme.fg_key(ThemeKey::Dim, &format!("({})", branch))
+            );
         }
         if let Some(ref name) = self.session_name {
-            pwd = format!("{} • {}", pwd, theme.fg_key(ThemeKey::Dim, name));
+            pwd = format!(
+                "{} {}",
+                pwd,
+                theme.fg_key(ThemeKey::Dim, &format!("• {}", name))
+            );
         }
         let pwd_line = truncate_to_width(
             &pwd,
