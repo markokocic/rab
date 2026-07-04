@@ -4519,9 +4519,9 @@ pub fn rebuild_chat_from_messages(
     }
 }
 
-/// Add a Component to chat_container with a spacer before it if chat_container is not empty.
-/// Mirrors pi's `addMessageToChat()` which adds `new Spacer(1)` before each message
-/// when `this.chatContainer.children.length > 0`.
+/// Add a Component to chat_container directly, without any preceding Spacer.
+/// Components that need a leading Spacer (user messages) handle it themselves,
+/// matching pi's per-message-type spacing in `addMessageToChat()`.
 pub fn chat_add(app: &mut App, component: std::boxed::Box<dyn Component>) {
     let mut chat = app.chat_container.borrow_mut();
     chat.add_child(component);
