@@ -4456,6 +4456,10 @@ pub fn rebuild_chat_from_messages(
             if text.is_empty() {
                 continue;
             }
+            // pi: add Spacer(1) before user messages when chat isn't empty
+            if !chat.children().is_empty() {
+                chat.add_child(std::boxed::Box::new(Spacer::new(1)));
+            }
             chat.add_child(std::boxed::Box::new(
                 crate::agent::ui::components::UserMessageComponent::new(text),
             ));
@@ -4988,12 +4992,14 @@ fn handle_agent_event(app: &mut App, event: yoagent::types::AgentEvent) {
             if crate::agent::types::message_is_user(&message) {
                 let text = crate::agent::types::message_text(&message);
                 if !text.is_empty() {
-                    chat_add(
-                        app,
-                        std::boxed::Box::new(
-                            crate::agent::ui::components::UserMessageComponent::new(&text),
-                        ),
-                    );
+                    // pi: add Spacer(1) before user messages when chat isn't empty
+                    let mut chat = app.chat_container.borrow_mut();
+                    if !chat.children().is_empty() {
+                        chat.add_child(std::boxed::Box::new(Spacer::new(1)));
+                    }
+                    chat.add_child(std::boxed::Box::new(
+                        crate::agent::ui::components::UserMessageComponent::new(&text),
+                    ));
                 }
             }
         }
