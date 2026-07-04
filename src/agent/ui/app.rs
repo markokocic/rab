@@ -218,9 +218,6 @@ pub struct App {
     /// Global toggle: expand all tool outputs (Ctrl+O). Inverted of collapse_tool_output.
     tools_expanded: bool,
 
-    /// Chat scroll offset (lines scrolled up from bottom).
-    scroll_offset: usize,
-
     /// Timestamp of last Ctrl+C for double-press detection (pi-style).
     last_clear_time: std::time::Instant,
 
@@ -582,7 +579,6 @@ impl App {
             hide_thinking: config.hide_thinking,
             collapse_tool_output: config.collapse_tool_output,
             tools_expanded: !config.collapse_tool_output,
-            scroll_offset: 0,
             last_clear_time: std::time::Instant::now(),
 
             should_quit: false,
@@ -3034,7 +3030,6 @@ fn show_help_overlay(app: &mut App, tui: &mut TUI) {
 /// turn finishes (the main loop skips start_agent_loop while is_streaming).
 /// When idle, starts a new agent loop immediately.
 fn submit_message(app: &mut App, message: String) {
-    app.scroll_offset = 0;
     let trimmed = message.trim().to_string();
 
     // Don't submit empty messages (pi-style)
