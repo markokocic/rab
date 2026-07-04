@@ -4456,9 +4456,6 @@ pub fn rebuild_chat_from_messages(
             if text.is_empty() {
                 continue;
             }
-            if !chat.children().is_empty() {
-                chat.add_child(std::boxed::Box::new(Spacer::new(1)));
-            }
             chat.add_child(std::boxed::Box::new(
                 crate::agent::ui::components::UserMessageComponent::new(text),
             ));
@@ -4512,9 +4509,6 @@ pub fn rebuild_chat_from_messages(
         } else if crate::agent::types::message_is_extension(msg) {
             // Extension messages (info, error, system_stop) rendered as info text.
             if let Some(text) = crate::agent::types::message_extension_text(msg) {
-                if !chat.children().is_empty() {
-                    chat.add_child(std::boxed::Box::new(Spacer::new(1)));
-                }
                 chat.add_child(std::boxed::Box::new(InfoMessageComponent::new(text)));
             }
         }
@@ -4526,9 +4520,6 @@ pub fn rebuild_chat_from_messages(
 /// when `this.chatContainer.children.length > 0`.
 pub fn chat_add(app: &mut App, component: std::boxed::Box<dyn Component>) {
     let mut chat = app.chat_container.borrow_mut();
-    if !chat.children().is_empty() {
-        chat.add_child(std::boxed::Box::new(Spacer::new(1)));
-    }
     chat.add_child(component);
 }
 
@@ -4540,11 +4531,9 @@ pub fn chat_info(app: &mut App, msg: impl Into<String>) {
     );
 }
 
-/// Add an AssistantMessageComponent with a preceding spacer.
+/// Add an AssistantMessageComponent. Matching pi, the component handles its own
+/// leading spacing internally — no external Spacer is needed.
 fn add_assistant_message(chat: &mut crate::tui::Container, text: &str, hide_thinking: bool) {
-    if !chat.children().is_empty() {
-        chat.add_child(std::boxed::Box::new(Spacer::new(1)));
-    }
     let mut asst = crate::agent::ui::components::AssistantMessageComponent::new(text);
     if hide_thinking {
         asst.set_hide_thinking(true);
@@ -4782,9 +4771,6 @@ fn show_status(app: &mut App, message: String) {
 
     // Add the new status
     let mut chat = app.chat_container.borrow_mut();
-    if !chat.children().is_empty() {
-        chat.add_child(std::boxed::Box::new(Spacer::new(1)));
-    }
     chat.add_child(std::boxed::Box::new(InfoMessageComponent::new(message)));
     app.last_status_len = Some(chat.len());
 }

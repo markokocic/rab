@@ -10,7 +10,6 @@ use crate::tui::Style;
 use crate::tui::component::{RenderCache, RenderCacheKey};
 use crate::tui::components::Text;
 use crate::tui::components::r#box::TuiBox;
-use crate::tui::components::spacer::Spacer;
 use crate::tui::container::Container;
 
 /// Maximum preview lines when collapsed.
@@ -278,9 +277,9 @@ impl ToolExecComponent {
         theme: &RabTheme,
         width: usize,
     ) -> Vec<String> {
-        // Pi-style: Spacer(1) before every tool execution
+        // Matching pi's ToolExecutionComponent: no leading Spacer here —
+        // spacing is provided by TuiBox's padding_y=1 (top padding line).
         let mut outer = Container::new();
-        outer.add_child(std::boxed::Box::new(Spacer::new(1)));
 
         let ctx = self.build_context();
 
@@ -315,7 +314,6 @@ impl ToolExecComponent {
     /// Generic fallback rendering for tools with no renderer.
     fn render_generic(&self, theme: &RabTheme, width: usize) -> Vec<String> {
         let mut outer = Container::new();
-        outer.add_child(std::boxed::Box::new(Spacer::new(1)));
 
         let bg_key = self.bg_key();
         let bg_ansi = theme.bg_ansi(bg_key);

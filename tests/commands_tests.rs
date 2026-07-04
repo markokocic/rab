@@ -3,7 +3,7 @@ use rab::builtin::commands::{CommandsExtension, SessionInfoInternal};
 
 #[test]
 fn test_quit_command() {
-    let ext = CommandsExtension::new(vec!["m1".into(), "m2".into()]);
+    let ext = CommandsExtension::new(vec!["m1".into(), "m2".into()], vec![]);
     let cmds = ext.commands();
     let quit_cmd = cmds.iter().find(|c| c.name == "quit").unwrap();
     let result = quit_cmd.handler.execute("");
@@ -16,7 +16,7 @@ fn test_quit_command() {
 
 #[test]
 fn test_model_command_no_args_opens_selector() {
-    let ext = CommandsExtension::new(vec!["m1".into(), "m2".into()]);
+    let ext = CommandsExtension::new(vec!["m1".into(), "m2".into()], vec![]);
     let cmds = ext.commands();
     let model_cmd = cmds.iter().find(|c| c.name == "model").unwrap();
     let result = model_cmd.handler.execute("");
@@ -29,7 +29,10 @@ fn test_model_command_no_args_opens_selector() {
 
 #[test]
 fn test_model_command_valid_model() {
-    let ext = CommandsExtension::new(vec!["deepseek-v4-flash".into(), "deepseek-v4-pro".into()]);
+    let ext = CommandsExtension::new(
+        vec!["deepseek-v4-flash".into(), "deepseek-v4-pro".into()],
+        vec![],
+    );
     let cmds = ext.commands();
     let model_cmd = cmds.iter().find(|c| c.name == "model").unwrap();
     let result = model_cmd.handler.execute("deepseek-v4-flash");
@@ -42,7 +45,7 @@ fn test_model_command_valid_model() {
 
 #[test]
 fn test_model_command_unknown_model() {
-    let ext = CommandsExtension::new(vec!["m1".into()]);
+    let ext = CommandsExtension::new(vec!["m1".into()], vec![]);
     let cmds = ext.commands();
     let model_cmd = cmds.iter().find(|c| c.name == "model").unwrap();
     let result = model_cmd.handler.execute("nonexistent");
@@ -55,7 +58,10 @@ fn test_model_command_unknown_model() {
 
 #[test]
 fn test_model_argument_completions() {
-    let ext = CommandsExtension::new(vec!["deepseek-v4-flash".into(), "deepseek-v4-pro".into()]);
+    let ext = CommandsExtension::new(
+        vec!["deepseek-v4-flash".into(), "deepseek-v4-pro".into()],
+        vec![],
+    );
     let cmds = ext.commands();
     let model_cmd = cmds.iter().find(|c| c.name == "model").unwrap();
     let completions = model_cmd.handler.argument_completions("deep");
@@ -71,7 +77,7 @@ fn test_model_argument_completions() {
 
 #[test]
 fn hotkeys_command_returns_show_help() {
-    let ext = CommandsExtension::new(vec![]);
+    let ext = CommandsExtension::new(vec![], vec![]);
     let cmds = ext.commands();
     let cmd = cmds.iter().find(|c| c.name == "hotkeys").unwrap();
     let result = cmd.handler.execute("");
@@ -84,7 +90,7 @@ fn hotkeys_command_returns_show_help() {
 
 #[test]
 fn hotkeys_ignores_args() {
-    let ext = CommandsExtension::new(vec![]);
+    let ext = CommandsExtension::new(vec![], vec![]);
     let cmds = ext.commands();
     let cmd = cmds.iter().find(|c| c.name == "hotkeys").unwrap();
     let result = cmd.handler.execute("anything");
@@ -99,7 +105,7 @@ fn hotkeys_ignores_args() {
 
 #[test]
 fn reload_command_returns_reloaded() {
-    let ext = CommandsExtension::new(vec![]);
+    let ext = CommandsExtension::new(vec![], vec![]);
     let cmds = ext.commands();
     let cmd = cmds.iter().find(|c| c.name == "reload").unwrap();
     let result = cmd.handler.execute("");
@@ -114,7 +120,7 @@ fn reload_command_returns_reloaded() {
 
 #[test]
 fn new_command_returns_new_session() {
-    let ext = CommandsExtension::new(vec![]);
+    let ext = CommandsExtension::new(vec![], vec![]);
     let cmds = ext.commands();
     let cmd = cmds.iter().find(|c| c.name == "new").unwrap();
     let result = cmd.handler.execute("");
@@ -127,7 +133,7 @@ fn new_command_returns_new_session() {
 
 #[test]
 fn new_ignores_args() {
-    let ext = CommandsExtension::new(vec![]);
+    let ext = CommandsExtension::new(vec![], vec![]);
     let cmds = ext.commands();
     let cmd = cmds.iter().find(|c| c.name == "new").unwrap();
     let result = cmd.handler.execute("some args");
@@ -142,7 +148,7 @@ fn new_ignores_args() {
 
 #[test]
 fn resume_command_opens_session_selector() {
-    let ext = CommandsExtension::new(vec![]);
+    let ext = CommandsExtension::new(vec![], vec![]);
     let cmds = ext.commands();
     let cmd = cmds.iter().find(|c| c.name == "resume").unwrap();
     let result = cmd.handler.execute("");
@@ -155,7 +161,7 @@ fn resume_command_opens_session_selector() {
 
 #[test]
 fn resume_ignores_args() {
-    let ext = CommandsExtension::new(vec![]);
+    let ext = CommandsExtension::new(vec![], vec![]);
     let cmds = ext.commands();
     let cmd = cmds.iter().find(|c| c.name == "resume").unwrap();
     let result = cmd.handler.execute("some args");
@@ -170,7 +176,7 @@ fn resume_ignores_args() {
 
 #[test]
 fn session_command_no_info() {
-    let ext = CommandsExtension::new(vec![]);
+    let ext = CommandsExtension::new(vec![], vec![]);
     let cmds = ext.commands();
     let cmd = cmds.iter().find(|c| c.name == "session").unwrap();
     let result = cmd.handler.execute("");
@@ -185,7 +191,7 @@ fn session_command_no_info() {
 
 #[test]
 fn session_command_with_info() {
-    let ext = CommandsExtension::new(vec![]);
+    let ext = CommandsExtension::new(vec![], vec![]);
     ext.set_session_info(SessionInfoInternal {
         session_id: "abc123".to_string(),
         file_path: Some(std::path::PathBuf::from("/tmp/test.jsonl")),
@@ -227,7 +233,7 @@ fn session_command_with_info() {
 
 #[test]
 fn name_command_sets_name() {
-    let ext = CommandsExtension::new(vec![]);
+    let ext = CommandsExtension::new(vec![], vec![]);
     let cmds = ext.commands();
     let cmd = cmds.iter().find(|c| c.name == "name").unwrap();
     let result = cmd.handler.execute("My Task");
@@ -242,7 +248,7 @@ fn name_command_sets_name() {
 
 #[test]
 fn name_command_empty_shows_usage() {
-    let ext = CommandsExtension::new(vec![]);
+    let ext = CommandsExtension::new(vec![], vec![]);
     let cmds = ext.commands();
     let cmd = cmds.iter().find(|c| c.name == "name").unwrap();
     let result = cmd.handler.execute("");
@@ -258,7 +264,7 @@ fn name_command_empty_shows_usage() {
 
 #[test]
 fn name_command_trims_whitespace() {
-    let ext = CommandsExtension::new(vec![]);
+    let ext = CommandsExtension::new(vec![], vec![]);
     let cmds = ext.commands();
     let cmd = cmds.iter().find(|c| c.name == "name").unwrap();
     let result = cmd.handler.execute("   spaced   ");
