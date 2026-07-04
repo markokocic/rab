@@ -45,7 +45,7 @@ futures = "0.3"
 fs2 = "0.4"
 reqwest-eventsource = { package = "kameleoon-reqwest-eventsource", version = "0.6" }
 tracing = "0.1"
-yoagent = { git = "https://github.com/markokocic/yoagent.git", rev = "a98d00769373908b59bce5fbc09c76d3349a4daa" }
+yoagent = { git = "https://github.com/yologdev/yoagent.git", rev = "05d6a55a7fafef30edf7ffdbd1e81a4772a381a8" }
 reqwest = { version = "0.13", default-features = false, features = ["json", "stream", "rustls", "socks", "form"] }
 url = "2.5.8"
 
