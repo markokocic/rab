@@ -135,6 +135,7 @@ pub fn estimate_tokens(message: &AgentMessage) -> u64 {
                     // Pi estimates 4800 chars per image
                     chars += 4800;
                 }
+                _ => {}
             }
         }
     } else if let AgentMessage::Llm(yoagent::types::Message::User { content: c, .. }) = message {
@@ -734,22 +735,22 @@ mod tests {
             Content::Text {
                 text: "checking".into(),
             },
-            Content::ToolCall {
-                id: "call1".into(),
-                name: "read".into(),
-                arguments: serde_json::json!({"path": "/tmp/file.txt"}),
-                provider_metadata: None,
-            },
+            Content::tool_call(
+                "call1",
+                "read",
+                serde_json::json!({"path": "/tmp/file.txt"}),
+            ),
         ];
-        let msg = AgentMessage::Llm(Message::Assistant {
-            content,
-            stop_reason: yoagent::types::StopReason::Stop,
-            model: String::new(),
-            provider: String::new(),
-            usage: yoagent::types::Usage::default(),
-            timestamp: 0,
-            error_message: None,
-        });
+        let msg = AgentMessage::Llm(
+            Message::assistant(
+                content,
+                yoagent::types::StopReason::Stop,
+                String::new(),
+                String::new(),
+                yoagent::types::Usage::default(),
+            )
+            .with_timestamp(0),
+        );
         let tokens = estimate_tokens(&msg);
         // text "checking" (8) + name "read" (4) + args json length >= 17
         assert!(tokens >= 8, "tokens={}", tokens);
@@ -772,23 +773,24 @@ mod tests {
 
     #[test]
     fn test_estimate_context_tokens_with_usage_baseline() {
-        let msg_with_usage = AgentMessage::Llm(Message::Assistant {
-            content: vec![Content::Text {
-                text: "response".into(),
-            }],
-            stop_reason: yoagent::types::StopReason::Stop,
-            model: String::new(),
-            provider: String::new(),
-            usage: yoagent::types::Usage {
-                input: 100,
-                output: 50,
-                cache_read: 20,
-                cache_write: 0,
-                total_tokens: 0,
-            },
-            timestamp: 0,
-            error_message: None,
-        });
+        let msg_with_usage = AgentMessage::Llm(
+            Message::assistant(
+                vec![Content::Text {
+                    text: "response".into(),
+                }],
+                yoagent::types::StopReason::Stop,
+                String::new(),
+                String::new(),
+                yoagent::types::Usage {
+                    input: 100,
+                    output: 50,
+                    cache_read: 20,
+                    cache_write: 0,
+                    total_tokens: 0,
+                },
+            )
+            .with_timestamp(0),
+        );
         let msgs = vec![
             user_message("hello"),
             msg_with_usage,
@@ -945,25 +947,21 @@ mod tests {
     // ── extract_file_ops tests ──────────────────────────────────────
 
     fn make_asst_with_tool_call(name: &str, path: &str) -> AgentMessage {
-        AgentMessage::Llm(Message::Assistant {
-            content: vec![
-                Content::Text {
-                    text: "using tool".into(),
-                },
-                Content::ToolCall {
-                    id: "call-1".into(),
-                    name: name.into(),
-                    arguments: serde_json::json!({"path": path}),
-                    provider_metadata: None,
-                },
-            ],
-            stop_reason: yoagent::types::StopReason::ToolUse,
-            model: String::new(),
-            provider: String::new(),
-            usage: yoagent::types::Usage::default(),
-            timestamp: 0,
-            error_message: None,
-        })
+        AgentMessage::Llm(
+            Message::assistant(
+                vec![
+                    Content::Text {
+                        text: "using tool".into(),
+                    },
+                    Content::tool_call("call-1", name, serde_json::json!({"path": path})),
+                ],
+                yoagent::types::StopReason::ToolUse,
+                String::new(),
+                String::new(),
+                yoagent::types::Usage::default(),
+            )
+            .with_timestamp(0),
+        )
     }
 
     #[test]

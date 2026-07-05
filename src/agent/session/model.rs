@@ -2178,21 +2178,22 @@ mod tests {
                 id: "msg2".to_string(),
                 parent_id: Some("msg1".to_string()),
                 timestamp: "2026-06-19T12:00:02Z".to_string(),
-                message: AgentMessage::Llm(yoagent::types::Message::Assistant {
-                    content: vec![yoagent::types::Content::Text {
-                        text: "hi there".to_string(),
-                    }],
-                    stop_reason: yoagent::types::StopReason::Stop,
-                    model: String::new(),
-                    provider: String::new(),
-                    usage: yoagent::types::Usage {
-                        input: 10,
-                        output: 5,
-                        ..Default::default()
-                    },
-                    timestamp: 0,
-                    error_message: None,
-                }),
+                message: AgentMessage::Llm(
+                    yoagent::types::Message::assistant(
+                        vec![yoagent::types::Content::Text {
+                            text: "hi there".to_string(),
+                        }],
+                        yoagent::types::StopReason::Stop,
+                        String::new(),
+                        String::new(),
+                        yoagent::types::Usage {
+                            input: 10,
+                            output: 5,
+                            ..Default::default()
+                        },
+                    )
+                    .with_timestamp(0),
+                ),
             }),
         ];
 

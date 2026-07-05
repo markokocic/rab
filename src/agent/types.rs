@@ -178,15 +178,16 @@ pub fn user_message(text: impl Into<String>) -> AgentMessage {
 
 /// Create a simple Assistant AgentMessage with text content.
 pub fn assistant_message(text: impl Into<String>) -> AgentMessage {
-    AgentMessage::Llm(Message::Assistant {
-        content: vec![Content::Text { text: text.into() }],
-        stop_reason: yoagent::types::StopReason::Stop,
-        model: String::new(),
-        provider: String::new(),
-        usage: yoagent::types::Usage::default(),
-        timestamp: yoagent::types::now_ms(),
-        error_message: None,
-    })
+    AgentMessage::Llm(
+        Message::assistant(
+            vec![Content::Text { text: text.into() }],
+            yoagent::types::StopReason::Stop,
+            String::new(),
+            String::new(),
+            yoagent::types::Usage::default(),
+        )
+        .with_timestamp(yoagent::types::now_ms()),
+    )
 }
 
 /// Create a ToolResult AgentMessage.

@@ -2676,8 +2676,9 @@ dependencies = [
 
 [[package]]
 name = "yoagent"
-version = "0.8.4"
-source = "git+https://github.com/yologdev/yoagent.git?rev=363599d00224343ff4ce1b8422087bff5326ee08#363599d00224343ff4ce1b8422087bff5326ee08"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "996f385280a2a23cb11aaef6063d6c342a438b92f381f7267f0a22c9301ecf38"
 dependencies = [
  "async-trait",
  "base64",

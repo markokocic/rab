@@ -135,10 +135,7 @@ impl StreamProvider for RabOpenAiCompatProvider {
                                     let idx = match thinking_idx {
                                         Some(i) => i,
                                         None => {
-                                            content.push(Content::Thinking {
-                                                thinking: String::new(),
-                                                signature: None,
-                                            });
+                                            content.push(Content::thinking(String::new()));
                                             content.len() - 1
                                         }
                                     };
@@ -235,12 +232,7 @@ impl StreamProvider for RabOpenAiCompatProvider {
         for buf in &tool_call_buffers {
             let args = serde_json::from_str(&buf.arguments)
                 .unwrap_or(serde_json::Value::Object(Default::default()));
-            content.push(Content::ToolCall {
-                provider_metadata: None,
-                id: buf.id.clone(),
-                name: buf.name.clone(),
-                arguments: args,
-            });
+            content.push(Content::tool_call(buf.id.clone(), buf.name.clone(), args));
             let _ = tx.send(StreamEvent::ToolCallEnd {
                 content_index: content.len() - 1,
             });
@@ -250,15 +242,14 @@ impl StreamProvider for RabOpenAiCompatProvider {
             stop_reason = StopReason::ToolUse;
         }
 
-        let message = Message::Assistant {
+        let message = Message::assistant(
             content,
             stop_reason,
-            model: config.model.clone(),
-            provider: model_config.provider.clone(),
+            config.model.clone(),
+            model_config.provider.clone(),
             usage,
-            timestamp: now_ms(),
-            error_message: None,
-        };
+        )
+        .with_timestamp(now_ms());
 
         let _ = tx.send(StreamEvent::Done {
             message: message.clone(),

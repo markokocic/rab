@@ -167,20 +167,19 @@ fn parse_provider(id: &str, def: ProviderDef) -> anyhow::Result<ProviderEntry> {
             }
         }
 
-        let model = ModelConfig {
-            id: m.id.clone(),
-            name: m.name.clone().unwrap_or_else(|| m.id.clone()),
+        let mut model = ModelConfig::custom(
             api,
-            provider: id.to_string(),
+            id.to_string(),
             base_url,
-            reasoning: m.reasoning,
-            context_window,
-            max_tokens,
-            cost,
-            headers,
-            compat: yoagent_compat,
-            anthropic: None,
-        };
+            m.id.clone(),
+            m.name.clone().unwrap_or_else(|| m.id.clone()),
+        );
+        model.reasoning = m.reasoning;
+        model.context_window = context_window;
+        model.max_tokens = max_tokens;
+        model.cost = cost;
+        model.headers = headers;
+        model.compat = yoagent_compat;
 
         models.push(model);
     }
