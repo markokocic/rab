@@ -396,6 +396,14 @@ impl TUI {
         // Render root container (includes overlay compositing internally)
         let mut lines = self.root.render(width);
 
+        // Pad to terminal height so the footer (last child) is always at the
+        // bottom of the terminal viewport, even when chat content is short.
+        // Overlays handle their own padding via composite_overlays, so this
+        // only applies when no overlays are active.
+        if !self.has_overlays() && lines.len() < height {
+            lines.resize(height, String::new());
+        }
+
         // Normalize terminal output
         for line in lines.iter_mut() {
             *line = normalize_terminal_output(line);
