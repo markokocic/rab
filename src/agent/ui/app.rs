@@ -1078,7 +1078,7 @@ pub async fn run(config: AppConfig, session: AgentSession) -> anyhow::Result<()>
 
                         match result {
                             Ok(path) => {
-                                chat_info(
+                                show_status(
                                     &mut app,
                                     format!(
                                         "✓ Imported and switched to session: {}",
@@ -1087,12 +1087,12 @@ pub async fn run(config: AppConfig, session: AgentSession) -> anyhow::Result<()>
                                 );
                             }
                             Err(msg) => {
-                                chat_info(&mut app, format!("✗ {}", msg));
+                                show_status(&mut app, format!("✗ {}", msg));
                             }
                         }
                     }
                     OverlayResult::ImportCancelled => {
-                        chat_info(&mut app, "Import cancelled.");
+                        show_status(&mut app, "Import cancelled.");
                     }
                     OverlayResult::ForkMessageSelected(entry_id) => {
                         // User selected a message to fork from
@@ -1152,19 +1152,19 @@ pub async fn run(config: AppConfig, session: AgentSession) -> anyhow::Result<()>
                                                     "Fork created but new file not found: {}",
                                                     new_id
                                                 );
-                                                chat_info(&mut app, msg);
+                                                show_status(&mut app, msg);
                                             }
                                         }
                                     }
                                     Err(e) => {
                                         let msg = format!("Fork failed: {}", e);
-                                        chat_info(&mut app, msg.clone());
+                                        show_status(&mut app, msg.clone());
                                     }
                                 }
                             }
                             _ => {
                                 let msg = "No active session to fork".to_string();
-                                chat_info(&mut app, msg.clone());
+                                show_status(&mut app, msg.clone());
                             }
                         }
                     }
@@ -1316,7 +1316,7 @@ pub async fn run(config: AppConfig, session: AgentSession) -> anyhow::Result<()>
                     .unwrap_or_else(|| provider_id.clone());
                 let msg = format!("✓ Logged in to {} via OAuth", provider_name);
                 app.status_text = Some(msg.clone());
-                chat_info(&mut app, &msg);
+                show_status(&mut app, &msg);
                 app.refresh_registry();
                 complete_login(
                     &mut app,
@@ -1328,7 +1328,7 @@ pub async fn run(config: AppConfig, session: AgentSession) -> anyhow::Result<()>
                 // The error message was already shown as status_text; persist it to chat.
                 let err_msg = app.status_text.clone().unwrap_or_default();
                 if !err_msg.is_empty() {
-                    chat_info(&mut app, &err_msg);
+                    show_status(&mut app, &err_msg);
                 }
             }
         }
@@ -1409,7 +1409,7 @@ pub async fn run(config: AppConfig, session: AgentSession) -> anyhow::Result<()>
                 CommandResult::ImportSession { path } => {
                     let resolved = crate::builtin::resolve_path(&path, &app.cwd);
                     if !resolved.exists() {
-                        chat_info(
+                        show_status(
                             &mut app,
                             format!("✗ File not found: {}", resolved.display()),
                         );
@@ -1467,7 +1467,7 @@ pub async fn run(config: AppConfig, session: AgentSession) -> anyhow::Result<()>
                             crate::tui::OverlayPosition::Bottom,
                         );
                     } else {
-                        chat_info(&mut app, "No active session.");
+                        show_status(&mut app, "No active session.");
                     }
                 }
                 CommandResult::ForkSession { message_id: None } => {
@@ -1515,7 +1515,7 @@ pub async fn run(config: AppConfig, session: AgentSession) -> anyhow::Result<()>
                         .collect();
 
                     if user_messages.is_empty() {
-                        chat_info(&mut app, "No messages to fork from".to_string());
+                        show_status(&mut app, "No messages to fork from".to_string());
                     } else {
                         let signal_select = app.overlay_result_signal.clone();
                         let signal_cancel = app.overlay_result_signal.clone();
@@ -2214,10 +2214,10 @@ fn handle_login(app: &mut App, provider: &str, api_key: Option<&str>) {
                     crate::agent::ui::components::oauth_selector::AuthType::ApiKey,
                 );
             }
-            Err(e) => chat_info(app, format!("Login failed: {}", e)),
+            Err(e) => show_status(app, format!("Login failed: {}", e)),
         }
     } else {
-        chat_info(app, format!("Usage: /login {} <api-key>", provider));
+        show_status(app, format!("Usage: /login {} <api-key>", provider));
     }
 }
 
@@ -2228,16 +2228,16 @@ fn handle_logout(app: &mut App, provider: Option<&str>) {
             let msg = provider
                 .map(|p| format!("Logged out from {}", p))
                 .unwrap_or_else(|| "Logged out from all providers".into());
-            chat_info(app, msg);
+            show_status(app, msg);
         }
         Ok(false) => {
             let msg = provider
                 .map(|p| format!("No credentials for {}", p))
                 .unwrap_or_else(|| "No credentials found".into());
-            chat_info(app, msg);
+            show_status(app, msg);
         }
         Err(e) => {
-            chat_info(app, format!("Logout failed: {}", e));
+            show_status(app, format!("Logout failed: {}", e));
         }
     }
 }
@@ -3389,7 +3389,7 @@ async fn start_agent_loop(
 /// Called from the main loop when pending_compact is set.
 async fn handle_compact_command(app: &mut App, custom_instructions: Option<String>) {
     if app.session.is_none() {
-        chat_info(app, "No active session to compact".to_string());
+        show_status(app, "No active session to compact".to_string());
         return;
     }
 
@@ -3424,7 +3424,7 @@ async fn handle_compact_command(app: &mut App, custom_instructions: Option<Strin
                 } else {
                     "Nothing to compact (session too small)"
                 };
-                chat_info(app, reason.to_string());
+                show_status(app, reason.to_string());
             } else {
                 app.rebuild_from_session_context();
                 show_status(app, "Compaction completed".to_string());
@@ -3433,7 +3433,7 @@ async fn handle_compact_command(app: &mut App, custom_instructions: Option<Strin
         Err(e) => {
             app.working.stop();
             app.status_text = None;
-            chat_info(app, format!("Compaction failed: {}", e));
+            show_status(app, format!("Compaction failed: {}", e));
         }
     }
 }
@@ -3569,7 +3569,7 @@ fn handle_slash_command(app: &mut App, input: &str) {
                     }
                     Err(e) => {
                         drop((ext, cmd));
-                        chat_info(app, format!("Error executing /{}: {}", cmd_name, e));
+                        show_status(app, format!("Error executing /{}: {}", cmd_name, e));
                         return;
                     }
                 }
@@ -3592,7 +3592,7 @@ fn handle_slash_command(app: &mut App, input: &str) {
 fn handle_command_result(app: &mut App, result: CommandResult) {
     match result {
         CommandResult::Info(msg) => {
-            chat_info(app, msg.clone());
+            show_status(app, msg.clone());
         }
         CommandResult::Quit => {
             app.should_quit = true;
@@ -3896,7 +3896,7 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
                 ext.on_session_start("reload");
             }
 
-            chat_info(app, format!("{} reloaded.", reload_parts.join(", ")));
+            show_status(app, format!("{} reloaded.", reload_parts.join(", ")));
         }
         CommandResult::NewSession => {
             // Matching pi's handleClearCommand:
@@ -4022,7 +4022,7 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
                 info += &format!("\n\nParent: {}", parent);
             }
 
-            chat_info(app, info.clone());
+            show_status(app, info.clone());
         }
         CommandResult::OpenSessionSelector => {
             // Load and display available sessions
@@ -4032,7 +4032,7 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
 
             if sessions.is_empty() {
                 let msg = "No sessions found.".to_string();
-                chat_info(app, msg.clone());
+                show_status(app, msg.clone());
             } else {
                 let mut info = format!("Available Sessions ({} total)\n\n", sessions.len());
                 for (i, s) in sessions.iter().take(20).enumerate() {
@@ -4052,7 +4052,7 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
                 }
                 info += "Use /resume to open the interactive picker";
 
-                chat_info(app, info.clone());
+                show_status(app, info.clone());
             }
         }
         CommandResult::SessionNamed { name } => {
@@ -4069,13 +4069,13 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
             if let Some(ref stored) = stored_name
                 && stored != &name
             {
-                chat_info(
+                show_status(
                     app,
                     format!("Session name normalized from {:?} to {:?}", name, stored),
                 );
             }
 
-            chat_info(
+            show_status(
                 app,
                 format!(
                     "Session name set: {}",
@@ -4135,10 +4135,10 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
             match result {
                 Ok(path) => {
                     let display = crate::builtin::shorten_path(path.to_string_lossy().as_ref());
-                    chat_info(app, format!("✓ Session exported to: {}", display));
+                    show_status(app, format!("✓ Session exported to: {}", display));
                 }
                 Err(msg) => {
-                    chat_info(app, format!("✗ {}", msg));
+                    show_status(app, format!("✗ {}", msg));
                 }
             }
         }
@@ -4148,7 +4148,7 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
         }
         CommandResult::ShareSession => {
             let msg = "Share session - not yet implemented.".to_string();
-            chat_info(app, msg.clone());
+            show_status(app, msg.clone());
         }
         CommandResult::CopyLastMessage => {
             // Get last assistant message text (pi-compatible)
@@ -4181,18 +4181,18 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
             let text = match text {
                 Some(t) => t,
                 None => {
-                    chat_info(app, "No agent messages to copy yet.");
+                    show_status(app, "No agent messages to copy yet.");
                     return;
                 }
             };
 
             // Pi-compatible clipboard copy (includes OSC 52 fallback)
             copy_to_clipboard(&text);
-            chat_info(app, "Copied last agent message to clipboard");
+            show_status(app, "Copied last agent message to clipboard");
         }
         CommandResult::ShowChangelog => {
             let msg = "Changelog - not yet implemented.".to_string();
-            chat_info(app, msg.clone());
+            show_status(app, msg.clone());
         }
         CommandResult::ForkSession { ref message_id } => {
             if message_id.is_none() {
@@ -4250,19 +4250,19 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
                                             "Fork created but new file not found: {}",
                                             new_id
                                         );
-                                        chat_info(app, msg);
+                                        show_status(app, msg);
                                     }
                                 }
                             }
                             Err(e) => {
                                 let msg = format!("Fork failed: {}", e);
-                                chat_info(app, msg.clone());
+                                show_status(app, msg.clone());
                             }
                         }
                     }
                     _ => {
                         let msg = "No active session to fork".to_string();
-                        chat_info(app, msg.clone());
+                        show_status(app, msg.clone());
                     }
                 }
             }
@@ -4281,7 +4281,7 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
                 Some(id) if !id.is_empty() => id,
                 _ => {
                     let msg = "Nothing to clone yet".to_string();
-                    chat_info(app, msg);
+                    show_status(app, msg);
                     return;
                 }
             };
@@ -4324,19 +4324,19 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
                                 None => {
                                     let msg =
                                         format!("Clone created but new file not found: {}", new_id);
-                                    chat_info(app, msg);
+                                    show_status(app, msg);
                                 }
                             }
                         }
                         Err(e) => {
                             let msg = format!("Clone failed: {}", e);
-                            chat_info(app, msg.clone());
+                            show_status(app, msg.clone());
                         }
                     }
                 }
                 _ => {
                     let msg = "No active session to clone".to_string();
-                    chat_info(app, msg.clone());
+                    show_status(app, msg.clone());
                 }
             }
         }
@@ -4346,7 +4346,7 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
         }
         CommandResult::TrustDecision { decision } => {
             let msg = format!("Trust decision '{}' saved.", decision);
-            chat_info(app, msg.clone());
+            show_status(app, msg.clone());
         }
         CommandResult::Login {
             ref provider,
@@ -4623,7 +4623,11 @@ pub fn rebuild_chat_from_messages(
             }
         } else if crate::agent::types::message_is_extension(msg) {
             // Extension messages (info, error, system_stop) rendered as info text.
+            // Pi-style: add Spacer(1) before extension info messages (matches showStatus).
             if let Some(text) = crate::agent::types::message_extension_text(msg) {
+                if !chat.children().is_empty() {
+                    chat.add_child(std::boxed::Box::new(Spacer::new(1)));
+                }
                 chat.add_child(std::boxed::Box::new(InfoMessageComponent::new(text)));
             }
         }
@@ -4636,14 +4640,6 @@ pub fn rebuild_chat_from_messages(
 pub fn chat_add(app: &mut App, component: std::boxed::Box<dyn Component>) {
     let mut chat = app.chat_container.borrow_mut();
     chat.add_child(component);
-}
-
-/// Convenience shortcut: add an InfoMessageComponent to chat.
-pub fn chat_info(app: &mut App, msg: impl Into<String>) {
-    chat_add(
-        app,
-        std::boxed::Box::new(InfoMessageComponent::new(msg.into())),
-    );
 }
 
 /// Add an AssistantMessageComponent. Matching pi, the component handles its own
@@ -4871,7 +4867,7 @@ fn show_summarization_prompt(app: &mut App, tui: &mut TUI, _entry_id: &str) {
 /// (spacer + InfoMessageComponent), they are replaced in-place rather than
 /// appending new entries. This prevents multiple consecutive status messages
 /// from accumulating at the end of the chat session.
-fn show_status(app: &mut App, message: String) {
+fn show_status(app: &mut App, message: impl Into<String>) {
     let mut chat = app.chat_container.borrow_mut();
     // Check if previous status children are still the last in the container
     // (pi-style: last two are Spacer + Text, replaced in-place)
@@ -5240,7 +5236,7 @@ fn handle_agent_event(app: &mut App, event: yoagent::types::AgentEvent) {
             app.streaming_component = None;
             // Surface provider errors carried by the turn's final message.
             if let Some(err) = crate::agent::types::message_error(&message) {
-                chat_info(app, format!("Provider error: {}", err));
+                show_status(app, format!("Provider error: {}", err));
             }
         }
         E::AgentEnd { messages } => {
@@ -5270,7 +5266,7 @@ fn handle_agent_event(app: &mut App, event: yoagent::types::AgentEvent) {
                     && stop_reason != &yoagent::types::StopReason::ToolUse
                 {
                     if let Some(err) = error_message {
-                        chat_info(app, format!("Provider error: {}", err));
+                        show_status(app, format!("Provider error: {}", err));
                         break;
                     }
                     // Check for any visible content: non-empty text or tool calls.
@@ -5282,7 +5278,7 @@ fn handle_agent_event(app: &mut App, event: yoagent::types::AgentEvent) {
                         _ => false,
                     });
                     if !has_visible {
-                        chat_info(
+                        show_status(
                             app,
                             "The agent returned an empty response. \
                                  This can happen when the provider's context \
@@ -5299,14 +5295,14 @@ fn handle_agent_event(app: &mut App, event: yoagent::types::AgentEvent) {
             // Special cases: persist as extension (excluded from LLM context).
             // Normal persistence handled by if-let above before the display match.
             if let Some(err) = crate::agent::types::message_error(&message) {
-                chat_info(app, err.to_string());
+                show_status(app, err.to_string());
                 let ext = crate::agent::types::extension_message("error", err, true);
                 if let Some(ref mut s) = app.session {
                     s.persist_extension_message(&ext);
                 }
             } else if crate::agent::types::message_is_system_stop(&message) {
                 let text = crate::agent::types::message_text(&message);
-                chat_info(app, text.clone());
+                show_status(app, text.clone());
                 if let Some(ref mut s) = app.session {
                     let ext = crate::agent::types::extension_message("system_stop", text, true);
                     s.persist_extension_message(&ext);
@@ -5314,13 +5310,13 @@ fn handle_agent_event(app: &mut App, event: yoagent::types::AgentEvent) {
             } else if crate::agent::types::message_is_extension(&message) {
                 // Extension messages: display in chat (persisted by on_agent_event).
                 if let Some(text) = crate::agent::types::message_extension_text(&message) {
-                    chat_info(app, text);
+                    show_status(app, text);
                 }
             }
         }
         E::InputRejected { reason } => {
             let msg = format!("Input rejected: {}", reason);
-            chat_info(app, msg);
+            show_status(app, msg);
         }
     }
 }
