@@ -319,6 +319,10 @@ pub struct App {
     /// Session picker state (Some = picker is active).
     session_picker: Option<crate::agent::ui::components::SessionPicker>,
 
+    /// Pending messages section (pi-style: shows queued steer/follow-up messages
+    /// between chat_container and status_section, with a spacer before).
+    pub pending_section: std::rc::Rc<std::cell::RefCell<crate::tui::components::DynamicLines>>,
+
     /// Tracks the number of children in `chat_container` after the last
     /// status message was added (pi-style `lastStatusSpacer`/`lastStatusText`).
     /// Used by `show_status()` to replace consecutive status messages in-place
@@ -553,6 +557,9 @@ impl App {
             invalidate_rxs: Vec::new(),
             streaming_component: None,
 
+            pending_section: std::rc::Rc::new(std::cell::RefCell::new(
+                crate::tui::components::DynamicLines::new(),
+            )),
             status_section: std::rc::Rc::new(std::cell::RefCell::new(
                 crate::tui::components::DynamicLines::new(),
             )),
@@ -659,6 +666,7 @@ impl App {
     /// Clear all transient session state when switching to a new session.
     fn clear_session_state(&mut self) {
         self.chat_container.borrow_mut().clear();
+        self.pending_section.borrow_mut().set_lines(vec![]);
         self.streaming_component = None;
         self.pending_tools.clear();
         self.tool_call_start_times.clear();
@@ -790,7 +798,7 @@ pub async fn run(config: AppConfig, session: AgentSession) -> anyhow::Result<()>
     tui.set_focus(crate::tui::FocusTarget::Editor);
 
     // Set up the component tree in TUI.root (matching pi's TUI.extend(Container))
-    // Order: header → chat_container (messages) → pending → status → queued → working → editor → footer
+    // Order: header → chat_container (messages) → pending → status → working → editor → footer
     tui.add_child(std::boxed::Box::new(Spacer::new(1)));
     tui.add_child(std::boxed::Box::new(
         crate::tui::components::RcRefCellComponent(
@@ -800,6 +808,10 @@ pub async fn run(config: AppConfig, session: AgentSession) -> anyhow::Result<()>
     tui.add_child(std::boxed::Box::new(Spacer::new(1)));
     tui.add_child(std::boxed::Box::new(
         crate::tui::components::RcRefCellComponent(app.chat_container.clone()
+            as std::rc::Rc<std::cell::RefCell<dyn crate::tui::Component>>),
+    ));
+    tui.add_child(std::boxed::Box::new(
+        crate::tui::components::RcRefCellComponent(app.pending_section.clone()
             as std::rc::Rc<std::cell::RefCell<dyn crate::tui::Component>>),
     ));
     tui.add_child(std::boxed::Box::new(
@@ -1610,13 +1622,14 @@ pub async fn run(config: AppConfig, session: AgentSession) -> anyhow::Result<()>
 /// Each section is a child of TUI.root rendered in the correct order.
 ///
 /// Layout (top to bottom):
-///   header → chat_container (messages) → pending → status → queued → working → editor → footer
+///   header → chat_container (messages) → pending (queued steer/follow-up) → status → working → editor → footer
 fn compose_ui(app: &mut App, width: usize) {
     // ── Session picker ──
     if let Some(ref picker) = app.session_picker {
         let (_lines, _cursor_y) = picker.render(width, &app.theme as &dyn crate::tui::Theme);
         // Clear chat container when picker is active
         app.chat_container.borrow_mut().clear();
+        app.pending_section.borrow_mut().set_lines(vec![]);
         app.status_section.borrow_mut().set_lines(vec![]);
         app.working_section.borrow_mut().set_lines(vec![]);
         return;
@@ -1628,35 +1641,79 @@ fn compose_ui(app: &mut App, width: usize) {
         let line = app.theme.fg_key(ThemeKey::Dim, &format!(" {}", status));
         status_lines.push(crate::agent::ui::render_utils::pad_to_width(&line, width));
     }
+    app.status_section.borrow_mut().set_lines(status_lines);
 
-    // ── Queued message indicator (pi-style: shows queued messages during streaming) ──
-    if app.is_streaming {
-        // Show pending_submit if set (idle path, before agent loop starts)
+    // ── Pending messages section (pi-style pendingMessagesContainer) ──
+    // Shows queued steer/follow-up messages between chat and status.
+    let mut pending_lines = Vec::new();
+    let has_pending = if let Some(ref agent) = app.agent {
+        agent.steering_queue_len() > 0
+            || agent.follow_up_queue_len() > 0
+            || app.pending_submit.is_some()
+    } else {
+        app.pending_submit.is_some()
+    };
+    if has_pending {
+        // Blank line separator (pi's Spacer(1) before pending section)
+        pending_lines.push(String::new());
+
+        // Show pending_submit (idle path, before agent loop starts)
         if let Some(ref msg) = app.pending_submit {
-            let preview = if msg.len() > 60 {
-                format!("{}…", &msg[..60])
+            let preview = if msg.len() > width.saturating_sub(12) {
+                format!("{}…", &msg[..width.saturating_sub(12)])
             } else {
                 msg.clone()
             };
             let line = app
                 .theme
                 .fg_key(ThemeKey::Dim, &format!(" 📝 queued: {}", preview));
-            status_lines.push(crate::agent::ui::render_utils::pad_to_width(&line, width));
+            pending_lines.push(crate::agent::ui::render_utils::pad_to_width(&line, width));
         }
-        // Show agent's internal steer/follow-up queue depths
+
+        // Show agent's internal steer/follow-up queues (pi-style)
         if let Some(ref agent) = app.agent {
-            let steer = agent.steering_queue_len();
-            let follow = agent.follow_up_queue_len();
-            if steer > 0 || follow > 0 {
-                let line = app.theme.fg_key(
+            for msg in agent.steering_queue_snapshot() {
+                let text = crate::agent::types::message_text(&msg);
+                let preview = if text.len() > width.saturating_sub(14) {
+                    format!("{}…", &text[..width.saturating_sub(14)])
+                } else {
+                    text
+                };
+                if !preview.is_empty() {
+                    let line = app
+                        .theme
+                        .fg_key(ThemeKey::Dim, &format!(" Steering: {}", preview));
+                    pending_lines.push(crate::agent::ui::render_utils::pad_to_width(&line, width));
+                }
+            }
+            for msg in agent.follow_up_queue_snapshot() {
+                let text = crate::agent::types::message_text(&msg);
+                let preview = if text.len() > width.saturating_sub(14) {
+                    format!("{}…", &text[..width.saturating_sub(14)])
+                } else {
+                    text
+                };
+                if !preview.is_empty() {
+                    let line = app
+                        .theme
+                        .fg_key(ThemeKey::Dim, &format!(" Follow-up: {}", preview));
+                    pending_lines.push(crate::agent::ui::render_utils::pad_to_width(&line, width));
+                }
+            }
+
+            // Dequeue hint (pi-style)
+            let dequeue_keys = crate::tui::keybindings::get_keybindings()
+                .get_keys(crate::tui::keybindings::ACTION_APP_MESSAGE_DEQUEUE);
+            if !dequeue_keys.is_empty() {
+                let hint = app.theme.fg_key(
                     ThemeKey::Dim,
-                    &format!(" 📝 steer: {}, follow-up: {}", steer, follow),
+                    &format!(" ↳ {} to edit all queued messages", dequeue_keys[0]),
                 );
-                status_lines.push(crate::agent::ui::render_utils::pad_to_width(&line, width));
+                pending_lines.push(crate::agent::ui::render_utils::pad_to_width(&hint, width));
             }
         }
     }
-    app.status_section.borrow_mut().set_lines(status_lines);
+    app.pending_section.borrow_mut().set_lines(pending_lines);
 
     // ── Working indicator (pi-style: blank line + spinner before editor) ──
     let mut working_lines = Vec::new();
@@ -4815,18 +4872,20 @@ fn show_summarization_prompt(app: &mut App, tui: &mut TUI, _entry_id: &str) {
 fn show_status(app: &mut App, message: String) {
     let mut chat = app.chat_container.borrow_mut();
     // Check if previous status children are still the last in the container
+    // (pi-style: last two are Spacer + Text, replaced in-place)
     if let Some(prev_len) = app.last_status_len
         && chat.len() == prev_len
         && prev_len >= 2
     {
-        chat.pop_child(); // info message
-        chat.pop_child(); // spacer
+        chat.pop_child(); // text / InfoMessageComponent
+        chat.pop_child(); // Spacer
     }
     app.last_status_len = None;
     drop(chat);
 
-    // Add the new status
+    // Add the new status with a leading spacer (pi-style: Spacer + Text)
     let mut chat = app.chat_container.borrow_mut();
+    chat.add_child(std::boxed::Box::new(Spacer::new(1)));
     chat.add_child(std::boxed::Box::new(InfoMessageComponent::new(message)));
     app.last_status_len = Some(chat.len());
 }
