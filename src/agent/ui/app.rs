@@ -195,6 +195,8 @@ pub struct App {
     is_streaming: bool,
     /// Pending agent submission (set by sync handle_input, consumed by async main loop).
     pending_submit: Option<String>,
+    /// Pre-loaded messages for the next agent turn (drained from steer/follow-up queues).
+    pending_preloaded_msgs: Option<Vec<yoagent::types::AgentMessage>>,
     /// Pending manual compaction (carries optional custom instructions).
     pending_compact: Option<Option<String>>,
     /// Pending auto-compaction check after AgentEnd (pi-compatible).
@@ -562,6 +564,7 @@ impl App {
             event_rx: rx,
             is_streaming: false,
             pending_submit: None,
+            pending_preloaded_msgs: None,
             pending_compact: None,
             pending_auto_compact: false,
             agent: None,
@@ -660,6 +663,7 @@ impl App {
         self.pending_tools.clear();
         self.tool_call_start_times.clear();
         self.pending_submit = None;
+        self.pending_preloaded_msgs = None;
     }
 
     /// Rebuild chat and agent messages from the current session context.
@@ -1318,12 +1322,14 @@ pub async fn run(config: AppConfig, session: AgentSession) -> anyhow::Result<()>
         // Handle pending agent submission (async).
         // During streaming, submit_message uses agent.steer() directly so
         // pending_submit is only set for the idle path. Processed here as
-        // soon as is_streaming becomes false.
-        if !app.is_streaming
-            && let Some(text) = app.pending_submit.take()
-        {
-            start_agent_loop(&mut app, text).await;
-            dirty = true;
+        // soon as is_streaming becomes false and the agent is truly idle.
+        if !app.is_streaming {
+            let agent_ready = app.agent.as_ref().is_none_or(|a| !a.is_streaming());
+            if agent_ready && let Some(text) = app.pending_submit.take() {
+                let preloaded = app.pending_preloaded_msgs.take();
+                start_agent_loop(&mut app, text, preloaded).await;
+                dirty = true;
+            }
         }
 
         // Handle pending manual compaction (async)
@@ -1636,6 +1642,18 @@ fn compose_ui(app: &mut App, width: usize) {
                 .theme
                 .fg_key(ThemeKey::Dim, &format!(" 📝 queued: {}", preview));
             status_lines.push(crate::agent::ui::render_utils::pad_to_width(&line, width));
+        }
+        // Show agent's internal steer/follow-up queue depths
+        if let Some(ref agent) = app.agent {
+            let steer = agent.steering_queue_len();
+            let follow = agent.follow_up_queue_len();
+            if steer > 0 || follow > 0 {
+                let line = app.theme.fg_key(
+                    ThemeKey::Dim,
+                    &format!(" 📝 steer: {}, follow-up: {}", steer, follow),
+                );
+                status_lines.push(crate::agent::ui::render_utils::pad_to_width(&line, width));
+            }
         }
     }
     app.status_section.borrow_mut().set_lines(status_lines);
@@ -2053,13 +2071,30 @@ pub fn handle_follow_up(app: &mut App, text: String) {
             agent.follow_up(follow_msg);
             app.status_text = Some("Follow-up queued — will send when agent finishes".into());
         }
-    } else {
-        // Not streaming — submit directly
-        if app.is_streaming {
-            app.is_streaming = false;
-        }
-        submit_message(app, trimmed);
+        return;
     }
+
+    // Agent is idle but has queued messages — drain and submit as batch.
+    // This mirrors pi's continue() which drains steer/follow-up queues
+    // when the last message is assistant.
+    if let Some(ref agent) = app.agent
+        && !agent.is_streaming()
+        && (agent.steering_queue_len() > 0 || agent.follow_up_queue_len() > 0)
+    {
+        let mut msgs = agent.take_steering_queue();
+        msgs.extend(agent.take_follow_up_queue());
+        msgs.push(user_agent_message(&trimmed));
+        app.pending_preloaded_msgs = Some(msgs);
+        app.pending_submit = Some(trimmed);
+        app.status_text = Some("Queued messages + follow-up will be sent next".into());
+        return;
+    }
+
+    // Not streaming — submit directly
+    if app.is_streaming {
+        app.is_streaming = false;
+    }
+    submit_message(app, trimmed);
 }
 
 /// Interrupt streaming agent and restore queued messages to editor.
@@ -3192,7 +3227,11 @@ fn map_thinking_level(level: Option<&str>) -> yoagent::types::ThinkingLevel {
 /// If no agent exists yet (first turn), creates a fresh one.
 /// Messages are always synced from the session (error-filtered source) at
 /// the start of each turn to avoid leaking transient provider errors.
-async fn start_agent_loop(app: &mut App, message: String) {
+async fn start_agent_loop(
+    app: &mut App,
+    message: String,
+    preloaded: Option<Vec<yoagent::types::AgentMessage>>,
+) {
     if app.session.is_none() {
         return;
     }
@@ -3264,9 +3303,15 @@ async fn start_agent_loop(app: &mut App, message: String) {
         }
     };
 
-    // Start the turn: agent.prompt() spawns the loop internally, keeps the
-    // Agent in scope, and returns a receiver for streaming events.
-    let mut rx = agent.prompt(message).await;
+    // Start the turn: agent.prompt() or agent.prompt_messages() spawns the
+    // loop internally and returns a receiver for streaming events.
+    // When preloaded messages are provided (drained from steer/follow-up
+    // queues), use prompt_messages so they're all injected in one turn.
+    let mut rx = if let Some(msgs) = preloaded {
+        agent.prompt_messages(msgs).await
+    } else {
+        agent.prompt(message).await
+    };
 
     // Forward events from the agent's receiver to the UI channel.
     // This runs concurrently while the agent loop processes the turn.
