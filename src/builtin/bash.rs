@@ -1,9 +1,9 @@
 use crate::agent::extension::{Cancel, Extension, ToolDefinition};
 use crate::agent::extension::{ToolRenderContext, ToolRenderer};
-use crate::tui::Component;
-use crate::tui::Theme;
-use crate::tui::ThemeKey;
+use crate::tui::Style;
+use crate::tui::components::StyledSegment;
 use crate::tui::visual_truncate::truncate_to_visual_lines;
+use crate::tui::{Component, Theme, ThemeKey};
 use async_trait::async_trait;
 
 use std::borrow::Cow;
@@ -464,17 +464,26 @@ impl ToolRenderer for BashRenderer {
             .and_then(|v| v.as_str())
             .unwrap_or("...");
         let timeout = args.get("timeout").and_then(|v| v.as_i64());
-        let timeout_suffix = timeout
-            .map(|t| theme.fg_key(ThemeKey::Muted, &format!(" (timeout {}s)", t)))
-            .unwrap_or_default();
 
-        let line = format!(
-            "{}{}",
-            theme.fg_key(ThemeKey::ToolTitle, &theme.bold(&format!("$ {}", cmd))),
-            timeout_suffix
-        );
+        let mut segments = Vec::new();
+        segments.push(StyledSegment {
+            text: format!("$ {}", cmd),
+            style: Some(
+                Style::new()
+                    .fg(theme.fg_ansi_key(ThemeKey::ToolTitle).to_string())
+                    .bold(),
+            ),
+        });
+        if let Some(t) = timeout {
+            segments.push(StyledSegment {
+                text: format!(" (timeout {}s)", t),
+                style: Some(Style::new().fg(theme.fg_ansi_key(ThemeKey::Muted).to_string())),
+            });
+        }
 
-        std::boxed::Box::new(crate::tui::components::Text::new(line, 0, 0, None))
+        std::boxed::Box::new(crate::tui::components::Text::from_segments(
+            segments, 0, 0, None,
+        ))
     }
 
     fn render_result(
@@ -504,29 +513,44 @@ impl ToolRenderer for BashRenderer {
 
         let mut container = crate::tui::container::Container::new();
 
+        // Pre-compute styles
+        let muted_style = Style::new().fg(theme.fg_ansi_key(ThemeKey::Muted).to_string());
+        let dim_style = Style::new().fg(theme.fg_ansi_key(ThemeKey::Dim).to_string());
+        let warning_style = Style::new().fg(theme.fg_ansi_key(ThemeKey::Warning).to_string());
+        let output_fg_key = if ctx.is_error { "error" } else { "toolOutput" };
+        let output_style = Style::new().fg(theme.fg_ansi(output_fg_key).to_string());
+
         // ── Preview hint ──
         if !ctx.expanded && hidden_line_count > 0 {
-            let hint = if ctx.expand_key.is_empty() {
-                theme.fg_key(
-                    ThemeKey::Muted,
-                    &format!("... {} earlier lines", hidden_line_count),
-                )
+            if ctx.expand_key.is_empty() {
+                container.add_child(std::boxed::Box::new(crate::tui::components::Text::new(
+                    format!("... {} earlier lines", hidden_line_count),
+                    0,
+                    0,
+                    Some(muted_style.clone()),
+                )));
             } else {
-                let prefix = theme.fg_key(
-                    ThemeKey::Muted,
-                    &format!("... ({} earlier lines, ", hidden_line_count),
-                );
-                let key_styled = theme.fg("dim", &ctx.expand_key);
-                let suffix = theme.fg_key(ThemeKey::Muted, " to expand)");
-                format!("{}{}{}", prefix, key_styled, suffix)
-            };
-            container.add_child(std::boxed::Box::new(crate::tui::components::Text::new(
-                hint, 0, 0, None,
-            )));
+                let hint_segments = vec![
+                    StyledSegment {
+                        text: format!("... ({} earlier lines, ", hidden_line_count),
+                        style: Some(muted_style.clone()),
+                    },
+                    StyledSegment {
+                        text: ctx.expand_key.clone(),
+                        style: Some(dim_style.clone()),
+                    },
+                    StyledSegment {
+                        text: " to expand)".to_string(),
+                        style: Some(muted_style.clone()),
+                    },
+                ];
+                container.add_child(std::boxed::Box::new(
+                    crate::tui::components::Text::from_segments(hint_segments, 0, 0, None),
+                ));
+            }
         }
 
         // ── Output lines ──
-        let fg_key = if ctx.is_error { "error" } else { "toolOutput" };
         for line in &preview_lines {
             if line.is_empty() {
                 container.add_child(std::boxed::Box::new(crate::tui::components::Text::new(
@@ -537,10 +561,10 @@ impl ToolRenderer for BashRenderer {
                 )));
             } else {
                 container.add_child(std::boxed::Box::new(crate::tui::components::Text::new(
-                    theme.fg(fg_key, line),
+                    line.to_string(),
                     0,
                     0,
-                    None,
+                    Some(output_style.clone()),
                 )));
             }
         }
@@ -550,25 +574,25 @@ impl ToolRenderer for BashRenderer {
             let is_complete = ctx.exit_code.is_some() || ctx.cancelled;
             let label = if is_complete { "Took" } else { "Elapsed" };
             container.add_child(std::boxed::Box::new(crate::tui::components::Text::new(
-                theme.fg_key(ThemeKey::Muted, &format!("{} {:.1}s", label, secs)),
+                format!("{} {:.1}s", label, secs),
                 0,
                 0,
-                None,
+                Some(muted_style.clone()),
             )));
         }
 
         // ── Truncation warning ──
         if ctx.was_truncated {
-            let warning = if let Some(ref path) = ctx.full_output_path {
-                theme.fg(
-                    "warning",
-                    &format!("Output truncated. Full output: {}", path),
-                )
+            let warning_text = if let Some(ref path) = ctx.full_output_path {
+                format!("Output truncated. Full output: {}", path)
             } else {
-                theme.fg_key(ThemeKey::Warning, "Output truncated.")
+                "Output truncated.".to_string()
             };
             container.add_child(std::boxed::Box::new(crate::tui::components::Text::new(
-                warning, 0, 0, None,
+                warning_text,
+                0,
+                0,
+                Some(warning_style.clone()),
             )));
         }
 

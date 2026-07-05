@@ -1,9 +1,9 @@
 use crate::agent::extension::{Extension, ToolDefinition};
 use crate::agent::extension::{ToolRenderContext, ToolRenderer};
 use crate::builtin;
-use crate::tui::Component;
-use crate::tui::Theme;
-use crate::tui::ThemeKey;
+use crate::tui::Style;
+use crate::tui::components::StyledSegment;
+use crate::tui::{Component, Theme, ThemeKey};
 
 use std::borrow::Cow;
 use std::path::Path;
@@ -433,26 +433,33 @@ impl ToolRenderer for WriteRenderer {
             .and_then(|v| v.as_str());
         let content = args.get("content");
 
+        let mut segments = Vec::new();
+
+        // ── Header: "write" in toolTitle bold ──
+        segments.push(StyledSegment {
+            text: "write".to_string(),
+            style: Some(
+                Style::new()
+                    .fg(theme.fg_ansi_key(ThemeKey::ToolTitle).to_string())
+                    .bold(),
+            ),
+        });
+
         // ── Path display with hyperlink ──
-        let path_display = if let Some(p) = raw_path {
+        if let Some(p) = raw_path {
             let short = builtin::shorten_path(p);
             let cwd = if ctx.cwd.is_empty() {
                 std::path::Path::new(".")
             } else {
                 std::path::Path::new(&ctx.cwd)
             };
-            builtin::link_path(&theme.fg_key(ThemeKey::Accent, &short), p, cwd)
-        } else {
-            String::new()
-        };
-
-        let header = format!(
-            "{} {}",
-            theme.fg_key(ThemeKey::ToolTitle, &theme.bold("write")),
-            path_display
-        );
-
-        let mut lines = vec![header];
+            let path_text = format!(" {}", short);
+            let linked = builtin::link_path(&path_text, p, cwd);
+            segments.push(StyledSegment {
+                text: linked,
+                style: Some(Style::new().fg(theme.fg_ansi_key(ThemeKey::Accent).to_string())),
+            });
+        }
 
         // Match pi's `str(value)` helper
         let content_str = match content {
@@ -462,9 +469,14 @@ impl ToolRenderer for WriteRenderer {
 
         match content_str {
             None => {
-                lines.push(String::new());
-                lines
-                    .push(theme.fg_key(ThemeKey::Error, "[invalid content arg - expected string]"));
+                segments.push(StyledSegment {
+                    text: "\n".to_string(),
+                    style: None,
+                });
+                segments.push(StyledSegment {
+                    text: "[invalid content arg - expected string]".to_string(),
+                    style: Some(Style::new().fg(theme.fg_ansi_key(ThemeKey::Error).to_string())),
+                });
             }
             Some("") => {}
             Some(text) => {
@@ -522,38 +534,54 @@ impl ToolRenderer for WriteRenderer {
                 let has_highlighting = cache_guard.is_some();
 
                 // Pi: blank line between header and content
-                lines.push(String::new());
+                segments.push(StyledSegment {
+                    text: "\n".to_string(),
+                    style: None,
+                });
+
+                let output_style =
+                    Style::new().fg(theme.fg_ansi_key(ThemeKey::ToolOutput).to_string());
+                let muted_style = Style::new().fg(theme.fg_ansi_key(ThemeKey::Muted).to_string());
+                let dim_style = Style::new().fg(theme.fg_ansi_key(ThemeKey::Dim).to_string());
 
                 for line in display_lines {
-                    let styled = if has_highlighting {
-                        line.clone()
+                    let line_text = if has_highlighting {
+                        format!("{}\n", line)
                     } else {
-                        theme.fg_key(ThemeKey::ToolOutput, &line.replace('\t', "   "))
+                        format!("{}\n", line.replace('\t', "   "))
                     };
-                    lines.push(styled);
+                    segments.push(StyledSegment {
+                        text: line_text,
+                        style: if has_highlighting {
+                            None
+                        } else {
+                            Some(output_style.clone())
+                        },
+                    });
                 }
 
                 if remaining > 0 {
-                    let dim_key = theme.fg_key(ThemeKey::Dim, &ctx.expand_key);
-                    let muted_rest = theme.fg_key(
-                        ThemeKey::Muted,
-                        &format!("... ({} more lines, {} total, ", remaining, total_lines),
-                    );
-                    let muted_to_expand = theme.fg_key(ThemeKey::Muted, " to expand");
-                    let muted_paren = theme.fg_key(ThemeKey::Muted, ")");
-                    lines.push(format!(
-                        "{}{}{}{}",
-                        muted_rest, dim_key, muted_to_expand, muted_paren
-                    ));
+                    let remaining_segments = vec![
+                        StyledSegment {
+                            text: format!("... ({} more lines, {} total, ", remaining, total_lines),
+                            style: Some(muted_style.clone()),
+                        },
+                        StyledSegment {
+                            text: ctx.expand_key.clone(),
+                            style: Some(dim_style.clone()),
+                        },
+                        StyledSegment {
+                            text: " to expand)".to_string(),
+                            style: Some(muted_style.clone()),
+                        },
+                    ];
+                    segments.extend(remaining_segments);
                 }
             }
         }
 
-        std::boxed::Box::new(crate::tui::components::Text::new(
-            lines.join("\n"),
-            0,
-            0,
-            None,
+        std::boxed::Box::new(crate::tui::components::Text::from_segments(
+            segments, 0, 0, None,
         ))
     }
 
@@ -561,15 +589,18 @@ impl ToolRenderer for WriteRenderer {
         &self,
         content: &str,
         theme: &dyn Theme,
-        ctx: &ToolRenderContext,
+        _ctx: &ToolRenderContext,
     ) -> Option<Box<dyn Component>> {
         // Pi: formatWriteResult prepends \n before error text
-        if !ctx.is_error || content.is_empty() {
+        if !_ctx.is_error || content.is_empty() {
             return None;
         }
-        let error_text = format!("\n{}", theme.fg_key(ThemeKey::Error, content));
+        let error_style = Style::new().fg(theme.fg_ansi_key(ThemeKey::Error).to_string());
         Some(std::boxed::Box::new(crate::tui::components::Text::new(
-            error_text, 0, 0, None,
+            content.to_string(),
+            0,
+            0,
+            Some(error_style),
         )))
     }
 }

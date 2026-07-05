@@ -8,9 +8,9 @@ use crate::agent::ui::theme::{RabTheme, current_theme};
 use crate::tui::Component;
 use crate::tui::Style;
 use crate::tui::component::{RenderCache, RenderCacheKey};
-use crate::tui::components::Text;
 use crate::tui::components::r#box::TuiBox;
 use crate::tui::components::spacer::Spacer;
+use crate::tui::components::{StyledSegment, Text};
 use crate::tui::container::Container;
 
 /// Maximum preview lines when collapsed.
@@ -326,15 +326,32 @@ impl ToolExecComponent {
         // Header: bold tool name + JSON args
         let args_str = serde_json::to_string(&self.args).unwrap_or_default();
         let header = if args_str.is_empty() || args_str == "{}" {
-            theme.fg("toolTitle", &theme.bold(&self.name))
+            let title_style = Style::new()
+                .fg(theme.fg_ansi("toolTitle").to_string())
+                .bold();
+            Text::new(self.name.clone(), 0, 0, Some(title_style))
         } else {
-            format!(
-                "{}  {}",
-                theme.fg("toolTitle", &theme.bold(&self.name)),
-                theme.fg("muted", &args_str),
+            let title_style = Style::new()
+                .fg(theme.fg_ansi("toolTitle").to_string())
+                .bold();
+            let muted_style = Style::new().fg(theme.fg_ansi("muted").to_string());
+            Text::from_segments(
+                vec![
+                    StyledSegment {
+                        text: self.name.clone(),
+                        style: Some(title_style),
+                    },
+                    StyledSegment {
+                        text: format!("  {}", args_str),
+                        style: Some(muted_style),
+                    },
+                ],
+                0,
+                0,
+                None,
             )
         };
-        msg_box.add_child(std::boxed::Box::new(Text::new(header, 0, 0, None)));
+        msg_box.add_child(std::boxed::Box::new(header));
 
         // Output text (collapsed if longer than PREVIEW_LINES, no tool-specific formatting)
         if let Some(ref output) = self.output {
@@ -344,13 +361,12 @@ impl ToolExecComponent {
                 let lines: Vec<&str> = output.lines().collect();
                 if lines.len() > PREVIEW_LINES {
                     let preview = lines[..PREVIEW_LINES].join("\n");
+                    let muted_style = Style::new().fg(theme.fg_ansi("muted").to_string());
+                    let remaining = lines.len() - PREVIEW_LINES;
                     format!(
                         "{}\n{}",
                         preview,
-                        theme.fg(
-                            "muted",
-                            &format!("... ({} more lines)", lines.len() - PREVIEW_LINES),
-                        ),
+                        muted_style.apply(&format!("... ({} more lines)", remaining)),
                     )
                 } else {
                     output.clone()
@@ -358,13 +374,14 @@ impl ToolExecComponent {
             };
 
             let fg_key = if self.is_error { "error" } else { "toolOutput" };
+            let output_style = Style::new().fg(theme.fg_ansi(fg_key).to_string());
             let styled = display_text
                 .lines()
                 .map(|line| {
                     if line.is_empty() {
                         String::new()
                     } else {
-                        theme.fg(fg_key, line)
+                        output_style.apply(line)
                     }
                 })
                 .collect::<Vec<_>>()

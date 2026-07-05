@@ -5,8 +5,9 @@
 //! that formats the operation type differently.
 
 use crate::agent::extension::{ToolRenderContext, ToolRenderer};
-use crate::tui::Component;
-use crate::tui::Theme;
+use crate::tui::Style;
+use crate::tui::components::StyledSegment;
+use crate::tui::{Component, Theme};
 use serde_json::Value;
 
 /// Renderer for individual direct MCP tools (matching pi's createMcpDirectToolCallRenderer).
@@ -29,17 +30,31 @@ impl ToolRenderer for McpToolRenderer {
         theme: &dyn Theme,
         _ctx: &ToolRenderContext,
     ) -> Box<dyn Component> {
-        let title = theme.bold(&self.display_name);
-        let header = theme.fg("toolTitle", &title);
+        let title_style = Style::new()
+            .fg(theme.fg_ansi("toolTitle").to_string())
+            .bold();
         if !has_useful_args(args) {
-            return std::boxed::Box::new(crate::tui::components::Text::new(header, 0, 0, None));
+            return std::boxed::Box::new(crate::tui::components::Text::new(
+                self.display_name.clone(),
+                0,
+                0,
+                Some(title_style),
+            ));
         }
         let args_str = format_jsonish(args);
-        std::boxed::Box::new(crate::tui::components::Text::new(
-            format!("{}\n{}", header, theme.fg("muted", &args_str)),
-            0,
-            0,
-            None,
+        let muted_style = Style::new().fg(theme.fg_ansi("muted").to_string());
+        let segments = vec![
+            StyledSegment {
+                text: self.display_name.clone(),
+                style: Some(title_style),
+            },
+            StyledSegment {
+                text: format!("\n{}", args_str),
+                style: Some(muted_style),
+            },
+        ];
+        std::boxed::Box::new(crate::tui::components::Text::from_segments(
+            segments, 0, 0, None,
         ))
     }
 
@@ -50,11 +65,12 @@ impl ToolRenderer for McpToolRenderer {
         ctx: &ToolRenderContext,
     ) -> Option<Box<dyn Component>> {
         if ctx.is_partial {
+            let warn_style = Style::new().fg(theme.fg_ansi("warning").to_string());
             return Some(std::boxed::Box::new(crate::tui::components::Text::new(
-                theme.fg("warning", "Running MCP tool..."),
+                "Running MCP tool...".to_string(),
                 0,
                 0,
-                None,
+                Some(warn_style),
             )));
         }
         render_compact_result(content, theme, ctx)
@@ -70,11 +86,12 @@ fn render_compact_result(
 ) -> Option<Box<dyn Component>> {
     let text_lines: Vec<&str> = content.lines().collect();
     if text_lines.is_empty() || (text_lines.len() == 1 && text_lines[0].is_empty()) {
+        let muted_style = Style::new().fg(theme.fg_ansi("muted").to_string());
         return Some(std::boxed::Box::new(crate::tui::components::Text::new(
-            theme.fg("muted", "(empty result)"),
+            "(empty result)".to_string(),
             0,
             0,
-            None,
+            Some(muted_style),
         )));
     }
 
@@ -85,31 +102,42 @@ fn render_compact_result(
         &text_lines[..]
     };
 
-    let mut lines: Vec<String> = Vec::new();
+    let output_style = Style::new().fg(theme.fg_ansi("toolOutput").to_string());
+    let muted_style = Style::new().fg(theme.fg_ansi("muted").to_string());
+    let mut segments = Vec::new();
+
     for line in display_lines {
-        if line.is_empty() {
-            lines.push(String::new());
-        } else {
-            lines.push(theme.fg("toolOutput", line));
+        if !line.is_empty() {
+            segments.push(StyledSegment {
+                text: line.to_string(),
+                style: Some(output_style.clone()),
+            });
         }
+        segments.push(StyledSegment {
+            text: "\n".to_string(),
+            style: None,
+        });
     }
 
     if is_truncated {
-        lines.push(theme.fg("muted", "…"));
+        segments.push(StyledSegment {
+            text: "…".to_string(),
+            style: Some(muted_style.clone()),
+        });
         let expand_key = if ctx.expand_key.is_empty() {
             "Ctrl+O"
         } else {
             &ctx.expand_key
         };
-        lines.push(theme.fg("muted", &format!("({} to expand)", expand_key)));
+        segments.push(StyledSegment {
+            text: format!("({} to expand)", expand_key),
+            style: Some(muted_style.clone()),
+        });
     }
 
-    Some(std::boxed::Box::new(crate::tui::components::Text::new(
-        lines.join("\n"),
-        0,
-        0,
-        None,
-    )))
+    Some(std::boxed::Box::new(
+        crate::tui::components::Text::from_segments(segments, 0, 0, None),
+    ))
 }
 
 /// Renderer for the proxy `mcp` tool (multi-purpose gateway, matching pi's renderMcpProxyToolCall).
@@ -123,8 +151,15 @@ impl ToolRenderer for McpProxyToolRenderer {
         _ctx: &ToolRenderContext,
     ) -> Box<dyn Component> {
         let line = format_mcp_proxy_call(args);
-        let header = theme.fg("toolTitle", &theme.bold(&line));
-        std::boxed::Box::new(crate::tui::components::Text::new(header, 0, 0, None))
+        let title_style = Style::new()
+            .fg(theme.fg_ansi("toolTitle").to_string())
+            .bold();
+        std::boxed::Box::new(crate::tui::components::Text::new(
+            line,
+            0,
+            0,
+            Some(title_style),
+        ))
     }
 
     fn render_result(
@@ -134,11 +169,12 @@ impl ToolRenderer for McpProxyToolRenderer {
         ctx: &ToolRenderContext,
     ) -> Option<Box<dyn Component>> {
         if ctx.is_partial {
+            let warn_style = Style::new().fg(theme.fg_ansi("warning").to_string());
             return Some(std::boxed::Box::new(crate::tui::components::Text::new(
-                theme.fg("warning", "Running MCP tool..."),
+                "Running MCP tool...".to_string(),
                 0,
                 0,
-                None,
+                Some(warn_style),
             )));
         }
         render_compact_result(content, theme, ctx)

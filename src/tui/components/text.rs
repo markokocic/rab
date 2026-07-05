@@ -2,13 +2,35 @@ use crate::tui::Component;
 use crate::tui::Style;
 use crate::tui::util::{visible_width, wrap_text_with_ansi};
 
+/// A styled segment of text with an optional Style (foreground, bold, etc.).
+#[derive(Debug, Clone)]
+pub struct StyledSegment {
+    pub text: String,
+    pub style: Option<Style>,
+}
+
+impl StyledSegment {
+    /// Build the ANSI-escaped representation of this segment.
+    pub fn render(&self) -> String {
+        match &self.style {
+            Some(style) => style.apply(&self.text),
+            None => self.text.clone(),
+        }
+    }
+}
+
 /// Multi-line text component with word wrapping and padding.
+/// Supports multiple styled segments per line via `StyledSegment`.
+///
 /// Port of pi's `packages/tui/src/components/text.ts`.
 pub struct Text {
-    content: String,
+    segments: Vec<StyledSegment>,
     padding_x: usize,
     padding_y: usize,
-    bg_style: Option<Style>,
+    /// Default style applied to the full padded line (typically background).
+    /// Segments without an explicit style inherit foreground/bold/etc from this
+    /// when it is applied to the final padded line.
+    style: Option<Style>,
     // Render cache
     cached_content: Option<String>,
     cached_width: Option<usize>,
@@ -16,49 +38,102 @@ pub struct Text {
 }
 
 impl Text {
+    /// Create a new Text component with a single, unstyled segment.
+    /// `style` is applied to the entire padded line (e.g. background color).
     pub fn new(
         content: impl Into<String>,
         padding_x: usize,
         padding_y: usize,
-        bg_style: Option<Style>,
+        style: Option<Style>,
     ) -> Self {
         Self {
-            content: content.into(),
+            segments: vec![StyledSegment {
+                text: content.into(),
+                style: None,
+            }],
             padding_x,
             padding_y,
-            bg_style,
+            style,
             cached_content: None,
             cached_width: None,
             cached_lines: Vec::new(),
         }
     }
 
-    pub fn set_text(&mut self, content: impl Into<String>) {
-        self.content = content.into();
+    /// Create a Text component from multiple styled segments.
+    /// `default_style` is applied to the full padded line (e.g. background color).
+    pub fn from_segments(
+        segments: Vec<StyledSegment>,
+        padding_x: usize,
+        padding_y: usize,
+        default_style: Option<Style>,
+    ) -> Self {
+        Self {
+            segments,
+            padding_x,
+            padding_y,
+            style: default_style,
+            cached_content: None,
+            cached_width: None,
+            cached_lines: Vec::new(),
+        }
+    }
+
+    /// Append a styled segment to the text.
+    pub fn push_segment(&mut self, segment: StyledSegment) {
+        self.segments.push(segment);
         self.invalidate();
     }
 
-    pub fn set_bg_style(&mut self, bg_style: Option<Style>) {
-        self.bg_style = bg_style;
+    /// Replace content with a single, unstyled segment.
+    pub fn set_text(&mut self, content: impl Into<String>) {
+        self.segments = vec![StyledSegment {
+            text: content.into(),
+            style: None,
+        }];
         self.invalidate();
+    }
+
+    /// Replace content with styled segments.
+    pub fn set_segments(&mut self, segments: Vec<StyledSegment>) {
+        self.segments = segments;
+        self.invalidate();
+    }
+
+    /// Set the default style applied to the final padded line.
+    pub fn set_style(&mut self, style: Option<Style>) {
+        self.style = style;
+        self.invalidate();
+    }
+
+    /// Build the full ANSI-escaped content string from all segments.
+    fn build_content(&self) -> String {
+        self.segments
+            .iter()
+            .map(|s| s.render())
+            .collect::<Vec<_>>()
+            .join("")
     }
 }
 
 impl Component for Text {
     fn render(&mut self, width: usize) -> Vec<String> {
+        // Build content key for cache
+        let content_key = self.build_content();
+
         // Check cache
-        if self.cached_content.as_deref() == Some(&self.content) && self.cached_width == Some(width)
+        if self.cached_content.as_deref() == Some(&content_key) && self.cached_width == Some(width)
         {
             return self.cached_lines.clone();
         }
 
         // Pi: return [] when content is empty or whitespace-only
-        if self.content.is_empty() || self.content.trim().is_empty() {
+        if content_key.is_empty() || content_key.trim().is_empty() {
             return Vec::new();
         }
 
         // Pi: replace tabs with 3 spaces
-        let normalized = self.content.replace('\t', "   ");
+        let normalized = content_key.replace('\t', "   ");
 
         // Pi: max(1, width - paddingX * 2)
         let content_width = width.saturating_sub(2 * self.padding_x).max(1);
@@ -76,7 +151,7 @@ impl Component for Text {
             } else {
                 line_with_margins
             };
-            let line = match self.bg_style {
+            let line = match self.style {
                 Some(ref style) => style.apply(&padded),
                 None => padded,
             };
@@ -84,23 +159,23 @@ impl Component for Text {
         }
 
         let empty_line = " ".repeat(width);
-        let empty_with_bg = self
-            .bg_style
+        let empty_with_style = self
+            .style
             .as_ref()
             .map(|style| style.apply(&empty_line))
             .unwrap_or_else(|| empty_line.clone());
 
         let mut result = Vec::new();
         for _ in 0..self.padding_y {
-            result.push(empty_with_bg.clone());
+            result.push(empty_with_style.clone());
         }
         result.extend(content_lines);
         for _ in 0..self.padding_y {
-            result.push(empty_with_bg.clone());
+            result.push(empty_with_style.clone());
         }
 
         // Update cache
-        self.cached_content = Some(self.content.clone());
+        self.cached_content = Some(content_key);
         self.cached_width = Some(width);
         self.cached_lines = result.clone();
 
@@ -148,5 +223,47 @@ mod tests {
         let a = text.render(20);
         let b = text.render(20);
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn test_styled_segment_render() {
+        let style = Style::new().fg("\x1b[38;5;196m".to_string());
+        let segment = StyledSegment {
+            text: "red".to_string(),
+            style: Some(style),
+        };
+        let result = segment.render();
+        assert!(result.starts_with("\x1b[38"));
+        assert!(result.contains("red"));
+        assert!(result.ends_with("\x1b[39m"));
+    }
+
+    #[test]
+    fn test_unstyled_segment_render() {
+        let segment = StyledSegment {
+            text: "plain".to_string(),
+            style: None,
+        };
+        assert_eq!(segment.render(), "plain");
+    }
+
+    #[test]
+    fn test_from_segments() {
+        let bold = Style::new().bold();
+        let segments = vec![
+            StyledSegment {
+                text: "hello ".to_string(),
+                style: None,
+            },
+            StyledSegment {
+                text: "world".to_string(),
+                style: Some(bold),
+            },
+        ];
+        let mut text = Text::from_segments(segments, 0, 0, None);
+        let lines = text.render(20);
+        assert!(!lines.is_empty());
+        assert!(lines[0].contains("hello"));
+        assert!(lines[0].contains("\x1b[1mworld\x1b[22m"));
     }
 }

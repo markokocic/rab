@@ -22,4 +22,4 @@ pub use loader::Loader;
 
 pub use select_list::{SelectItem, SelectList};
 pub use spacer::Spacer;
-pub use text::Text;
+pub use text::{StyledSegment, Text};

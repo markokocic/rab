@@ -1,9 +1,9 @@
 use crate::agent::extension::{Extension, ToolDefinition};
 use crate::agent::extension::{ToolRenderContext, ToolRenderer};
-use crate::tui::Component;
-use crate::tui::Theme;
-use crate::tui::ThemeKey;
+use crate::tui::Style;
+use crate::tui::components::StyledSegment;
 use crate::tui::components::spacer::Spacer;
+use crate::tui::{Component, Theme, ThemeKey};
 use async_trait::async_trait;
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
@@ -1051,17 +1051,26 @@ impl ToolRenderer for EditRenderer {
         } else {
             path.to_string()
         };
-        let path_disp = if short.is_empty() {
-            String::new()
-        } else {
-            theme.fg_key(ThemeKey::Accent, &short)
-        };
 
-        let header = format!(
-            "{} {}",
-            theme.fg_key(ThemeKey::ToolTitle, &theme.bold("edit")),
-            path_disp
-        );
+        let header_segments = vec![
+            StyledSegment {
+                text: "edit".to_string(),
+                style: Some(
+                    Style::new()
+                        .fg(theme.fg_ansi_key(ThemeKey::ToolTitle).to_string())
+                        .bold(),
+                ),
+            },
+            StyledSegment {
+                text: if short.is_empty() {
+                    String::new()
+                } else {
+                    format!(" {}", short)
+                },
+                style: Some(Style::new().fg(theme.fg_ansi_key(ThemeKey::Accent).to_string())),
+            },
+        ];
+        let header = crate::tui::components::Text::from_segments(header_segments, 0, 0, None);
 
         // Decide what diff to show (pi-compatible ordering)
         // 1. Actual diff from result details (if available)
@@ -1162,21 +1171,20 @@ impl ToolRenderer for EditRenderer {
             Some(crate::tui::Style::new().bg(bg_ansi.to_string())),
         );
 
-        edit_box.add_child(std::boxed::Box::new(crate::tui::components::Text::new(
-            header, 0, 0, None,
-        )));
+        edit_box.add_child(std::boxed::Box::new(header));
 
         if let Some(ref diff) = diff_to_show {
             if diff.is_empty() {
                 // No diff to show (still computing or no preview input)
             } else if let Some(err_msg) = diff.strip_prefix("error: ") {
                 // Error preview: add spacer + error text
+                let error_style = Style::new().fg(theme.fg_ansi_key(ThemeKey::Error).to_string());
                 edit_box.add_child(std::boxed::Box::new(Spacer::new(1)));
                 edit_box.add_child(std::boxed::Box::new(crate::tui::components::Text::new(
-                    theme.fg_key(ThemeKey::Error, err_msg),
+                    err_msg.to_string(),
                     0,
                     0,
-                    None,
+                    Some(error_style),
                 )));
             } else {
                 // Diff preview: add spacer + rendered diff
@@ -1225,10 +1233,10 @@ impl ToolRenderer for EditRenderer {
                     Some(crate::tui::Style::new().bg(bg_ansi.to_string())),
                 );
                 result_box.add_child(std::boxed::Box::new(crate::tui::components::Text::new(
-                    theme.fg_key(ThemeKey::Error, msg),
+                    msg.to_string(),
                     1,
                     0,
-                    None,
+                    Some(Style::new().fg(theme.fg_ansi_key(ThemeKey::Error).to_string())),
                 )));
                 return Some(std::boxed::Box::new(result_box));
             }

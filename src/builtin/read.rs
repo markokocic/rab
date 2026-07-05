@@ -1,8 +1,8 @@
 use crate::agent::extension::{Extension, ToolDefinition};
 use crate::agent::extension::{ToolRenderContext, ToolRenderer};
-use crate::tui::Component;
-use crate::tui::Theme;
-use crate::tui::ThemeKey;
+use crate::tui::Style;
+use crate::tui::components::StyledSegment;
+use crate::tui::{Component, Theme, ThemeKey};
 
 use base64::Engine as _;
 use std::borrow::Cow;
@@ -591,20 +591,19 @@ impl ToolRenderer for ReadRenderer {
         };
 
         // Format line range (matching pi's formatReadLineRange)
-        let range = if offset > 0 || limit.is_some() {
+        let range_text = if offset > 0 || limit.is_some() {
             let start = if offset > 0 { offset } else { 1 };
-            let range_str = match limit {
+            match limit {
                 Some(l) => format!(":{}-{}", start, start + l - 1),
                 None => format!(":{}", start),
-            };
-            theme.fg_key(ThemeKey::Warning, &range_str)
+            }
         } else {
             String::new()
         };
 
         // Expand hint (matching pi's compact read: `theme.fg("dim", " (${keyText} to expand)")`)
-        let expand_hint = if !ctx.expanded && !ctx.expand_key.is_empty() {
-            theme.fg_key(ThemeKey::Dim, &format!(" ({} to expand)", ctx.expand_key))
+        let expand_hint_text = if !ctx.expanded && !ctx.expand_key.is_empty() {
+            format!(" ({} to expand)", ctx.expand_key)
         } else {
             String::new()
         };
@@ -614,27 +613,78 @@ impl ToolRenderer for ReadRenderer {
                 CompactReadKind::Skill => {
                     // Pi: `[skill] name:range (Ctrl+O to expand)`
                     // [skill] in customMessageLabel bold, name in customMessageText
-                    let prefix =
-                        theme.fg_key(ThemeKey::CustomMessageLabel, "\x1b[1m[skill]\x1b[22m ");
-                    let name = theme.fg_key(ThemeKey::CustomMessageText, &label);
-                    std::boxed::Box::new(crate::tui::components::Text::new(
-                        format!("{}{}{}{}", prefix, name, range, expand_hint),
-                        0,
-                        0,
-                        None,
+                    let mut segments = Vec::new();
+                    segments.push(StyledSegment {
+                        text: "[skill] ".to_string(),
+                        style: Some(
+                            Style::new()
+                                .fg(theme.fg_ansi_key(ThemeKey::CustomMessageLabel).to_string())
+                                .bold(),
+                        ),
+                    });
+                    segments.push(StyledSegment {
+                        text: label,
+                        style: Some(
+                            Style::new()
+                                .fg(theme.fg_ansi_key(ThemeKey::CustomMessageText).to_string()),
+                        ),
+                    });
+                    if !range_text.is_empty() {
+                        segments.push(StyledSegment {
+                            text: range_text,
+                            style: Some(
+                                Style::new().fg(theme.fg_ansi_key(ThemeKey::Warning).to_string()),
+                            ),
+                        });
+                    }
+                    if !expand_hint_text.is_empty() {
+                        segments.push(StyledSegment {
+                            text: expand_hint_text,
+                            style: Some(
+                                Style::new().fg(theme.fg_ansi_key(ThemeKey::Dim).to_string()),
+                            ),
+                        });
+                    }
+                    std::boxed::Box::new(crate::tui::components::Text::from_segments(
+                        segments, 0, 0, None,
                     ))
                 }
                 CompactReadKind::Resource => {
                     // Pi: `read resource  path:range (Ctrl+O to expand)`
                     // "read resource" in bold toolTitle, path in accent
-                    let title_styled =
-                        theme.fg_key(ThemeKey::ToolTitle, &theme.bold("read resource"));
-                    let path_styled = theme.fg_key(ThemeKey::Accent, &label);
-                    std::boxed::Box::new(crate::tui::components::Text::new(
-                        format!("{} {}{}{}", title_styled, path_styled, range, expand_hint),
-                        0,
-                        0,
-                        None,
+                    let mut segments = Vec::new();
+                    segments.push(StyledSegment {
+                        text: "read resource ".to_string(),
+                        style: Some(
+                            Style::new()
+                                .fg(theme.fg_ansi_key(ThemeKey::ToolTitle).to_string())
+                                .bold(),
+                        ),
+                    });
+                    segments.push(StyledSegment {
+                        text: label,
+                        style: Some(
+                            Style::new().fg(theme.fg_ansi_key(ThemeKey::Accent).to_string()),
+                        ),
+                    });
+                    if !range_text.is_empty() {
+                        segments.push(StyledSegment {
+                            text: range_text,
+                            style: Some(
+                                Style::new().fg(theme.fg_ansi_key(ThemeKey::Warning).to_string()),
+                            ),
+                        });
+                    }
+                    if !expand_hint_text.is_empty() {
+                        segments.push(StyledSegment {
+                            text: expand_hint_text,
+                            style: Some(
+                                Style::new().fg(theme.fg_ansi_key(ThemeKey::Dim).to_string()),
+                            ),
+                        });
+                    }
+                    std::boxed::Box::new(crate::tui::components::Text::from_segments(
+                        segments, 0, 0, None,
                     ))
                 }
             }
@@ -645,21 +695,36 @@ impl ToolRenderer for ReadRenderer {
             } else {
                 path.to_string()
             };
-            let path_disp = if short.is_empty() {
-                String::new()
-            } else {
-                theme.fg_key(ThemeKey::Accent, &short)
-            };
-            std::boxed::Box::new(crate::tui::components::Text::new(
-                format!(
-                    "{} {}{}",
-                    theme.fg_key(ThemeKey::ToolTitle, &theme.bold("read")),
-                    path_disp,
-                    range,
+
+            let mut segments = Vec::new();
+            segments.push(StyledSegment {
+                text: "read ".to_string(),
+                style: Some(
+                    Style::new()
+                        .fg(theme.fg_ansi_key(ThemeKey::ToolTitle).to_string())
+                        .bold(),
                 ),
-                0,
-                0,
-                None,
+            });
+            if !short.is_empty() {
+                segments.push(StyledSegment {
+                    text: short,
+                    style: Some(Style::new().fg(theme.fg_ansi_key(ThemeKey::Accent).to_string())),
+                });
+            }
+            if !range_text.is_empty() {
+                segments.push(StyledSegment {
+                    text: range_text,
+                    style: Some(Style::new().fg(theme.fg_ansi_key(ThemeKey::Warning).to_string())),
+                });
+            }
+            if !expand_hint_text.is_empty() {
+                segments.push(StyledSegment {
+                    text: expand_hint_text,
+                    style: Some(Style::new().fg(theme.fg_ansi_key(ThemeKey::Dim).to_string())),
+                });
+            }
+            std::boxed::Box::new(crate::tui::components::Text::from_segments(
+                segments, 0, 0, None,
             ))
         }
     }
@@ -700,14 +765,13 @@ impl ToolRenderer for ReadRenderer {
             {
                 let kitty_seq =
                     crate::tui::components::markdown::kitty_image_sequence(&binary, mime);
-                let lines = [
-                    String::new(),
-                    kitty_seq,
-                    theme.fg_key(
-                        ThemeKey::ToolOutput,
-                        &format!("Read image file [{}] - {} ({})", mime, file_name, size_str),
-                    ),
-                ];
+                let output_line = crate::tui::Style::new()
+                    .fg(theme.fg_ansi_key(ThemeKey::ToolOutput).to_string())
+                    .apply(&format!(
+                        "Read image file [{}] - {} ({})",
+                        mime, file_name, size_str
+                    ));
+                let lines = [String::new(), kitty_seq, output_line];
                 return Some(std::boxed::Box::new(crate::tui::components::Text::new(
                     lines.join("\n"),
                     0,
@@ -717,11 +781,13 @@ impl ToolRenderer for ReadRenderer {
             }
 
             // Fallback: text summary
+            let img_style =
+                crate::tui::Style::new().fg(theme.fg_ansi_key(ThemeKey::ToolOutput).to_string());
             let fallback = format!(
-                "\n{}\n  File: {}\n  Size: {}",
-                theme.fg_key(ThemeKey::ToolOutput, &format!("Read image file [{}]", mime)),
-                theme.fg_key(ThemeKey::ToolOutput, &format!("  File: {}", file_name)),
-                theme.fg_key(ThemeKey::ToolOutput, &format!("  Size: {}", size_str)),
+                "\n{}\n{}\n{}",
+                img_style.apply(&format!("Read image file [{}]", mime)),
+                img_style.apply(&format!("  File: {}", file_name)),
+                img_style.apply(&format!("  Size: {}", size_str)),
             );
             return Some(std::boxed::Box::new(crate::tui::components::Text::new(
                 fallback, 0, 0, None,
@@ -748,6 +814,14 @@ impl ToolRenderer for ReadRenderer {
         let display_lines: Vec<&str> = trimmed_lines.iter().copied().take(max_lines).collect();
         let remaining = trimmed_lines.len().saturating_sub(display_lines.len());
 
+        // Pre-compute Style objects for each color used in the result
+        let output_style =
+            crate::tui::Style::new().fg(theme.fg_ansi_key(ThemeKey::ToolOutput).to_string());
+        let muted_style =
+            crate::tui::Style::new().fg(theme.fg_ansi_key(ThemeKey::Muted).to_string());
+        let warning_style =
+            crate::tui::Style::new().fg(theme.fg_ansi_key(ThemeKey::Warning).to_string());
+
         // Pi: start with blank line (`\n` before content)
         let mut result = vec![String::new()];
 
@@ -763,7 +837,7 @@ impl ToolRenderer for ReadRenderer {
             } else {
                 for line in &display_lines {
                     let processed = line.replace('\t', "   ");
-                    result.push(theme.fg_key(ThemeKey::ToolOutput, &processed));
+                    result.push(output_style.apply(&processed));
                 }
             }
         }
@@ -771,7 +845,7 @@ impl ToolRenderer for ReadRenderer {
         #[cfg(not(feature = "syntect"))]
         for line in &display_lines {
             let processed = line.replace('\t', "   ");
-            result.push(theme.fg_key(ThemeKey::ToolOutput, &processed));
+            result.push(output_style.apply(&processed));
         }
 
         // Pi: remaining lines hint
@@ -784,7 +858,7 @@ impl ToolRenderer for ReadRenderer {
             } else {
                 format!("... ({} more lines)", remaining)
             };
-            result.push(theme.fg_key(ThemeKey::Muted, &hint));
+            result.push(muted_style.apply(&hint));
         }
 
         // Pi: truncation warnings from details (matching pi's formatReadResult)
@@ -796,7 +870,6 @@ impl ToolRenderer for ReadRenderer {
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
             if truncated {
-                let warning_color = |s: String| theme.fg_key(ThemeKey::Warning, &s);
                 let first_line_exceeds = truncation
                     .get("firstLineExceedsLimit")
                     .and_then(|v| v.as_bool())
@@ -807,7 +880,7 @@ impl ToolRenderer for ReadRenderer {
                         .and_then(|v| v.as_u64())
                         .unwrap_or(DEFAULT_MAX_BYTES as u64)
                         as usize;
-                    result.push(warning_color(format!(
+                    result.push(warning_style.apply(&format!(
                         "[First line exceeds {} limit]",
                         format_size(max_bytes),
                     )));
@@ -828,7 +901,7 @@ impl ToolRenderer for ReadRenderer {
                             .and_then(|v| v.as_u64())
                             .unwrap_or(DEFAULT_MAX_LINES as u64)
                             as usize;
-                        result.push(warning_color(format!(
+                        result.push(warning_style.apply(&format!(
                             "[Truncated: showing {} of {} lines ({} line limit)]",
                             output_lines, total_lines, max_lines,
                         )));
@@ -838,7 +911,7 @@ impl ToolRenderer for ReadRenderer {
                             .and_then(|v| v.as_u64())
                             .unwrap_or(DEFAULT_MAX_BYTES as u64)
                             as usize;
-                        result.push(warning_color(format!(
+                        result.push(warning_style.apply(&format!(
                             "[Truncated: {} lines shown ({} limit)]",
                             output_lines,
                             format_size(max_bytes),

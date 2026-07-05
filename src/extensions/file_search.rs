@@ -1,7 +1,7 @@
 use crate::agent::extension::{Extension, ToolDefinition, ToolRenderContext, ToolRenderer};
-use crate::tui::Component;
-use crate::tui::Theme;
-use crate::tui::ThemeKey;
+use crate::tui::Style;
+use crate::tui::components::StyledSegment;
+use crate::tui::{Component, Theme, ThemeKey};
 use async_trait::async_trait;
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
@@ -970,28 +970,56 @@ impl ToolRenderer for ListRenderer {
         let limit = args.get("limit").and_then(|v| v.as_u64());
         let path_display = shorten_path_str(search_path);
 
-        let mut text = format!(
-            "{} {}{}",
-            theme.fg_key(ThemeKey::ToolTitle, &theme.bold(self.tool_name)),
-            if self.pattern_format.is_empty() {
-                String::new()
-            } else {
-                let p = args.get("pattern").and_then(|v| v.as_str()).unwrap_or("");
-                theme.fg_key(ThemeKey::Accent, &self.pattern_format.replace("{}", p))
-            },
-            theme.fg_key(ThemeKey::ToolOutput, &path_display),
-        );
+        let mut segments = Vec::new();
 
+        // Tool name: bold + toolTitle
+        segments.push(StyledSegment {
+            text: self.tool_name.to_string(),
+            style: Some(
+                Style::new()
+                    .fg(theme.fg_ansi_key(ThemeKey::ToolTitle).to_string())
+                    .bold(),
+            ),
+        });
+
+        // Pattern in accent
+        if !self.pattern_format.is_empty() {
+            let p = args.get("pattern").and_then(|v| v.as_str()).unwrap_or("");
+            let pattern_text = format!(" {}", self.pattern_format.replace("{}", p));
+            segments.push(StyledSegment {
+                text: pattern_text,
+                style: Some(Style::new().fg(theme.fg_ansi_key(ThemeKey::Accent).to_string())),
+            });
+        }
+
+        // Path in toolOutput
+        let output_style = Style::new().fg(theme.fg_ansi_key(ThemeKey::ToolOutput).to_string());
+        segments.push(StyledSegment {
+            text: format!(" {}", path_display),
+            style: Some(output_style.clone()),
+        });
+
+        // Glob
         if self.show_glob
             && let Some(g) = args.get("glob").and_then(|v| v.as_str())
         {
-            text.push_str(&theme.fg_key(ThemeKey::ToolOutput, &format!(" ({})", g)));
-        }
-        if let Some(l) = limit {
-            text.push_str(&theme.fg_key(ThemeKey::ToolOutput, &format!(" limit {}", l)));
+            segments.push(StyledSegment {
+                text: format!(" ({})", g),
+                style: Some(output_style.clone()),
+            });
         }
 
-        std::boxed::Box::new(crate::tui::components::Text::new(text, 0, 0, None))
+        // Limit
+        if let Some(l) = limit {
+            segments.push(StyledSegment {
+                text: format!(" limit {}", l),
+                style: Some(output_style.clone()),
+            });
+        }
+
+        std::boxed::Box::new(crate::tui::components::Text::from_segments(
+            segments, 0, 0, None,
+        ))
     }
 
     fn render_result(
@@ -1008,12 +1036,15 @@ impl ToolRenderer for ListRenderer {
         }
 
         let output = content.trim();
+        let output_style = Style::new().fg(theme.fg_ansi_key(ThemeKey::ToolOutput).to_string());
+        let muted_style = Style::new().fg(theme.fg_ansi_key(ThemeKey::Muted).to_string());
+
         if output.is_empty() || output == self.no_results_text {
             return Some(std::boxed::Box::new(crate::tui::components::Text::new(
-                theme.fg_key(ThemeKey::ToolOutput, output),
+                output.to_string(),
                 0,
                 0,
-                None,
+                Some(output_style),
             )));
         }
 
@@ -1026,9 +1057,19 @@ impl ToolRenderer for ListRenderer {
         let display: Vec<&str> = lines.iter().copied().take(max_lines).collect();
         let remaining = lines.len().saturating_sub(display.len());
 
-        let mut all_lines = vec![String::new()];
+        let mut segments = vec![StyledSegment {
+            text: "\n".to_string(),
+            style: None,
+        }];
         for line in &display {
-            all_lines.push(theme.fg_key(ThemeKey::ToolOutput, line));
+            segments.push(StyledSegment {
+                text: line.to_string(),
+                style: Some(output_style.clone()),
+            });
+            segments.push(StyledSegment {
+                text: "\n".to_string(),
+                style: None,
+            });
         }
         if remaining > 0 {
             let hint = if !ctx.expand_key.is_empty() {
@@ -1039,14 +1080,14 @@ impl ToolRenderer for ListRenderer {
             } else {
                 format!("... ({} more lines)", remaining)
             };
-            all_lines.push(theme.fg_key(ThemeKey::Muted, &hint));
+            segments.push(StyledSegment {
+                text: hint,
+                style: Some(muted_style.clone()),
+            });
         }
 
-        Some(std::boxed::Box::new(crate::tui::components::Text::new(
-            all_lines.join("\n"),
-            0,
-            0,
-            None,
-        )))
+        Some(std::boxed::Box::new(
+            crate::tui::components::Text::from_segments(segments, 0, 0, None),
+        ))
     }
 }
