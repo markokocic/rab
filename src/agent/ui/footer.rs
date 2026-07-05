@@ -89,6 +89,7 @@ pub struct Footer {
 
     // ── Model / settings state (set directly by App) ──
     model: String,
+    model_provider: Option<String>,
     thinking_level: Option<String>,
     auto_compact: bool,
     experimental_enabled: bool,
@@ -115,6 +116,7 @@ impl Footer {
             context_window: 0,
             auto_compact: true,
             model: String::new(),
+            model_provider: None,
             thinking_level: None,
             experimental_enabled: false,
             provider,
@@ -205,6 +207,11 @@ impl Footer {
             let prov = self.provider.borrow();
             if let Some(mid) = prov.get_model_id() {
                 self.model = mid.to_string();
+            }
+            if let Some(mp) = prov.get_model_provider()
+                && !mp.is_empty()
+            {
+                self.model_provider = Some(mp.to_string());
             }
         }
 
@@ -391,12 +398,16 @@ impl crate::tui::Component for Footer {
         };
 
         // Always prepend provider in parentheses if available (non-empty provider name).
-        let pname = self.provider.borrow().get_model_provider().and_then(|s| {
-            if s.is_empty() {
-                None
-            } else {
-                Some(s.to_string())
-            }
+        // Fall back to the cached provider from FooterDataProvider if we don't have
+        // a local copy (shouldn't happen — refresh_from_session always sets it).
+        let pname = self.model_provider.clone().or_else(|| {
+            self.provider.borrow().get_model_provider().and_then(|s| {
+                if s.is_empty() {
+                    None
+                } else {
+                    Some(s.to_string())
+                }
+            })
         });
         let right_side = if let Some(ref pname) = pname {
             format!("({}) {}", pname, right_side_without_provider)

@@ -3811,6 +3811,13 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
             // Create a new session via AgentSession (new ID, new file, resets tracked state)
             if let Some(ref mut agent_session) = app.session {
                 agent_session.new_session();
+
+                // Re-record current model/provider and thinking level in the fresh session
+                // so the footer can pick them up via refresh_from_session.
+                agent_session.on_model_change(&app.current_provider, &app.model);
+                if let Some(ref level) = app.thinking_level {
+                    agent_session.on_thinking_level_change(level);
+                }
             }
 
             // Clear everything (matching pi's renderCurrentSessionState)
