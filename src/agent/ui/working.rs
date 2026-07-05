@@ -45,10 +45,6 @@ pub struct WorkingIndicator {
     /// a race where a fast agent loop dispatches both AgentStart and AgentEnd
     /// in the same event batch, causing the spinner to never appear.
     show_once: bool,
-    /// True if `start()` was ever called. When idle after at least one
-    /// activation, render 2 blank lines (pi's `IdleStatus`) to maintain
-    /// vertical space between chat and editor.
-    has_been_active: bool,
 }
 
 impl WorkingIndicator {
@@ -61,7 +57,6 @@ impl WorkingIndicator {
             theme,
             active: false,
             show_once: false,
-            has_been_active: false,
             message: "Working...".into(),
         }
     }
@@ -69,7 +64,6 @@ impl WorkingIndicator {
     pub fn start(&mut self) {
         self.active = true;
         self.show_once = true;
-        self.has_been_active = true;
         self.last_tick = std::time::Instant::now();
     }
 
@@ -121,8 +115,10 @@ impl Default for WorkingIndicator {
 }
 
 impl Component for WorkingIndicator {
-    fn render(&mut self, width: usize) -> Vec<String> {
-        // During streaming: blank line + spinner with message
+    fn render(&mut self, _width: usize) -> Vec<String> {
+        // Simpler version: render spinner when active, nothing when idle.
+        // Spacing between working area and editor is handled by a separate
+        // Spacer in the TUI layout (pi's widgetContainerAbove), not by this component.
         if (self.active || self.show_once) && !self.options.frames.is_empty() {
             let frame = &self.options.frames[self.frame % self.options.frames.len()];
             let line = format!(
@@ -135,14 +131,6 @@ impl Component for WorkingIndicator {
             return vec![String::new(), line];
         }
 
-        // After first activation, show idle spacer (pi's IdleStatus: 2 blank lines)
-        // to maintain vertical space between chat and editor.
-        // On initial startup (never activated), render nothing.
-        if self.has_been_active {
-            let empty = " ".repeat(width);
-            vec![empty.clone(), empty]
-        } else {
-            vec![]
-        }
+        vec![]
     }
 }

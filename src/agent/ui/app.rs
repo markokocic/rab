@@ -798,7 +798,7 @@ pub async fn run(config: AppConfig, session: AgentSession) -> anyhow::Result<()>
     tui.set_focus(crate::tui::FocusTarget::Editor);
 
     // Set up the component tree in TUI.root (matching pi's TUI.extend(Container))
-    // Order: header → chat_container (messages) → pending → status → working → editor → footer
+    // Order: header → chat_container (messages) → pending → status → working → spacer → editor → footer
     tui.add_child(std::boxed::Box::new(Spacer::new(1)));
     tui.add_child(std::boxed::Box::new(
         crate::tui::components::RcRefCellComponent(
@@ -822,6 +822,8 @@ pub async fn run(config: AppConfig, session: AgentSession) -> anyhow::Result<()>
         crate::tui::components::RcRefCellComponent(app.working_section.clone()
             as std::rc::Rc<std::cell::RefCell<dyn crate::tui::Component>>),
     ));
+    // Pi-compatible: Spacer(1) between working indicator and editor (widgetContainerAbove)
+    tui.add_child(std::boxed::Box::new(Spacer::new(1)));
     tui.add_child(std::boxed::Box::new(EditorComponent(app.editor.clone())));
     tui.add_child(std::boxed::Box::new(FooterComponent(app.footer.clone())));
 
@@ -1622,7 +1624,7 @@ pub async fn run(config: AppConfig, session: AgentSession) -> anyhow::Result<()>
 /// Each section is a child of TUI.root rendered in the correct order.
 ///
 /// Layout (top to bottom):
-///   header → chat_container (messages) → pending (queued steer/follow-up) → status → working → editor → footer
+///   header → chat_container (messages) → pending (queued steer/follow-up) → status → working → spacer → editor → footer
 fn compose_ui(app: &mut App, width: usize) {
     // ── Session picker ──
     if let Some(ref picker) = app.session_picker {
