@@ -630,7 +630,6 @@ async fn main() -> anyhow::Result<()> {
 
         let result = run_print_mode(
             message,
-            model,
             api_key,
             mc,
             system_prompt,
@@ -652,7 +651,6 @@ async fn main() -> anyhow::Result<()> {
 
 async fn run_print_mode(
     message: String,
-    model: String,
     api_key: String,
     mc: yoagent::provider::model::ModelConfig,
     system_prompt: String,
@@ -662,24 +660,20 @@ async fn run_print_mode(
     use yoagent::provider::model::ApiProtocol;
 
     let agent = match mc.api {
-        ApiProtocol::OpenAiCompletions => {
-            yoagent::agent::Agent::new(rab::provider::openai_compat::RabOpenAiCompatProvider)
-        }
-        ApiProtocol::AnthropicMessages => {
-            yoagent::agent::Agent::new(rab::provider::anthropic::RabAnthropicProvider)
-        }
-        ApiProtocol::OpenAiResponses => {
-            yoagent::agent::Agent::new(yoagent::provider::OpenAiResponsesProvider)
-        }
-        ApiProtocol::GoogleGenerativeAi => {
-            yoagent::agent::Agent::new(yoagent::provider::GoogleProvider)
-        }
-        _ => yoagent::agent::Agent::new(yoagent::provider::OpenAiCompatProvider),
+        ApiProtocol::OpenAiCompletions => yoagent::agent::Agent::from_provider(
+            rab::provider::openai_compat::RabOpenAiCompatProvider,
+            mc.clone(),
+        ),
+        ApiProtocol::AnthropicMessages => yoagent::agent::Agent::from_provider(
+            rab::provider::anthropic::RabAnthropicProvider,
+            mc.clone(),
+        ),
+        ApiProtocol::OpenAiResponses => yoagent::agent::Agent::from_config(mc.clone()),
+        ApiProtocol::GoogleGenerativeAi => yoagent::agent::Agent::from_config(mc.clone()),
+        _ => yoagent::agent::Agent::from_config(mc.clone()),
     };
     let mut agent = agent
-        .with_model(&model)
         .with_api_key(&api_key)
-        .with_model_config(mc)
         .with_system_prompt(&system_prompt)
         .with_thinking(yoagent::types::ThinkingLevel::High)
         .with_tools(agent_tools)

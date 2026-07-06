@@ -2,7 +2,7 @@
 
 A lightweight, extensible Rust coding agent inspired by [pi-coding-agent](https://pi.dev).
 rab delegates the core agent loop, types, and provider abstraction to the **yoagent** crate
-(MIT, published crate 0.9.0), providing the session layer, TUI, built-in tools, slash commands,
+(MIT, published crate 0.10.0), providing the session layer, TUI, built-in tools, slash commands,
 file search tools (grep/find/ls), file mutation queue, lifecycle management, and a
 **custom provider layer** with a model registry and rich OpenAI-compatible streaming support.
 
@@ -148,7 +148,7 @@ file search tools (grep/find/ls), file mutation queue, lifecycle management, and
 │  └──────────────────────────────────────────────────────────────┘   │
 │                       │                                              │
 │  ┌────────────────────▼─────────────────────────────────────────┐   │
-│  │                   yoagent 0.9.0 (MIT)                        │   │
+│  │                   yoagent 0.10.0 (MIT)                        │   │
 │  │                                                              │   │
 │  │  ┌──────────────────────────────────────────────────────┐   │   │
 │  │  │           yoagent::types                             │   │   │
@@ -200,7 +200,7 @@ file search tools (grep/find/ls), file mutation queue, lifecycle management, and
 ## Key architectural decisions
 
 - **yoagent is the core dependency**, not genai. rab delegates the agent loop,
-  provider abstraction, and message types to yoagent 0.9.0 (published crate).
+  provider abstraction, and message types to yoagent 0.10.0 (published crate).
   rab provides the session layer, TUI, built-in tools,
   file search tools, slash commands, lifecycle management, and a custom provider
   layer on top.
@@ -227,10 +227,11 @@ file search tools (grep/find/ls), file mutation queue, lifecycle management, and
 
 - **Multi-protocol agent selection** — `main.rs` resolves the model via
   `ProviderRegistry`, then selects the appropriate yoagent provider based on
-  `ApiProtocol`:
-  - `OpenAiCompletions` → `RabOpenAiCompatProvider` (rich compat)
-  - `AnthropicMessages` → `RabAnthropicProvider` (custom, respects base_url)
-  - `OpenAiResponses` → `yoagent::provider::OpenAiResponsesProvider`
+  `ApiProtocol` using `Agent::from_provider()` for custom providers and
+  `Agent::from_config()` for built-in ones:
+  - `OpenAiCompletions` → `Agent::from_provider(RabOpenAiCompatProvider, mc)`
+  - `AnthropicMessages` → `Agent::from_provider(RabAnthropicProvider, mc)`
+  - `OpenAiResponses` → `Agent::from_config(mc)`
   - `GoogleGenerativeAi` → `yoagent::provider::GoogleProvider`
   - Fallback → `yoagent::provider::OpenAiCompatProvider`
 
@@ -1293,15 +1294,23 @@ based on `ApiProtocol`:
 ```rust
 let agent = match mc.api {
     ApiProtocol::OpenAiCompletions =>
-        yoagent::agent::Agent::new(RabOpenAiCompatProvider),
+        yoagent::agent::Agent::from_provider(RabOpenAiCompatProvider, mc.clone()),
     ApiProtocol::AnthropicMessages =>
-        yoagent::agent::Agent::new(RabAnthropicProvider),
+        yoagent::agent::Agent::from_provider(RabAnthropicProvider, mc.clone()),
     ApiProtocol::OpenAiResponses =>
-        yoagent::agent::Agent::new(yoagent::provider::OpenAiResponsesProvider),
+        yoagent::agent::Agent::from_config(mc.clone()),
     ApiProtocol::GoogleGenerativeAi =>
-        yoagent::agent::Agent::new(yoagent::provider::GoogleProvider),
-    _ => yoagent::agent::Agent::new(yoagent::provider::OpenAiCompatProvider),
+        yoagent::agent::Agent::from_config(mc.clone()),
+    _ => yoagent::agent::Agent::from_config(mc.clone()),
 };
+
+agent
+    .with_api_key(api_key)
+    .with_system_prompt(&system_prompt)
+    .with_thinking(thinking_level)
+    .with_messages(messages)
+    .with_tools(tools)
+    .without_context_management()
 ```
 
 ### Interactive (TUI) mode
@@ -1504,7 +1513,7 @@ use `status_section` that appears for one frame then clears.
 
 ```
 rab (EPL-2.0)
-├── yoagent 0.9.0        (MIT)                - agent loop, provider, types, skills
+├── yoagent 0.10.0        (MIT)                - agent loop, provider, types, skills
 │   └── reqwest          (Apache 2.0)           - HTTP client (inside yoagent)
 ├── tokio 1              (MIT)                  - async runtime
 ├── tokio-util 0.7       (MIT)                  - CancellationToken
@@ -1546,7 +1555,7 @@ Key dependency changes from earlier versions:
 - `openssl-sys` removed (fully rustls-based)
 - `rustls-platform-verifier` patched with `webpki-roots` to fix Android/Termux panic
 - `edition = "2024"` (Rust 1.96.0) for `impl Trait` in const contexts and RPIT lifetime capture
-- `yoagent` is a published crate at version 0.9.0
+- `yoagent` is a published crate at version 0.10.0
 
 ---
 

@@ -3242,25 +3242,21 @@ fn build_fresh_agent(
         .collect();
 
     let agent = match mc.api {
-        ApiProtocol::OpenAiCompletions => {
-            yoagent::agent::Agent::new(crate::provider::openai_compat::RabOpenAiCompatProvider)
-        }
-        ApiProtocol::AnthropicMessages => {
-            yoagent::agent::Agent::new(crate::provider::anthropic::RabAnthropicProvider)
-        }
-        ApiProtocol::OpenAiResponses => {
-            yoagent::agent::Agent::new(yoagent::provider::OpenAiResponsesProvider)
-        }
-        ApiProtocol::GoogleGenerativeAi => {
-            yoagent::agent::Agent::new(yoagent::provider::GoogleProvider)
-        }
-        _ => yoagent::agent::Agent::new(yoagent::provider::OpenAiCompatProvider),
+        ApiProtocol::OpenAiCompletions => yoagent::agent::Agent::from_provider(
+            crate::provider::openai_compat::RabOpenAiCompatProvider,
+            mc.clone(),
+        ),
+        ApiProtocol::AnthropicMessages => yoagent::agent::Agent::from_provider(
+            crate::provider::anthropic::RabAnthropicProvider,
+            mc.clone(),
+        ),
+        ApiProtocol::OpenAiResponses => yoagent::agent::Agent::from_config(mc.clone()),
+        ApiProtocol::GoogleGenerativeAi => yoagent::agent::Agent::from_config(mc.clone()),
+        _ => yoagent::agent::Agent::from_config(mc.clone()),
     };
 
     agent
-        .with_model(model)
         .with_api_key(api_key)
-        .with_model_config(mc)
         .with_system_prompt(system_prompt)
         .with_thinking(thinking_level)
         .with_messages(messages)
