@@ -2,7 +2,7 @@
 
 A lightweight, extensible Rust coding agent inspired by [pi-coding-agent](https://pi.dev).
 rab delegates the core agent loop, types, and provider abstraction to the **yoagent** crate
-(MIT, git dependency), providing the session layer, TUI, built-in tools, slash commands,
+(MIT, published crate 0.9.0), providing the session layer, TUI, built-in tools, slash commands,
 file search tools (grep/find/ls), file mutation queue, lifecycle management, and a
 **custom provider layer** with a model registry and rich OpenAI-compatible streaming support.
 
@@ -39,7 +39,7 @@ file search tools (grep/find/ls), file mutation queue, lifecycle management, and
 │  │  High-level API wrapping SessionStorage. Pi-compatible:      │   │
 │  │  append_*, build_context, move_to, metadata.                │   │
 │  │  SessionError, SessionTreeNode, SessionManager (internal)   │   │
-│  │  ~3182 lines                                                │   │
+│  │  ~3183 lines                                                │   │
 │  └──────────┬───────────────────────────────────────────────────┘   │
 │             │                                                       │
 │  ┌──────────▼───────────────────────────────────────────────────┐   │
@@ -148,7 +148,7 @@ file search tools (grep/find/ls), file mutation queue, lifecycle management, and
 │  └──────────────────────────────────────────────────────────────┘   │
 │                       │                                              │
 │  ┌────────────────────▼─────────────────────────────────────────┐   │
-│  │                   yoagent (MIT, git dep)                      │   │
+│  │                   yoagent 0.9.0 (MIT)                        │   │
 │  │                                                              │   │
 │  │  ┌──────────────────────────────────────────────────────┐   │   │
 │  │  │           yoagent::types                             │   │   │
@@ -187,7 +187,7 @@ file search tools (grep/find/ls), file mutation queue, lifecycle management, and
 │                                                                      │
 │  ┌──────────────────────────────────────────────────────────────┐   │
 │  │  TUI (src/tui/ + src/agent/ui/) — 101 source modules,        │   │
-│  │  ~57.8K lines, ~766 tests                                    │   │
+│  │  ~56.9K lines, ~713 tests                                    │   │
 │  │  Direct Rust port on crossterm 0.29                          │   │
 │  │  Image (Kitty protocol), TerminalColors (OSC 11 detection),  │   │
 │  │  TreeSelector, ConfirmOverlay, LoginDialog, OAuthSelector,   │   │
@@ -200,8 +200,8 @@ file search tools (grep/find/ls), file mutation queue, lifecycle management, and
 ## Key architectural decisions
 
 - **yoagent is the core dependency**, not genai. rab delegates the agent loop,
-  provider abstraction, and message types to yoagent (git dependency, not a
-  published crate version). rab provides the session layer, TUI, built-in tools,
+  provider abstraction, and message types to yoagent 0.9.0 (published crate).
+  rab provides the session layer, TUI, built-in tools,
   file search tools, slash commands, lifecycle management, and a custom provider
   layer on top.
 
@@ -273,8 +273,8 @@ file search tools (grep/find/ls), file mutation queue, lifecycle management, and
 
 | pi component | rab equivalent | Status |
 |---|---|---|
-| `pi-tui` (terminal UI, components, editor) | `src/tui/` + `src/agent/ui/` | ✅ Complete — 101 source modules, ~57.8K lines, ~766 tests. Direct Rust port on crossterm 0.29. Includes Image (Kitty), TerminalColors (OSC 11), TreeSelector, ConfirmOverlay, LoginDialog, OAuthSelector, ScopedModelsSelector, ForkSelector, SettingsList, SettingsSelector. |
-| `pi-agent-core` (agent loop, session, compaction, skills) | Delegated to **yoagent** (agent loop, types, provider, skills) + rab's `AgentSession` (session lifecycle, compaction, branching) | ✅ Agent loop in yoagent (`yoagent::agent::Agent`). ✅ Session in `session/model.rs` (~3182 lines). ✅ SessionStorage in `session/storage.rs` (~710 lines). ✅ Compaction in `compaction.rs` (~1132 lines). ✅ Branch summarization in `branch_summary.rs` (~455 lines). ✅ Skills loaded via `yoagent::skills::SkillSet`. |
+| `pi-tui` (terminal UI, components, editor) | `src/tui/` + `src/agent/ui/` | ✅ Complete — 101 source modules, ~56.9K lines, ~713 tests. Direct Rust port on crossterm 0.29. Includes Image (Kitty), TerminalColors (OSC 11), TreeSelector, ConfirmOverlay, LoginDialog, OAuthSelector, ScopedModelsSelector, ForkSelector, SettingsList, SettingsSelector. |
+| `pi-agent-core` (agent loop, session, compaction, skills) | Delegated to **yoagent** (agent loop, types, provider, skills) + rab's `AgentSession` (session lifecycle, compaction, branching) | ✅ Agent loop in yoagent (`yoagent::agent::Agent`). ✅ Session in `session/model.rs` (~3183 lines). ✅ SessionStorage in `session/storage.rs` (~710 lines). ✅ Compaction in `compaction.rs` (~1130 lines). ✅ Branch summarization in `branch_summary.rs` (~455 lines). ✅ Skills loaded via `yoagent::skills::SkillSet`. |
 | `coding-agent` (CLI, extensions, tools, settings, commands) | `main.rs`, `builtin/`, `extensions/`, `settings.rs`, `auth.rs`, `commands.rs`, `prompt_templates.rs`, `export.rs` | ✅ Tools (read/write/edit/bash/grep/find/ls), settings, auth, CLI done. ✅ 22+ slash commands including `/export`, `/import`, `/share`, `/fork`, `/clone`, `/settings`, `/hotkeys`, `/session`, `/tree`, `/compact`, `/resume`. ✅ Prompt templates as `/name` commands. ✅ Extension trait with tools, commands, renderers, skills, hooks. |
 | `GrepTool`, `FindTool`, `LsTool` (pi agent tools) | `src/extensions/file_search.rs` | ✅ grep (ripgrep/grep fallback), find (fd/find fallback), ls — all with pluggable operations. |
 | provider registry + model catalog | `src/provider/` | ✅ `ProviderRegistry` loading built-in + user models.json. ✅ `RabOpenAiCompatProvider` for rich OpenAI-compatible streaming. ✅ `RabAnthropicProvider` for custom Anthropic API. ✅ OAuth support (device code flow, GitHub Copilot). ✅ `rab generate-models` subcommand (targets github-copilot, opencode, opencode-go, deepseek). |
@@ -336,9 +336,16 @@ pub fn message_tool_call_id(msg: &AgentMessage) -> Option<&str>;
 pub fn message_usage(msg: &AgentMessage) -> Option<Usage>;
 pub fn message_error(msg: &AgentMessage) -> Option<&str>;
 pub fn message_tool_call_count(msg: &AgentMessage) -> usize;
+pub fn message_dedup_key(msg: &AgentMessage) -> String;  // distinguishes messages with same text but different tool calls
+pub fn message_is_system_stop(msg: &AgentMessage) -> bool;  // checks for "[Agent stopped:" prefix
+pub fn message_is_extension(msg: &AgentMessage) -> bool;
+pub fn message_extension_kind(msg: &AgentMessage) -> Option<&str>;
+pub fn message_extension_text(msg: &AgentMessage) -> Option<String>;
 pub fn user_message(text: &str) -> AgentMessage;
 pub fn assistant_message(text: &str) -> AgentMessage;
-pub fn tool_result_message(tool_call_id: &str, text: String, is_error: bool) -> AgentMessage;
+pub fn tool_result_message(tool_call_id: &str, tool_name: &str, text: String, is_error: bool) -> AgentMessage;
+pub fn extension_message(kind: &str, text: &str, display: bool) -> AgentMessage;  // pi-compatible custom_message
+pub fn extension_message_with_details(kind: &str, text: &str, display: bool, details: Value) -> AgentMessage;
 ```
 
 ---
@@ -431,7 +438,7 @@ agent_session.check_auto_compact().await;
 
 ---
 
-## Session layer (`src/agent/session/`) — `mod.rs` + `model.rs`, ~3182 lines
+## Session layer (`src/agent/session/`) — `mod.rs` + `model.rs`, ~3183 lines
 
 Pi-compatible three-layer architecture:
 
@@ -568,7 +575,7 @@ cwd filtering for the session picker UI.
 
 ---
 
-## Compaction (`src/agent/compaction.rs`) — ~1132 lines ✅ IMPLEMENTED
+## Compaction (`src/agent/compaction.rs`) — ~1130 lines ✅ IMPLEMENTED
 
 When the conversation approaches the model's context window, older messages
 are summarized to free space. Ported from pi's compaction algorithm.
@@ -678,6 +685,12 @@ impl ProviderRegistry {
         -> Option<String>;
     pub fn api_key_for_provider(&self, provider_id: &str) -> Option<String>;
     pub fn count_providers(&self) -> usize;
+    pub fn list_authenticated_model_ids(&self) -> Vec<String>;  // only models from providers with valid auth
+    pub fn list_model_provider_tuples(&self) -> Vec<(String, String, String)>;  // (provider, model_id, model_name)
+    pub fn list_providers(&self) -> Vec<(String, String)>;  // (provider_id, provider_name)
+    pub fn configured_providers(&self) -> Vec<String>;  // providers with stored credentials
+    pub fn provider_has_auth(&self, provider_id: &str) -> bool;
+    pub fn auth_status_for_provider(&self, provider_id: &str) -> ProviderAuthStatus;
 }
 ```
 
@@ -792,9 +805,9 @@ Generic OAuth provider trait and registry matching pi's `OAuthProviderInterface`
 
 | Module | Description |
 |--------|-------------|
-| `oauth/mod.rs` | `OAuthProvider` trait, `OAuthCredentials`, `DeviceCodeInfo`, registry |
+| `oauth/mod.rs` | `OAuthProvider` trait, `OAuthCredentials`, `DeviceCodeInfo`, registry with `register()`, `get()`, `list_ids()`, `is_built_in()`, `register_builtins()` |
 | `oauth/device_code.rs` | RFC 8628 device code flow poller with timeout, slow-down handling, cancellation |
-| `oauth/github_copilot.rs` | GitHub Copilot OAuth: device code login, model fetch, auto-enable |
+| `oauth/github_copilot.rs` | GitHub Copilot OAuth: device code login, model fetch, auto-enable, dynamic endpoint derivation |
 
 ### generate_models.rs — `rab generate-models` subcommand
 
@@ -820,7 +833,7 @@ Corrections applied:
 
 ---
 
-## Extension trait (`src/agent/extension.rs`) — ~1100 lines
+## Extension trait (`src/agent/extension.rs`) — ~1191 lines
 
 All capability — built-in or user-provided — comes through the same trait.
 Supports pi-compatible `beforeToolCall` / `afterToolCall` hooks, `before_compact` hook,
@@ -846,6 +859,7 @@ pub struct ToolDefinition {
     pub prepare_arguments: Option<fn(serde_json::Value) -> Result<serde_json::Value, String>>,
     pub before_tool_call: Option<fn(&serde_json::Value) -> Option<BeforeToolCallResult>>,
     pub after_tool_call: Option<fn(&yoagent::types::ToolResult, bool) -> Option<AfterToolCallResult>>,
+    pub renderer: Option<Arc<dyn ToolRenderer>>,  // TUI renderer for this tool
 }
 
 pub struct BeforeToolCallResult { pub block: bool, pub reason: String }
@@ -907,7 +921,7 @@ At startup, extensions are collected from builtins + file_search + mcp:
 
 ```rust
 let extensions: Vec<Box<dyn Extension>> = vec![
-    Box::new(CommandsExtension::new(available_models)),
+    Box::new(CommandsExtension::new(available_models.clone(), provider_models.clone())),
     Box::new(ReadExtension::new(cwd)),
     Box::new(WriteExtension::new(cwd)),
     Box::new(EditExtension::new(cwd)),
@@ -941,12 +955,12 @@ Pi-compatible session export/import with embedded template assets:
 Template assets (`template.html`, `template.css`, `template.js`, `marked.min.js`,
 `highlight.min.js`) are embedded via `include_bytes!` at compile time.
 
-### commands — ✅ 22 slash commands
+### commands — ✅ 19 slash commands
 
 | Command | Result | Description |
 |---------|--------|-------------|
 | `/quit` | `Quit` | Graceful shutdown |
-| `/model <name>` | `ModelChanged(name)` / `Info` | Switch model; no args lists available |
+| `/model <name>` | `ModelChanged(name)` / `Info` / `OpenModelSelector` | Switch model; no args opens selector; `provider/model` format supported |
 | `/settings` | `OpenSettings` | Open interactive settings menu overlay |
 | `/scoped-models` | `ScopedModels` | Enable/disable models for Ctrl+P cycling |
 | `/export [path]` | `ExportSession { path }` | Export session (HTML or .jsonl) |
@@ -961,12 +975,13 @@ Template assets (`template.html`, `template.css`, `template.js`, `marked.min.js`
 | `/clone` | `CloneSession` | Duplicate the current session at current position |
 | `/tree` | `SessionTree` | Navigate session tree |
 | `/trust <decision>` | `TrustDecision { decision }` | Save project trust decision |
-| `/login [provider]` | `Login { provider }` | Configure provider auth |
+| `/login [provider] [api-key]` | `Login { provider, api_key }` | Configure provider auth |
 | `/logout [provider]` | `Logout { provider }` | Remove provider auth |
 | `/new` | `NewSession` | Clear conversation |
-| `/compact` | `CompactSession` | Manually compact session context |
+| `/compact [instructions]` | `CompactSession(Option<String>)` | Manually compact session context with optional custom instructions |
 | `/resume` | `OpenSessionSelector` | Open session selector |
 | `/reload` | `Reloaded` | Reload keybindings, extensions, skills, prompts, themes |
+| `/changelog` | `ShowChangelog` | Show changelog entries |
 
 ### Built-in tools
 
@@ -1034,7 +1049,8 @@ read-modify-write semantics. This prevents race conditions where a lock-free
 read observes a truncated/partial file during a concurrent write.
 
 Load order: `~/.rab/agent/auth.json`. Supports multiple providers (api_key
-or oauth). Methods: `api_key(provider)`, `oauth_token(provider)`.
+or oauth). Methods: `api_key(provider)`, `oauth_token(provider)`, `oauth_token_past_buffer(provider)`,
+`oauth_credential(provider)`, `refresh_oauth_token(provider)` (async, returns refreshed key or empty).
 
 ---
 
@@ -1169,6 +1185,10 @@ precedence over both. Settings modifications during a session (Ctrl+T, Ctrl+O,
 Ctrl+Shift+C toggles) are tracked via `modified_fields` and only written
 back for fields that were explicitly changed (preserving project-level overrides).
 
+Settings modifications during a session (Ctrl+T, Ctrl+O, Ctrl+Shift+C toggles) are tracked
+via `modified_fields` and only written back for fields that were explicitly changed
+(preserving project-level overrides).
+
 Nested configs use a `DeepMerge` trait for recursive field-by-field merging.
 Arrays are replaced entirely (not merged element-by-element).
 
@@ -1235,12 +1255,15 @@ Other:
 
 Session resolution supports both paths and partial UUID prefixes.
 `--fork` resolves the session file, validates no conflicts with `--session-id`,
-and calls `AgentSession::fork_from()`.
+calls `AgentSession::fork_from()`, and supports interactive message selector
+when no entry_id is specified.
 
 Extension gating: `is_extension_active()` checks `settings.tools` whitelist
 and `settings.exclude_tools` blacklist. Core extensions (commands, read,
 write, edit, bash, mcp) are always active when no whitelist is set. File
 search tools (grep, find, ls) are opt-in via the bundled `FileSearchExtension`.
+MCP extension calls `restore_cache()` and `bootstrap_direct_tools()` at startup
+so configured direct tools are available from the first turn.`
 
 ---
 
@@ -1289,7 +1312,7 @@ stdout. Uses `yoagent::agent::Agent::prompt_with_sender()` with event channels.
 
 ---
 
-## TUI (`src/tui/` + `src/agent/ui/`) — 101 source modules, ~57.8K lines, ~766 tests
+## TUI (`src/tui/` + `src/agent/ui/`) — 101 source modules, ~56.9K lines, ~713 tests
 
 The TUI library is a direct Rust port of pi's `@earendil-works/pi-tui`.
 
@@ -1372,14 +1395,14 @@ TUI.root (Container):
   │   ├── UserMessageComponent
   │   ├── ToolExecComponent (read/write/edit/bash/grep/find/ls)
   │   ├── RcRefCellComponent → AssistantMessageComponent
-  │   ├── InfoMessageComponent
+  │   ├── RcRefCellComponent → InfoMessageComponent
   │   └── Spacer(1) between each
   ├── pending_section (DynamicLines — streaming text/thinking)
-  ├── status_section (DynamicLines — transient status)
-  ├── queued_section (DynamicLines — ◷ queued messages)
-  ├── working_section (DynamicLines — ⠋ Working...)
-  ├── EditorComponent (border color: thinking level / bash mode)
-  └── FooterComponent (cwd, git branch, token usage, model, auto-compact)
+  ├── status_section (DynamicLines — transient status like toggles, interrupts)
+  ├── queued_section (DynamicLines — ◷ queued follow-up messages)
+  ├── working_section (DynamicLines — ⠋ Working... animation)
+  ├── EditorComponent (border color: thinking level / bash mode indicator)
+  └── FooterComponent (cwd, git branch, token usage, model, auto-compact indicator)
 ```
 
 ### Message queuing and follow-up
@@ -1481,7 +1504,7 @@ use `status_section` that appears for one frame then clears.
 
 ```
 rab (EPL-2.0)
-├── yoagent              (MIT, git rev a98d007) - agent loop, provider, types, skills
+├── yoagent 0.9.0        (MIT)                - agent loop, provider, types, skills
 │   └── reqwest          (Apache 2.0)           - HTTP client (inside yoagent)
 ├── tokio 1              (MIT)                  - async runtime
 ├── tokio-util 0.7       (MIT)                  - CancellationToken
@@ -1500,7 +1523,6 @@ rab (EPL-2.0)
 ├── comrak 0.53          (MIT)                  - markdown parsing (GFM)
 ├── syntect 5.3          (MIT, optional)        - syntax highlighting
 ├── base64 0.22          (MIT)                  - image data URL encoding
-├── async-stream 0.3     (MIT)                  - async stream generation
 ├── regex 1.12           (MIT)                  - regex
 ├── reqwest 0.13         (MIT/Apache 2.0)       - HTTP client (rustls-tls, socks)
 ├── kameleoon-reqwest-eventsource 0.6 (Apache 2.0) - SSE streaming
@@ -1523,7 +1545,8 @@ Key dependency changes from earlier versions:
 - `reqwest-eventsource` replaced with `kameleoon-reqwest-eventsource` 0.6
 - `openssl-sys` removed (fully rustls-based)
 - `rustls-platform-verifier` patched with `webpki-roots` to fix Android/Termux panic
-- `yoagent` is a git dependency at rev `a98d00769373908b59bce5fbc09c76d3349a4daa`
+- `edition = "2024"` (Rust 1.96.0) for `impl Trait` in const contexts and RPIT lifetime capture
+- `yoagent` is a published crate at version 0.9.0
 
 ---
 
@@ -1564,7 +1587,7 @@ adapter matching pi-mcp-adapter's architecture. Configured via `~/.rab/agent/mcp
 ### models.json — ✅ IMPLEMENTED
 
 Custom provider/model definitions are now supported via `~/.rab/agent/models.json`,
-merged with the built-in catalog (`src/provider/models.json`, ~60K / ~1300 lines).
+merged with the built-in catalog (`src/provider/models.json`, ~2200 lines).
 User entries with the same provider ID replace built-in entries entirely.
 The `rab generate-models` subcommand fetches the latest models from `models.dev`
 and updates the built-in catalog.
