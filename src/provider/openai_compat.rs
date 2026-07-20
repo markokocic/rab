@@ -57,9 +57,10 @@ impl StreamProvider for RabOpenAiCompatProvider {
             .header("authorization", format!("Bearer {}", config.api_key));
 
         // Add any extra headers from model config.
-        // Skip internal `_rab_*` headers used for compat/threshold metadata.
+        // Skip internal `_rab_*` and `anthropic-*` headers (the latter are
+        // injected for Anthropic provider models at resolution time).
         for (k, v) in &model_config.headers {
-            if !k.starts_with("_rab_") {
+            if !k.starts_with("_rab_") && !k.starts_with("anthropic-") {
                 request = request.header(k, v);
             }
         }

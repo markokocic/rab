@@ -119,6 +119,9 @@ impl ProviderRegistry {
                         enterprise_domain.as_deref(),
                     );
                     model_config.base_url = derived;
+
+                    // Inject Copilot OAuth headers for proxy-ep tokens.
+                    inject_github_copilot_headers(&mut model_config, &api_key);
                 }
 
                 return Ok(ResolvedModel {
@@ -173,6 +176,9 @@ impl ProviderRegistry {
                 enterprise_domain.as_deref(),
             );
             model_config.base_url = derived;
+
+            // Inject Copilot OAuth headers for proxy-ep tokens.
+            inject_github_copilot_headers(&mut model_config, &api_key);
         }
 
         Some(ResolvedModel {
@@ -370,6 +376,38 @@ pub fn calculate_cost(cost_config: &CostConfig, usage: &Usage) -> (f64, f64, f64
 }
 
 /// Get the agent config directory (~/.rab/agent).
+/// Inject GitHub Copilot OAuth headers into a model config when using
+/// a `proxy-ep=` token (Claude Code OAuth).
+fn inject_github_copilot_headers(model_config: &mut ModelConfig, api_key: &str) {
+    if !api_key.contains("proxy-ep=") {
+        return;
+    }
+    model_config
+        .headers
+        .entry("authorization".into())
+        .or_insert_with(|| format!("Bearer {api_key}"));
+    model_config
+        .headers
+        .entry("anthropic-beta".into())
+        .or_insert_with(|| {
+            "claude-code-20250219,oauth-2025-04-20,\
+             fine-grained-tool-streaming-2025-05-14"
+                .into()
+        });
+    model_config
+        .headers
+        .entry("anthropic-dangerous-direct-browser-access".into())
+        .or_insert_with(|| "true".into());
+    model_config
+        .headers
+        .entry("user-agent".into())
+        .or_insert_with(|| "claude-cli/2.1.2 (external, cli)".into());
+    model_config
+        .headers
+        .entry("x-app".into())
+        .or_insert_with(|| "cli".into());
+}
+
 pub fn get_agent_dir() -> std::path::PathBuf {
     directories::BaseDirs::new()
         .map(|d| d.home_dir().join(".rab").join("agent"))
