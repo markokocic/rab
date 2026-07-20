@@ -37,9 +37,7 @@
             "maxTokensField": "max_tokens",
             "requiresReasoningContentOnAssistantMessages": true,
             "supportsDeveloperRole": false,
-            "supportsReasoningEffort": false,
             "supportsStore": false,
-            "supportsThinkingControl": true,
             "thinkingFormat": "deepseek"
           },
           "contextWindow": 1000000,
@@ -59,9 +57,9 @@
           "thinkingLevelMap": {
             "high": "high",
             "low": null,
+            "max": "max",
             "medium": null,
-            "minimal": null,
-            "xhigh": "max"
+            "minimal": null
           }
         },
         {
@@ -71,9 +69,7 @@
             "maxTokensField": "max_tokens",
             "requiresReasoningContentOnAssistantMessages": true,
             "supportsDeveloperRole": false,
-            "supportsReasoningEffort": false,
             "supportsStore": false,
-            "supportsThinkingControl": true,
             "thinkingFormat": "deepseek"
           },
           "contextWindow": 1000000,
@@ -93,9 +89,9 @@
           "thinkingLevelMap": {
             "high": "high",
             "low": null,
+            "max": "max",
             "medium": null,
-            "minimal": null,
-            "xhigh": "max"
+            "minimal": null
           }
         },
         {
@@ -105,9 +101,7 @@
             "maxTokensField": "max_tokens",
             "requiresReasoningContentOnAssistantMessages": true,
             "supportsDeveloperRole": false,
-            "supportsReasoningEffort": false,
             "supportsStore": false,
-            "supportsThinkingControl": true,
             "thinkingFormat": "deepseek"
           },
           "contextWindow": 1000000,
@@ -127,9 +121,9 @@
           "thinkingLevelMap": {
             "high": "high",
             "low": null,
+            "max": "max",
             "medium": null,
-            "minimal": null,
-            "xhigh": "max"
+            "minimal": null
           }
         }
       ],
@@ -236,7 +230,7 @@
           "name": "Claude Opus 4.6",
           "reasoning": true,
           "thinkingLevelMap": {
-            "xhigh": "max"
+            "max": "max"
           }
         },
         {
@@ -262,6 +256,7 @@
           "name": "Claude Opus 4.7",
           "reasoning": true,
           "thinkingLevelMap": {
+            "max": "max",
             "minimal": "low",
             "xhigh": "xhigh"
           }
@@ -289,6 +284,7 @@
           "name": "Claude Opus 4.8",
           "reasoning": true,
           "thinkingLevelMap": {
+            "max": "max",
             "minimal": "low",
             "xhigh": "xhigh"
           }
@@ -359,8 +355,8 @@
           "name": "Claude Sonnet 4.6",
           "reasoning": true,
           "thinkingLevelMap": {
-            "minimal": "low",
-            "xhigh": "max"
+            "max": "max",
+            "minimal": "low"
           }
         },
         {
@@ -1137,9 +1133,8 @@
             "requiresReasoningContentOnAssistantMessages": true,
             "supportsDeveloperRole": false,
             "supportsLongCacheRetention": false,
-            "supportsReasoningEffort": false,
             "supportsStore": false,
-            "thinkingFormat": "deepseek"
+            "thinkingFormat": "openai"
           },
           "contextWindow": 1000000,
           "cost": {
@@ -1158,9 +1153,9 @@
           "thinkingLevelMap": {
             "high": "high",
             "low": null,
+            "max": "max",
             "medium": null,
-            "minimal": null,
-            "xhigh": "max"
+            "minimal": null
           }
         },
         {
@@ -1171,9 +1166,8 @@
             "requiresReasoningContentOnAssistantMessages": true,
             "supportsDeveloperRole": false,
             "supportsLongCacheRetention": false,
-            "supportsReasoningEffort": false,
             "supportsStore": false,
-            "thinkingFormat": "deepseek"
+            "thinkingFormat": "openai"
           },
           "contextWindow": 200000,
           "cost": {
@@ -1192,9 +1186,9 @@
           "thinkingLevelMap": {
             "high": "high",
             "low": null,
+            "max": "max",
             "medium": null,
-            "minimal": null,
-            "xhigh": "max"
+            "minimal": null
           }
         },
         {
@@ -1205,9 +1199,8 @@
             "requiresReasoningContentOnAssistantMessages": true,
             "supportsDeveloperRole": false,
             "supportsLongCacheRetention": false,
-            "supportsReasoningEffort": false,
             "supportsStore": false,
-            "thinkingFormat": "deepseek"
+            "thinkingFormat": "openai"
           },
           "contextWindow": 1000000,
           "cost": {
@@ -1226,9 +1219,9 @@
           "thinkingLevelMap": {
             "high": "high",
             "low": null,
+            "max": "max",
             "medium": null,
-            "minimal": null,
-            "xhigh": "max"
+            "minimal": null
           }
         },
         {
@@ -2081,7 +2074,6 @@
             "maxTokensField": "max_tokens",
             "requiresReasoningContentOnAssistantMessages": true,
             "supportsDeveloperRole": false,
-            "supportsReasoningEffort": false,
             "supportsStore": false,
             "thinkingFormat": "deepseek"
           },
@@ -2102,9 +2094,9 @@
           "thinkingLevelMap": {
             "high": "high",
             "low": null,
+            "max": "max",
             "medium": null,
-            "minimal": null,
-            "xhigh": "max"
+            "minimal": null
           }
         },
         {
@@ -2114,7 +2106,6 @@
             "maxTokensField": "max_tokens",
             "requiresReasoningContentOnAssistantMessages": true,
             "supportsDeveloperRole": false,
-            "supportsReasoningEffort": false,
             "supportsStore": false,
             "thinkingFormat": "deepseek"
           },
@@ -2135,9 +2126,9 @@
           "thinkingLevelMap": {
             "high": "high",
             "low": null,
+            "max": "max",
             "medium": null,
-            "minimal": null,
-            "xhigh": "max"
+            "minimal": null
           }
         },
         {
@@ -2230,7 +2221,12 @@
           ],
           "maxTokens": 65536,
           "name": "Kimi K2.6",
-          "reasoning": true
+          "reasoning": true,
+          "thinkingLevelMap": {
+            "low": null,
+            "medium": null,
+            "minimal": null
+          }
         },
         {
           "api": "openai-completions",

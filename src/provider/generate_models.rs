@@ -361,17 +361,15 @@ fn apply_corrections(
         // thinkingLevelMap overrides for GitHub Copilot Claude models
         if provider_key == "github-copilot" {
             let override_map: Option<Value> = match model_id {
-                "claude-opus-4.6" | "claude-opus-4-6" => {
-                    Some(serde_json::json!({ "xhigh": "max" }))
-                }
-                "claude-opus-4.7" | "claude-opus-4-7" => {
-                    Some(serde_json::json!({ "xhigh": "xhigh", "minimal": "low" }))
-                }
-                "claude-opus-4.8" | "claude-opus-4-8" => {
-                    Some(serde_json::json!({ "xhigh": "xhigh", "minimal": "low" }))
-                }
+                "claude-opus-4.6" | "claude-opus-4-6" => Some(serde_json::json!({ "max": "max" })),
+                "claude-opus-4.7" | "claude-opus-4-7" => Some(serde_json::json!({
+                    "xhigh": "xhigh", "max": "max", "minimal": "low"
+                })),
+                "claude-opus-4.8" | "claude-opus-4-8" => Some(serde_json::json!({
+                    "xhigh": "xhigh", "max": "max", "minimal": "low"
+                })),
                 "claude-sonnet-4.6" | "claude-sonnet-4-6" => {
-                    Some(serde_json::json!({ "minimal": "low", "xhigh": "max" }))
+                    Some(serde_json::json!({ "minimal": "low", "max": "max" }))
                 }
                 _ => None,
             };
@@ -396,16 +394,16 @@ fn apply_corrections(
 
     if model_id.contains("deepseek-v4") {
         compat["requiresReasoningContentOnAssistantMessages"] = Value::Bool(true);
-        compat["thinkingFormat"] = Value::String("deepseek".into());
-        compat["supportsReasoningEffort"] = Value::Bool(false);
         if provider_key == "opencode" {
+            // opencode preserves native reasoning_effort
+            compat["thinkingFormat"] = Value::String("openai".into());
             compat["supportsLongCacheRetention"] = Value::Bool(false);
+        } else {
+            compat["thinkingFormat"] = Value::String("deepseek".into());
         }
-        if provider_key == "deepseek" {
-            compat["supportsThinkingControl"] = Value::Bool(true);
-        }
+        // supportsReasoningEffort stays at default (true) to match pi
         entry["thinkingLevelMap"] = serde_json::json!({
-            "minimal": null, "low": null, "medium": null, "high": "high", "xhigh": "max"
+            "minimal": null, "low": null, "medium": null, "high": "high", "max": "max"
         });
     }
 
@@ -413,6 +411,12 @@ fn apply_corrections(
         compat["thinkingFormat"] = Value::String("deepseek".into());
         compat["supportsReasoningEffort"] = Value::Bool(false);
         compat["supportsLongCacheRetention"] = Value::Bool(false);
+        // Only opencode-go kimi-k2.6 gets a thinkingLevelMap (pi behavior)
+        if provider_key == "opencode-go" {
+            entry["thinkingLevelMap"] = serde_json::json!({
+                "minimal": null, "low": null, "medium": null
+            });
+        }
     }
 
     if model_id == "kimi-k2.5" {
@@ -426,10 +430,9 @@ fn apply_corrections(
     if model_id == "deepseek-reasoner" {
         compat["requiresReasoningContentOnAssistantMessages"] = Value::Bool(true);
         compat["thinkingFormat"] = Value::String("deepseek".into());
-        compat["supportsReasoningEffort"] = Value::Bool(false);
-        compat["supportsThinkingControl"] = Value::Bool(true);
+        // supportsReasoningEffort stays at default (true) to match pi
         entry["thinkingLevelMap"] = serde_json::json!({
-            "minimal": null, "low": null, "medium": null, "high": "high", "xhigh": "max"
+            "minimal": null, "low": null, "medium": null, "high": "high", "max": "max"
         });
     }
 
