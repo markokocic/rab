@@ -56,9 +56,10 @@ impl StreamProvider for RabOpenAiCompatProvider {
             .header("content-type", "application/json")
             .header("authorization", format!("Bearer {}", config.api_key));
 
-        // Add any extra headers from model config
+        // Add any extra headers from model config.
+        // Skip internal `_rab_*` headers used for compat/threshold metadata.
         for (k, v) in &model_config.headers {
-            if k != "_rab_compat" {
+            if !k.starts_with("_rab_") {
                 request = request.header(k, v);
             }
         }
