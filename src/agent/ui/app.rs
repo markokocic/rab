@@ -3209,33 +3209,59 @@ fn submit_message(app: &mut App, message: String) {
     app.pending_submit = Some(trimmed);
 }
 
-/// Build a fresh Agent with the given messages and app configuration.
-/// Uses the provider registry to resolve the model and dispatch to the right provider.
-#[allow(clippy::too_many_arguments)]
+/// Build a `yoagent::RetryConfig` from rab's user-facing settings.
+fn retry_config_from_settings(settings: &crate::agent::settings::Settings) -> yoagent::RetryConfig {
+    let Some(r) = &settings.retry else {
+        return yoagent::RetryConfig::default();
+    };
+
+    if r.enabled == Some(false) {
+        return yoagent::RetryConfig::none();
+    }
+
+    let max_retries = r.max_retries.map(|v| v as usize).unwrap_or(3);
+    let initial_delay_ms = r.base_delay_ms.unwrap_or(1000);
+    let max_delay_ms = r
+        .provider
+        .as_ref()
+        .and_then(|p| p.max_retry_delay_ms)
+        .unwrap_or(30_000);
+
+    yoagent::RetryConfig {
+        max_retries,
+        initial_delay_ms,
+        max_delay_ms,
+        ..yoagent::RetryConfig::default()
+    }
+}
+
+/// Build a fresh Agent from the App's current configuration.
 fn build_fresh_agent(
-    registry: &ProviderRegistry,
-    model: &str,
+    app: &App,
     api_key: &str,
-    system_prompt: &str,
-    thinking_level: yoagent::types::ThinkingLevel,
     messages: Vec<yoagent::types::AgentMessage>,
-    extensions: &[Box<dyn Extension>],
-    default_provider: Option<&str>,
 ) -> yoagent::agent::Agent {
     use yoagent::provider::model::ApiProtocol;
 
-    let resolved = registry.resolve(model, default_provider).ok();
+    let preferred = if !app.current_provider.is_empty() {
+        Some(app.current_provider.as_str())
+    } else {
+        app.settings.default_provider.as_deref()
+    };
+
+    let resolved = app.registry.resolve(&app.model, preferred).ok();
     let mc = resolved
         .as_ref()
         .map(|r| r.model_config.clone())
-        .unwrap_or_else(|| crate::agent::base_model_config(model));
+        .unwrap_or_else(|| crate::agent::base_model_config(&app.model));
     let api_key = resolved
         .as_ref()
         .map(|r| r.api_key.as_str())
         .filter(|k| !k.is_empty())
         .unwrap_or(api_key);
 
-    let tools: Vec<Box<dyn yoagent::types::AgentTool>> = extensions
+    let tools: Vec<Box<dyn yoagent::types::AgentTool>> = app
+        .extensions
         .iter()
         .flat_map(|ext| ext.tools())
         .map(|twm| Box::new(twm) as Box<dyn yoagent::types::AgentTool>)
@@ -3255,10 +3281,14 @@ fn build_fresh_agent(
         _ => yoagent::agent::Agent::from_config(mc.clone()),
     };
 
+    let retry_config = retry_config_from_settings(&app.settings);
+    let thinking_level = map_thinking_level(app.thinking_level.as_deref());
+
     agent
         .with_api_key(api_key)
-        .with_system_prompt(system_prompt)
+        .with_system_prompt(&app.system_prompt)
         .with_thinking(thinking_level)
+        .with_retry_config(retry_config)
         .with_messages(messages)
         .with_tools(tools)
         .without_context_management()
@@ -3294,8 +3324,6 @@ async fn start_agent_loop(
     app.is_streaming = true;
     app.working.start();
     app.footer.borrow_mut().set_streaming(true);
-
-    let thinking = map_thinking_level(app.thinking_level.as_deref());
 
     // Build or reuse agent. On the first turn the session has no messages;
     // on subsequent turns the reused agent already has messages restored
@@ -3337,22 +3365,8 @@ async fn start_agent_loop(
             existing
         }
         None => {
-            let preferred = if !app.current_provider.is_empty() {
-                Some(app.current_provider.as_str())
-            } else {
-                app.settings.default_provider.as_deref()
-            };
             let fallback_key = fresh_oauth_key.as_deref().unwrap_or(&app.api_key);
-            app.agent = Some(build_fresh_agent(
-                &app.registry,
-                &app.model,
-                fallback_key,
-                &app.system_prompt,
-                thinking,
-                msgs,
-                &app.extensions,
-                preferred,
-            ));
+            app.agent = Some(build_fresh_agent(app, fallback_key, msgs));
             // SAFETY: we just set app.agent to Some(...)
             app.agent.as_mut().unwrap()
         }
