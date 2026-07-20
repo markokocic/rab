@@ -51,14 +51,13 @@ async fn test_yoagent_basic_stream() {
     );
 
     // ── Agent ──
-    let mut agent = yoagent::agent::Agent::new(yoagent::provider::OpenAiCompatProvider)
-        .with_model("deepseek-v4-flash")
-        .with_api_key(&api_key)
-        .with_model_config(model_config)
-        .with_system_prompt("You are a helpful assistant. Answer concisely.")
-        .with_thinking(THINKING_LEVEL)
-        .with_max_tokens(256)
-        .without_context_management();
+    let mut agent =
+        yoagent::agent::Agent::from_provider(yoagent::provider::OpenAiCompatProvider, model_config)
+            .with_api_key(&api_key)
+            .with_system_prompt("You are a helpful assistant. Answer concisely.")
+            .with_thinking(THINKING_LEVEL)
+            .with_max_tokens(256)
+            .without_context_management();
 
     eprintln!("✓ Agent ready, sending prompt...");
 

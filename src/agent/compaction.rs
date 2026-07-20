@@ -1065,18 +1065,13 @@ pub async fn summarize_text(
     let retry_config = yoagent::RetryConfig::default();
 
     for attempt in 0..=retry_config.max_retries {
-        let config = StreamConfig {
-            model: model.to_string(),
-            system_prompt: system_prompt.to_string(),
-            messages: yoagent_messages.clone(),
-            tools: vec![],
-            thinking_level,
-            api_key: api_key.to_string(),
-            max_tokens: Some(2048),
-            temperature: Some(0.3),
-            model_config: Some(model_config.clone()),
-            cache_config: yoagent::types::CacheConfig::default(),
-        };
+        let mut config = StreamConfig::new(model.to_string(), api_key.to_string());
+        config.system_prompt = system_prompt.to_string();
+        config.messages = yoagent_messages.clone();
+        config.thinking_level = thinking_level;
+        config.max_tokens = Some(2048);
+        config.temperature = Some(0.3);
+        config.model_config = Some(model_config.clone());
 
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let cancel = tokio_util::sync::CancellationToken::new();

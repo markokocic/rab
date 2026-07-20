@@ -1,6 +1,6 @@
 [package]
 name = "rab-agent"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 authors = ["Marko Kocic <marko@euptera.com>"]
 description = "rab is a lightweight, extensible, Rust-based coding agent."
@@ -36,7 +36,7 @@ libc = "0.2"
 unicode-segmentation = "1"
 unicode-width = "0.2"
 unicode-normalization = "0.1"
-comrak = "0.53"
+comrak = "0.54"
 syntect = { version = "5.3.0", optional = true }
 regex = "1.12.4"
 base64 = "0.22"
@@ -45,12 +45,9 @@ futures = "0.3"
 fs2 = "0.4"
 reqwest-eventsource = { package = "kameleoon-reqwest-eventsource", version = "0.6" }
 tracing = "0.1"
-yoagent = "0.10.0"
+yoagent = "0.13.0"
 reqwest = { version = "0.13", default-features = false, features = ["json", "stream", "rustls", "socks", "form"] }
 url = "2.5.8"
-
-[patch.crates-io]
-rustls-platform-verifier = { path = "patches/rustls-platform-verifier" }
 
 [features]
 default = ["syntect"]
