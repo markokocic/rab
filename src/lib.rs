@@ -4,4 +4,5 @@ pub mod builtin;
 pub mod extensions;
 pub mod paths;
 pub mod provider;
+pub mod tls;
 pub mod tui;

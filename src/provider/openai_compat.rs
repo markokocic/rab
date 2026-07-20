@@ -7,6 +7,7 @@
 //! - All pi `OpenAICompletionsCompat` flags
 
 use super::compat::{RabMaxTokensField, RabOpenAiCompat, RabThinkingFormat};
+use crate::tls;
 use async_trait::async_trait;
 use futures::StreamExt;
 use reqwest_eventsource::EventSource;
@@ -50,7 +51,7 @@ impl StreamProvider for RabOpenAiCompatProvider {
         let body = build_request_body(&config, model_config, &rab_compat, &yoagent_compat);
         debug!("OpenAI compat request: model={} url={}", config.model, url);
 
-        let client = reqwest::Client::new();
+        let client = tls::reqwest_client();
         let mut request = client
             .post(&url)
             .header("content-type", "application/json")

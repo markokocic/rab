@@ -5,6 +5,7 @@
 //!
 //! All-or-nothing: any error aborts before writing.
 
+use crate::tls;
 use serde_json::Value;
 
 const MODELS_DEV_URL: &str = "https://models.dev/api.json";
@@ -466,7 +467,9 @@ fn apply_corrections(
 }
 
 async fn fetch(url: &str) -> anyhow::Result<String> {
-    let response = reqwest::get(url)
+    let response = tls::reqwest_client()
+        .get(url)
+        .send()
         .await
         .map_err(|e| anyhow::anyhow!("Network error fetching {}: {}", url, e))?;
 

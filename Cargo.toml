@@ -46,6 +46,8 @@ fs2 = "0.4"
 reqwest-eventsource = { package = "kameleoon-reqwest-eventsource", version = "0.6" }
 tracing = "0.1"
 yoagent = "0.13.0"
+rustls = "0.23"
+webpki-root-certs = "1"
 reqwest = { version = "0.13", default-features = false, features = ["json", "stream", "rustls", "socks", "form"] }
 url = "2.5.8"
 

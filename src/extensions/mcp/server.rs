@@ -2,6 +2,7 @@
 //! Mirrors pi-mcp-adapter's McpLifecycleManager + McpServerManager pattern.
 
 use crate::extensions::mcp::types::ServerEntry;
+use crate::tls;
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -38,7 +39,7 @@ struct SseHttpTransport {
 impl SseHttpTransport {
     fn new(url: &str) -> Self {
         Self {
-            client: reqwest::Client::new(),
+            client: tls::reqwest_client(),
             base_url: url.trim_end_matches('/').to_string(),
             headers: Vec::new(),
             session_id: StdMutex::new(None),

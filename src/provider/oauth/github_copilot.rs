@@ -5,6 +5,7 @@
 
 use std::collections::HashMap;
 
+use crate::tls;
 use async_trait::async_trait;
 use base64::Engine;
 
@@ -79,7 +80,7 @@ pub fn get_copilot_base_url(token: Option<&str>, enterprise_domain: Option<&str>
 
 /// Fetch JSON from a URL with headers.
 async fn fetch_json(url: &str, headers: &[(&str, &str)]) -> Result<serde_json::Value, String> {
-    let client = reqwest::Client::new();
+    let client = tls::reqwest_client();
     let mut req = client.get(url);
     for (k, v) in headers {
         req = req.header(*k, *v);
@@ -99,7 +100,7 @@ async fn post_form(
     headers: &[(&str, &str)],
     form: &[(&str, &str)],
 ) -> Result<serde_json::Value, String> {
-    let client = reqwest::Client::new();
+    let client = tls::reqwest_client();
     let mut req = client.post(url);
     for (k, v) in headers {
         req = req.header(*k, *v);
@@ -302,7 +303,7 @@ async fn enable_model(
     let base_url = get_copilot_base_url(Some(copilot_token), enterprise_domain);
     let url = format!("{}/models/{}/policy", base_url, model_id);
 
-    let client = reqwest::Client::new();
+    let client = tls::reqwest_client();
     let auth_header = format!("Bearer {}", copilot_token);
     let mut req = client
         .post(&url)
