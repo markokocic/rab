@@ -148,10 +148,7 @@ impl Footer {
         // Cost is pre-computed per message and stored in the session (pi-style),
         // so we just sum the stored values — no need to re-resolve models.
         for entry in session.get_entries() {
-            if let crate::agent::session::SessionEntry::Message(msg_entry) = entry
-                && let Some(yoagent::types::Message::Assistant { usage, .. }) =
-                    msg_entry.message.as_llm()
-            {
+            if let Some(yoagent::types::Message::Assistant { usage, .. }) = entry.message.as_llm() {
                 total_input += usage.input;
                 total_output += usage.output;
                 total_cache_read += usage.cache_read;
@@ -166,7 +163,7 @@ impl Footer {
                 }
 
                 // Sum pre-computed cost (pi-style: stored per message at creation time)
-                total_cost += msg_entry.cost.total();
+                total_cost += session.entry_cost(&entry.id).map_or(0.0, |c| c.total);
             }
         }
 
@@ -217,8 +214,11 @@ impl Footer {
 
         // Extract latest thinking level from session
         for entry in session.get_entries() {
-            if let crate::agent::session::SessionEntry::ThinkingLevelChange(e) = entry {
-                self.thinking_level = Some(e.thinking_level.clone());
+            if let yoagent::types::AgentMessage::Extension(ext) = &entry.message
+                && ext.kind == "session/thinking_level_change"
+                && let Some(level) = ext.data.get("level").and_then(|v| v.as_str())
+            {
+                self.thinking_level = Some(level.to_string());
             }
         }
     }

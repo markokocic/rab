@@ -92,9 +92,19 @@ impl FooterDataProvider {
         let mut latest_model_id: Option<String> = None;
 
         for entry in session.get_entries() {
-            if let crate::agent::session::SessionEntry::ModelChange(e) = entry {
-                latest_provider = Some(e.provider.clone());
-                latest_model_id = Some(e.model_id.clone());
+            if let yoagent::types::AgentMessage::Extension(ext) = &entry.message
+                && ext.kind == "session/model_change"
+            {
+                latest_provider = ext
+                    .data
+                    .get("provider")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                latest_model_id = ext
+                    .data
+                    .get("modelId")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
             }
         }
 

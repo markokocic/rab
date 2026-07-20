@@ -1,5 +1,4 @@
-use crate::agent::SessionRepo;
-use crate::agent::session::SessionInfo;
+use crate::agent::session::{SessionInfo, list_all_sessions, list_sessions};
 use crate::tui::Theme;
 use crate::tui::theme::ThemeKey;
 use std::path::{Path, PathBuf};
@@ -78,20 +77,24 @@ impl SessionPicker {
     }
 
     /// Load sessions from disk without cwd grouping.
-    pub fn load_sessions(&mut self, repo: &dyn SessionRepo) {
-        self.load_sessions_with_cwd(repo, None, None);
+    pub fn load_sessions(&mut self, dir: &Path) {
+        let sessions = list_sessions(dir);
+        self.sessions = sessions
+            .into_iter()
+            .map(|info| GroupedSession {
+                info,
+                group: SessionGroup::OtherProjects,
+            })
+            .collect();
+        self.loading = false;
+        self.selected = 0;
+        self.rebuild_filter();
     }
 
     /// Load sessions with cwd-based grouping.
-    /// - `repo` — Session repo for loading
     /// - `cwd` — Current working directory (sessions with matching cwd are "Current project")
     /// - `session_dir` — Session directory for current project (if None, uses default)
-    pub fn load_sessions_with_cwd(
-        &mut self,
-        repo: &dyn SessionRepo,
-        cwd: Option<&Path>,
-        session_dir: Option<&Path>,
-    ) {
+    pub fn load_sessions_with_cwd(&mut self, cwd: Option<&Path>, session_dir: Option<&Path>) {
         self.loading = true;
         self.loaded_count = 0;
         self.total_count = 0;
@@ -103,20 +106,7 @@ impl SessionPicker {
             let dir = session_dir
                 .map(|d| d.to_path_buf())
                 .unwrap_or_else(|| crate::agent::session::get_default_session_dir(cwd));
-            let current_count = std::cell::Cell::new(0usize);
-            let current_total = std::cell::Cell::new(0usize);
-
-            let current_sessions = repo.list(
-                &dir,
-                Some(cwd),
-                Some(&|l, t| {
-                    current_count.set(l);
-                    current_total.set(t);
-                }),
-            );
-
-            self.loaded_count += current_count.get();
-            self.total_count += current_total.get();
+            let current_sessions = list_sessions(&dir);
 
             for s in current_sessions {
                 all_sessions.push(GroupedSession {
@@ -130,16 +120,11 @@ impl SessionPicker {
         let existing_paths: std::collections::HashSet<PathBuf> =
             all_sessions.iter().map(|gs| gs.info.path.clone()).collect();
 
-        let loaded = std::cell::Cell::new(0usize);
-        let total = std::cell::Cell::new(0usize);
-
-        let all_loaded = repo.list_all(Some(&|l, t| {
-            loaded.set(l);
-            total.set(t);
-        }));
-
-        self.loaded_count = loaded.get();
-        self.total_count = total.get();
+        // Load sessions from all project directories
+        let session_base = directories::BaseDirs::new()
+            .map(|d| d.home_dir().join(".rab").join("sessions"))
+            .unwrap_or_else(|| std::path::PathBuf::from("/tmp/.rab/sessions"));
+        let all_loaded = list_all_sessions(&session_base, None);
 
         for s in all_loaded {
             if !existing_paths.contains(&s.path) {

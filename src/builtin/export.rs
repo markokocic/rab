@@ -13,7 +13,7 @@
 // highlight.min.js), with session data embedded as base64 JSON.
 
 use crate::agent::extension::{CommandHandler, CommandResult};
-use crate::agent::session::model::{CURRENT_SESSION_VERSION, Session, SessionHeader};
+use crate::agent::session::Session;
 use std::path::{Path, PathBuf};
 
 // ── Template assets ────────────────────────────────────────────────
@@ -140,20 +140,15 @@ pub fn export_to_jsonl(
     }
 
     // Build header (pi-compatible: uses fresh timestamp, not original createdAt)
-    let meta = session.metadata();
-    let header = SessionHeader {
-        type_: "session".to_string(),
-        version: Some(CURRENT_SESSION_VERSION),
-        id: meta.id.clone(),
-        timestamp: chrono::Utc::now().to_rfc3339(),
-        cwd: meta.cwd.clone(),
-        parent_session: meta.parent_session_path.clone(),
-    };
+    let _meta = session.metadata();
+    let header = serde_json::json!({
+        "id": session.session_id(),
+        "cwd": session.cwd(),
+        "createdAt": chrono::Utc::now().to_rfc3339(),
+    });
 
     // Get branch entries (pi-compatible: linearized path from root to leaf)
-    let branch_entries = session
-        .get_branch(None)
-        .map_err(|e| ExportError::TemplateError(format!("Failed to get branch: {}", e)))?;
+    let branch_entries = session.get_branch(None);
 
     // Build JSONL content
     let mut lines = Vec::with_capacity(branch_entries.len() + 1);
@@ -176,7 +171,7 @@ pub fn export_to_jsonl(
                 }
             }
         }
-        prev_id = Some(entry.id().to_string());
+        prev_id = Some(entry.id.clone());
         lines.push(serde_json::to_string(&value)?);
     }
 
@@ -451,24 +446,18 @@ fn build_session_data_json(
     session: &Session,
     system_prompt: Option<&str>,
 ) -> Result<serde_json::Value, ExportError> {
-    let meta = session.metadata();
-
     let mut header = serde_json::json!({
-        "type": "session",
-        "version": CURRENT_SESSION_VERSION,
-        "id": meta.id,
-        "timestamp": meta.created_at,
-        "cwd": meta.cwd,
+        "id": session.session_id(),
+        "cwd": session.cwd(),
+        "createdAt": session.created_at(),
     });
-
-    // Pi-compatible: only include parentSession if it exists (omit when None)
-    if let Some(ref ps) = meta.parent_session_path
+    if let Some(name) = session.session_name() {
+        header["name"] = serde_json::json!(name);
+    }
+    if let Some(ps) = session.parent_session_path()
         && let Some(obj) = header.as_object_mut()
     {
-        obj.insert(
-            "parentSession".to_string(),
-            serde_json::Value::String(ps.clone()),
-        );
+        obj.insert("parentSession".to_string(), serde_json::json!(ps));
     }
 
     let leaf_id = session.get_leaf_id();
@@ -516,11 +505,11 @@ pub fn export_to_html(
     let file_path = match output_path {
         Some(p) => crate::builtin::resolve_path(p, cwd),
         None => {
-            let session_id = &session.metadata().id;
+            let session_id = session.session_id();
             let short_id = if session_id.len() > 8 {
-                &session_id[..8]
+                session_id.chars().take(8).collect::<String>()
             } else {
-                session_id.as_str()
+                session_id.to_string()
             };
             cwd.join(format!("rab-session-{}.html", short_id))
         }

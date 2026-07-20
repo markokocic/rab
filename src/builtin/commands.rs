@@ -9,6 +9,7 @@ use crate::agent::types::{
 use crate::builtin::export::{ExportCommand, ImportCommand};
 use std::borrow::Cow;
 use std::sync::{Arc, Mutex};
+use yoagent::types::AgentMessage;
 
 /// Built-in commands extension - provides all 22 pi slash commands.
 /// Uses the same Extension trait as all other extensions, making built-in
@@ -89,18 +90,18 @@ pub fn compute_session_info(session: &Session) -> SessionInfoInternal {
     let mut cost: f64 = 0.0;
 
     for entry in entries {
-        if let super::super::agent::session::SessionEntry::Message(m) = entry {
+        if let Some(llm_msg) = entry.message.as_llm() {
             message_count += 1;
-            if message_is_user(&m.message) {
+            if message_is_user(&AgentMessage::Llm(llm_msg.clone())) {
                 user_messages += 1;
-            } else if message_is_assistant(&m.message) {
+            } else if message_is_assistant(&AgentMessage::Llm(llm_msg.clone())) {
                 assistant_messages += 1;
-                let tc_count = message_tool_call_count(&m.message);
+                let tc_count = message_tool_call_count(&AgentMessage::Llm(llm_msg.clone()));
                 tool_calls += tc_count;
-            } else if message_is_tool_result(&m.message) {
+            } else if message_is_tool_result(&AgentMessage::Llm(llm_msg.clone())) {
                 tool_results += 1;
             }
-            if let Some(usage) = message_usage(&m.message) {
+            if let Some(usage) = message_usage(&AgentMessage::Llm(llm_msg.clone())) {
                 input_tokens += usage.input;
                 output_tokens += usage.output;
                 cache_read_tokens += usage.cache_read;
@@ -110,14 +111,14 @@ pub fn compute_session_info(session: &Session) -> SessionInfoInternal {
             // Use pre-computed per-message cost (pi-style): computed at message
             // creation time via the model's cost config. Falls back to 0.0 for
             // sessions created before cost was stored.
-            cost += m.cost.total();
+            cost += session.entry_cost(&entry.id).map_or(0.0, |c| c.total);
         }
     }
 
     SessionInfoInternal {
-        session_id: session.session_id(),
-        file_path: session.session_file(),
-        name: session.session_name(),
+        session_id: session.session_id().to_string(),
+        file_path: session.session_file().map(|p| p.to_path_buf()),
+        name: session.session_name().map(|s| s.to_string()),
         message_count,
         user_messages,
         assistant_messages,

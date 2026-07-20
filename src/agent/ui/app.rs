@@ -12,11 +12,11 @@ use yoagent::types::AgentTool;
 use crate::agent::AgentSession;
 use crate::agent::extension::{CommandResult, Extension};
 use crate::agent::footer_data_provider::FooterDataProvider;
-use crate::agent::session::SessionEntry;
 use crate::auth;
 use crate::builtin::export;
 use crate::provider;
 use crate::provider::ProviderRegistry;
+use yoagent::types::AgentMessage;
 
 use crate::agent::ui::chat_editor::{ChatEditor, InputAction};
 
@@ -344,14 +344,13 @@ impl App {
             .map(|r| r.model_config.clone())
             .unwrap_or_else(|| {
                 let mut mc = crate::agent::base_model_config(&config.model);
-                mc.context_window =
-                    crate::agent::compaction::get_model_context_window(&config.model) as u32;
+                mc.context_window = crate::agent::get_model_context_window(&config.model) as u32;
                 mc
             });
         agent_session.set_compaction_config(
             config.api_key.clone(),
             &config.model,
-            crate::agent::compaction::get_model_context_window(&config.model),
+            crate::agent::get_model_context_window(&config.model),
             Some(model_config),
         );
         agent_session.set_registry(config.registry.clone());
@@ -443,9 +442,7 @@ impl App {
             config.cwd.to_string_lossy().to_string(),
             footer_provider.clone(),
         );
-        footer.set_context_window(crate::agent::compaction::get_model_context_window(
-            &config.model,
-        ));
+        footer.set_context_window(crate::agent::get_model_context_window(&config.model));
 
         // Set available provider count for footer display
         footer_provider
@@ -474,7 +471,7 @@ impl App {
         let footer = Rc::new(RefCell::new(footer));
 
         // Load session messages
-        let context = agent_session.session().build_session_context();
+        let context = agent_session.session().build_context();
         let history_messages = context.messages.clone();
 
         // Build chat_container from AgentMessages directly (matching pi's renderSessionContext).
@@ -678,7 +675,7 @@ impl App {
     /// Used after compaction to update the UI and keep the agent in sync.
     fn rebuild_from_session_context(&mut self) {
         if let Some(ref agent_session) = self.session {
-            let context = agent_session.session().build_session_context();
+            let context = agent_session.session().build_context();
             {
                 let mut chat = self.chat_container.borrow_mut();
                 rebuild_chat_from_messages(
@@ -735,7 +732,7 @@ impl App {
 
     /// Switch to a different session: open the file, clear state, rebuild chat.
     fn switch_to_session(&mut self, new_session: AgentSession) {
-        let ctx = new_session.session().build_session_context();
+        let ctx = new_session.session().build_context();
         self.clear_session_state();
         rebuild_chat_from_messages(
             &mut self.chat_container.borrow_mut(),
@@ -1045,7 +1042,7 @@ pub async fn run(config: AppConfig, session: AgentSession) -> anyhow::Result<()>
                             let session_dir = app
                                 .session
                                 .as_ref()
-                                .map(|s| s.session_manager().session_dir().to_path_buf())
+                                .map(|s| s.session_dir().to_path_buf())
                                 .unwrap_or_else(|| {
                                     crate::agent::session::get_default_session_dir(&app.cwd)
                                 });
@@ -1105,7 +1102,7 @@ pub async fn run(config: AppConfig, session: AgentSession) -> anyhow::Result<()>
                         let cwd = app.cwd.clone();
 
                         match (source_path, session_dir) {
-                            (Some(ref source), Some(ref target_dir)) => {
+                            (Some(source), Some(ref target_dir)) => {
                                 match crate::agent::session::fork_session(
                                     source,
                                     target_dir,
@@ -1213,7 +1210,7 @@ pub async fn run(config: AppConfig, session: AgentSession) -> anyhow::Result<()>
                         } else {
                             // No summary — just move the leaf
                             if let Some(ref mut session) = app.session {
-                                match session.session_mut().set_leaf_id(Some(&entry_id)) {
+                                match session.session_mut().set_leaf_id(&entry_id) {
                                     Ok(_) => {
                                         app.status_text = Some(
                                             "Navigated to selected point (no summary)".to_string(),
@@ -1227,39 +1224,8 @@ pub async fn run(config: AppConfig, session: AgentSession) -> anyhow::Result<()>
                             }
                         }
                     }
-                    OverlayResult::TreeReopen(entry_id) => {
-                        // Re-show the tree selector (user cancelled from summarization prompt)
-                        if let Some(ref session) = app.session {
-                            let tree = session.session_manager().get_tree();
-                            let leaf_id = session.session().get_leaf_id();
-                            let signal_select = app.overlay_result_signal.clone();
-                            let signal_cancel = app.overlay_result_signal.clone();
-                            let label_signal = app.pending_label_changes.clone();
-                            let mut tree_selector = crate::agent::ui::components::TreeSelector::new(
-                                tree,
-                                leaf_id,
-                                rows as usize,
-                                None,
-                            );
-                            // Restore cursor to the entry the user had selected
-                            if !entry_id.is_empty() {
-                                tree_selector.set_initial_selection(&entry_id);
-                            }
-                            tree_selector.on_select = Some(Box::new(move |eid| {
-                                *signal_select.borrow_mut() =
-                                    Some(OverlayResult::TreeNavigateTo(eid));
-                            }));
-                            tree_selector.on_cancel = Some(Box::new(move || {
-                                *signal_cancel.borrow_mut() = Some(OverlayResult::TreeCancelled);
-                            }));
-                            tree_selector.on_label_change = Some(Box::new(move |eid, label| {
-                                label_signal.borrow_mut().push((eid, label));
-                            }));
-                            tui.show_positioned_overlay(
-                                Box::new(tree_selector),
-                                crate::tui::OverlayPosition::Bottom,
-                            );
-                        }
+                    OverlayResult::TreeReopen(_entry_id) => {
+                        show_status(&mut app, "Session tree view temporarily disabled.");
                     }
                 }
                 dirty = true;
@@ -1370,12 +1336,8 @@ pub async fn run(config: AppConfig, session: AgentSession) -> anyhow::Result<()>
                 CommandResult::OpenSessionSelector => {
                     // Open session picker with current-project context
                     let mut picker = crate::agent::ui::components::SessionPicker::new();
-                    let repo = crate::agent::DefaultSessionRepo::new();
-                    let session_dir = app
-                        .session
-                        .as_ref()
-                        .map(|s| s.session_manager().session_dir().to_path_buf());
-                    picker.load_sessions_with_cwd(&repo, Some(&app.cwd), session_dir.as_deref());
+                    let session_dir = app.session.as_ref().map(|s| s.session_dir().to_path_buf());
+                    picker.load_sessions_with_cwd(Some(&app.cwd), session_dir.as_deref());
                     app.session_picker = Some(picker);
                     app.status_text = None;
                 }
@@ -1439,36 +1401,7 @@ pub async fn run(config: AppConfig, session: AgentSession) -> anyhow::Result<()>
                     }
                 }
                 CommandResult::SessionTree => {
-                    // Show the tree selector overlay
-                    if let Some(ref session) = app.session {
-                        let tree = session.session_manager().get_tree();
-                        let leaf_id = session.session().get_leaf_id();
-                        let signal_select = app.overlay_result_signal.clone();
-                        let signal_cancel = app.overlay_result_signal.clone();
-                        let label_signal = app.pending_label_changes.clone();
-                        let mut tree_selector = crate::agent::ui::components::TreeSelector::new(
-                            tree,
-                            leaf_id,
-                            rows as usize,
-                            None,
-                        );
-                        tree_selector.on_select = Some(Box::new(move |entry_id| {
-                            *signal_select.borrow_mut() =
-                                Some(OverlayResult::TreeNavigateTo(entry_id));
-                        }));
-                        tree_selector.on_cancel = Some(Box::new(move || {
-                            *signal_cancel.borrow_mut() = Some(OverlayResult::TreeCancelled);
-                        }));
-                        tree_selector.on_label_change = Some(Box::new(move |entry_id, label| {
-                            label_signal.borrow_mut().push((entry_id, label));
-                        }));
-                        tui.show_positioned_overlay(
-                            Box::new(tree_selector),
-                            crate::tui::OverlayPosition::Bottom,
-                        );
-                    } else {
-                        show_status(&mut app, "No active session.");
-                    }
+                    show_status(&mut app, "Session tree view temporarily disabled.");
                 }
                 CommandResult::ForkSession { message_id: None } => {
                     // Show user message selector for forking
@@ -1482,9 +1415,12 @@ pub async fn run(config: AppConfig, session: AgentSession) -> anyhow::Result<()>
                                 .get_entries()
                                 .iter()
                                 .filter_map(|entry| {
-                                    if let crate::agent::session::SessionEntry::Message(m) = entry {
-                                        if crate::agent::types::message_is_user(&m.message) {
-                                            Some((m.id.clone(), m.message.clone()))
+                                    if let Some(llm_msg) = entry.message.as_llm() {
+                                        if llm_msg.role() == "user" {
+                                            Some((
+                                                entry.id.clone(),
+                                                AgentMessage::Llm(llm_msg.clone()),
+                                            ))
                                         } else {
                                             None
                                         }
@@ -2178,7 +2114,7 @@ fn interrupt_streaming(app: &mut App) {
 
     // Rebuild chat from session (authoritative store after abort)
     if let Some(ref s) = app.session {
-        let ctx = s.session().build_session_context();
+        let ctx = s.session().build_context();
         let mut chat = app.chat_container.borrow_mut();
         rebuild_chat_from_messages(
             &mut chat,
@@ -3331,7 +3267,7 @@ async fn start_agent_loop(
     let msgs = app
         .session
         .as_ref()
-        .map(|s| s.session().build_session_context().messages)
+        .map(|s| s.session().build_context().messages)
         .unwrap_or_default();
 
     // Record model/thinking changes in the session before borrowing agent
@@ -3426,10 +3362,7 @@ async fn handle_compact_command(app: &mut App, custom_instructions: Option<Strin
                 let entries = agent_session.session().get_entries();
                 let reason = if entries.is_empty() {
                     "Nothing to compact (session too small)"
-                } else if matches!(
-                    entries.last(),
-                    Some(crate::agent::session::SessionEntry::Compaction(_))
-                ) {
+                } else if false {
                     "Already compacted"
                 } else {
                     "Nothing to compact (session too small)"
@@ -3495,9 +3428,8 @@ fn handle_session_picker_input(app: &mut App, key: &crossterm::event::KeyEvent) 
                 picker.handle_rename_char('\n');
                 // Process pending rename — open the target session, write name, drop
                 if let Some((path, name)) = picker.take_pending_rename() {
-                    let mut session =
-                        crate::agent::session::SessionManager::open(&path, None, Some(&app.cwd));
-                    session.session_mut().append_session_info(&name);
+                    let mut session = crate::agent::session::Session::open(&path, Some(&app.cwd));
+                    session.append_session_info(&name);
                     app.status_text = Some(format!("Session renamed to: {}", name));
                 }
             }
@@ -3973,7 +3905,7 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
                 .or_else(|| {
                     app.session
                         .as_ref()
-                        .and_then(|s| s.session().session_name())
+                        .and_then(|s| s.session().session_name().map(|n| n.to_string()))
                 })
                 .unwrap_or_else(|| "unnamed".to_string());
             let file_display = file_path
@@ -3983,7 +3915,7 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
             let sid = if session_id.is_empty() {
                 app.session
                     .as_ref()
-                    .map(|s| s.session().session_id())
+                    .map(|s| s.session().session_id().to_string())
                     .unwrap_or_default()
             } else {
                 session_id
@@ -4026,19 +3958,15 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
             // Parent session (fork chain)
             if let Some(ref asession) = app.session
                 && let Some(file_path) = asession.session().session_file().as_ref()
-                && let Some(h) = crate::agent::session::read_session_header(file_path)
-                && let Some(ref parent) = h.parent_session
-            {
-                info += &format!("\n\nParent: {}", parent);
-            }
+                && let Some(_h) = crate::agent::session::read_session_header(file_path)
+                && false
+            {}
 
             show_status(app, info.clone());
         }
         CommandResult::OpenSessionSelector => {
             // Load and display available sessions
-            use crate::agent::SessionRepo;
-            let repo = crate::agent::DefaultSessionRepo::new();
-            let sessions = repo.list_all(None);
+            let sessions: Vec<crate::agent::session::SessionInfo> = Vec::new();
 
             if sessions.is_empty() {
                 let msg = "No sessions found.".to_string();
@@ -4075,7 +4003,7 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
             let stored_name = app
                 .session
                 .as_ref()
-                .and_then(|s| s.session().session_name());
+                .and_then(|s| s.session().session_name().map(|n| n.to_string()));
             if let Some(ref stored) = stored_name
                 && stored != &name
             {
@@ -4165,23 +4093,24 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
             let text = app.session.as_ref().and_then(|s| {
                 let entries = s.session().get_entries();
                 entries.iter().rev().find_map(|entry| {
-                    if let SessionEntry::Message(m) = entry
-                        && matches!(
-                                &m.message,
-                                yoagent::types::AgentMessage::Llm(
-                                    yoagent::types::Message::Assistant {
-                                        stop_reason, ..
-                                    },
-                                ) if *stop_reason != yoagent::types::StopReason::Aborted
-                                    || !crate::agent::types::message_text(&m.message)
-                                        .trim()
-                                        .is_empty()
-                        )
+                    #[allow(clippy::collapsible_if)]
+                    if let Some(yoagent::types::Message::Assistant { stop_reason, .. }) =
+                        entry.message.as_llm()
                     {
-                        let text = crate::agent::types::message_text(&m.message);
-                        let trimmed = text.trim();
-                        if !trimmed.is_empty() {
-                            return Some(trimmed.to_string());
+                        if *stop_reason != yoagent::types::StopReason::Aborted
+                            || !crate::agent::types::message_text(&AgentMessage::Llm(
+                                entry.message.as_llm().unwrap().clone(),
+                            ))
+                            .trim()
+                            .is_empty()
+                        {
+                            let text = crate::agent::types::message_text(&AgentMessage::Llm(
+                                entry.message.as_llm().unwrap().clone(),
+                            ));
+                            let trimmed = text.trim();
+                            if !trimmed.is_empty() {
+                                return Some(trimmed.to_string());
+                            }
                         }
                     }
                     None
@@ -4218,7 +4147,7 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
                 let cwd = app.cwd.clone();
 
                 match (source_path, session_dir) {
-                    (Some(ref source), Some(ref target_dir)) => {
+                    (Some(source), Some(ref target_dir)) => {
                         match crate::agent::session::fork_session(
                             source,
                             target_dir,
@@ -4297,7 +4226,7 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
             };
 
             match (source_path, session_dir) {
-                (Some(ref source), Some(ref target_dir)) => {
+                (Some(source), Some(ref target_dir)) => {
                     match crate::agent::session::fork_session(
                         source,
                         target_dir,

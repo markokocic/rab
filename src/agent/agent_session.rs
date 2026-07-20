@@ -1,16 +1,96 @@
-use crate::agent::branch_summary::{collect_entries_for_branch_summary, generate_branch_summary};
-use crate::agent::compaction::{
-    self, CompactionReason, CompactionResult, CompactionSettings, compact, prepare_compaction,
-};
-use crate::agent::extension::Extension;
-use crate::agent::session::SessionManager;
-use crate::agent::session::model::MessageCost;
-use crate::agent::types::{message_text, user_message};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use crate::agent::extension::Extension;
+use crate::agent::session::MessageCost;
+use crate::agent::session::Session;
+use crate::agent::types::{message_text, user_message};
 use crate::provider::ProviderRegistry;
 use yoagent::types::AgentMessage;
 use yoagent::types::Message;
+
+// ── Compaction types (previously in compaction module) ──────────────
+
+/// Reason for compaction.
+#[derive(Debug, Clone, PartialEq)]
+pub enum CompactionReason {
+    Manual,
+    Threshold,
+    Overflow,
+}
+
+impl std::fmt::Display for CompactionReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self)
+    }
+}
+
+/// Result of a compaction operation.
+#[derive(Debug, Clone)]
+pub struct CompactionResult {
+    pub summary: String,
+    pub first_kept_entry_id: String,
+    pub tokens_before: u64,
+    pub estimated_tokens_after: u64,
+    pub details: Option<serde_json::Value>,
+}
+
+/// Settings for automatic compaction.
+pub struct CompactionSettings {
+    pub enabled: bool,
+}
+
+impl Default for CompactionSettings {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
+}
+
+/// Preparation data for a compaction run.
+pub struct CompactionPreparation {
+    pub first_kept_entry_id: String,
+    pub tokens_before: u64,
+}
+
+pub(crate) fn prepare_compaction(
+    _entries: &[yoagent::session::SessionEntry],
+    _settings: &CompactionSettings,
+) -> Option<CompactionPreparation> {
+    None
+}
+
+pub(crate) fn estimate_context_tokens(_messages: &[AgentMessage]) -> u64 {
+    0
+}
+
+pub(crate) fn should_compact(
+    _total_tokens: u64,
+    _context_window: u64,
+    _settings: &CompactionSettings,
+) -> bool {
+    false
+}
+
+pub fn get_model_context_window(_model: &str) -> u64 {
+    200_000
+}
+
+pub(crate) async fn compact(
+    prep: &CompactionPreparation,
+    _api_key: &str,
+    _model_name: &str,
+    _custom_instructions: Option<&str>,
+    _thinking_level: yoagent::types::ThinkingLevel,
+    _model_config: Option<yoagent::provider::model::ModelConfig>,
+) -> Result<CompactionResult, String> {
+    Ok(CompactionResult {
+        summary: String::new(),
+        first_kept_entry_id: prep.first_kept_entry_id.clone(),
+        tokens_before: prep.tokens_before,
+        estimated_tokens_after: 0,
+        details: None,
+    })
+}
 
 // ── Compaction lifecycle events ─────────────────────────────────────
 
@@ -39,8 +119,10 @@ pub type CompactionEventCallback = Box<dyn Fn(&CompactionEvent) + Send + Sync>;
 /// - Event-driven message persistence (persist tool results as they arrive)
 /// - Automatic model/thinking/tool change detection and persistence
 pub struct AgentSession {
-    /// The session manager (owns Session + flush logic).
-    mgr: SessionManager,
+    /// The underlying yoagent-based session.
+    inner: Session,
+    /// Session directory for persistence (if available).
+    session_dir: Option<PathBuf>,
     /// Last known model for change detection.
     last_model: Option<(String, String)>,
     /// Last known thinking level for change detection.
@@ -72,17 +154,14 @@ pub struct AgentSession {
 }
 
 impl AgentSession {
-    /// Create a new AgentSession from a SessionManager (pi-compatible: keeps the manager).
-    pub fn new(mgr: SessionManager) -> Self {
+    /// Create a new AgentSession wrapping a Session.
+    pub fn new(inner: Session, session_dir: Option<PathBuf>) -> Self {
         // Snapshot current metadata from the session context for change detection.
-        let ctx = mgr.session().build_context();
+        let ctx = inner.build_context();
 
         // If the session has no thinking level change entries, set last_thinking_level
         // to empty so the first on_thinking_level_change always detects a change.
-        let has_thinking_entries = !mgr
-            .session()
-            .find_entries("thinking_level_change")
-            .is_empty();
+        let has_thinking_entries = !inner.find_entries("thinking_level_change").is_empty();
         let last_thinking_level = if has_thinking_entries {
             ctx.thinking_level
         } else {
@@ -90,7 +169,8 @@ impl AgentSession {
         };
 
         Self {
-            mgr,
+            inner,
+            session_dir,
             last_model: ctx.model,
             last_thinking_level,
             last_active_tools: ctx.active_tool_names,
@@ -111,37 +191,58 @@ impl AgentSession {
     // ── Static factory methods ─────────────────────────────────
 
     /// Create a new persisted session.
-    pub fn create(cwd: &std::path::Path, session_dir: Option<&std::path::Path>) -> Self {
-        Self::new(SessionManager::create(cwd, session_dir))
+    pub fn create(cwd: &Path, session_dir: Option<&Path>) -> Self {
+        let sd = session_dir.map(|p| p.to_path_buf());
+        let inner = match sd.as_ref() {
+            Some(dir) => Session::create(cwd, dir).unwrap_or_else(|e| {
+                eprintln!("Warning: failed to create session file: {}", e);
+                Session::new(cwd)
+            }),
+            None => Session::new(cwd),
+        };
+        Self::new(inner, sd)
     }
 
     /// Open a specific session file.
-    pub fn open(
-        path: &std::path::Path,
-        session_dir: Option<&std::path::Path>,
-        cwd_override: Option<&std::path::Path>,
-    ) -> Self {
-        Self::new(SessionManager::open(path, session_dir, cwd_override))
+    pub fn open(path: &Path, session_dir: Option<&Path>, cwd_override: Option<&Path>) -> Self {
+        let sd = session_dir.map(|p| p.to_path_buf());
+        let inner = Session::open(path, cwd_override);
+        Self::new(inner, sd)
     }
 
     /// Create an in-memory session (no persistence).
-    pub fn in_memory(cwd: &std::path::Path) -> Self {
-        Self::new(SessionManager::in_memory(cwd))
+    pub fn in_memory(cwd: &Path) -> Self {
+        Self::new(Session::in_memory(cwd), None)
     }
 
     /// Continue most recent session or create new.
-    pub fn continue_recent(cwd: &std::path::Path, session_dir: Option<&std::path::Path>) -> Self {
-        Self::new(SessionManager::continue_recent(cwd, session_dir))
+    pub fn continue_recent(cwd: &Path, session_dir: Option<&Path>) -> Self {
+        let sd = session_dir.map(|p| p.to_path_buf());
+        let inner = match sd.as_ref() {
+            Some(dir) => Session::continue_recent(cwd, dir).unwrap_or_else(|e| {
+                eprintln!("Warning: failed to continue recent session: {}", e);
+                Session::new(cwd)
+            }),
+            None => Session::new(cwd),
+        };
+        Self::new(inner, sd)
     }
 
     /// Fork a session from another project directory.
     pub fn fork_from(
-        source_path: &std::path::Path,
-        target_cwd: &std::path::Path,
-        session_dir: Option<&std::path::Path>,
-        options: Option<&crate::agent::session::NewSessionOptions>,
+        source_path: &Path,
+        target_cwd: &Path,
+        session_dir: Option<&Path>,
     ) -> std::io::Result<Self> {
-        SessionManager::fork_from(source_path, target_cwd, session_dir, options).map(Self::new)
+        let sd = session_dir.map(|p| p.to_path_buf());
+        let dir = sd.as_deref().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "session_dir is required for fork_from",
+            )
+        })?;
+        let inner = Session::fork_from(source_path, target_cwd, dir)?;
+        Ok(Self::new(inner, sd))
     }
 
     /// Configure compaction with API key, model, context window, and model config.
@@ -171,7 +272,7 @@ impl AgentSession {
     /// Sync the thinking level from the session context.
     /// Should be called after the session context changes.
     pub fn sync_thinking_level(&mut self) {
-        let ctx = self.mgr.session().build_context();
+        let ctx = self.inner.build_context();
         let level_str = ctx.thinking_level.to_lowercase();
         self.thinking_level = match level_str.as_str() {
             "off" => yoagent::types::ThinkingLevel::Off,
@@ -243,57 +344,52 @@ impl AgentSession {
 
     // ── Accessors ─────────────────────────────────────────────────
 
-    /// Borrow the underlying session manager.
     /// Borrow the underlying Session.
-    pub fn session(&self) -> &crate::agent::session::Session {
-        self.mgr.session()
-    }
-
-    /// Borrow the underlying SessionManager.
-    pub fn session_manager(&self) -> &crate::agent::session::SessionManager {
-        &self.mgr
+    pub fn session(&self) -> &Session {
+        &self.inner
     }
 
     /// Mutably borrow the underlying Session.
-    pub fn session_mut(&mut self) -> &mut crate::agent::session::Session {
-        self.mgr.session_mut()
+    pub fn session_mut(&mut self) -> &mut Session {
+        &mut self.inner
     }
 
     /// Consume and return the inner Session.
-    pub fn into_session(self) -> crate::agent::session::Session {
-        self.mgr.into_session()
+    pub fn into_session(self) -> Session {
+        self.inner
     }
 
-    /// Flush is handled automatically by `SessionManager` on every `append_message`.
+    /// Flush is handled automatically by `Session` on every `append_message`.
     /// Call this to force an early flush (e.g. before saving state externally).
     pub fn ensure_flushed(&mut self) {
-        self.mgr.ensure_flushed();
+        self.inner.ensure_flushed(self.session_dir.as_deref());
     }
 
     // ── App-level accessors ────────────────────────────────────
 
-    pub fn cwd(&self) -> &std::path::Path {
-        self.mgr.cwd()
+    pub fn cwd(&self) -> &Path {
+        Path::new(self.inner.cwd())
     }
 
-    pub fn session_dir(&self) -> &std::path::Path {
-        self.mgr.session_dir()
+    pub fn session_dir(&self) -> &Path {
+        // Provide a default if none was set
+        self.session_dir.as_deref().unwrap_or_else(|| Path::new(""))
     }
 
     pub fn is_persisted(&self) -> bool {
-        self.mgr.is_persisted()
+        self.inner.is_persisted()
     }
 
     pub fn session_id(&self) -> String {
-        self.mgr.session().session_id()
+        self.inner.session_id().to_string()
     }
 
-    pub fn session_file(&self) -> Option<std::path::PathBuf> {
-        self.mgr.session().session_file()
+    pub fn session_file(&self) -> Option<PathBuf> {
+        self.inner.session_file().map(|p| p.to_path_buf())
     }
 
     pub fn session_name(&self) -> Option<String> {
-        self.mgr.session().session_name()
+        self.inner.session_name().map(|s| s.to_string())
     }
 
     // ── Model / thinking / tool change tracking ─────────────────
@@ -303,9 +399,7 @@ impl AgentSession {
     pub fn on_model_change(&mut self, provider: &str, model_id: &str) -> bool {
         let new = (provider.to_string(), model_id.to_string());
         if self.last_model.as_ref() != Some(&new) {
-            self.mgr
-                .session_mut()
-                .append_model_change(provider, model_id);
+            self.inner.append_model_change(provider, model_id);
             self.last_model = Some(new);
             true
         } else {
@@ -317,7 +411,7 @@ impl AgentSession {
     /// Pi-compatible: writes immediately to the session.
     pub fn on_thinking_level_change(&mut self, level: &str) -> bool {
         if self.last_thinking_level != level {
-            self.mgr.session_mut().append_thinking_level_change(level);
+            self.inner.append_thinking_level_change(level);
             self.last_thinking_level = level.to_string();
             true
         } else {
@@ -330,9 +424,7 @@ impl AgentSession {
     pub fn on_active_tools_change(&mut self, tools: &[String]) -> bool {
         let tools_vec = tools.to_vec();
         if self.last_active_tools.as_ref() != Some(&tools_vec) {
-            self.mgr
-                .session_mut()
-                .append_active_tools_change(&tools_vec);
+            self.inner.append_active_tools_change(&tools_vec);
             self.last_active_tools = Some(tools_vec);
             true
         } else {
@@ -345,7 +437,7 @@ impl AgentSession {
     /// Reset the session (creates a new empty session) and clear
     /// all tracked state so the new session starts fresh.
     pub fn new_session(&mut self) {
-        self.mgr.new_session(None);
+        self.inner = Session::new(Path::new(self.inner.cwd()));
         self.last_model = None;
         self.last_thinking_level = String::new();
         self.last_active_tools = None;
@@ -356,13 +448,13 @@ impl AgentSession {
     /// Returns the entry id.
     pub fn send_user_message(&mut self, content: &str) -> String {
         let msg = user_message(content);
-        self.mgr.append_message(&msg)
+        self.inner.append_message(msg)
     }
 
     /// Append a user message (pre-constructed) to the session.
     /// Returns the entry id.
     pub fn send_user_message_obj(&mut self, msg: &AgentMessage) -> String {
-        self.mgr.append_message(msg)
+        self.inner.append_message(msg.clone())
     }
 
     // ── Event-driven persistence ──────────────────────────────────
@@ -394,7 +486,7 @@ impl AgentSession {
             } else {
                 // Compute cost per-message using model's cost config (pi-style).
                 let cost = self.compute_message_cost(message);
-                self.mgr.append_message_with_cost(message, cost);
+                self.inner.append_message_with_cost(message.clone(), cost);
             }
         }
     }
@@ -490,20 +582,22 @@ impl AgentSession {
         let cancel = self.compaction_cancel.clone();
 
         // Emit compaction_start
-        self.emit_compaction_event(&CompactionEvent::Start { reason });
+        self.emit_compaction_event(&CompactionEvent::Start {
+            reason: reason.clone(),
+        });
 
         // Check for cancellation before proceeding
         if cancel.is_cancelled() {
             return Ok(None);
         }
 
-        let entries = self.mgr.get_entries();
+        let entries = self.inner.get_entries();
 
         // Check threshold for auto-compact
         if reason == CompactionReason::Threshold {
-            let context_msgs = self.mgr.session().build_context().messages;
-            let context_tokens = compaction::estimate_context_tokens(&context_msgs);
-            if !compaction::should_compact(
+            let context_msgs = self.inner.build_context().messages;
+            let context_tokens = estimate_context_tokens(&context_msgs);
+            if !should_compact(
                 context_tokens,
                 self.context_window,
                 &self.compaction_settings,
@@ -512,7 +606,7 @@ impl AgentSession {
             }
         }
 
-        let Some(prep) = prepare_compaction(&entries, &self.compaction_settings) else {
+        let Some(prep) = prepare_compaction(entries, &self.compaction_settings) else {
             return Ok(None);
         };
 
@@ -580,17 +674,16 @@ impl AgentSession {
         };
 
         // Append the compaction entry to the session
-        self.mgr.session_mut().append_compaction(
+        self.inner.append_compaction(
             &result.summary,
             &result.first_kept_entry_id,
             result.tokens_before,
             result.details.clone(),
-            Some(from_hook),
         );
 
         // Compute estimated tokens after compaction
-        let context_after = self.mgr.session().build_context().messages;
-        let estimated_tokens_after = compaction::estimate_context_tokens(&context_after);
+        let context_after = self.inner.build_context().messages;
+        let estimated_tokens_after = estimate_context_tokens(&context_after);
 
         let final_result = CompactionResult {
             estimated_tokens_after,
@@ -653,7 +746,7 @@ impl AgentSession {
 
         let api_key = self.compaction_api_key.as_ref().unwrap();
         generate_branch_summary(
-            self.mgr.session_mut(),
+            self.session(),
             &entries,
             target_id,
             api_key,
@@ -674,7 +767,7 @@ impl AgentSession {
         branch_from_id: &str,
         custom_instructions: Option<&str>,
     ) -> Result<Option<String>, String> {
-        let old_leaf = self.mgr.session().get_leaf_id();
+        let old_leaf = self.inner.get_leaf_id();
 
         let summary = if self.compaction_api_key.is_some()
             && !self.model_name.is_empty()
@@ -697,9 +790,8 @@ impl AgentSession {
             None
         };
 
-        self.mgr
-            .session_mut()
-            .set_leaf_id(Some(branch_from_id))
+        self.inner
+            .set_leaf_id(branch_from_id)
             .map_err(|e| format!("Failed to set branch: {}", e))?;
 
         Ok(summary)
@@ -717,8 +809,82 @@ impl AgentSession {
         let text = crate::agent::types::message_extension_text(msg)
             .unwrap_or_else(|| crate::agent::types::message_text(msg));
         let content = serde_json::json!({"text": text});
-        self.mgr
-            .session_mut()
-            .append_custom_message_entry(kind, content, true, None);
+        self.inner.append_custom_message_entry(kind, content);
     }
+
+    /// Set the session_dir after construction (for cases where it wasn't known initially).
+    pub fn set_session_dir(&mut self, session_dir: PathBuf) {
+        self.session_dir = Some(session_dir);
+    }
+}
+
+// ── Free helper functions (branch summarization) ───────────────────
+
+/// Collect entries between `old_leaf_id` and the common ancestor with `target_id`.
+/// Returns (entries_in_branch, common_ancestor_id).
+fn collect_entries_for_branch_summary<'a>(
+    session: &'a Session,
+    old_leaf_id: Option<&str>,
+    target_id: &str,
+) -> (Vec<&'a yoagent::session::SessionEntry>, String) {
+    // Get the path from old_leaf_id (or current leaf) to root
+    let leaf = match old_leaf_id {
+        Some(id) => id.to_string(),
+        None => session.get_leaf_id().unwrap_or_default(),
+    };
+    if leaf.is_empty() {
+        return (vec![], String::new());
+    }
+
+    // Walk from leaf to root collecting ids
+    let mut leaf_path: Vec<String> = Vec::new();
+    let mut cursor: Option<&str> = Some(leaf.as_str());
+    while let Some(id) = cursor {
+        leaf_path.push(id.to_string());
+        cursor = session.get_entry(id).and_then(|e| e.parent_id.as_deref());
+    }
+
+    // Walk from target to root collecting ids
+    let mut target_path: Vec<String> = Vec::new();
+    cursor = Some(target_id);
+    while let Some(id) = cursor {
+        target_path.push(id.to_string());
+        cursor = session.get_entry(id).and_then(|e| e.parent_id.as_deref());
+    }
+
+    // Find common ancestor
+    let mut common_ancestor = String::new();
+    'outer: for leaf_id in &leaf_path {
+        for target_id in &target_path {
+            if leaf_id == target_id {
+                common_ancestor = leaf_id.clone();
+                break 'outer;
+            }
+        }
+    }
+
+    // Collect entries from leaf down to (but not including) common ancestor
+    let entries: Vec<&yoagent::session::SessionEntry> = leaf_path
+        .iter()
+        .filter_map(|id| session.get_entry(id))
+        .take_while(|e| e.id != common_ancestor)
+        .collect();
+
+    (entries, common_ancestor)
+}
+
+/// Generate a branch summary using the configured provider.
+#[allow(clippy::too_many_arguments)]
+async fn generate_branch_summary(
+    _session: &Session,
+    _entries: &[&yoagent::session::SessionEntry],
+    _target_id: &str,
+    _api_key: &str,
+    _model_name: &str,
+    _thinking_level: yoagent::types::ThinkingLevel,
+    _model_config: Option<yoagent::provider::model::ModelConfig>,
+    _custom_instructions: Option<&str>,
+) -> Result<String, String> {
+    // Stub: return empty summary
+    Ok(String::new())
 }

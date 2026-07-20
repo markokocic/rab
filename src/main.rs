@@ -1,5 +1,5 @@
 use rab::agent::extension::Extension;
-use rab::agent::session::SessionRepo;
+
 use rab::agent::settings::Settings;
 use rab::agent::ui;
 use rab::builtin::{
@@ -213,8 +213,10 @@ async fn main() -> anyhow::Result<()> {
         }
 
         // Try to match as session ID prefix (first exact, then prefix)
-        let repo = rab::agent::session::DefaultSessionRepo::new();
-        let sessions = repo.list_all(None);
+        let session_dir = _session_dir
+            .map(|d| d.to_path_buf())
+            .unwrap_or_else(|| rab::agent::session::get_default_session_dir(cwd));
+        let sessions = rab::agent::session::list_sessions(&session_dir);
 
         // Exact match first
         if let Some(s) = sessions.iter().find(|s| s.id == arg) {
@@ -287,21 +289,10 @@ async fn main() -> anyhow::Result<()> {
                 std::process::exit(1);
             }
         }
-        let fork_options = session_id
-            .as_ref()
-            .map(|id| rab::agent::session::NewSessionOptions {
-                id: Some(id.clone()),
-                parent_session: None,
-            });
-        match rab::agent::session::SessionManager::fork_from(
-            resolved.path(),
-            &cwd,
-            session_dir.as_deref(),
-            fork_options.as_ref(),
-        ) {
-            Ok(sm) => {
-                eprintln!("Forked session {}", sm.session().session_id());
-                rab::agent::AgentSession::new(sm)
+        match rab::agent::AgentSession::fork_from(resolved.path(), &cwd, session_dir.as_deref()) {
+            Ok(session) => {
+                eprintln!("Forked session {}", session.session_id());
+                session
             }
             Err(e) => {
                 eprintln!("Error: fork failed: {}", e);
@@ -345,14 +336,7 @@ async fn main() -> anyhow::Result<()> {
         if let Some(s) = existing {
             rab::agent::AgentSession::open(&s.path, session_dir.as_deref(), None)
         } else {
-            rab::agent::AgentSession::new(rab::agent::session::SessionManager::create_with_options(
-                &cwd,
-                session_dir.as_deref(),
-                Some(&rab::agent::session::NewSessionOptions {
-                    id: Some(sid.clone()),
-                    parent_session: None,
-                }),
-            ))
+            rab::agent::AgentSession::create(&cwd, session_dir.as_deref())
         }
     } else {
         rab::agent::AgentSession::create(&cwd, session_dir.as_deref())
@@ -612,13 +596,13 @@ async fn main() -> anyhow::Result<()> {
             .map(|r| r.model_config.clone())
             .unwrap_or_else(|| {
                 let mut mc = rab::agent::base_model_config(&model);
-                mc.context_window = rab::agent::compaction::get_model_context_window(&model) as u32;
+                mc.context_window = rab::agent::get_model_context_window(&model) as u32;
                 mc
             });
         agent_session.set_compaction_config(
             api_key.clone(),
             &model,
-            rab::agent::compaction::get_model_context_window(&model),
+            rab::agent::get_model_context_window(&model),
             Some(mc.clone()),
         );
 

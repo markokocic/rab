@@ -12,7 +12,6 @@ pub mod session_picker;
 pub mod settings_list;
 pub mod settings_selector;
 pub mod tool_messages;
-pub mod tree_selector;
 pub mod user_message;
 
 pub use assistant_message::AssistantMessageComponent;
@@ -28,5 +27,4 @@ pub use session_picker::SessionPicker;
 pub use settings_list::SettingsList;
 pub use settings_selector::SettingsSelector;
 pub use tool_messages::{RcToolExec, ToolExecComponent};
-pub use tree_selector::TreeSelector;
 pub use user_message::UserMessageComponent;
