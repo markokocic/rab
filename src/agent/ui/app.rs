@@ -5244,6 +5244,11 @@ fn handle_agent_event(app: &mut App, event: yoagent::types::AgentEvent) {
         }
         E::TurnEnd { message, .. } => {
             app.streaming_component = None;
+            // Refresh footer stats after each turn completes (sooner than
+            // AgentEnd, but still bounded by turn frequency — not every frame).
+            if let Some(ref s) = app.session {
+                app.footer.borrow_mut().refresh_from_session(s.session());
+            }
             // Surface provider errors carried by the turn's final message.
             if let Some(err) = crate::agent::types::message_error(&message) {
                 show_status(app, format!("Provider error: {}", err));
