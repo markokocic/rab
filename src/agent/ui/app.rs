@@ -770,8 +770,6 @@ pub async fn run(config: AppConfig, session: AgentSession) -> anyhow::Result<()>
     crate::tui::terminal::start_stdin_reader();
 
     let mut tui = TUI::new();
-    // Disable clear_on_shrink to avoid full redraws during streaming
-    // (content grows/shrinks frequently as pending text is flushed).
     tui.set_clear_on_shrink(false);
     let mut app = App::new(config, session);
 
@@ -922,7 +920,7 @@ pub async fn run(config: AppConfig, session: AgentSession) -> anyhow::Result<()>
             }
         }
 
-        // Check overlay result signal (set by overlay callbacks when user selects/cancels).
+        // Check overlay result signal
         if tui.has_overlays() {
             let result = app.overlay_result_signal.borrow_mut().take();
             if let Some(result) = result {
@@ -1520,7 +1518,6 @@ pub async fn run(config: AppConfig, session: AgentSession) -> anyhow::Result<()>
 
         // Compose and render only when state has changed
         if dirty {
-            // Update section components from compose_ui
             compose_ui(&mut app, cols as usize);
             tui.set_dimensions(cols as usize, rows as usize);
             tui.render(cols as usize, rows as usize, &mut stdout)?;
@@ -2836,7 +2833,7 @@ fn open_extensions_selector(app: &mut App, tui: &mut TUI) {
             let tools = ext.tools();
             let tool_names: Vec<String> = tools.iter().map(|t| t.name().to_string()).collect();
             let commands = ext.commands();
-            let command_count = commands.len();
+            let command_names: Vec<String> = commands.iter().map(|c| c.name.clone()).collect();
             let skills = ext.skills();
             let skill_names: Vec<String> = skills.skills().iter().map(|s| s.name.clone()).collect();
 
@@ -2860,12 +2857,11 @@ fn open_extensions_selector(app: &mut App, tui: &mut TUI) {
                 default_state,
                 enabled,
                 tool_names,
-                command_count,
+                command_names,
                 skill_names,
             }
         })
         .collect();
-
     let close_signal = app.overlay_result_signal.clone();
 
     let callbacks = ExtensionsCallbacks {
@@ -2911,7 +2907,16 @@ fn open_extensions_selector(app: &mut App, tui: &mut TUI) {
     };
 
     let selector = ExtensionsSelector::new(extensions, callbacks);
-    tui.show_positioned_overlay(Box::new(selector), crate::tui::OverlayPosition::Bottom);
+    use crate::tui::overlay::{OverlayAnchor, OverlayOptions, SizeValue};
+    tui.show_overlay(
+        Box::new(selector),
+        OverlayOptions {
+            width: Some(SizeValue::Percent(100.0)),
+            anchor: Some(OverlayAnchor::BottomLeft),
+            offset_y: Some(-5),
+            ..Default::default()
+        },
+    );
 }
 
 /// Refresh all agent-facing configuration (system prompt, tools, commands,

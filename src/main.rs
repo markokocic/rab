@@ -370,48 +370,24 @@ async fn main() -> anyhow::Result<()> {
     builtin_ext = builtin_ext.with_bash_options(bash_options);
 
     // ── Extension loading ──────────────────────────────────────────
-    //
-    // For each extension:
-    //   Builtin → always loaded (not in /extensions as toggleable)
-    //   Others → check settings.extensions_config.states[name];
-    //            fall back to extension.default_state()
-    //
-    fn is_extension_enabled(ext: &dyn Extension, settings: &Settings) -> bool {
-        use rab::agent::ExtensionDefault;
-        match ext.default_state() {
-            ExtensionDefault::Builtin => true,
-            _ => {
-                // Check user override in settings
-                if let Some(&enabled) = settings.extensions_config.states.get(ext.name().as_ref()) {
-                    return enabled;
-                }
-                // Fall back to default
-                ext.default_state() == ExtensionDefault::Enabled
-            }
-        }
-    }
+    // All extensions are loaded regardless of enable state so they appear
+    // in the /extensions UI. Enable/disable filtering is done at use sites
+    // (handle_slash_command, refresh_agent_config, etc.).
 
     let mut extensions: Vec<Box<dyn Extension>> = Vec::new();
 
     // Builtin is always loaded
     extensions.push(Box::new(builtin_ext));
 
-    // File search extension
+    // File search extension (load regardless of enabled state so it appears in /extensions)
     let file_search_ext = rab::extensions::file_search::FileSearchExtension::new(cwd.clone());
-    if is_extension_enabled(&file_search_ext, &settings) {
-        extensions.push(Box::new(file_search_ext));
-    }
+    extensions.push(Box::new(file_search_ext));
 
-    // MCP extension
-    if is_extension_enabled(
-        &rab::extensions::mcp::McpExtension::from_cwd(&cwd),
-        &settings,
-    ) {
-        let mcp_ext = rab::extensions::mcp::McpExtension::from_cwd(&cwd);
-        mcp_ext.restore_cache().await;
-        mcp_ext.bootstrap_direct_tools().await;
-        extensions.push(Box::new(mcp_ext));
-    }
+    // MCP extension (load regardless of enabled state)
+    let mcp_ext = rab::extensions::mcp::McpExtension::from_cwd(&cwd);
+    mcp_ext.restore_cache().await;
+    mcp_ext.bootstrap_direct_tools().await;
+    extensions.push(Box::new(mcp_ext));
 
     // Load context files (AGENTS.md / CLAUDE.md)
     let context_files = if no_context_files {

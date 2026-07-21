@@ -18,7 +18,7 @@ pub struct ExtensionInfo {
     pub default_state: ExtensionDefault,
     pub enabled: bool,
     pub tool_names: Vec<String>,
-    pub command_count: usize,
+    pub command_names: Vec<String>,
     pub skill_names: Vec<String>,
 }
 
@@ -30,14 +30,13 @@ pub struct ExtensionsCallbacks {
     pub on_cancel: Box<dyn FnMut()>,
 }
 
-/// Build SettingItems from extension info.
+/// Build SettingItems from extension info (extension rows + save actions only).
 fn build_items(extensions: &[ExtensionInfo]) -> Vec<SettingItem> {
     let mut items: Vec<SettingItem> = Vec::new();
 
     for ext in extensions {
         let is_builtin = ext.default_state == ExtensionDefault::Builtin;
 
-        // Extension row
         let (current_value, values) = if is_builtin {
             ("(builtin)".to_string(), None)
         } else {
@@ -47,56 +46,37 @@ fn build_items(extensions: &[ExtensionInfo]) -> Vec<SettingItem> {
                 Some(vec!["enabled".to_string(), "disabled".to_string()]),
             )
         };
+
+        // Build description with tools, commands, skills (shown when extension is selected)
+        let mut desc_parts: Vec<String> = Vec::new();
+        if is_builtin {
+            desc_parts.push("Always loaded, cannot be disabled".to_string());
+        }
+        if !ext.tool_names.is_empty() {
+            desc_parts.push(format!("Tools: {}", ext.tool_names.join(", ")));
+        }
+        if !ext.command_names.is_empty() {
+            desc_parts.push(format!("Commands: {}", ext.command_names.join(", ")));
+        }
+        if !ext.skill_names.is_empty() {
+            desc_parts.push(format!("Skills: {}", ext.skill_names.join(", ")));
+        }
+        let description = if desc_parts.is_empty() {
+            None
+        } else {
+            Some(desc_parts.join("\n"))
+        };
+
         items.push(SettingItem {
             id: format!("ext_{}", ext.name),
             label: ext.name.clone(),
-            description: None,
+            description,
             current_value,
             values,
         });
-
-        // Tools detail line
-        if !ext.tool_names.is_empty() {
-            let tools_str = format!("    Tools: {}", ext.tool_names.join(", "));
-            items.push(SettingItem {
-                id: format!("{}_tools", ext.name),
-                label: tools_str,
-                description: None,
-                current_value: String::new(),
-                values: None,
-            });
-        }
-
-        // Commands detail line
-        if ext.command_count > 0 {
-            let label = if ext.command_count == 1 {
-                "    Commands: 1 command".to_string()
-            } else {
-                format!("    Commands: {} commands", ext.command_count)
-            };
-            items.push(SettingItem {
-                id: format!("{}_cmds", ext.name),
-                label,
-                description: None,
-                current_value: String::new(),
-                values: None,
-            });
-        }
-
-        // Skills detail line
-        if !ext.skill_names.is_empty() {
-            let skills_str = format!("    Skills: {}", ext.skill_names.join(", "));
-            items.push(SettingItem {
-                id: format!("{}_skills", ext.name),
-                label: skills_str,
-                description: None,
-                current_value: String::new(),
-                values: None,
-            });
-        }
     }
 
-    // Separator + save actions
+    // Save actions
     items.push(SettingItem {
         id: "__separator__".into(),
         label: "".into(),
@@ -182,35 +162,42 @@ impl ExtensionsSelector {
 
 impl Component for ExtensionsSelector {
     fn render(&mut self, width: usize) -> Vec<String> {
-        let theme = current_theme();
+        // Scope the theme guard so it's dropped before settings_list.render()
+        // (which also calls current_theme()). Otherwise the non-reentrant Mutex deadlocks.
         let mut lines: Vec<String> = Vec::new();
+        let hint_text: String;
+        {
+            let theme = current_theme();
+            let title = theme.bold_accent("  Extension Configuration");
+            lines.push(truncate_to_width(&title, width, "", true));
+            lines.push(theme.dim(&"─".repeat(width.saturating_sub(2))));
+            lines.push(String::new());
+            hint_text = format!(
+                "  {}",
+                theme.dim("Type to search · ↑↓ navigate · Enter/Space: toggle · Esc: close")
+            );
+        }
+        // theme lock is released here
 
-        let title = theme.bold_accent("  Extension Configuration");
-        lines.push(truncate_to_width(&title, width, "", true));
-        lines.push(theme.dim(&"─".repeat(width.saturating_sub(2))));
-        lines.push(String::new());
-
-        // Render the settings list contents
+        // Render the settings list contents (descriptions shown when selected)
         let list_lines = self.settings_list.render(width);
 
         // Filter out the default hint line from SettingsList and replace with our own
-        // (The settings list renders hints at the bottom; we want our own hint line)
-        let our_hint = format!(
-            "  {}",
-            theme.dim("Type to search · ↑↓ navigate · Enter/Space: toggle · Esc: close")
-        );
-
-        // Replace the last non-empty line (the hint) with our custom hint
         let mut result_lines: Vec<String> = Vec::new();
         for line in &list_lines {
-            // Skip the default hint line
             if line.contains("Type to search") || line.contains("Enter/Space to change") {
                 continue;
             }
             result_lines.push(line.clone());
         }
         result_lines.push(String::new());
-        result_lines.push(truncate_to_width(&our_hint, width, "", true));
+        result_lines.push(truncate_to_width(&hint_text, width, "", true));
+
+        // Pad to minimum height so overlay doesn't flicker as description length changes
+        const MIN_OVERLAY_HEIGHT: usize = 20;
+        while result_lines.len() < MIN_OVERLAY_HEIGHT {
+            result_lines.push(String::new());
+        }
 
         lines.extend(result_lines);
         lines

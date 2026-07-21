@@ -78,35 +78,25 @@ pub fn start_stdin_reader() {
     STDIN_RUNNING.store(true, Ordering::SeqCst);
 
     let handle = std::thread::spawn(move || {
-        // Use poll() with a timeout so we can check the stop flag regularly.
-        // 100ms interval is short enough for responsive shutdown but long
-        // enough to not waste CPU.
         while STDIN_RUNNING.load(Ordering::SeqCst) {
             match event::poll(std::time::Duration::from_millis(100)) {
-                Ok(true) => {
-                    // Data available — read it
-                    match event::read() {
-                        Ok(Event::Key(key)) => {
-                            let _ = tx.send(TerminalEvent::Key(key));
-                        }
-                        Ok(Event::Paste(content)) => {
-                            let _ = tx.send(TerminalEvent::Paste(content));
-                        }
-                        Ok(Event::Resize(w, h)) => {
-                            let _ = tx.send(TerminalEvent::Resize(w, h));
-                        }
-                        Ok(_) => {}
-                        Err(_) => {
-                            // Stdin error — terminal likely closed. Exit thread.
-                            break;
-                        }
+                Ok(true) => match event::read() {
+                    Ok(Event::Key(key)) => {
+                        let _ = tx.send(TerminalEvent::Key(key));
                     }
-                }
-                Ok(false) => {
-                    // Timeout — loop back and check stop flag
-                }
+                    Ok(Event::Paste(content)) => {
+                        let _ = tx.send(TerminalEvent::Paste(content));
+                    }
+                    Ok(Event::Resize(w, h)) => {
+                        let _ = tx.send(TerminalEvent::Resize(w, h));
+                    }
+                    Ok(_) => {}
+                    Err(_) => {
+                        break;
+                    }
+                },
+                Ok(false) => {}
                 Err(_) => {
-                    // poll error — exit
                     break;
                 }
             }
@@ -139,24 +129,22 @@ pub fn join_stdin_reader() {
 
 /// Drain all pending events from the stdin reader channel.
 /// Non-blocking read from the background stdin reader channel.
-///
-/// The receiver is taken out of the mutex before the call so `EVENT_RX`
-/// is never held during the operation — other code (e.g. `stop_stdin_reader`)
-/// can always lock it without contention.
 pub fn try_recv_terminal_event() -> Option<TerminalEvent> {
     use std::sync::mpsc::TryRecvError;
-    let rx_opt = EVENT_RX.lock().unwrap().take();
-    let rx = rx_opt.as_ref()?;
-    let (event, keep) = match rx.try_recv() {
-        Ok(event) => (Some(event), true),
-        Err(TryRecvError::Empty) => (None, true),
-        Err(TryRecvError::Disconnected) => (None, false),
-    };
-    let _ = rx;
-    if keep {
-        *EVENT_RX.lock().unwrap() = rx_opt;
+    // Lock the mutex for the entire operation so the receiver is never
+    // removed while other code (e.g. stop_stdin_reader) might access it.
+    let mut guard = EVENT_RX.lock().unwrap();
+    let rx = guard.as_ref()?;
+    match rx.try_recv() {
+        Ok(event) => Some(event),
+        Err(TryRecvError::Empty) => None,
+        Err(TryRecvError::Disconnected) => {
+            // Channel disconnected — stdin reader thread exited.
+            // Drop the receiver so a new channel can be created.
+            *guard = None;
+            None
+        }
     }
-    event
 }
 
 // =============================================================================
@@ -234,13 +222,6 @@ impl TerminalTrait for ProcessTerminal {
         crossterm::terminal::enable_raw_mode()?;
         self.was_raw = true;
         self.enable_bracketed_paste(writer)?;
-        // Enable Kitty keyboard protocol for:
-        //   - Disambiguated escape codes (no more ambiguity between Esc and Alt+key)
-        //   - Key event types (press/repeat/release)
-        //   - Alternate key reporting (shifted key according to keyboard layout)
-        // Crossterm 0.29+ parses Kitty CSI-u sequences natively via
-        // parse_csi_u_encoded_key_code. The enhancement flags response is
-        // consumed internally by crossterm and doesn't interfere with event reading.
         self.enable_kitty_protocol(writer)?;
         // Refresh terminal dimensions
         let _ = crossterm::terminal::size();

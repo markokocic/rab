@@ -409,9 +409,6 @@ impl TUI {
             *line = normalize_terminal_output(line);
         }
 
-        // Hide cursor before diff render to avoid flicker from cursor movement
-        // during line clears and rewrites. The cursor will be shown at the
-        // correct position after positioning.
         write!(writer, "\x1b[?25l")?;
 
         // Diff render via Screen (extracts cursor markers internally)
