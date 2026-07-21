@@ -568,6 +568,11 @@ pub enum CommandResult {
     Logout { provider: Option<String> },
     /// Manually compact the session context.
     CompactSession(Option<String>),
+    /// Graceful stop: finish current turn, then stop without starting new turns.
+    /// Queued steer/follow-up messages are preserved for the next run.
+    Stop,
+    /// Queue a message for the next agent run (when idle).
+    NextTurn { text: String },
 }
 
 /// A registered slash command.

@@ -118,6 +118,18 @@ pub(crate) fn make_commands(
             description: "Exit rab".to_string(),
             handler: Box::new(QuitCommand),
         },
+        SlashCommand {
+            name: "stop".to_string(),
+            description:
+                "Graceful stop: finish current turn, then stop. Queued messages preserved."
+                    .to_string(),
+            handler: Box::new(StopCommand),
+        },
+        SlashCommand {
+            name: "nextTurn".to_string(),
+            description: "Queue a message for the next agent run (when idle)".to_string(),
+            handler: Box::new(NextTurnCommand),
+        },
     ]
 }
 
@@ -128,6 +140,27 @@ struct QuitCommand;
 impl CommandHandler for QuitCommand {
     fn execute(&self, _args: &str) -> anyhow::Result<CommandResult> {
         Ok(CommandResult::Quit)
+    }
+}
+
+// ── /stop ────────────────────────────────────────────────────────
+
+struct StopCommand;
+
+impl CommandHandler for StopCommand {
+    fn execute(&self, _args: &str) -> anyhow::Result<CommandResult> {
+        Ok(CommandResult::Stop)
+    }
+}
+
+// ── /nextTurn ────────────────────────────────────────────────────
+
+struct NextTurnCommand;
+
+impl CommandHandler for NextTurnCommand {
+    fn execute(&self, args: &str) -> anyhow::Result<CommandResult> {
+        let text = args.trim().to_string();
+        Ok(CommandResult::NextTurn { text })
     }
 }
 

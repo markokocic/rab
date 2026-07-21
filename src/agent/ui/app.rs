@@ -4,6 +4,7 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::rc::{Rc, Weak};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use crate::agent::extension::ToolRenderer;
@@ -331,6 +332,14 @@ pub struct App {
     last_status_len: Option<usize>,
     /// Pending label changes from the tree selector (accumulated, flushed each frame).
     pending_label_changes: PendingLabelChanges,
+    /// Stop-requested flag shared with agent's before_turn callback.
+    /// Set by /stop, cleared when a new agent turn starts.
+    stop_requested: Arc<AtomicBool>,
+    /// Messages queued via /nextTurn (delivered at the start of the next agent run).
+    next_turn_queue: Vec<yoagent::types::AgentMessage>,
+    /// Messages saved from steer/follow-up queues when stop was requested.
+    /// Restored as preloaded on the next agent run.
+    saved_queued_msgs: Vec<yoagent::types::AgentMessage>,
     // ── Message rendering cache (avoids re-rendering messages every frame) ──
     // Cache fields removed - messages now rendered via Components in chat_container.
 }
@@ -617,6 +626,9 @@ impl App {
             session_picker: None,
             last_status_len: None,
             pending_label_changes: Rc::new(RefCell::new(Vec::new())),
+            stop_requested: Arc::new(AtomicBool::new(false)),
+            next_turn_queue: Vec::new(),
+            saved_queued_msgs: Vec::new(),
         };
 
         // Set resource data on header (pi-style loaded resources display)
@@ -655,6 +667,9 @@ impl App {
         self.tool_call_start_times.clear();
         self.pending_submit = None;
         self.pending_preloaded_msgs = None;
+        self.next_turn_queue.clear();
+        self.saved_queued_msgs.clear();
+        self.stop_requested.store(false, Ordering::Relaxed);
     }
 
     /// Rebuild chat and agent messages from the current session context.
@@ -1567,18 +1582,54 @@ fn compose_ui(app: &mut App, width: usize) {
     app.status_section.borrow_mut().set_lines(status_lines);
 
     // ── Pending messages section (pi-style pendingMessagesContainer) ──
-    // Shows queued steer/follow-up messages between chat and status.
+    // Shows queued steer/follow-up/nextTurn messages between chat and status.
     let mut pending_lines = Vec::new();
+    let has_next_turn = !app.next_turn_queue.is_empty();
+    let has_saved = !app.saved_queued_msgs.is_empty();
     let has_pending = if let Some(ref agent) = app.agent {
         agent.steering_queue_len() > 0
             || agent.follow_up_queue_len() > 0
             || app.pending_submit.is_some()
+            || has_next_turn
+            || has_saved
     } else {
-        app.pending_submit.is_some()
+        app.pending_submit.is_some() || has_next_turn || has_saved
     };
     if has_pending {
         // Blank line separator (pi's Spacer(1) before pending section)
         pending_lines.push(String::new());
+
+        // Show next-turn queue (queued while idle via /nextTurn)
+        for msg in &app.next_turn_queue {
+            let text = crate::agent::types::message_text(msg);
+            let preview = if text.len() > width.saturating_sub(14) {
+                format!("{}…", &text[..width.saturating_sub(14)])
+            } else {
+                text
+            };
+            if !preview.is_empty() {
+                let line = app
+                    .theme
+                    .fg_key(ThemeKey::Dim, &format!(" Next turn: {}", preview));
+                pending_lines.push(crate::agent::ui::render_utils::pad_to_width(&line, width));
+            }
+        }
+
+        // Show saved queued messages (from stop-requested)
+        for msg in &app.saved_queued_msgs {
+            let text = crate::agent::types::message_text(msg);
+            let preview = if text.len() > width.saturating_sub(14) {
+                format!("{}…", &text[..width.saturating_sub(14)])
+            } else {
+                text
+            };
+            if !preview.is_empty() {
+                let line = app
+                    .theme
+                    .fg_key(ThemeKey::Dim, &format!(" Saved: {}", preview));
+                pending_lines.push(crate::agent::ui::render_utils::pad_to_width(&line, width));
+            }
+        }
 
         // Show pending_submit (idle path, before agent loop starts)
         if let Some(ref msg) = app.pending_submit {
@@ -3222,6 +3273,10 @@ fn build_fresh_agent(
         .with_tools(tools)
         .with_context_config(context_config)
         .with_execution_limits(execution_limits)
+        .on_before_turn({
+            let stop_flag = app.stop_requested.clone();
+            move |_, _| !stop_flag.load(Ordering::Relaxed)
+        })
 }
 
 /// Map rab's thinking level string to yoagent's ThinkingLevel enum.
@@ -3249,6 +3304,20 @@ async fn start_agent_loop(
 ) {
     if app.session.is_none() {
         return;
+    }
+
+    // Reset stop flag — new turn starting
+    app.stop_requested.store(false, Ordering::Relaxed);
+
+    // Compose preloaded messages from all sources
+    let mut all_preloaded: Vec<yoagent::types::AgentMessage> = Vec::new();
+    // 1. Next-turn queue (queued while idle via /nextTurn)
+    all_preloaded.append(&mut app.next_turn_queue);
+    // 2. Saved queued messages from a previous stop-requested
+    all_preloaded.append(&mut app.saved_queued_msgs);
+    // 3. Explicit preloaded (from steer/follow-up drain at idle)
+    if let Some(msgs) = preloaded {
+        all_preloaded.extend(msgs);
     }
 
     app.is_streaming = true;
@@ -3302,12 +3371,29 @@ async fn start_agent_loop(
         }
     };
 
-    // Start the turn: agent.prompt() or agent.prompt_messages() spawns the
-    // loop internally and returns a receiver for streaming events.
-    // When preloaded messages are provided (drained from steer/follow-up
-    // queues), use prompt_messages so they're all injected in one turn.
-    let mut rx = if let Some(msgs) = preloaded {
-        agent.prompt_messages(msgs).await
+    // Apply steering/follow-up queue modes from settings (pi-compatible)
+    if let Some(ref mode_str) = app.settings.steering_mode {
+        let mode = match mode_str.as_str() {
+            "all" => yoagent::agent::QueueMode::All,
+            _ => yoagent::agent::QueueMode::OneAtATime,
+        };
+        agent.set_steering_mode(mode);
+    }
+    if let Some(ref mode_str) = app.settings.follow_up_mode {
+        let mode = match mode_str.as_str() {
+            "all" => yoagent::agent::QueueMode::All,
+            _ => yoagent::agent::QueueMode::OneAtATime,
+        };
+        agent.set_follow_up_mode(mode);
+    }
+
+    // Start the turn.
+    // When preloaded messages are provided, use prompt_messages so they're
+    // all injected in one turn; the main message is appended to the list.
+    let user_msg = user_agent_message(&message);
+    let mut rx = if !all_preloaded.is_empty() {
+        all_preloaded.push(user_msg);
+        agent.prompt_messages(all_preloaded).await
     } else {
         agent.prompt(message).await
     };
@@ -4207,6 +4293,19 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
         CommandResult::CompactSession(custom_instructions) => {
             app.pending_compact = Some(custom_instructions);
         }
+        CommandResult::Stop => {
+            app.stop_requested
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+            app.status_text = Some("Stop requested — finishing current turn…".into());
+        }
+        CommandResult::NextTurn { text } => {
+            if text.is_empty() {
+                app.status_text = Some("Usage: /nextTurn <message>".into());
+            } else {
+                app.next_turn_queue.push(user_agent_message(&text));
+                app.status_text = Some("Message queued for next turn".into());
+            }
+        }
     }
 }
 
@@ -5079,6 +5178,18 @@ fn handle_agent_event(app: &mut App, event: yoagent::types::AgentEvent) {
             // Surface provider errors carried by the turn's final message.
             if let Some(err) = crate::agent::types::message_error(&message) {
                 show_status(app, format!("Provider error: {}", err));
+            }
+            // Pi-compatible shouldStopAfterTurn: if stop was requested, save
+            // the steer/follow-up queues so they're preserved for the next run
+            // and the agent loop exits (queues are empty).
+            if app.stop_requested.load(Ordering::Relaxed) {
+                if let Some(ref agent) = app.agent {
+                    app.saved_queued_msgs
+                        .append(&mut agent.take_steering_queue());
+                    app.saved_queued_msgs
+                        .append(&mut agent.take_follow_up_queue());
+                }
+                app.stop_requested.store(false, Ordering::Relaxed);
             }
         }
         E::AgentEnd { messages } => {
