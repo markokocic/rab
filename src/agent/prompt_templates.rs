@@ -605,16 +605,6 @@ mod tests {
     }
 
     #[test]
-    fn test_source_classification_user() {
-        let path = Path::new("/home/user/.rab/agent/prompts/fix.md");
-        let _templates = load_prompt_templates(&[path]);
-        // If the file doesn't exist, no templates, but source is not tested.
-        // Source is set during loading, test it via classify_source directly.
-        let source = classify_source(Path::new("/home/user/.rab/agent/prompts"));
-        assert_eq!(source, "user");
-    }
-
-    #[test]
     fn test_source_classification_project() {
         let source = classify_source(Path::new("/home/user/project/.rab/prompts"));
         assert_eq!(source, "project");

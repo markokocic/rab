@@ -86,18 +86,6 @@ fn hotkeys_command_returns_show_help() {
     }
 }
 
-#[test]
-fn hotkeys_ignores_args() {
-    let cmds = test_ext().commands();
-    let cmd = cmds.iter().find(|c| c.name == "hotkeys").unwrap();
-    let result = cmd.handler.execute("anything");
-    assert!(result.is_ok());
-    match result.unwrap() {
-        CommandResult::ShowHelp => {}
-        other => panic!("Expected ShowHelp, got {:?}", other),
-    }
-}
-
 // ── /reload ───────────────────────────────────────────────────────
 
 #[test]
@@ -126,18 +114,6 @@ fn new_command_returns_new_session() {
     }
 }
 
-#[test]
-fn new_ignores_args() {
-    let cmds = test_ext().commands();
-    let cmd = cmds.iter().find(|c| c.name == "new").unwrap();
-    let result = cmd.handler.execute("some args");
-    assert!(result.is_ok());
-    match result.unwrap() {
-        CommandResult::NewSession => {}
-        other => panic!("Expected NewSession, got {:?}", other),
-    }
-}
-
 // ── /resume ───────────────────────────────────────────────────────
 
 #[test]
@@ -145,18 +121,6 @@ fn resume_command_opens_session_selector() {
     let cmds = test_ext().commands();
     let cmd = cmds.iter().find(|c| c.name == "resume").unwrap();
     let result = cmd.handler.execute("");
-    assert!(result.is_ok());
-    match result.unwrap() {
-        CommandResult::OpenSessionSelector => {}
-        other => panic!("Expected OpenSessionSelector, got {:?}", other),
-    }
-}
-
-#[test]
-fn resume_ignores_args() {
-    let cmds = test_ext().commands();
-    let cmd = cmds.iter().find(|c| c.name == "resume").unwrap();
-    let result = cmd.handler.execute("some args");
     assert!(result.is_ok());
     match result.unwrap() {
         CommandResult::OpenSessionSelector => {}

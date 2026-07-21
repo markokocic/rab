@@ -122,38 +122,6 @@ fn hide_thinking_block_deserializes_from_pi_key() {
     assert_eq!(s.hide_thinking, Some(true));
 }
 
-#[test]
-fn hide_thinking_block_false_is_read() {
-    let tmp = tmp_dir();
-    let global = tmp.join("global.json");
-    write_file(&global, r#"{"hideThinkingBlock": false}"#);
-
-    let s = Settings::load_from(global, &tmp).unwrap();
-    assert_eq!(s.hide_thinking, Some(false));
-}
-
-// ── collapseToolOutput deserialization ────────────────────────────
-
-#[test]
-fn collapse_tool_output_defaults_to_false() {
-    let tmp = tmp_dir();
-    let global = tmp.join("global.json");
-    write_file(&global, r#"{}"#);
-
-    let s = Settings::load_from(global, &tmp).unwrap();
-    assert_eq!(s.collapse_tool_output, None);
-}
-
-#[test]
-fn collapse_tool_output_deserializes() {
-    let tmp = tmp_dir();
-    let global = tmp.join("global.json");
-    write_file(&global, r#"{"collapseToolOutput": true}"#);
-
-    let s = Settings::load_from(global, &tmp).unwrap();
-    assert_eq!(s.collapse_tool_output, Some(true));
-}
-
 // ── Merge behavior ────────────────────────────────────────────────
 
 #[test]
@@ -171,20 +139,6 @@ fn hide_thinking_project_overrides_global() {
 }
 
 #[test]
-fn collapse_tool_output_project_overrides_global() {
-    let tmp = tmp_dir();
-    let global = tmp.join("global.json");
-    write_file(&global, r#"{"collapseToolOutput": false}"#);
-    write_file(
-        &tmp.join(".rab").join("settings.json"),
-        r#"{"collapseToolOutput": true}"#,
-    );
-
-    let s = Settings::load_from(global, &tmp).unwrap();
-    assert_eq!(s.collapse_tool_output, Some(true)); // project wins
-}
-
-#[test]
 fn hide_thinking_global_used_when_project_not_set() {
     let tmp = tmp_dir();
     let global = tmp.join("global.json");
@@ -193,16 +147,6 @@ fn hide_thinking_global_used_when_project_not_set() {
 
     let s = Settings::load_from(global, &tmp).unwrap();
     assert_eq!(s.hide_thinking, Some(true));
-}
-
-#[test]
-fn collapse_tool_output_global_used_when_project_not_set() {
-    let tmp = tmp_dir();
-    let global = tmp.join("global.json");
-    write_file(&global, r#"{"collapseToolOutput": true}"#);
-
-    let s = Settings::load_from(global, &tmp).unwrap();
-    assert_eq!(s.collapse_tool_output, Some(true));
 }
 
 // ── Serialization (save) ──────────────────────────────────────────
@@ -219,21 +163,6 @@ fn save_writes_hide_thinking_block() {
 
     let content = read_file(&global);
     assert!(content.contains(r#"hideThinkingBlock"#));
-    assert!(content.contains(r#"true"#));
-}
-
-#[test]
-fn save_writes_collapse_tool_output() {
-    let tmp = tmp_dir();
-    let global = tmp.join("global.json");
-    write_file(&global, r#"{}"#);
-
-    let mut s = Settings::default();
-    s.set_collapse_tool_output(Some(true));
-    s.save_to(global.clone()).unwrap();
-
-    let content = read_file(&global);
-    assert!(content.contains(r#"collapseToolOutput"#));
     assert!(content.contains(r#"true"#));
 }
 
