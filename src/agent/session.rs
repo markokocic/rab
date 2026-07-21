@@ -18,6 +18,11 @@ use std::path::{Path, PathBuf};
 use yoagent::Session as YoagentSession;
 use yoagent::types::{AgentMessage, ExtensionMessage};
 
+use crate::agent::types::{
+    message_is_assistant, message_is_tool_result, message_is_user, message_tool_call_count,
+    message_usage,
+};
+
 // ── Extension kinds for metadata entries ──────────────────────────
 
 pub const KIND_MODEL_CHANGE: &str = "session/model_change";
@@ -752,6 +757,81 @@ pub struct SessionInfo {
     pub message_count: usize,
     pub first_message: String,
     pub all_messages_text: String,
+}
+
+/// Detailed session statistics for /session command display.
+#[derive(Debug, Clone)]
+pub struct SessionInfoInternal {
+    pub session_id: String,
+    pub file_path: Option<PathBuf>,
+    pub name: Option<String>,
+    pub message_count: usize,
+    pub user_messages: usize,
+    pub assistant_messages: usize,
+    pub tool_calls: usize,
+    pub tool_results: usize,
+    pub total_tokens: u64,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cache_write_tokens: u64,
+    pub cost: f64,
+}
+
+/// Compute session info from a Session.
+pub fn compute_session_info(session: &Session) -> SessionInfoInternal {
+    let entries = session.get_entries();
+    let mut message_count: usize = 0;
+    let mut user_messages: usize = 0;
+    let mut assistant_messages: usize = 0;
+    let mut tool_calls: usize = 0;
+    let mut tool_results: usize = 0;
+    let mut total_tokens: u64 = 0;
+    let mut input_tokens: u64 = 0;
+    let mut output_tokens: u64 = 0;
+    let mut cache_read_tokens: u64 = 0;
+    let mut cache_write_tokens: u64 = 0;
+    let mut cost: f64 = 0.0;
+
+    for entry in entries {
+        if let Some(llm_msg) = entry.message.as_llm() {
+            message_count += 1;
+            if message_is_user(&AgentMessage::Llm(llm_msg.clone())) {
+                user_messages += 1;
+            } else if message_is_assistant(&AgentMessage::Llm(llm_msg.clone())) {
+                assistant_messages += 1;
+                let tc_count = message_tool_call_count(&AgentMessage::Llm(llm_msg.clone()));
+                tool_calls += tc_count;
+            } else if message_is_tool_result(&AgentMessage::Llm(llm_msg.clone())) {
+                tool_results += 1;
+            }
+            if let Some(usage) = message_usage(&AgentMessage::Llm(llm_msg.clone())) {
+                input_tokens += usage.input;
+                output_tokens += usage.output;
+                cache_read_tokens += usage.cache_read;
+                cache_write_tokens += usage.cache_write;
+                total_tokens += usage.input + usage.output + usage.cache_read + usage.cache_write;
+            }
+            cost += session.entry_cost(&entry.id).map_or(0.0, |c| c.total);
+        }
+    }
+
+    SessionInfoInternal {
+        session_id: session.session_id().to_string(),
+        file_path: session.session_file().map(|p| p.to_path_buf()),
+        name: session.session_name().map(|s| s.to_string()),
+        message_count,
+        user_messages,
+        assistant_messages,
+        tool_calls,
+        tool_results,
+        total_tokens,
+        input_tokens,
+        output_tokens,
+        cache_read_tokens,
+        cache_write_tokens,
+        cost,
+    }
 }
 
 // ── Free functions ─────────────────────────────────────────────────

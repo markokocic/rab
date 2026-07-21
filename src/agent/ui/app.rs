@@ -20,6 +20,7 @@ use yoagent::types::AgentMessage;
 
 use crate::agent::ui::chat_editor::{ChatEditor, InputAction};
 
+use crate::agent::session::SessionInfoInternal;
 use crate::agent::ui::components::EditorComponent;
 use crate::agent::ui::components::FooterComponent;
 use crate::agent::ui::components::InfoMessageComponent;
@@ -27,7 +28,6 @@ use crate::agent::ui::footer::Footer;
 use crate::agent::ui::theme;
 use crate::agent::ui::theme::RabTheme;
 use crate::agent::ui::working::WorkingIndicator;
-use crate::builtin::commands::SessionInfoInternal;
 use crate::tui::Component;
 use crate::tui::TUI;
 use crate::tui::focusable::Focusable;
@@ -653,7 +653,7 @@ impl App {
         if let Some(ref session) = self.session
             && let Some(ref info) = self.session_info
         {
-            let si = crate::builtin::commands::compute_session_info(session.session());
+            let si = crate::agent::session::compute_session_info(session.session());
             if let Ok(mut guard) = info.lock() {
                 *guard = Some(si);
             }

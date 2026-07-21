@@ -1,5 +1,5 @@
 use rab::agent::extension::{CommandResult, Extension as _};
-use rab::builtin::commands::SessionInfoInternal;
+use rab::agent::session::SessionInfoInternal;
 use rab::builtin::extension::BuiltinExtension;
 
 fn test_ext() -> BuiltinExtension {

@@ -588,7 +588,7 @@ async fn main() -> anyhow::Result<()> {
         }
 
         // Populate session info for /session command
-        let si = rab::builtin::commands::compute_session_info(agent_session.session());
+        let si = rab::agent::session::compute_session_info(agent_session.session());
         if let Ok(mut guard) = session_info.lock() {
             *guard = Some(si);
         }
@@ -605,7 +605,7 @@ async fn main() -> anyhow::Result<()> {
 
         // Update session info snapshot after print mode completes to reflect
         // the costs and stats from the current run.
-        let si = rab::builtin::commands::compute_session_info(agent_session.session());
+        let si = rab::agent::session::compute_session_info(agent_session.session());
         if let Ok(mut guard) = session_info.lock() {
             *guard = Some(si);
         }

@@ -4,8 +4,9 @@
 //! EditExtension, and CommandsExtension into a single Extension implementation.
 
 use crate::agent::extension::{Extension, SlashCommand, ToolDefinition};
+use crate::agent::session::SessionInfoInternal;
 use crate::builtin::bash::{BashToolOptions, make_bash_tool};
-use crate::builtin::commands::{SessionInfoInternal, make_commands};
+use crate::builtin::commands::make_commands;
 use crate::builtin::edit::{EditOperations, make_edit_tool};
 use crate::builtin::read::{ReadOperations, make_read_tool};
 use crate::builtin::write::{WriteOperations, make_write_tool};
