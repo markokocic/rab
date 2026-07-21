@@ -1222,22 +1222,17 @@ impl ToolRenderer for EditRenderer {
                 .ok()
                 .and_then(|p| p.as_ref().and_then(|preview| preview.error.clone()));
             if preview_err.as_deref() != Some(msg) {
-                // Show the actual error in a TuiBox matching render_call's styling.
-                // Pi: Container(Spacer(1) + Text(error, 1, 0)), but we use a TuiBox
-                // with background for visual consistency with the render_call header.
-                let bg_ansi = theme.bg_ansi("toolErrorBg");
-                let mut result_box = crate::tui::components::r#box::TuiBox::new(
-                    1,
-                    1,
-                    Some(crate::tui::Style::new().bg(bg_ansi.to_string())),
-                );
-                result_box.add_child(std::boxed::Box::new(crate::tui::components::Text::new(
+                // Pi: returns Container(Spacer(1) + Text(error, 1, 0)) — no separate
+                // TuiBox, so the error sits right after the call box's bottom padding.
+                let mut container = crate::tui::Container::new();
+                container.add_child(std::boxed::Box::new(crate::tui::components::Spacer::new(1)));
+                container.add_child(std::boxed::Box::new(crate::tui::components::Text::new(
                     msg.to_string(),
                     1,
                     0,
                     Some(Style::new().fg(theme.fg_ansi_key(ThemeKey::Error).to_string())),
                 )));
-                return Some(std::boxed::Box::new(result_box));
+                return Some(std::boxed::Box::new(container));
             }
         }
 
