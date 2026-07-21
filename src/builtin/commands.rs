@@ -1,13 +1,11 @@
 use crate::agent::extension::{AutocompleteItem, CommandHandler, CommandResult, SlashCommand};
-use crate::agent::session::SessionInfoInternal;
 use crate::builtin::export::{ExportCommand, ImportCommand};
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
 /// Build all built-in slash commands.
 pub(crate) fn make_commands(
-    available_models: &std::sync::Mutex<Vec<String>>,
-    provider_models: &std::sync::Mutex<Vec<(String, String)>>,
-    session_info: &std::sync::Arc<std::sync::Mutex<Option<SessionInfoInternal>>>,
+    available_models: &Mutex<Vec<String>>,
+    provider_models: &Mutex<Vec<(String, String)>>,
 ) -> Vec<SlashCommand> {
     // Snapshot the current model list so changes from /reload are visible.
     let models = available_models
@@ -58,16 +56,12 @@ pub(crate) fn make_commands(
         SlashCommand {
             name: "name".to_string(),
             description: "Set session display name".to_string(),
-            handler: Box::new(NameCommand {
-                session_info: session_info.clone(),
-            }),
+            handler: Box::new(NameCommand),
         },
         SlashCommand {
             name: "session".to_string(),
             description: "Show session info and stats".to_string(),
-            handler: Box::new(SessionInfoCommand {
-                info: session_info.clone(),
-            }),
+            handler: Box::new(SessionInfoCommand),
         },
         SlashCommand {
             name: "hotkeys".to_string(),
@@ -151,7 +145,7 @@ impl CommandHandler for ResumeCommand {
 
 struct ModelCommand {
     available_models: Vec<String>,
-    provider_models: Vec<(String, String)>, // (provider, model_id) pairs
+    provider_models: Vec<(String, String)>,
 }
 
 impl CommandHandler for ModelCommand {
@@ -160,7 +154,6 @@ impl CommandHandler for ModelCommand {
         if input.is_empty() {
             Ok(CommandResult::OpenModelSelector)
         } else if let Some((provider, model_id)) = input.split_once('/') {
-            // Handle "provider/model" format
             let provider = provider.trim();
             let model_id = model_id.trim();
             if self
@@ -168,7 +161,6 @@ impl CommandHandler for ModelCommand {
                 .iter()
                 .any(|(p, m)| p == provider && m == model_id)
             {
-                // Return ModelChanged with "provider/model" so app can parse both
                 Ok(CommandResult::ModelChanged(format!(
                     "{}/{}",
                     provider, model_id
@@ -180,7 +172,6 @@ impl CommandHandler for ModelCommand {
                 )))
             }
         } else if self.available_models.iter().any(|m| m == input) {
-            // Plain model name - resolve provider automatically
             Ok(CommandResult::ModelChanged(input.to_string()))
         } else {
             Ok(CommandResult::Info(format!(
@@ -196,7 +187,6 @@ impl CommandHandler for ModelCommand {
         let has_slash = prefix.contains('/');
 
         if has_slash {
-            // Complete "provider/model" format
             self.provider_models
                 .iter()
                 .map(|(p, m)| format!("{}/{}", p, m))
@@ -208,7 +198,6 @@ impl CommandHandler for ModelCommand {
                 })
                 .collect()
         } else {
-            // Complete by model name or "provider/" prefix
             let mut items: Vec<AutocompleteItem> = self
                 .available_models
                 .iter()
@@ -219,7 +208,6 @@ impl CommandHandler for ModelCommand {
                     description: None,
                 })
                 .collect();
-            // Also offer provider/ prefix completions
             let providers: std::collections::HashSet<String> = self
                 .provider_models
                 .iter()
@@ -296,34 +284,28 @@ impl CommandHandler for NewCommand {
 
 // ── /session ──────────────────────────────────────────────────────
 
-struct SessionInfoCommand {
-    info: Arc<Mutex<Option<SessionInfoInternal>>>,
-}
+/// Returns a sentinel CommandResult::SessionInfo with empty fields.
+/// The actual data is filled in by app.rs from the live Session.
+struct SessionInfoCommand;
 
 impl CommandHandler for SessionInfoCommand {
     fn execute(&self, _args: &str) -> anyhow::Result<CommandResult> {
-        let info = self.info.lock().unwrap();
-        match info.as_ref() {
-            Some(si) => Ok(CommandResult::SessionInfo {
-                session_id: si.session_id.clone(),
-                file_path: si.file_path.clone(),
-                name: si.name.clone(),
-                message_count: si.message_count,
-                user_messages: si.user_messages,
-                assistant_messages: si.assistant_messages,
-                tool_calls: si.tool_calls,
-                tool_results: si.tool_results,
-                total_tokens: si.total_tokens,
-                input_tokens: si.input_tokens,
-                output_tokens: si.output_tokens,
-                cache_read_tokens: si.cache_read_tokens,
-                cache_write_tokens: si.cache_write_tokens,
-                cost: si.cost,
-            }),
-            None => Ok(CommandResult::Info(
-                "No active session (use --no-session?)".to_string(),
-            )),
-        }
+        Ok(CommandResult::SessionInfo {
+            session_id: String::new(),
+            file_path: None,
+            name: None,
+            message_count: 0,
+            user_messages: 0,
+            assistant_messages: 0,
+            tool_calls: 0,
+            tool_results: 0,
+            total_tokens: 0,
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+            cost: 0.0,
+        })
     }
 }
 
@@ -339,27 +321,18 @@ impl CommandHandler for CopyCommand {
 
 // ── /name ─────────────────────────────────────────────────────────
 
-struct NameCommand {
-    session_info: Arc<Mutex<Option<SessionInfoInternal>>>,
-}
+struct NameCommand;
 
 impl CommandHandler for NameCommand {
     fn execute(&self, args: &str) -> anyhow::Result<CommandResult> {
         let name = args.trim();
         if name.is_empty() {
-            let info = self.session_info.lock().unwrap();
-            let current_name = info
-                .as_ref()
-                .and_then(|si| si.name.as_deref())
-                .filter(|n| !n.is_empty());
-            return match current_name {
-                Some(n) => Ok(CommandResult::Info(format!("Session name: {}", n))),
-                None => Ok(CommandResult::Info("Usage: /name <name>".to_string())),
-            };
+            Ok(CommandResult::Info("Usage: /name <name>".to_string()))
+        } else {
+            Ok(CommandResult::SessionNamed {
+                name: name.to_string(),
+            })
         }
-        Ok(CommandResult::SessionNamed {
-            name: name.to_string(),
-        })
     }
 }
 
@@ -371,13 +344,11 @@ impl CommandHandler for LoginCommand {
     fn execute(&self, args: &str) -> anyhow::Result<CommandResult> {
         let args = args.trim();
         if args.is_empty() {
-            // No args — show provider selector
             return Ok(CommandResult::Login {
                 provider: None,
                 api_key: None,
             });
         }
-        // Split on first space: provider [api-key]
         let (provider, api_key) = match args.split_once(' ') {
             Some((p, key)) => (p.trim().to_string(), Some(key.trim().to_string())),
             None => (args.to_string(), None),

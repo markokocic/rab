@@ -352,7 +352,6 @@ async fn main() -> anyhow::Result<()> {
     let mut builtin_ext = BuiltinExtension::new(cwd.clone());
     builtin_ext.set_available_models(available_models.clone());
     builtin_ext.set_provider_models(provider_models.clone());
-    let session_info = builtin_ext.session_info.clone();
 
     // Set bash options from settings
     let bash_options = BashToolOptions {
@@ -545,7 +544,6 @@ async fn main() -> anyhow::Result<()> {
             agent_dir: agent_dir.clone(),
             prompt_templates,
             prompt_template_dirs,
-            session_info: Some(session_info),
             api_key,
             registry: Arc::new(registry),
             open_session_picker: resume_session,
@@ -587,13 +585,7 @@ async fn main() -> anyhow::Result<()> {
             agent_session.apply_compaction_config(cc);
         }
 
-        // Populate session info for /session command
-        let si = rab::agent::session::compute_session_info(agent_session.session());
-        if let Ok(mut guard) = session_info.lock() {
-            *guard = Some(si);
-        }
-
-        let result = run_print_mode(
+        run_print_mode(
             message,
             api_key,
             mc,
@@ -601,16 +593,7 @@ async fn main() -> anyhow::Result<()> {
             agent_tools,
             &mut agent_session,
         )
-        .await;
-
-        // Update session info snapshot after print mode completes to reflect
-        // the costs and stats from the current run.
-        let si = rab::agent::session::compute_session_info(agent_session.session());
-        if let Ok(mut guard) = session_info.lock() {
-            *guard = Some(si);
-        }
-
-        result
+        .await
     }
 }
 

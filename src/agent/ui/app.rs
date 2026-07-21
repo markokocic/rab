@@ -20,7 +20,6 @@ use yoagent::types::AgentMessage;
 
 use crate::agent::ui::chat_editor::{ChatEditor, InputAction};
 
-use crate::agent::session::SessionInfoInternal;
 use crate::agent::ui::components::EditorComponent;
 use crate::agent::ui::components::FooterComponent;
 use crate::agent::ui::components::InfoMessageComponent;
@@ -153,8 +152,6 @@ pub struct AppConfig {
     pub prompt_templates: Vec<crate::agent::prompt_templates::PromptTemplate>,
     /// Prompt template directories to scan (for /reload support).
     pub prompt_template_dirs: Vec<PathBuf>,
-    /// Session info Arc for /session command (shared with CommandsExtension).
-    pub session_info: Option<std::sync::Arc<std::sync::Mutex<Option<SessionInfoInternal>>>>,
     /// API key for yoagent provider.
     pub api_key: String,
     /// Provider registry for model resolution and provider dispatch.
@@ -304,8 +301,6 @@ pub struct App {
     prompt_templates: Vec<crate::agent::prompt_templates::PromptTemplate>,
     /// API key for yoagent provider.
     api_key: String,
-    /// Session info updater for /session command.
-    session_info: Option<std::sync::Arc<std::sync::Mutex<Option<SessionInfoInternal>>>>,
 
     /// Auto-compact toggle state.
     auto_compact: bool,
@@ -608,7 +603,6 @@ impl App {
             agent_dir: config.agent_dir,
             prompt_template_dirs: config.prompt_template_dirs,
             prompt_templates: config.prompt_templates,
-            session_info: config.session_info,
             api_key: config.api_key,
             scoped_model_ids: config.settings.enabled_models.clone(),
             settings: config.settings,
@@ -637,9 +631,6 @@ impl App {
             );
         }
 
-        // Initial session info for /session command
-        result.update_session_info();
-
         // Initialize footer stats and session name from session
         if let Some(ref mut s) = result.session {
             result.footer.borrow_mut().refresh_from_session(s.session());
@@ -649,17 +640,6 @@ impl App {
     }
 
     /// Update the session info shared with CommandsExtension for /session display.
-    fn update_session_info(&self) {
-        if let Some(ref session) = self.session
-            && let Some(ref info) = self.session_info
-        {
-            let si = crate::agent::session::compute_session_info(session.session());
-            if let Ok(mut guard) = info.lock() {
-                *guard = Some(si);
-            }
-        }
-    }
-
     /// Refresh git branch for footer display.
     /// Called on AgentStart to match pi's FooterDataProvider.onBranchChange.
     fn refresh_git_branch(&self) {
@@ -755,7 +735,6 @@ impl App {
 
         self.session = Some(new_session);
         self.agent = None;
-        self.update_session_info();
     }
 }
 
@@ -3900,77 +3879,14 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
             app.switch_to_session(new_session);
             app.status_text = Some(format!("Switched to session: {}", path.display()));
         }
-        CommandResult::SessionInfo {
-            session_id,
-            file_path,
-            name,
-            message_count,
-            user_messages,
-            assistant_messages,
-            tool_calls,
-            tool_results,
-            total_tokens,
-            input_tokens,
-            output_tokens,
-            cache_read_tokens,
-            cache_write_tokens,
-            cost,
-        } => {
-            let name_display = name
-                .or_else(|| {
-                    app.session
-                        .as_ref()
-                        .and_then(|s| s.session().session_name().map(|n| n.to_string()))
-                })
-                .unwrap_or_else(|| "unnamed".to_string());
-            let file_display = file_path
+        CommandResult::SessionInfo { .. } => {
+            // Compute from the live session on demand.
+            let info = app
+                .session
                 .as_ref()
-                .map(|p| p.display().to_string())
-                .unwrap_or_else(|| "in-memory".to_string());
-            let sid = if session_id.is_empty() {
-                app.session
-                    .as_ref()
-                    .map(|s| s.session().session_id().to_string())
-                    .unwrap_or_default()
-            } else {
-                session_id
-            };
-
-            let total_messages = message_count;
-
-            // Build info display matching pi's handleSessionCommand
-            let mut info = format!(
-                "Session Info\n\n\
-                 Name: {name_display}\n\
-                 File: {file_display}\n\
-                 ID: {sid}\n\
-                 \n\
-                 Messages\n\
-                 User: {user_messages}\n\
-                 Assistant: {assistant_messages}\n\
-                 Tool Calls: {tool_calls}\n\
-                 Tool Results: {tool_results}\n\
-                 Total: {total_messages}\n\
-                 \n\
-                 Tokens\n\
-                 Input: {}\n\
-                 Output: {}",
-                format_number(input_tokens),
-                format_number(output_tokens),
-            );
-            if cache_read_tokens > 0 {
-                info += &format!("\nCache Read: {}", format_number(cache_read_tokens));
-            }
-            if cache_write_tokens > 0 {
-                info += &format!("\nCache Write: {}", format_number(cache_write_tokens));
-            }
-            info += &format!("\nTotal: {}", format_number(total_tokens));
-
-            if cost > 0.0 {
-                info += &format!("\n\nCost\nTotal: {:.4}", cost);
-            }
-
-            show_status(app, info.clone());
+                .map(|s| crate::agent::session::format_session_info(s.session()))
+                .unwrap_or_else(|| "No active session".to_string());
+            show_status(app, info);
         }
         CommandResult::OpenSessionSelector => {
             // Load and display available sessions
@@ -4034,8 +3950,7 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
                 stored_name.as_deref().unwrap_or(&name)
             ));
 
-            // Update session info and footer (refresh_from_session picks up the new name)
-            app.update_session_info();
+            // Refresh footer (refresh_from_session picks up the new name)
             if let Some(ref s) = app.session {
                 app.footer.borrow_mut().refresh_from_session(s.session());
             }
@@ -5295,18 +5210,6 @@ fn parse_bang_command(input: &str) -> Option<(String, bool)> {
 }
 
 /// Format a number with locale-style thousands separators (e.g. 1234 -> "1,234").
-fn format_number(n: u64) -> String {
-    let s = n.to_string();
-    let mut result = String::new();
-    for (i, c) in s.chars().rev().enumerate() {
-        if i > 0 && i % 3 == 0 {
-            result.push(',');
-        }
-        result.push(c);
-    }
-    result.chars().rev().collect()
-}
-
 /// Format a DateTime for short display (YYYY-MM-DD HH:MM).
 fn fmt_time_short(dt: &chrono::DateTime<chrono::Utc>) -> String {
     dt.format("%Y-%m-%d %H:%M").to_string()

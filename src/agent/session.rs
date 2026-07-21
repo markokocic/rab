@@ -18,11 +18,6 @@ use std::path::{Path, PathBuf};
 use yoagent::Session as YoagentSession;
 use yoagent::types::{AgentMessage, ExtensionMessage};
 
-use crate::agent::types::{
-    message_is_assistant, message_is_tool_result, message_is_user, message_tool_call_count,
-    message_usage,
-};
-
 // ── Extension kinds for metadata entries ──────────────────────────
 
 pub const KIND_MODEL_CHANGE: &str = "session/model_change";
@@ -759,27 +754,13 @@ pub struct SessionInfo {
     pub all_messages_text: String,
 }
 
-/// Detailed session statistics for /session command display.
-#[derive(Debug, Clone)]
-pub struct SessionInfoInternal {
-    pub session_id: String,
-    pub file_path: Option<PathBuf>,
-    pub name: Option<String>,
-    pub message_count: usize,
-    pub user_messages: usize,
-    pub assistant_messages: usize,
-    pub tool_calls: usize,
-    pub tool_results: usize,
-    pub total_tokens: u64,
-    pub input_tokens: u64,
-    pub output_tokens: u64,
-    pub cache_read_tokens: u64,
-    pub cache_write_tokens: u64,
-    pub cost: f64,
-}
+use crate::agent::types::{
+    message_is_assistant, message_is_tool_result, message_is_user, message_tool_call_count,
+    message_usage,
+};
 
-/// Compute session info from a Session.
-pub fn compute_session_info(session: &Session) -> SessionInfoInternal {
+/// Format a detailed session info string for /session display.
+pub fn format_session_info(session: &Session) -> String {
     let entries = session.get_entries();
     let mut message_count: usize = 0;
     let mut user_messages: usize = 0;
@@ -796,16 +777,18 @@ pub fn compute_session_info(session: &Session) -> SessionInfoInternal {
     for entry in entries {
         if let Some(llm_msg) = entry.message.as_llm() {
             message_count += 1;
-            if message_is_user(&AgentMessage::Llm(llm_msg.clone())) {
+            if message_is_user(&yoagent::types::AgentMessage::Llm(llm_msg.clone())) {
                 user_messages += 1;
-            } else if message_is_assistant(&AgentMessage::Llm(llm_msg.clone())) {
+            } else if message_is_assistant(&yoagent::types::AgentMessage::Llm(llm_msg.clone())) {
                 assistant_messages += 1;
-                let tc_count = message_tool_call_count(&AgentMessage::Llm(llm_msg.clone()));
+                let tc_count =
+                    message_tool_call_count(&yoagent::types::AgentMessage::Llm(llm_msg.clone()));
                 tool_calls += tc_count;
-            } else if message_is_tool_result(&AgentMessage::Llm(llm_msg.clone())) {
+            } else if message_is_tool_result(&yoagent::types::AgentMessage::Llm(llm_msg.clone())) {
                 tool_results += 1;
             }
-            if let Some(usage) = message_usage(&AgentMessage::Llm(llm_msg.clone())) {
+            if let Some(usage) = message_usage(&yoagent::types::AgentMessage::Llm(llm_msg.clone()))
+            {
                 input_tokens += usage.input;
                 output_tokens += usage.output;
                 cache_read_tokens += usage.cache_read;
@@ -816,21 +799,59 @@ pub fn compute_session_info(session: &Session) -> SessionInfoInternal {
         }
     }
 
-    SessionInfoInternal {
-        session_id: session.session_id().to_string(),
-        file_path: session.session_file().map(|p| p.to_path_buf()),
-        name: session.session_name().map(|s| s.to_string()),
-        message_count,
-        user_messages,
-        assistant_messages,
-        tool_calls,
-        tool_results,
-        total_tokens,
-        input_tokens,
-        output_tokens,
-        cache_read_tokens,
-        cache_write_tokens,
-        cost,
+    let session_id = session.session_id();
+    let file_path = session.session_file();
+    let name = session.session_name();
+
+    let name_display = name
+        .map(|n| n.to_string())
+        .unwrap_or_else(|| "unnamed".to_string());
+    let file_display = file_path
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| "in-memory".to_string());
+
+    let mut info = format!(
+        "Session Info\n\n\
+         Name: {name_display}\n\
+         File: {file_display}\n\
+         ID: {session_id}\n\
+         \n\
+         Messages\n\
+         User: {user_messages}\n\
+         Assistant: {assistant_messages}\n\
+         Tool Calls: {tool_calls}\n\
+         Tool Results: {tool_results}\n\
+         Total: {message_count}\n\
+         \n\
+         Tokens\n\
+         Input: {}\n\
+         Output: {}",
+        format_number(input_tokens),
+        format_number(output_tokens),
+    );
+    if cache_read_tokens > 0 {
+        info += &format!("\nCache Read: {}", format_number(cache_read_tokens));
+    }
+    if cache_write_tokens > 0 {
+        info += &format!("\nCache Write: {}", format_number(cache_write_tokens));
+    }
+    info += &format!("\nTotal: {}", format_number(total_tokens));
+
+    if cost > 0.0 {
+        info += &format!("\n\nCost\nTotal: {:.4}", cost);
+    }
+
+    info
+}
+
+/// Format a number in human-readable form (e.g. 1500 -> "1.5K", 1200000 -> "1.2M").
+fn format_number(n: u64) -> String {
+    if n >= 1_000_000 {
+        format!("{:.1}M", n as f64 / 1_000_000.0)
+    } else if n >= 1_000 {
+        format!("{:.1}K", n as f64 / 1_000.0)
+    } else {
+        n.to_string()
     }
 }
 

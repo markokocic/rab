@@ -4,7 +4,6 @@
 //! EditExtension, and CommandsExtension into a single Extension implementation.
 
 use crate::agent::extension::{Extension, SlashCommand, ToolDefinition};
-use crate::agent::session::SessionInfoInternal;
 use crate::builtin::bash::{BashToolOptions, make_bash_tool};
 use crate::builtin::commands::make_commands;
 use crate::builtin::edit::{EditOperations, make_edit_tool};
@@ -45,7 +44,6 @@ pub struct BuiltinExtension {
     bash_options: BashToolOptions,
     available_models: Mutex<Vec<String>>,
     provider_models: Mutex<Vec<(String, String)>>,
-    pub session_info: Arc<Mutex<Option<SessionInfoInternal>>>,
 }
 
 impl BuiltinExtension {
@@ -65,7 +63,6 @@ impl BuiltinExtension {
             bash_options: options.bash_options,
             available_models: Mutex::new(Vec::new()),
             provider_models: Mutex::new(Vec::new()),
-            session_info: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -122,13 +119,6 @@ impl BuiltinExtension {
             *guard = models;
         }
     }
-
-    /// Update the session info that /session will display.
-    pub fn set_session_info(&self, info: SessionInfoInternal) {
-        if let Ok(mut guard) = self.session_info.lock() {
-            *guard = Some(info);
-        }
-    }
 }
 
 impl Extension for BuiltinExtension {
@@ -155,10 +145,6 @@ impl Extension for BuiltinExtension {
     }
 
     fn commands(&self) -> Vec<SlashCommand> {
-        make_commands(
-            &self.available_models,
-            &self.provider_models,
-            &self.session_info,
-        )
+        make_commands(&self.available_models, &self.provider_models)
     }
 }

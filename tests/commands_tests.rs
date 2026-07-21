@@ -1,5 +1,4 @@
 use rab::agent::extension::{CommandResult, Extension as _};
-use rab::agent::session::SessionInfoInternal;
 use rab::builtin::extension::BuiltinExtension;
 
 fn test_ext() -> BuiltinExtension {
@@ -167,55 +166,25 @@ fn resume_ignores_args() {
 
 // ── /session ──────────────────────────────────────────────────────
 
-#[test]
-fn session_command_no_info() {
-    let cmds = test_ext().commands();
-    let cmd = cmds.iter().find(|c| c.name == "session").unwrap();
-    let result = cmd.handler.execute("");
-    assert!(result.is_ok());
-    match result.unwrap() {
-        CommandResult::Info(ref text) => {
-            assert!(text.contains("No active session"));
-        }
-        other => panic!("Expected Info, got {:?}", other),
-    }
-}
+// ── /session no-info is no longer possible; handler always returns sentinel.
+// See session_command_returns_sentinel above.
 
 #[test]
-fn session_command_with_info() {
-    let ext = test_ext();
-    ext.set_session_info(SessionInfoInternal {
-        session_id: "abc123".to_string(),
-        file_path: Some(std::path::PathBuf::from("/tmp/test.jsonl")),
-        name: Some("Test".to_string()),
-        message_count: 42,
-        user_messages: 10,
-        assistant_messages: 8,
-        tool_calls: 15,
-        tool_results: 12,
-        total_tokens: 5000,
-        input_tokens: 3000,
-        output_tokens: 1500,
-        cache_read_tokens: 500,
-        cache_write_tokens: 0,
-        cost: 0.0123,
-    });
-    let cmds = ext.commands();
+fn session_command_returns_sentinel() {
+    let cmds = test_ext().commands();
     let cmd = cmds.iter().find(|c| c.name == "session").unwrap();
     let result = cmd.handler.execute("");
     assert!(result.is_ok());
     match result.unwrap() {
         CommandResult::SessionInfo {
             session_id,
-            file_path,
-            name,
             message_count,
             ..
         } => {
-            assert_eq!(session_id, "abc123");
-            assert_eq!(file_path, Some(std::path::PathBuf::from("/tmp/test.jsonl")));
-            assert_eq!(name, Some("Test".to_string()));
-            assert_eq!(message_count, 42);
+            // Handler returns sentinel with empty fields; real data is filled
+            // in by app.rs from the live Session.
+            assert!(session_id.is_empty());
+            assert_eq!(message_count, 0);
         }
         other => panic!("Expected SessionInfo, got {:?}", other),
     }
