@@ -15,10 +15,10 @@ pub use agent_session::{
 };
 pub use context_files::{ContextFile, load_context_files};
 pub use extension::{CommandHandler, CommandResult, Extension, SlashCommand, ToolDefinition};
-pub use session::{MessageCost, Session, SessionContext, SessionInfo, SessionTreeNode};
+pub use session::{MessageCost, Session, SessionContext, SessionInfo};
 pub use session::{
-    build_tree, delete_session, encode_cwd_for_dir, fork_session, get_default_session_dir,
-    list_sessions, load_session_info, read_session_header,
+    delete_session, encode_cwd_for_dir, fork_session, get_default_session_dir, list_sessions,
+    load_session_info,
 };
 pub use settings::Settings;
 

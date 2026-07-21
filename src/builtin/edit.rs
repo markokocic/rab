@@ -2,7 +2,6 @@ use crate::agent::extension::{Extension, ToolDefinition};
 use crate::agent::extension::{ToolRenderContext, ToolRenderer};
 use crate::tui::Style;
 use crate::tui::components::StyledSegment;
-use crate::tui::components::spacer::Spacer;
 use crate::tui::{Component, Theme, ThemeKey};
 use async_trait::async_trait;
 use std::borrow::Cow;
@@ -1163,7 +1162,9 @@ impl ToolRenderer for EditRenderer {
         let _ = settled;
 
         // ── Build the component tree (pi-compatible) ──
-        // Pi: Box(1,1, bgFn) containing Text(header, 0, 0) + [Spacer(1) + Text(body, 0, 0)]
+        // Pi: Box(1,1, bgFn) containing Text(header, 0, 0) + [Text(body, 0, 0)]
+        // Note: Spacer(1) between header and body was removed as redundant —
+        // TuiBox padding_y=1 already provides visual breathing room.
         let bg_ansi = theme.bg_ansi(bg_key);
         let mut edit_box = crate::tui::components::r#box::TuiBox::new(
             1,
@@ -1177,9 +1178,8 @@ impl ToolRenderer for EditRenderer {
             if diff.is_empty() {
                 // No diff to show (still computing or no preview input)
             } else if let Some(err_msg) = diff.strip_prefix("error: ") {
-                // Error preview: add spacer + error text
+                // Error preview: add error text
                 let error_style = Style::new().fg(theme.fg_ansi_key(ThemeKey::Error).to_string());
-                edit_box.add_child(std::boxed::Box::new(Spacer::new(1)));
                 edit_box.add_child(std::boxed::Box::new(crate::tui::components::Text::new(
                     err_msg.to_string(),
                     0,
@@ -1187,10 +1187,9 @@ impl ToolRenderer for EditRenderer {
                     Some(error_style),
                 )));
             } else {
-                // Diff preview: add spacer + rendered diff
+                // Diff preview: add rendered diff
                 let rendered_diff =
                     crate::tui::components::diff::render_diff(diff, theme).join("\n");
-                edit_box.add_child(std::boxed::Box::new(Spacer::new(1)));
                 edit_box.add_child(std::boxed::Box::new(crate::tui::components::Text::new(
                     rendered_diff,
                     0,

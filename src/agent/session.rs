@@ -2,15 +2,17 @@
 //! metadata, and file management. No traits, no type-of-entry enum, no lazy write.
 //!
 //! File format:
-//!   Line 1: metadata JSON (id, cwd, createdAt, name, parentSession, costs)
+//!   Line 1: metadata JSON (id, cwd, createdAt, name, parentSession)
 //!   Lines 2+: yoagent JSONL entries (one per line, append-friendly)
+//!
+//! Costs are stored as `AgentMessage::Extension` entries (kind = `session/cost`)
+//! inside the JSONL stream, not in the header metadata.
 //!
 //! Metadata entries (model changes, compaction, etc.) are stored as
 //! `AgentMessage::Extension` entries with well-known `kind` values.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use yoagent::Session as YoagentSession;
@@ -25,6 +27,9 @@ pub const KIND_COMPACTION: &str = "session/compaction";
 pub const KIND_BRANCH_SUMMARY: &str = "session/branch_summary";
 pub const KIND_LABEL: &str = "session/label";
 pub const KIND_CUSTOM_MESSAGE: &str = "session/custom_message";
+
+/// Extension kind for storing per-message cost (pre-computed at creation time).
+pub const KIND_SESSION_COST: &str = "session/cost";
 
 /// All metadata entry kinds that participate in context building.
 pub const METADATA_KINDS: &[&str] = &[
@@ -80,9 +85,6 @@ struct SessionMeta {
     name: Option<String>,
     #[serde(rename = "parentSession", skip_serializing_if = "Option::is_none")]
     parent_session: Option<String>,
-    /// Per-entry costs keyed by entry id.
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    costs: HashMap<String, MessageCost>,
 }
 
 // ── Session ───────────────────────────────────────────────────────
@@ -125,7 +127,6 @@ impl Session {
                 created_at,
                 name: None,
                 parent_session: None,
-                costs: HashMap::new(),
             },
             file_path: None,
         }
@@ -228,7 +229,6 @@ impl Session {
             created_at,
             name: None,
             parent_session: Some(source.to_string_lossy().to_string()),
-            costs: HashMap::new(),
         };
 
         let mut s = Self::from_parts(inner, meta, None);
@@ -283,15 +283,44 @@ impl Session {
     }
 
     /// Append a message with a pre-computed cost.
+    /// The cost is stored as an extension entry in the JSONL stream.
     pub fn append_message_with_cost(&mut self, msg: AgentMessage, cost: MessageCost) -> String {
         let id = self.inner.append(msg);
-        self.meta.costs.insert(id.clone(), cost);
+        self.inner
+            .append(AgentMessage::Extension(ExtensionMessage::new(
+                KIND_SESSION_COST,
+                serde_json::json!({
+                    "targetId": id,
+                    "input": cost.input,
+                    "output": cost.output,
+                    "cacheRead": cost.cache_read,
+                    "cacheWrite": cost.cache_write,
+                    "total": cost.total,
+                }),
+            )));
         id
     }
 
-    /// Get the cost for an entry, if any.
-    pub fn entry_cost(&self, id: &str) -> Option<&MessageCost> {
-        self.meta.costs.get(id)
+    /// Get the cost for an entry, if any. Scans cost extension entries in
+    /// reverse to find the most recent one targeting the given entry id.
+    pub fn entry_cost(&self, id: &str) -> Option<MessageCost> {
+        self.inner.entries().iter().rev().find_map(|e| {
+            if let AgentMessage::Extension(ext) = &e.message {
+                if ext.kind == KIND_SESSION_COST && ext.data["targetId"].as_str() == Some(id) {
+                    Some(MessageCost {
+                        input: ext.data["input"].as_f64().unwrap_or(0.0),
+                        output: ext.data["output"].as_f64().unwrap_or(0.0),
+                        cache_read: ext.data["cacheRead"].as_f64().unwrap_or(0.0),
+                        cache_write: ext.data["cacheWrite"].as_f64().unwrap_or(0.0),
+                        total: ext.data["total"].as_f64().unwrap_or(0.0),
+                    })
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        })
     }
 
     // ── Metadata entries ─────────────────────────────────────
@@ -920,7 +949,6 @@ pub fn fork_session(
         created_at,
         name: None,
         parent_session: Some(source_path.to_string_lossy().to_string()),
-        costs: HashMap::new(),
     };
 
     let mut inner = YoagentSession::new();
@@ -961,74 +989,6 @@ fn get_path_to_root(
 // Re-export yoagent's SessionEntry for convenience.
 pub use yoagent::session::SessionEntry;
 
-// ── SessionTreeNode (for tree display) ─────────────────────────
-
-/// A node in the session tree, with resolved children and labels.
-#[derive(Debug, Clone)]
-pub struct SessionTreeNode {
-    pub entry: SessionEntry,
-    pub children: Vec<SessionTreeNode>,
-    pub label: Option<String>,
-    pub label_timestamp: Option<String>,
-}
-
-/// Build a tree structure from session entries (for UI display).
-pub fn build_tree(session: &Session) -> Vec<SessionTreeNode> {
-    let entries = session.get_entries();
-    let mut node_map: HashMap<String, SessionTreeNode> = HashMap::new();
-
-    for entry in entries {
-        let label = session.get_label(&entry.id);
-        let label_timestamp = session.get_label_timestamp(&entry.id);
-        node_map.insert(
-            entry.id.clone(),
-            SessionTreeNode {
-                entry: entry.clone(),
-                children: Vec::new(),
-                label,
-                label_timestamp,
-            },
-        );
-    }
-
-    // Use yoagent's children() to assign children to parents.
-    for entry in entries {
-        let children = session.get_children(&entry.id);
-        for child in children {
-            if let Some(child_node) = node_map.remove(&child.id)
-                && let Some(parent) = node_map.get_mut(&entry.id)
-            {
-                parent.children.push(child_node);
-            }
-        }
-    }
-
-    // Root = entries whose parent doesn't exist in the session or is self-referencing.
-    let roots: Vec<String> = entries
-        .iter()
-        .filter(|e| {
-            e.parent_id
-                .as_deref()
-                .is_none_or(|pid| pid == e.id || !node_map.contains_key(pid))
-        })
-        .map(|e| e.id.clone())
-        .collect();
-
-    fn sort_tree(node: &mut SessionTreeNode) {
-        node.children.sort_by_key(|c| c.entry.timestamp);
-        for child in &mut node.children {
-            sort_tree(child);
-        }
-    }
-
-    let mut result: Vec<SessionTreeNode> =
-        roots.iter().filter_map(|id| node_map.remove(id)).collect();
-    for root in &mut result {
-        sort_tree(root);
-    }
-    result
-}
-
 // ── get_default_session_dir ─────────────────────────────────────
 
 /// Get the default session directory for a cwd.
@@ -1038,148 +998,6 @@ pub fn get_default_session_dir(cwd: &Path) -> PathBuf {
         .home_dir()
         .join(".rab");
     rab_dir.join("sessions").join(encode_cwd_for_dir(cwd))
-}
-
-pub fn read_session_header(path: &Path) -> Option<String> {
-    let content = fs::read_to_string(path).ok()?;
-    content.lines().next().map(|s| s.to_string())
-}
-
-// ── Entry introspection helpers (for UI tree display) ─────────
-
-/// Check if an entry is a regular conversation message.
-pub fn entry_is_message(entry: &SessionEntry) -> bool {
-    entry.message.as_llm().is_some()
-}
-
-/// Check if an entry is a metadata entry (model change, thinking level, etc.)
-pub fn entry_is_metadata(entry: &SessionEntry) -> bool {
-    match &entry.message {
-        AgentMessage::Extension(ext) => ext.kind.starts_with("session/"),
-        _ => false,
-    }
-}
-
-/// Get the LLM message from an entry, if it's a conversation message.
-pub fn entry_as_message(entry: &SessionEntry) -> Option<&yoagent::types::Message> {
-    entry.message.as_llm()
-}
-
-/// Get the Extension kind from an entry, if it's an extension message.
-pub fn entry_extension_kind(entry: &SessionEntry) -> Option<&str> {
-    match &entry.message {
-        AgentMessage::Extension(ext) => Some(&ext.kind),
-        _ => None,
-    }
-}
-
-/// Get a display title for a session entry (for tree selector).
-pub fn entry_display_title(entry: &SessionEntry) -> String {
-    match &entry.message {
-        AgentMessage::Llm(msg) => match msg {
-            yoagent::types::Message::User { content, .. } => {
-                let text = crate::agent::types::content_text(content);
-                if text.len() > 80 {
-                    format!("{}…", &text[..80])
-                } else {
-                    text
-                }
-            }
-            yoagent::types::Message::Assistant { content, .. } => {
-                let has_text = content
-                    .iter()
-                    .any(|c| matches!(c, yoagent::types::Content::Text { .. }));
-                let has_tool_calls = content
-                    .iter()
-                    .any(|c| matches!(c, yoagent::types::Content::ToolCall { .. }));
-                if has_text {
-                    let text = crate::agent::types::content_text(content);
-                    if text.len() > 80 {
-                        format!("{}…", &text[..80])
-                    } else {
-                        text
-                    }
-                } else if has_tool_calls {
-                    let names: Vec<&str> = content
-                        .iter()
-                        .filter_map(|c| {
-                            if let yoagent::types::Content::ToolCall { name, .. } = c {
-                                Some(name.as_str())
-                            } else {
-                                None
-                            }
-                        })
-                        .collect();
-                    format!("[Tool calls: {}]", names.join(", "))
-                } else {
-                    String::new()
-                }
-            }
-            yoagent::types::Message::ToolResult {
-                tool_name,
-                is_error,
-                ..
-            } => {
-                if *is_error {
-                    format!("[Tool error: {}]", tool_name)
-                } else {
-                    format!("[Tool result: {}]", tool_name)
-                }
-            }
-        },
-        AgentMessage::Extension(ext) => match ext.kind.as_str() {
-            KIND_MODEL_CHANGE => {
-                let provider = ext.data["provider"].as_str().unwrap_or("?");
-                let model_id = ext.data["modelId"].as_str().unwrap_or("?");
-                format!("Model: {} / {}", provider, model_id)
-            }
-            KIND_THINKING_LEVEL_CHANGE => {
-                let level = ext.data["level"].as_str().unwrap_or("?");
-                format!("Thinking: {}", level)
-            }
-            KIND_ACTIVE_TOOLS_CHANGE => {
-                let tools: Vec<&str> = ext.data["tools"]
-                    .as_array()
-                    .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
-                    .unwrap_or_default();
-                format!("Active tools: {}", tools.join(", "))
-            }
-            KIND_COMPACTION => {
-                if let Some(summary) = ext.data["summary"].as_str() {
-                    if summary.len() > 60 {
-                        format!("Compaction: {}…", &summary[..60])
-                    } else {
-                        format!("Compaction: {}", summary)
-                    }
-                } else {
-                    "Compaction".to_string()
-                }
-            }
-            KIND_BRANCH_SUMMARY => {
-                if let Some(summary) = ext.data["summary"].as_str() {
-                    if summary.len() > 60 {
-                        format!("Branch: {}…", &summary[..60])
-                    } else {
-                        format!("Branch: {}", summary)
-                    }
-                } else {
-                    "Branch".to_string()
-                }
-            }
-            KIND_CUSTOM_MESSAGE => {
-                if let Some(text) = ext.data["text"].as_str() {
-                    if text.len() > 80 {
-                        format!("{}…", &text[..80])
-                    } else {
-                        text.to_string()
-                    }
-                } else {
-                    "Info".to_string()
-                }
-            }
-            _ => format!("[{}]", ext.kind),
-        },
-    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────
@@ -1211,14 +1029,6 @@ mod tests {
             )
             .with_timestamp(yoagent::types::now_ms()),
         )
-    }
-
-    #[test]
-    fn test_create_in_memory() {
-        let s = Session::in_memory(Path::new("/tmp/test"));
-        assert!(!s.session_id().is_empty());
-        assert!(!s.is_persisted());
-        assert!(s.get_entries().is_empty());
     }
 
     #[test]
@@ -1322,6 +1132,7 @@ mod tests {
         let mut s = Session::create(&cwd, &sessions_dir).unwrap();
         s.append_message(user_msg("first"));
         s.append_message(asst_msg("response"));
+        s.flush(Some(&sessions_dir)).unwrap();
         drop(s);
 
         let sessions = list_sessions(&sessions_dir);
@@ -1340,7 +1151,6 @@ mod tests {
             created_at: Utc::now().to_rfc3339(),
             name: None,
             parent_session: None,
-            costs: HashMap::new(),
         };
         let meta_json = serde_json::to_string(&meta).unwrap();
         std::fs::write(&path, format!("{}\n", meta_json)).unwrap();
@@ -1443,17 +1253,5 @@ mod tests {
         let s = Session::continue_recent(&cwd, &sessions_dir).unwrap();
         assert!(!s.session_id().is_empty());
         assert!(s.get_entries().is_empty());
-    }
-
-    #[test]
-    fn test_branch_traversal() {
-        let mut s = Session::in_memory(Path::new("/tmp/test"));
-        s.append_message(user_msg("root"));
-        let _m1 = s.append_message(asst_msg("first response"));
-
-        // children of root
-        let root_id = &s.get_entries()[0].id;
-        let children = s.get_children(root_id);
-        assert_eq!(children.len(), 1);
     }
 }

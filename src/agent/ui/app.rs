@@ -3967,13 +3967,6 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
                 info += &format!("\n\nCost\nTotal: {:.4}", cost);
             }
 
-            // Parent session (fork chain)
-            if let Some(ref asession) = app.session
-                && let Some(file_path) = asession.session().session_file().as_ref()
-                && let Some(_h) = crate::agent::session::read_session_header(file_path)
-                && false
-            {}
-
             show_status(app, info.clone());
         }
         CommandResult::OpenSessionSelector => {
