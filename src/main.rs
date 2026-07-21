@@ -389,6 +389,10 @@ async fn main() -> anyhow::Result<()> {
     mcp_ext.bootstrap_direct_tools().await;
     extensions.push(Box::new(mcp_ext));
 
+    // Tree-sitter extension (load regardless of enabled state)
+    let ts_ext = rab::extensions::tree_sitter::TreeSitterExtension::new();
+    extensions.push(Box::new(ts_ext));
+
     // Load context files (AGENTS.md / CLAUDE.md)
     let context_files = if no_context_files {
         Vec::new()
@@ -407,9 +411,14 @@ async fn main() -> anyhow::Result<()> {
         .map(|cf| format_context_path(&cf.path, &cwd))
         .collect();
 
-    // Collect tools + metadata from all extensions
+    // Collect tools from all extensions
     let all_tools: Vec<rab::agent::extension::ToolDefinition> =
         extensions.iter().flat_map(|ext| ext.tools()).collect();
+
+    // Collect hooks from all extensions and register them globally
+    let all_hooks: Vec<rab::agent::extension::HookRegistration> =
+        extensions.iter().flat_map(|ext| ext.tool_hooks()).collect();
+    rab::agent::extension::register_tool_hooks(&all_hooks);
 
     // Build tool snippets and guidelines from ToolDefinition metadata
     let tool_snippets: Vec<rab::agent::ToolSnippet> = all_tools

@@ -7,6 +7,112 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
+// ── Tool hook types ────────────────────────────────────────────
+
+/// A before-tool-call hook: receives parsed/validated arguments, returns
+/// optionally blocks execution. Matching pi's `beforeToolCall`.
+pub type BeforeHook = Arc<dyn Fn(&serde_json::Value) -> Option<BeforeToolCallResult> + Send + Sync>;
+
+/// An after-tool-call hook: receives the result and error flag, returns
+/// optional overrides. Matching pi's `afterToolCall`.
+pub type AfterHook =
+    Arc<dyn Fn(&yoagent::types::ToolResult, bool) -> Option<AfterToolCallResult> + Send + Sync>;
+
+/// A tool hook registration: pairs a tool name (or "*" for all tools)
+/// with optional before/after hooks. Extensions return these from
+/// [`Extension::tool_hooks`].
+pub struct HookRegistration {
+    /// Tool name to hook into, or `"*"` for every tool.
+    pub tool_name: &'static str,
+    /// Optional before-execution hook.
+    pub before: Option<BeforeHook>,
+    /// Optional after-execution hook.
+    pub after: Option<AfterHook>,
+}
+
+// ── External hook registry ──────────────────────────────────
+
+use std::collections::HashMap;
+use std::sync::Mutex;
+
+struct ToolHookSet {
+    before: Vec<BeforeHook>,
+    after: Vec<AfterHook>,
+}
+
+/// Global registry mapping tool names → extension hooks.
+/// Populated once at startup via [`register_tool_hooks`], read by
+/// [`run_before_hooks`] / [`run_after_hooks`] during tool execution.
+/// Empty by default — no hooks means no blocking.
+static EXTENSION_HOOKS: Mutex<Option<HashMap<&'static str, ToolHookSet>>> = Mutex::new(None);
+
+/// Register extension hooks for a tool name (called during startup).
+/// `"*"` matches every tool.
+pub fn register_tool_hooks(registrations: &[HookRegistration]) {
+    let mut map = EXTENSION_HOOKS.lock().unwrap();
+    let map = map.get_or_insert_with(HashMap::new);
+    for reg in registrations {
+        let entry = map.entry(reg.tool_name).or_insert_with(|| ToolHookSet {
+            before: vec![],
+            after: vec![],
+        });
+        if let Some(ref before) = reg.before {
+            entry.before.push(before.clone());
+        }
+        if let Some(ref after) = reg.after {
+            entry.after.push(after.clone());
+        }
+    }
+}
+
+/// Run all registered before-hooks for a tool. Returns the first blocking result.
+pub fn run_before_hooks(tool_name: &str, args: &serde_json::Value) -> Option<BeforeToolCallResult> {
+    let map = EXTENSION_HOOKS.lock().ok()?;
+    let map = map.as_ref()?;
+    if let Some(set) = map.get(tool_name) {
+        for hook in &set.before {
+            if let Some(result) = hook(args)
+                && result.block
+            {
+                return Some(result);
+            }
+        }
+    }
+    None
+}
+
+/// Run all registered after-hooks for a tool. Returns merged overrides.
+pub fn run_after_hooks(
+    tool_name: &str,
+    result: &yoagent::types::ToolResult,
+    is_error: bool,
+) -> Option<AfterToolCallResult> {
+    let map = EXTENSION_HOOKS.lock().ok()?;
+    let map = map.as_ref()?;
+    let mut merged: Option<AfterToolCallResult> = None;
+    if let Some(set) = map.get(tool_name) {
+        for hook in &set.after {
+            if let Some(override_result) = hook(result, is_error) {
+                let m = merged.get_or_insert(AfterToolCallResult {
+                    content: None,
+                    details: None,
+                    is_error: None,
+                });
+                if let Some(content) = override_result.content {
+                    m.content = Some(content);
+                }
+                if let Some(details) = override_result.details {
+                    m.details = Some(details);
+                }
+                if let Some(err) = override_result.is_error {
+                    m.is_error = Some(err);
+                }
+            }
+        }
+    }
+    merged
+}
+
 // ── Extension default state ────────────────────────────────────
 
 /// Default state of an extension for the /extensions UI.
@@ -760,6 +866,18 @@ impl yoagent::types::AgentTool for ToolDefinition {
             return Err(yoagent::types::ToolError::Failed(reason));
         }
 
+        // Step 3b: extension before-execution hooks
+        if let Some(result) = run_before_hooks(tool_name, &params)
+            && result.block
+        {
+            let reason = if result.reason.is_empty() {
+                format!("Tool {} execution blocked", tool_name)
+            } else {
+                result.reason
+            };
+            return Err(yoagent::types::ToolError::Failed(reason));
+        }
+
         // Step 4: execute the inner tool
         let (mut tool_result, mut is_error) = match self.tool.execute(params, ctx).await {
             Ok(r) => (r, false),
@@ -779,6 +897,19 @@ impl yoagent::types::AgentTool for ToolDefinition {
         if let Some(ref hook) = self.after_tool_call
             && let Some(override_result) = hook(&tool_result, is_error)
         {
+            if let Some(content) = override_result.content {
+                tool_result.content = content;
+            }
+            if let Some(details) = override_result.details {
+                tool_result.details = details;
+            }
+            if let Some(err) = override_result.is_error {
+                is_error = err;
+            }
+        }
+
+        // Step 5b: extension after-execution hooks
+        if let Some(override_result) = run_after_hooks(tool_name, &tool_result, is_error) {
             if let Some(content) = override_result.content {
                 tool_result.content = content;
             }
@@ -844,6 +975,13 @@ pub trait Extension: Send + Sync + std::any::Any {
     /// Called when `/reload` is triggered (matching pi's `session_start` with reason "reload").
     /// Extensions can refresh internal state, re-read configs, reconnect, etc.
     fn on_reload(&self) {}
+
+    /// Register hooks into any tool (including tools owned by other extensions).
+    /// Returned registrations are matched by `tool_name` against every registered
+    /// tool and applied at startup. Use `"*"` to hook every tool.
+    fn tool_hooks(&self) -> Vec<HookRegistration> {
+        vec![]
+    }
 
     /// Called before the session is shut down or reloaded (matching pi's `session_shutdown`).
     /// `reason` is "reload", "quit", "new", "resume", or "fork".
