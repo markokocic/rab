@@ -271,7 +271,7 @@ pub fn prepare_edit_args(mut args: serde_json::Value) -> Result<serde_json::Valu
 }
 
 /// Normalize tool arguments before execution (test-only).
-#[allow(dead_code)]
+#[cfg(test)]
 fn prepare_edit_tool_args(mut args: serde_json::Value) -> serde_json::Value {
     let (path_str, edits) = match prepare_edit_arguments(&args) {
         Ok(result) => result,

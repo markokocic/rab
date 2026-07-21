@@ -1596,13 +1596,13 @@ mod tests {
         // The CWD doesn't matter for ~/ paths since we use HOME
         let provider = CombinedAutocompleteProvider::new(vec![], "/tmp".into());
 
-        let tilde_path = format!("~/.rab_test_autocomplete/sub/deep/tar");
+        let tilde_path = "~/.rab_test_autocomplete/sub/deep/tar".to_string();
         let result = provider.get_file_suggestions(&tilde_path);
         assert!(result.is_some(), "~/ path should produce suggestions");
         let suggestions = result.unwrap();
         assert_eq!(suggestions.prefix, tilde_path);
 
-        let expected_value = format!("~/.rab_test_autocomplete/sub/deep/target/");
+        let expected_value = "~/.rab_test_autocomplete/sub/deep/target/".to_string();
         let has_target = suggestions.items.iter().any(|i| i.value == expected_value);
         assert!(
             has_target,
@@ -1651,7 +1651,7 @@ mod tests {
         let provider = CombinedAutocompleteProvider::new(vec![], "/tmp".into());
 
         // User typed "~/.rab_test_trailing/sub/deep/" (trailing slash)
-        let tilde_path = format!("~/.rab_test_trailing/sub/deep/");
+        let tilde_path = "~/.rab_test_trailing/sub/deep/".to_string();
         let result = provider.get_file_suggestions(&tilde_path);
         assert!(
             result.is_some(),
@@ -1661,7 +1661,7 @@ mod tests {
         assert_eq!(suggestions.prefix, tilde_path);
 
         // The suggestion value should include the full path, not just the last component
-        let expected_value = format!("~/.rab_test_trailing/sub/deep/target/");
+        let expected_value = "~/.rab_test_trailing/sub/deep/target/".to_string();
         let has_target = suggestions.items.iter().any(|i| i.value == expected_value);
         assert!(
             has_target,

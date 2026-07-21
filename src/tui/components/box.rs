@@ -142,9 +142,7 @@ mod tests {
         // Long styled title simulating a wrapped read tool title
         // Must actually wrap: visible chars need to exceed content_width (78)
         // "read " = 5 + "/very/long/path/that/actually/wraps/because/it/is/super/duper/long/file_name.config.rs" = 80 => 85 total
-        let title = format!(
-            "\x1b[1mread\x1b[22m \x1b[38;2;100;100;200m/very/long/path/that/actually/wraps/because/it/is/super/duper/long/file_name.config.rs\x1b[39m"
-        );
+        let title = "\x1b[1mread\x1b[22m \x1b[38;2;100;100;200m/very/long/path/that/actually/wraps/because/it/is/super/duper/long/file_name.config.rs\x1b[39m".to_string();
         b.add_child(Box::new(Text::new(title, 0, 1, None)));
 
         let width = 80;

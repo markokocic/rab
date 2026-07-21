@@ -719,7 +719,7 @@ mod tests {
         .await;
 
         assert!(result.contains("Successfully wrote"));
-        assert_eq!(result.contains("0 bytes"), true);
+        assert!(result.contains("0 bytes"));
     }
 
     #[tokio::test]

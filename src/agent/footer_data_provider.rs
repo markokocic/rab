@@ -375,8 +375,8 @@ mod tests {
     #[test]
     fn test_find_git_paths_regular_repo() {
         let tmp = std::env::temp_dir().join(format!("rab-test-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&tmp.join(".git")).unwrap();
-        std::fs::write(&tmp.join(".git").join("HEAD"), "ref: refs/heads/main\n").unwrap();
+        std::fs::create_dir_all(tmp.join(".git")).unwrap();
+        std::fs::write(tmp.join(".git").join("HEAD"), "ref: refs/heads/main\n").unwrap();
 
         let result = find_git_paths(&tmp);
         assert!(result.is_some());
@@ -389,9 +389,9 @@ mod tests {
     #[test]
     fn test_find_git_paths_walk_up() {
         let tmp = std::env::temp_dir().join(format!("rab-test-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&tmp.join("sub").join("deep")).unwrap();
-        std::fs::create_dir_all(&tmp.join(".git")).unwrap();
-        std::fs::write(&tmp.join(".git").join("HEAD"), "ref: refs/heads/main\n").unwrap();
+        std::fs::create_dir_all(tmp.join("sub").join("deep")).unwrap();
+        std::fs::create_dir_all(tmp.join(".git")).unwrap();
+        std::fs::write(tmp.join(".git").join("HEAD"), "ref: refs/heads/main\n").unwrap();
 
         // Should find .git by walking up from sub/deep
         let result = find_git_paths(&tmp.join("sub").join("deep"));
@@ -403,9 +403,9 @@ mod tests {
     #[test]
     fn test_resolve_git_branch_from_head() {
         let tmp = std::env::temp_dir().join(format!("rab-test-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&tmp.join(".git")).unwrap();
+        std::fs::create_dir_all(tmp.join(".git")).unwrap();
         std::fs::write(
-            &tmp.join(".git").join("HEAD"),
+            tmp.join(".git").join("HEAD"),
             "ref: refs/heads/feature-branch\n",
         )
         .unwrap();
@@ -419,8 +419,8 @@ mod tests {
     #[test]
     fn test_resolve_git_branch_detached() {
         let tmp = std::env::temp_dir().join(format!("rab-test-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&tmp.join(".git")).unwrap();
-        std::fs::write(&tmp.join(".git").join("HEAD"), "abc123def456\n").unwrap();
+        std::fs::create_dir_all(tmp.join(".git")).unwrap();
+        std::fs::write(tmp.join(".git").join("HEAD"), "abc123def456\n").unwrap();
 
         let result = resolve_git_branch(&tmp);
         assert_eq!(result.as_deref(), Some("detached"));

@@ -240,10 +240,10 @@ mod tests {
         let cwd = Path::new("/other");
         let result = format_for_display(path, cwd);
         // If HOME is set, it should show ~/project/AGENTS.md
-        if let Ok(home) = std::env::var("HOME") {
-            if home == "/home/user" {
-                assert_eq!(result, "~/project/AGENTS.md");
-            }
+        if let Ok(home) = std::env::var("HOME")
+            && home == "/home/user"
+        {
+            assert_eq!(result, "~/project/AGENTS.md");
         }
     }
 

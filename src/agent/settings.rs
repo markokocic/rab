@@ -1095,12 +1095,16 @@ mod tests {
 
     #[test]
     fn test_merge_global_and_project() {
-        let mut global = Settings::default();
-        global.hide_thinking = Some(true);
-        global.default_thinking_level = Some("high".into());
+        let global = Settings {
+            hide_thinking: Some(true),
+            default_thinking_level: Some("high".into()),
+            ..Default::default()
+        };
 
-        let mut project = Settings::default();
-        project.hide_thinking = Some(false);
+        let project = Settings {
+            hide_thinking: Some(false),
+            ..Default::default()
+        };
 
         let merged = Settings::merge(global, project);
         assert_eq!(merged.hide_thinking, Some(false));
@@ -1442,14 +1446,14 @@ mod tests {
     #[test]
     fn test_auto_compact_setter_getter() {
         let mut s = Settings::default();
-        assert_eq!(s.get_auto_compact(), true); // default
+        assert!(s.get_auto_compact()); // default
 
         s.set_auto_compact(Some(false));
-        assert_eq!(s.get_auto_compact(), false);
+        assert!(!s.get_auto_compact());
         assert!(s.modified_fields.contains("compaction.enabled"));
 
         s.set_auto_compact(Some(true));
-        assert_eq!(s.get_auto_compact(), true);
+        assert!(s.get_auto_compact());
     }
 
     #[test]
@@ -1747,8 +1751,10 @@ mod tests {
 
     #[test]
     fn test_model_from_settings() {
-        let mut s = Settings::default();
-        s.default_model = Some("claude-sonnet".into());
+        let s = Settings {
+            default_model: Some("claude-sonnet".into()),
+            ..Default::default()
+        };
         assert_eq!(s.model(), "claude-sonnet");
     }
 
@@ -1778,13 +1784,15 @@ mod tests {
     #[test]
     fn test_settings_fields_accessible() {
         // Ensure commonly-used fields are still accessible as before
-        let mut s = Settings::default();
-        s.hide_thinking = Some(true);
-        s.collapse_tool_output = Some(true);
-        s.default_thinking_level = Some("high".into());
-        s.enabled_models = Some(vec!["model1".into()]);
-        s.theme = Some("dark".into());
-        s.verbose = true;
+        let s = Settings {
+            hide_thinking: Some(true),
+            collapse_tool_output: Some(true),
+            default_thinking_level: Some("high".into()),
+            enabled_models: Some(vec!["model1".into()]),
+            theme: Some("dark".into()),
+            verbose: true,
+            ..Default::default()
+        };
 
         assert_eq!(s.hide_thinking, Some(true));
         assert_eq!(s.collapse_tool_output, Some(true));
