@@ -533,7 +533,7 @@ async fn main() -> anyhow::Result<()> {
     } else {
         settings.default_thinking_level.clone()
     };
-    let thinking_level_str = thinking_level.as_deref().or(Some("xhigh"));
+    let thinking_level_str = thinking_level.as_deref().or(Some("max"));
 
     if message_parts.is_empty() {
         let api_key = resolved
@@ -594,15 +594,11 @@ async fn main() -> anyhow::Result<()> {
         let mc = resolved
             .as_ref()
             .map(|r| r.model_config.clone())
-            .unwrap_or_else(|| {
-                let mut mc = rab::agent::base_model_config(&model);
-                mc.context_window = rab::agent::get_model_context_window(&model) as u32;
-                mc
-            });
+            .unwrap_or_else(|| rab::agent::base_model_config(&model));
         agent_session.set_compaction_config(
             api_key.clone(),
             &model,
-            rab::agent::get_model_context_window(&model),
+            mc.context_window as u64,
             Some(mc.clone()),
         );
 

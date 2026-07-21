@@ -86,12 +86,14 @@ use crossterm::event::{KeyEvent, KeyEventKind};
 use tokio::sync::mpsc;
 
 /// Thinking level cycle order (matching pi's thinking level enum). Cycles from
-/// highest to lowest so the first press from the default (xhigh) goes to "high"
+/// highest to lowest so the first press from the default (max) goes to "high"
 /// (a step down), not to "off".
-const ALL_THINKING_LEVELS: &[&str] = &["xhigh", "high", "medium", "low", "off"];
+const ALL_THINKING_LEVELS: &[&str] = &["max", "high", "medium", "low", "off"];
 
 /// Get the available thinking levels for the current model, filtered by
-/// the model's `thinkingLevelMap`. Levels mapped to `null` are unsupported.
+/// the model's `thinkingLevelMap`. Matches pi's `getSupportedThinkingLevels`.
+/// Levels mapped to `null` are unsupported. "max" requires explicit presence
+/// in the map (other levels are available unless nulled).
 fn available_thinking_levels(app: &App) -> Vec<&'static str> {
     // Try to read thinkingLevelMap from the resolved model
     let thinking_map: Option<std::collections::HashMap<String, Option<serde_json::Value>>> = app
@@ -109,11 +111,15 @@ fn available_thinking_levels(app: &App) -> Vec<&'static str> {
         Some(map) => ALL_THINKING_LEVELS
             .iter()
             .filter(|level| {
-                if **level == "off" {
-                    return true; // off is always available
+                let mapped = map.get(**level);
+                if matches!(mapped, Some(None)) {
+                    return false; // explicitly unsupported
                 }
-                // If the level is in the map and maps to null, it's unsupported
-                !matches!(map.get(**level), Some(None))
+                // Pi: "xhigh" / "max" require explicit presence in the map
+                if **level == "max" {
+                    return matches!(mapped, Some(Some(_)));
+                }
+                true
             })
             .copied()
             .collect(),
@@ -342,15 +348,12 @@ impl App {
             .resolve(&config.model, Some(&config.provider))
             .ok()
             .map(|r| r.model_config.clone())
-            .unwrap_or_else(|| {
-                let mut mc = crate::agent::base_model_config(&config.model);
-                mc.context_window = crate::agent::get_model_context_window(&config.model) as u32;
-                mc
-            });
+            .unwrap_or_else(|| crate::agent::base_model_config(&config.model));
+        let context_window = model_config.context_window;
         agent_session.set_compaction_config(
             config.api_key.clone(),
             &config.model,
-            crate::agent::get_model_context_window(&config.model),
+            context_window as u64,
             Some(model_config),
         );
         agent_session.set_registry(config.registry.clone());
@@ -442,7 +445,7 @@ impl App {
             config.cwd.to_string_lossy().to_string(),
             footer_provider.clone(),
         );
-        footer.set_context_window(crate::agent::get_model_context_window(&config.model));
+        footer.set_context_window(context_window as u64);
 
         // Set available provider count for footer display
         footer_provider
@@ -3245,7 +3248,7 @@ fn map_thinking_level(level: Option<&str>) -> yoagent::types::ThinkingLevel {
         Some("off") => yoagent::types::ThinkingLevel::Off,
         Some("low") => yoagent::types::ThinkingLevel::Low,
         Some("medium") => yoagent::types::ThinkingLevel::Medium,
-        Some("high") | Some("xhigh") => yoagent::types::ThinkingLevel::High,
+        Some("high") | Some("max") | Some("xhigh") => yoagent::types::ThinkingLevel::High,
         _ => yoagent::types::ThinkingLevel::High,
     }
 }

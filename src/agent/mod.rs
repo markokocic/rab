@@ -11,7 +11,7 @@ pub mod ui;
 
 pub use agent_session::{
     AgentSession, CompactionEvent, CompactionEventCallback, CompactionReason, CompactionResult,
-    CompactionSettings, get_model_context_window,
+    CompactionSettings,
 };
 pub use context_files::{ContextFile, load_context_files};
 pub use extension::{CommandHandler, CommandResult, Extension, SlashCommand, ToolDefinition};

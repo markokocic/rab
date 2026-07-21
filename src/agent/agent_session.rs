@@ -190,11 +190,6 @@ pub(crate) fn should_compact(
     total_tokens > context_window.saturating_sub(reserve_tokens)
 }
 
-pub fn get_model_context_window(_model: &str) -> u64 {
-    // Default: use a conservative 200K context window
-    200_000
-}
-
 /// Generate a compaction summary using the LLM provider.
 ///
 /// This calls the provider (same model as the agent) to summarize the
@@ -683,7 +678,10 @@ impl AgentSession {
     ) {
         self.compaction_api_key = Some(api_key);
         self.model_name = model_name.to_string();
-        self.context_window = context_window;
+        // Prefer model_config.context_window when available (more accurate)
+        self.context_window = model_config
+            .as_ref()
+            .map_or(context_window, |mc| mc.context_window as u64);
         self.model_config = model_config;
     }
 

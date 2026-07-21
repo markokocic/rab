@@ -132,7 +132,7 @@ impl SettingsSelector {
                 "low".into(),
                 "medium".into(),
                 "high".into(),
-                "xhigh".into(),
+                "max".into(),
             ]),
         });
 

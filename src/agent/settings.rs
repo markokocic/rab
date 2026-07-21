@@ -1275,7 +1275,7 @@ mod tests {
         cleanup(&path);
 
         let mut s = Settings::default();
-        s.set_default_thinking_level(Some("xhigh".into()));
+        s.set_default_thinking_level(Some("max".into()));
         s.set_hide_thinking(Some(false));
         s.save_to(path.clone()).unwrap();
         assert!(s.modified_fields.is_empty());
@@ -1333,7 +1333,7 @@ mod tests {
         {
             let mut settings = Settings::default();
             settings.set_hide_thinking(Some(false));
-            settings.set_default_thinking_level(Some("xhigh".into()));
+            settings.set_default_thinking_level(Some("max".into()));
             settings.save_to(path.clone()).unwrap();
         }
 
@@ -1343,7 +1343,7 @@ mod tests {
             assert_eq!(loaded.hide_thinking, Some(false), "hide_thinking persists");
             assert_eq!(
                 loaded.default_thinking_level.as_deref(),
-                Some("xhigh"),
+                Some("max"),
                 "thinking level persists"
             );
         }
@@ -1377,7 +1377,7 @@ mod tests {
 
         let mut s1 = Settings::default();
         s1.set_hide_thinking(Some(true));
-        s1.set_default_thinking_level(Some("xhigh".into()));
+        s1.set_default_thinking_level(Some("max".into()));
 
         let mut s2 = Settings::default();
         s2.set_hide_thinking(Some(false));
