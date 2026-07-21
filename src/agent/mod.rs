@@ -1,4 +1,5 @@
 pub mod agent_session;
+pub mod compaction;
 pub mod context_files;
 pub mod extension;
 pub mod footer_data_provider;

@@ -601,6 +601,9 @@ async fn main() -> anyhow::Result<()> {
             mc.context_window as u64,
             Some(mc.clone()),
         );
+        if let Some(ref cc) = settings.compaction {
+            agent_session.apply_compaction_config(cc);
+        }
 
         // Populate session info for /session command
         let si = rab::builtin::commands::compute_session_info(agent_session.session());

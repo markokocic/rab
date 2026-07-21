@@ -358,6 +358,9 @@ impl App {
         );
         agent_session.set_registry(config.registry.clone());
         agent_session.set_auto_compact(config.settings.get_auto_compact());
+        if let Some(ref cc) = config.settings.compaction {
+            agent_session.apply_compaction_config(cc);
+        }
         let (tx, rx) = mpsc::unbounded_channel();
         use crate::agent::ui::theme::current_theme;
         let theme = current_theme().clone();
