@@ -3555,6 +3555,10 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
             // Needs TUI overlay - defer
             app.pending_command_result = Some(result);
         }
+        CommandResult::OpenSessionSelector => {
+            // Needs TUI overlay - defer
+            app.pending_command_result = Some(result);
+        }
         CommandResult::Reloaded => {
             app.refresh_registry();
 
@@ -3887,35 +3891,6 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
                 .map(|s| crate::agent::session::format_session_info(s.session()))
                 .unwrap_or_else(|| "No active session".to_string());
             show_status(app, info);
-        }
-        CommandResult::OpenSessionSelector => {
-            // Load and display available sessions
-            let sessions: Vec<crate::agent::session::SessionInfo> = Vec::new();
-
-            if sessions.is_empty() {
-                let msg = "No sessions found.".to_string();
-                show_status(app, msg.clone());
-            } else {
-                let mut info = format!("Available Sessions ({} total)\n\n", sessions.len());
-                for (i, s) in sessions.iter().take(20).enumerate() {
-                    let name = s.name.as_deref().unwrap_or("unnamed");
-                    let cwd_short = s.cwd.rsplit('/').next().unwrap_or(&s.cwd);
-                    info += &format!(
-                        "{}. {}  [{}]  {} msgs\n   {}\n\n",
-                        i + 1,
-                        name,
-                        fmt_time_short(&s.created),
-                        s.message_count,
-                        cwd_short,
-                    );
-                }
-                if sessions.len() > 20 {
-                    info += &format!("... and {} more sessions\n", sessions.len() - 20);
-                }
-                info += "Use /resume to open the interactive picker";
-
-                show_status(app, info.clone());
-            }
         }
         CommandResult::SessionNamed { name } => {
             // Persist name in session
@@ -5207,12 +5182,6 @@ fn parse_bang_command(input: &str) -> Option<(String, bool)> {
     } else {
         None
     }
-}
-
-/// Format a number with locale-style thousands separators (e.g. 1234 -> "1,234").
-/// Format a DateTime for short display (YYYY-MM-DD HH:MM).
-fn fmt_time_short(dt: &chrono::DateTime<chrono::Utc>) -> String {
-    dt.format("%Y-%m-%d %H:%M").to_string()
 }
 
 // ── Skills utilities (moved inline from skills.rs) ─────────────────
