@@ -130,6 +130,10 @@ impl Extension for BuiltinExtension {
         self
     }
 
+    fn default_state(&self) -> crate::agent::ExtensionDefault {
+        crate::agent::ExtensionDefault::Builtin
+    }
+
     fn tools(&self) -> Vec<ToolDefinition> {
         vec![
             make_read_tool(self.cwd.clone(), self.read_operations.clone()),

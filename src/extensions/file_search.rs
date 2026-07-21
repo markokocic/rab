@@ -159,6 +159,10 @@ impl Extension for FileSearchExtension {
         self
     }
 
+    fn default_state(&self) -> crate::agent::ExtensionDefault {
+        crate::agent::ExtensionDefault::Disabled
+    }
+
     fn tools(&self) -> Vec<ToolDefinition> {
         vec![
             ToolDefinition {

@@ -54,17 +54,22 @@ fn project_override_takes_precedence() {
 }
 
 #[test]
-fn tools_replaced_by_project_not_merged() {
+fn extensions_config_merged_key_by_key() {
     let tmp = tmp_dir();
     let global = tmp.join("global.json");
-    write_file(&global, r#"{"tools": ["read", "write"]}"#);
+    write_file(
+        &global,
+        r#"{"extensionsConfig": {"states": {"ext1": true, "ext2": false}}}"#,
+    );
     write_file(
         &tmp.join(".rab").join("settings.json"),
-        r#"{"tools": ["bash"]}"#,
+        r#"{"extensionsConfig": {"states": {"ext2": true}}}"#,
     );
 
     let s = Settings::load_from(global, &tmp).unwrap();
-    assert_eq!(s.tools, vec!["bash"]);
+    // ext1 comes from global (not overridden), ext2 comes from project
+    assert_eq!(s.extensions_config.states.get("ext1"), Some(&true));
+    assert_eq!(s.extensions_config.states.get("ext2"), Some(&true));
 }
 
 #[test]

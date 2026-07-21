@@ -369,44 +369,46 @@ async fn main() -> anyhow::Result<()> {
     };
     builtin_ext = builtin_ext.with_bash_options(bash_options);
 
-    // Conditionally build extensions based on settings.
-    // New tools (grep, find, ls) are disabled by default.
-    // Enable them by adding to settings.tools, e.g.:
-    //   "tools": ["grep", "find", "ls"]
-    // Or use settings.exclude_tools to disable specific core tools.
-    fn is_extension_active(name: &str, settings: &Settings) -> bool {
-        // exclude_tools always wins
-        if settings.exclude_tools.iter().any(|t| t == name) {
-            return false;
+    // ── Extension loading ──────────────────────────────────────────
+    //
+    // For each extension:
+    //   Builtin → always loaded (not in /extensions as toggleable)
+    //   Others → check settings.extensions_config.states[name];
+    //            fall back to extension.default_state()
+    //
+    fn is_extension_enabled(ext: &dyn Extension, settings: &Settings) -> bool {
+        use rab::agent::ExtensionDefault;
+        match ext.default_state() {
+            ExtensionDefault::Builtin => true,
+            _ => {
+                // Check user override in settings
+                if let Some(&enabled) = settings.extensions_config.states.get(ext.name().as_ref()) {
+                    return enabled;
+                }
+                // Fall back to default
+                ext.default_state() == ExtensionDefault::Enabled
+            }
         }
-
-        let core_extensions: &[&str] = &["builtin", "mcp"];
-
-        // If tools whitelist is set, only those are active
-        if !settings.tools.is_empty() {
-            return settings.tools.iter().any(|t| t == name);
-        }
-
-        // Core extensions are always active when no whitelist
-        core_extensions.contains(&name)
     }
 
     let mut extensions: Vec<Box<dyn Extension>> = Vec::new();
 
+    // Builtin is always loaded
     extensions.push(Box::new(builtin_ext));
-    if is_extension_active("grep", &settings)
-        || is_extension_active("find", &settings)
-        || is_extension_active("ls", &settings)
-    {
-        extensions.push(Box::new(
-            rab::extensions::file_search::FileSearchExtension::new(cwd.clone()),
-        ));
+
+    // File search extension
+    let file_search_ext = rab::extensions::file_search::FileSearchExtension::new(cwd.clone());
+    if is_extension_enabled(&file_search_ext, &settings) {
+        extensions.push(Box::new(file_search_ext));
     }
-    if is_extension_active("mcp", &settings) {
+
+    // MCP extension
+    if is_extension_enabled(
+        &rab::extensions::mcp::McpExtension::from_cwd(&cwd),
+        &settings,
+    ) {
         let mcp_ext = rab::extensions::mcp::McpExtension::from_cwd(&cwd);
         mcp_ext.restore_cache().await;
-        // Bootstrap servers with directTools configured so their tools are
-        // available as native AgentTools from the start.
         mcp_ext.bootstrap_direct_tools().await;
         extensions.push(Box::new(mcp_ext));
     }

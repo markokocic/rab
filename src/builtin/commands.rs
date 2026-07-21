@@ -126,6 +126,11 @@ pub(crate) fn make_commands(
             handler: Box::new(StopCommand),
         },
         SlashCommand {
+            name: "extensions".to_string(),
+            description: "Enable/disable extensions".to_string(),
+            handler: Box::new(ExtensionsCommand),
+        },
+        SlashCommand {
             name: "nextTurn".to_string(),
             description: "Queue a message for the next agent run (when idle)".to_string(),
             handler: Box::new(NextTurnCommand),
@@ -161,6 +166,16 @@ impl CommandHandler for NextTurnCommand {
     fn execute(&self, args: &str) -> anyhow::Result<CommandResult> {
         let text = args.trim().to_string();
         Ok(CommandResult::NextTurn { text })
+    }
+}
+
+// ── /extensions ────────────────────────────────────────────────────
+
+struct ExtensionsCommand;
+
+impl CommandHandler for ExtensionsCommand {
+    fn execute(&self, _args: &str) -> anyhow::Result<CommandResult> {
+        Ok(CommandResult::OpenExtensions)
     }
 }
 

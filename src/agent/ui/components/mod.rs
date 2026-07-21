@@ -1,6 +1,7 @@
 pub mod assistant_message;
 pub mod confirm_overlay;
 pub mod editor_component;
+pub mod extensions_selector;
 pub mod footer_component;
 pub mod fork_selector;
 pub mod header;
@@ -17,6 +18,7 @@ pub mod user_message;
 pub use assistant_message::AssistantMessageComponent;
 pub use confirm_overlay::ConfirmOverlay;
 pub use editor_component::EditorComponent;
+pub use extensions_selector::{ExtensionInfo, ExtensionsCallbacks, ExtensionsSelector};
 pub use footer_component::FooterComponent;
 pub use header::HeaderComponent;
 pub use info_message::InfoMessageComponent;

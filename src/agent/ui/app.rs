@@ -1347,6 +1347,9 @@ pub async fn run(config: AppConfig, session: AgentSession) -> anyhow::Result<()>
                 CommandResult::OpenSettings => {
                     open_settings(&mut app, &mut tui);
                 }
+                CommandResult::OpenExtensions => {
+                    open_extensions_selector(&mut app, &mut tui);
+                }
                 CommandResult::ScopedModels => {
                     open_scoped_models_selector(&mut app, &mut tui);
                 }
@@ -2818,6 +2821,279 @@ fn open_settings(app: &mut App, tui: &mut TUI) {
     tui.show_positioned_overlay(Box::new(selector), crate::tui::OverlayPosition::Bottom);
 }
 
+/// Open the extension configuration overlay.
+fn open_extensions_selector(app: &mut App, tui: &mut TUI) {
+    use crate::agent::ExtensionDefault;
+    use crate::agent::ui::components::extensions_selector::{
+        ExtensionInfo, ExtensionsCallbacks, ExtensionsSelector,
+    };
+
+    // Build ExtensionInfo for each loaded extension
+    let extensions: Vec<ExtensionInfo> = app
+        .extensions
+        .iter()
+        .map(|ext| {
+            let tools = ext.tools();
+            let tool_names: Vec<String> = tools.iter().map(|t| t.name().to_string()).collect();
+            let commands = ext.commands();
+            let command_count = commands.len();
+            let skills = ext.skills();
+            let skill_names: Vec<String> = skills.skills().iter().map(|s| s.name.clone()).collect();
+
+            let name = ext.name().to_string();
+            let default_state = ext.default_state();
+
+            // Determine current enabled state
+            let enabled = match default_state {
+                ExtensionDefault::Builtin => true,
+                _ => {
+                    if let Some(&state) = app.settings.extensions_config.states.get(&name) {
+                        state
+                    } else {
+                        default_state == ExtensionDefault::Enabled
+                    }
+                }
+            };
+
+            ExtensionInfo {
+                name,
+                default_state,
+                enabled,
+                tool_names,
+                command_count,
+                skill_names,
+            }
+        })
+        .collect();
+
+    let close_signal = app.overlay_result_signal.clone();
+
+    let callbacks = ExtensionsCallbacks {
+        on_toggle: Box::new({
+            let app_ptr: *mut App = app as *mut App;
+            move |name: String, enabled: bool| {
+                let app = unsafe { &mut *app_ptr };
+                // Update in-memory settings
+                app.settings.set_extension_enabled(&name, enabled);
+
+                // Rebuild system prompt, commands, and skills from current extensions
+                refresh_agent_config(app);
+            }
+        }),
+        on_save_global: Box::new({
+            let app_ptr: *mut App = app as *mut App;
+            move || {
+                let app = unsafe { &mut *app_ptr };
+                if let Err(e) = app.settings.save() {
+                    app.status_text = Some(format!("Failed to save extensions globally: {}", e));
+                } else {
+                    app.status_text = Some("Extensions saved globally".into());
+                }
+            }
+        }),
+        on_save_project: Box::new({
+            let app_ptr: *mut App = app as *mut App;
+            move || {
+                let app = unsafe { &mut *app_ptr };
+                if let Err(e) = app.settings.save_to_project(&app.cwd) {
+                    app.status_text = Some(format!("Failed to save extensions in project: {}", e));
+                } else {
+                    app.status_text = Some("Extensions saved in project".into());
+                }
+            }
+        }),
+        on_cancel: Box::new({
+            let signal = close_signal.clone();
+            move || {
+                *signal.borrow_mut() = Some(OverlayResult::Dismiss);
+            }
+        }),
+    };
+
+    let selector = ExtensionsSelector::new(extensions, callbacks);
+    tui.show_positioned_overlay(Box::new(selector), crate::tui::OverlayPosition::Bottom);
+}
+
+/// Refresh all agent-facing configuration (system prompt, tools, commands,
+/// skills, autocomplete) from the current extension enablement state.
+///
+/// This is the single method for rebuilding everything that depends on which
+/// extensions are enabled. Called by:
+/// - `/extensions` toggle (extension enablement changed)
+/// - `/reload` handler (files on disk may have changed)
+fn refresh_agent_config(app: &mut App) {
+    use crate::agent::ExtensionDefault;
+
+    fn is_enabled(ext: &dyn Extension, settings: &crate::agent::settings::Settings) -> bool {
+        match ext.default_state() {
+            ExtensionDefault::Builtin => true,
+            _ => {
+                if let Some(&enabled) = settings.extensions_config.states.get(ext.name().as_ref()) {
+                    enabled
+                } else {
+                    ext.default_state() == ExtensionDefault::Enabled
+                }
+            }
+        }
+    }
+
+    // ── Collect tools from enabled extensions ────────────────────
+    let enabled_exts: Vec<&dyn Extension> = app
+        .extensions
+        .iter()
+        .filter(|ext| is_enabled(ext.as_ref(), &app.settings))
+        .map(|b| b.as_ref())
+        .collect();
+
+    let all_tools: Vec<crate::agent::extension::ToolDefinition> =
+        enabled_exts.iter().flat_map(|ext| ext.tools()).collect();
+    let tool_snippets: Vec<crate::agent::ToolSnippet> = all_tools
+        .iter()
+        .map(|twm| crate::agent::ToolSnippet {
+            name: twm.name().to_string(),
+            description: twm.snippet.to_string(),
+        })
+        .collect();
+
+    let tool_guidelines: Vec<String> = all_tools
+        .iter()
+        .flat_map(|twm| twm.guidelines.iter().copied())
+        .map(|s| s.to_string())
+        .collect();
+
+    let has_read_tool = tool_snippets.iter().any(|t| t.name == "read");
+
+    // ── Collect skills: disk-loaded + enabled extensions ─────────
+    let mut all_skills = yoagent::skills::SkillSet::load(&app.skill_dirs).unwrap_or_default();
+    for ext in &enabled_exts {
+        all_skills.merge(ext.skills());
+    }
+    app.skills = all_skills.skills().to_vec();
+
+    // ── Rebuild commands list and editor autocomplete ────────────
+    app.commands = enabled_exts
+        .iter()
+        .flat_map(|e| e.commands())
+        .map(|c| (c.name, c.description))
+        .collect();
+    for skill in &app.skills {
+        app.commands
+            .push((format!("skill:{}", skill.name), skill.description.clone()));
+    }
+    for template in &app.prompt_templates {
+        app.commands
+            .push((template.name.clone(), template.description.clone()));
+    }
+
+    // Rebuild editor autocomplete
+    {
+        use crate::tui::autocomplete::AutocompleteItem as AutoAutocompleteItem;
+        use crate::tui::autocomplete::SlashCommand as AutoSlashCommand;
+
+        let mut auto_commands: Vec<AutoSlashCommand> = enabled_exts
+            .iter()
+            .flat_map(|e| e.commands())
+            .map(|cmd| {
+                let handler = cmd.handler;
+                AutoSlashCommand {
+                    name: cmd.name,
+                    description: Some(cmd.description),
+                    argument_hint: None,
+                    argument_completions: None,
+                    get_argument_completions: Some(std::sync::Arc::new(
+                        move |prefix: &str| -> Vec<AutoAutocompleteItem> {
+                            handler
+                                .argument_completions(prefix)
+                                .into_iter()
+                                .map(|item| AutoAutocompleteItem {
+                                    value: item.value,
+                                    label: item.label,
+                                    description: item.description,
+                                })
+                                .collect()
+                        },
+                    )),
+                }
+            })
+            .collect();
+
+        // Re-register /skill:name commands
+        for skill in &app.skills {
+            let cmd_name = format!("skill:{}", skill.name);
+            auto_commands.push(AutoSlashCommand {
+                name: cmd_name,
+                description: Some(skill.description.clone()),
+                argument_hint: None,
+                argument_completions: None,
+                get_argument_completions: None,
+            });
+        }
+
+        // Re-register prompt template commands
+        for template in &app.prompt_templates {
+            auto_commands.push(AutoSlashCommand {
+                name: template.name.clone(),
+                description: Some(template.description.clone()),
+                argument_hint: template.argument_hint.clone(),
+                argument_completions: None,
+                get_argument_completions: None,
+            });
+        }
+
+        app.editor.borrow_mut().set_slash_commands(auto_commands);
+    }
+
+    // ── Reload context files and system prompts from disk ────────
+    let context_files = crate::agent::context_files::load_context_files(&app.cwd, &app.agent_dir);
+
+    let custom_system_md = {
+        let project_path = app.cwd.join(".rab").join("SYSTEM.md");
+        if project_path.exists() {
+            std::fs::read_to_string(&project_path).ok()
+        } else {
+            let global_path = app.agent_dir.join("SYSTEM.md");
+            if global_path.exists() {
+                std::fs::read_to_string(&global_path).ok()
+            } else {
+                None
+            }
+        }
+    };
+    let append_system_md = {
+        let project_path = app.cwd.join(".rab").join("APPEND_SYSTEM.md");
+        if project_path.exists() {
+            std::fs::read_to_string(&project_path).ok()
+        } else {
+            let global_path = app.agent_dir.join("APPEND_SYSTEM.md");
+            if global_path.exists() {
+                std::fs::read_to_string(&global_path).ok()
+            } else {
+                None
+            }
+        }
+    };
+
+    // Update header context file display names
+    let context_file_list: Vec<String> = context_files
+        .iter()
+        .map(|cf| crate::paths::format_for_display(&cf.path, &app.cwd))
+        .collect();
+    app.context_files = context_file_list;
+
+    // ── Build system prompt ──────────────────────────────────────
+    let new_system_prompt = crate::agent::SystemPromptBuilder::new()
+        .tool_snippets(tool_snippets)
+        .guidelines(tool_guidelines)
+        .context_files(context_files)
+        .custom_prompt(custom_system_md)
+        .append_prompt(append_system_md)
+        .skills(all_skills)
+        .has_read_tool(has_read_tool)
+        .cwd(&app.cwd)
+        .build();
+    app.system_prompt = new_system_prompt;
+}
+
 /// Apply a setting change from the settings menu.
 /// Updates app state and persists to settings.
 fn apply_settings_change(app: &mut App, id: &str, new_value: &str) {
@@ -3575,8 +3851,26 @@ fn handle_slash_command(app: &mut App, input: &str) {
         None => (input.trim_start_matches('/'), ""),
     };
 
+    // Helper: is the extension that owns this command enabled?
+    fn is_ext_enabled(ext: &dyn Extension, settings: &crate::agent::settings::Settings) -> bool {
+        use crate::agent::ExtensionDefault;
+        match ext.default_state() {
+            ExtensionDefault::Builtin => true,
+            _ => {
+                if let Some(&enabled) = settings.extensions_config.states.get(ext.name().as_ref()) {
+                    enabled
+                } else {
+                    ext.default_state() == ExtensionDefault::Enabled
+                }
+            }
+        }
+    }
+
     // Find the command handler first (before mutable borrow on app)
     for ext in app.extensions.iter() {
+        if !is_ext_enabled(ext.as_ref(), &app.settings) {
+            continue;
+        }
         for cmd in ext.commands() {
             if cmd.name == cmd_name {
                 // Execute the handler here while we have immutably borrowed app,
@@ -3737,12 +4031,7 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
             crate::tui::keybindings::init_keybindings(kb);
             reload_parts.push("keybindings");
 
-            // 4. Reload skills from disk (pi-compatible)
-            let new_skill_set =
-                yoagent::skills::SkillSet::load(&app.skill_dirs).unwrap_or_default();
-            app.skills = new_skill_set.skills().to_vec();
-            reload_parts.push("skills");
-
+            // 4. Skills are reloaded inside rebuild_ext_state below
             // 5. Reload prompt templates from disk (pi-compatible)
             app.prompt_templates =
                 crate::agent::prompt_templates::load_prompt_templates(&app.prompt_template_dirs);
@@ -3751,67 +4040,9 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
                 reload_parts.push("prompts");
             }
 
-            // 5. Reload context files (AGENTS.md / CLAUDE.md) and system prompt (pi-compatible)
-            let context_files =
-                crate::agent::context_files::load_context_files(&app.cwd, &app.agent_dir);
-            // Load SYSTEM.md: project `.rab/SYSTEM.md` first, then global
-            let custom_system_md = {
-                let project_path = app.cwd.join(".rab").join("SYSTEM.md");
-                if project_path.exists() {
-                    std::fs::read_to_string(&project_path).ok()
-                } else {
-                    let global_path = app.agent_dir.join("SYSTEM.md");
-                    if global_path.exists() {
-                        std::fs::read_to_string(&global_path).ok()
-                    } else {
-                        None
-                    }
-                }
-            };
-            // Load APPEND_SYSTEM.md: project `.rab/APPEND_SYSTEM.md` first, then global
-            let append_system_md = {
-                let project_path = app.cwd.join(".rab").join("APPEND_SYSTEM.md");
-                if project_path.exists() {
-                    std::fs::read_to_string(&project_path).ok()
-                } else {
-                    let global_path = app.agent_dir.join("APPEND_SYSTEM.md");
-                    if global_path.exists() {
-                        std::fs::read_to_string(&global_path).ok()
-                    } else {
-                        None
-                    }
-                }
-            };
-
-            // Rebuild tool snippets from current extensions
-            let all_tools: Vec<crate::agent::extension::ToolDefinition> =
-                app.extensions.iter().flat_map(|ext| ext.tools()).collect();
-            let tool_snippets: Vec<crate::agent::ToolSnippet> = all_tools
-                .iter()
-                .map(|twm| crate::agent::ToolSnippet {
-                    name: twm.name().to_string(),
-                    description: twm.snippet.to_string(),
-                })
-                .collect();
-            let has_read_tool = tool_snippets.iter().any(|t| t.name == "read");
-
-            let new_system_prompt = crate::agent::SystemPromptBuilder::new()
-                .tool_snippets(tool_snippets)
-                .context_files(context_files.clone())
-                .custom_prompt(custom_system_md)
-                .append_prompt(append_system_md)
-                .skills(new_skill_set)
-                .has_read_tool(has_read_tool)
-                .cwd(&app.cwd)
-                .build();
-            app.system_prompt = new_system_prompt;
-
-            // Store context files for header resource display
-            let context_file_list: Vec<String> = context_files
-                .iter()
-                .map(|cf| crate::paths::format_for_display(&cf.path, &app.cwd))
-                .collect();
-            app.context_files = context_file_list.clone();
+            // 5. Reload context files and rebuild system prompt
+            refresh_agent_config(app);
+            reload_parts.push("skills");
             {
                 let skill_names: Vec<String> = app.skills.iter().map(|s| s.name.clone()).collect();
                 let template_names: Vec<String> = app
@@ -3829,7 +4060,7 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
                     .filter(|n| n != "dark" && n != "light")
                     .collect();
                 app.header.borrow_mut().set_resource_data(
-                    context_file_list,
+                    app.context_files.clone(),
                     skill_names,
                     template_names,
                     extension_names,
@@ -3838,84 +4069,6 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
             }
             reload_parts.push("system prompt");
             reload_parts.push("context files");
-
-            // 6. Rebuild slash commands and commands list with updated skills
-            {
-                use crate::tui::autocomplete::SlashCommand as AutoSlashCommand;
-                let mut auto_commands: Vec<AutoSlashCommand> =
-                    app.extensions
-                        .iter()
-                        .flat_map(|e| e.commands())
-                        .map(|cmd| {
-                            let handler = cmd.handler;
-                            AutoSlashCommand {
-                                name: cmd.name,
-                                description: Some(cmd.description),
-                                argument_hint: None,
-                                argument_completions: None,
-                                get_argument_completions: Some(
-                                    std::sync::Arc::new(
-                                        move |prefix: &str| -> Vec<
-                                            crate::tui::autocomplete::AutocompleteItem,
-                                        > {
-                                            handler
-                                                .argument_completions(prefix)
-                                                .into_iter()
-                                                .map(|item| {
-                                                    crate::tui::autocomplete::AutocompleteItem {
-                                                        value: item.value,
-                                                        label: item.label,
-                                                        description: item.description,
-                                                    }
-                                                })
-                                                .collect()
-                                        },
-                                    ),
-                                ),
-                            }
-                        })
-                        .collect();
-
-                // Re-register /skill:name commands
-                for skill in &app.skills {
-                    let cmd_name = format!("skill:{}", skill.name);
-                    auto_commands.push(AutoSlashCommand {
-                        name: cmd_name,
-                        description: Some(skill.description.clone()),
-                        argument_hint: None,
-                        argument_completions: None,
-                        get_argument_completions: None,
-                    });
-                }
-
-                // Re-register prompt template commands
-                for template in &app.prompt_templates {
-                    auto_commands.push(AutoSlashCommand {
-                        name: template.name.clone(),
-                        description: Some(template.description.clone()),
-                        argument_hint: template.argument_hint.clone(),
-                        argument_completions: None,
-                        get_argument_completions: None,
-                    });
-                }
-                app.editor.borrow_mut().set_slash_commands(auto_commands);
-            }
-
-            // Rebuild commands list for help overlay
-            app.commands = app
-                .extensions
-                .iter()
-                .flat_map(|e| e.commands())
-                .map(|c| (c.name, c.description))
-                .collect();
-            for skill in &app.skills {
-                app.commands
-                    .push((format!("skill:{}", skill.name), skill.description.clone()));
-            }
-            for template in &app.prompt_templates {
-                app.commands
-                    .push((template.name.clone(), template.description.clone()));
-            }
 
             // 7. Notify extensions that reload is complete (pi-compatible: session_start)
             for ext in app.extensions.iter() {
@@ -4021,6 +4174,10 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
             app.pending_command_result = Some(result);
         }
         CommandResult::OpenSettings => {
+            // Needs TUI overlay - defer
+            app.pending_command_result = Some(result);
+        }
+        CommandResult::OpenExtensions => {
             // Needs TUI overlay - defer
             app.pending_command_result = Some(result);
         }

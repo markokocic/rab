@@ -7,6 +7,20 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
+// ── Extension default state ────────────────────────────────────
+
+/// Default state of an extension for the /extensions UI.
+/// Controls whether the extension can be toggled and its default enabled state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExtensionDefault {
+    /// Always loaded, cannot be toggled via /extensions (builtin).
+    Builtin,
+    /// Enabled by default, user can toggle via /extensions.
+    Enabled,
+    /// Disabled by default, user can toggle via /extensions.
+    Disabled,
+}
+
 // ── Tool call hooks (matching pi's beforeToolCall / afterToolCall) ──
 
 /// Result returned from `before_tool_call` (matching pi's `BeforeToolCallResult`).
@@ -537,6 +551,8 @@ pub enum CommandResult {
     SessionNamed { name: String },
     /// Open settings menu.
     OpenSettings,
+    /// Open extension configuration overlay.
+    OpenExtensions,
     /// Open model selector UI.
     OpenModelSelector,
     /// Enable/disable models for cycling.
@@ -799,6 +815,14 @@ pub trait Extension: Send + Sync + std::any::Any {
 
     /// Downcast to `&dyn Any` for downcasting to concrete types.
     fn as_any(&self) -> &dyn std::any::Any;
+
+    /// How this extension behaves in the /extensions UI.
+    /// - `Builtin` → always loaded, not toggleable (builtin).
+    /// - `Enabled` → loaded by default, user can toggle off.
+    /// - `Disabled` → not loaded by default, user can toggle on.
+    fn default_state(&self) -> ExtensionDefault {
+        ExtensionDefault::Enabled
+    }
 
     /// Tools this extension provides (LLM-callable), each with its own prompt metadata.
     fn tools(&self) -> Vec<ToolDefinition> {

@@ -1,5 +1,7 @@
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+
 use std::collections::HashSet;
 use std::path::PathBuf;
 
@@ -266,6 +268,24 @@ impl DeepMerge for ThinkingBudgetsConfig {
     }
 }
 
+// ── Extensions Config ──────────────────────────────────────────
+
+/// Extension enable/disable state (managed by /extensions command).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct ExtensionsConfig {
+    /// Extension name → whether it's enabled.
+    /// Extensions not listed use their own default_state().
+    /// "builtin" is always ignored (always enabled).
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub states: HashMap<String, bool>,
+}
+
+/// Helper to skip serializing default ExtensionsConfig.
+fn is_default_extensions(cfg: &ExtensionsConfig) -> bool {
+    cfg.states.is_empty()
+}
+
 // ── Main Settings struct ────────────────────────────────────────────────
 
 /// Settings schema matching pi's settings.json format.
@@ -294,13 +314,6 @@ pub struct Settings {
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub follow_up_mode: Option<String>,
-
-    // ── Tools ──────────────────────────────────────────────────────
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub tools: Vec<String>,
-
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub exclude_tools: Vec<String>,
 
     // ── Theme / Display ────────────────────────────────────────────
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -414,8 +427,13 @@ pub struct Settings {
     pub thinking_budgets: Option<ThinkingBudgetsConfig>,
 
     // ── Extensions / Packages ──────────────────────────────────────
+    /// Extension script paths to load (user extensions).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub extensions: Vec<String>,
+
+    /// Extension enable/disable overrides (managed by /extensions command).
+    #[serde(default, skip_serializing_if = "is_default_extensions")]
+    pub extensions_config: ExtensionsConfig,
 
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub skills: Vec<String>,
@@ -540,6 +558,20 @@ impl Settings {
         self.mark_modified("shellCommandPrefix");
     }
 
+    /// Set an extension's enabled state and mark extensions as modified.
+    pub fn set_extension_enabled(&mut self, name: &str, enabled: bool) {
+        self.extensions_config
+            .states
+            .insert(name.to_string(), enabled);
+        self.mark_modified("extensionsConfig");
+    }
+
+    /// Clear an extension's override (reverts to default).
+    pub fn clear_extension_override(&mut self, name: &str) {
+        self.extensions_config.states.remove(name);
+        self.mark_modified("extensionsConfig");
+    }
+
     // ── Convenience accessors for compaction (bridge to nested) ────────
 
     /// Get auto_compact value (from compaction.enabled or default true).
@@ -631,15 +663,20 @@ impl Settings {
             transport: merge_opt(global.transport, project.transport),
             steering_mode: merge_opt(global.steering_mode, project.steering_mode),
             follow_up_mode: merge_opt(global.follow_up_mode, project.follow_up_mode),
-            tools: if project.tools.is_empty() {
-                global.tools
-            } else {
-                project.tools
-            },
-            exclude_tools: if project.exclude_tools.is_empty() {
-                global.exclude_tools
-            } else {
-                project.exclude_tools
+            extensions_config: ExtensionsConfig {
+                states: project
+                    .extensions_config
+                    .states
+                    .clone()
+                    .into_iter()
+                    .chain(
+                        global
+                            .extensions_config
+                            .states
+                            .into_iter()
+                            .filter(|(k, _)| !project.extensions_config.states.contains_key(k)),
+                    )
+                    .collect(),
             },
             theme: merge_opt(global.theme, project.theme),
             verbose: project.verbose || global.verbose,
@@ -780,6 +817,16 @@ impl Settings {
         // Clear modified fields after a successful write.
         self.modified_fields.clear();
         Ok(())
+    }
+
+    /// Save only the modified fields to the project-local path (`.rab/settings.json`).
+    /// Returns without doing anything if no fields have been modified.
+    pub fn save_to_project(&mut self, cwd: &std::path::Path) -> anyhow::Result<()> {
+        if self.modified_fields.is_empty() {
+            return Ok(());
+        }
+        let path = cwd.join(".rab").join("settings.json");
+        self.save_to(path)
     }
 
     /// Reload settings from disk (re-reads global + project).
