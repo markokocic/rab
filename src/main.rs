@@ -661,6 +661,9 @@ async fn run_print_mode(
         .with_system_prompt(&system_prompt)
         .with_thinking(yoagent::types::ThinkingLevel::High)
         .with_tools(agent_tools)
+        .with_context_config(yoagent::context::ContextConfig::from_context_window(
+            mc.context_window,
+        ))
         .with_execution_limits(yoagent::context::ExecutionLimits {
             max_total_tokens: usize::MAX,
             max_turns: usize::MAX,

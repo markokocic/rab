@@ -3220,6 +3220,14 @@ fn build_fresh_agent(
     let retry_config = retry_config_from_settings(&app.settings);
     let thinking_level = map_thinking_level(app.thinking_level.as_deref());
 
+    let context_window = mc.context_window;
+    let execution_limits = yoagent::context::ExecutionLimits {
+        max_total_tokens: 10_000_000,
+        max_turns: 200,
+        max_duration: std::time::Duration::from_secs(3600),
+    };
+    let context_config = yoagent::context::ContextConfig::from_context_window(context_window);
+
     agent
         .with_api_key(api_key)
         .with_system_prompt(&app.system_prompt)
@@ -3227,7 +3235,8 @@ fn build_fresh_agent(
         .with_retry_config(retry_config)
         .with_messages(messages)
         .with_tools(tools)
-        .without_context_management()
+        .with_context_config(context_config)
+        .with_execution_limits(execution_limits)
 }
 
 /// Map rab's thinking level string to yoagent's ThinkingLevel enum.

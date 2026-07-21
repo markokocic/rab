@@ -6,6 +6,7 @@ use crate::agent::session::MessageCost;
 use crate::agent::session::Session;
 use crate::agent::types::{message_text, user_message};
 use crate::provider::ProviderRegistry;
+use yoagent::context::ContextConfig;
 use yoagent::types::AgentMessage;
 use yoagent::types::Message;
 
@@ -50,46 +51,473 @@ impl Default for CompactionSettings {
 pub struct CompactionPreparation {
     pub first_kept_entry_id: String,
     pub tokens_before: u64,
+    /// Messages to summarize (everything before the cut point).
+    pub messages_to_summarize: Vec<AgentMessage>,
 }
 
-pub(crate) fn prepare_compaction(
-    _entries: &[yoagent::session::SessionEntry],
-    _settings: &CompactionSettings,
-) -> Option<CompactionPreparation> {
+/// Find a cut point in the session entries that keeps approximately
+/// `keep_recent_tokens` worth of recent context.
+///
+/// Walks backwards from the end, accumulating token estimates. Returns the
+/// index of the first entry to keep (everything before it is summarized).
+fn find_cut_point(
+    entries: &[yoagent::session::SessionEntry],
+    keep_recent_tokens: u64,
+) -> Option<usize> {
+    if entries.is_empty() {
+        return None;
+    }
+
+    let mut accumulated: u64 = 0;
+    let budget = keep_recent_tokens.max(5000); // minimum 5K tokens kept
+
+    for i in (0..entries.len()).rev() {
+        let entry = &entries[i];
+        // Only count LLM messages (skip metadata entries like model_change, etc.)
+        if entry.message.as_llm().is_some() {
+            let tokens = yoagent::context::message_tokens(&entry.message) as u64;
+            accumulated = accumulated.saturating_add(tokens);
+        }
+        if accumulated >= budget && i > 0 {
+            // Found a cut point — walk forward to the next LLM message boundary
+            // so we don't split in the middle of a turn.
+            for (j, entry) in entries.iter().enumerate().skip(i) {
+                if let Some(llm) = entry.message.as_llm()
+                    && matches!(llm, Message::User { .. })
+                {
+                    return Some(j);
+                }
+            }
+            return Some(i);
+        }
+    }
+
+    // Even the full history is under budget — no compaction needed
     None
 }
 
-pub(crate) fn estimate_context_tokens(_messages: &[AgentMessage]) -> u64 {
-    0
+pub(crate) fn prepare_compaction(
+    entries: &[yoagent::session::SessionEntry],
+    settings: &CompactionSettings,
+) -> Option<CompactionPreparation> {
+    if !settings.enabled || entries.is_empty() {
+        return None;
+    }
+
+    // Skip if the last entry is already a compaction (nothing new to compact)
+    if let Some(last) = entries.last()
+        && let AgentMessage::Extension(ext) = &last.message
+        && ext.kind == crate::agent::session::KIND_COMPACTION
+    {
+        return None;
+    }
+
+    // Find previous compaction boundary, if any
+    let prev_compaction_idx = entries.iter().rposition(|e| {
+        matches!(&e.message, AgentMessage::Extension(ext) if ext.kind == crate::agent::session::KIND_COMPACTION)
+    });
+
+    // Start from after the last compaction
+    let start_idx = prev_compaction_idx.map(|i| i + 1).unwrap_or(0);
+
+    // Only consider entries from start_idx onward
+    let recent_entries = &entries[start_idx..];
+    if recent_entries.len() < 4 {
+        // Too few entries to compact
+        return None;
+    }
+
+    // Token estimate for the entire context
+    let messages: Vec<AgentMessage> = entries
+        .iter()
+        .filter_map(|e| {
+            if e.message.as_llm().is_some() {
+                Some(e.message.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
+    let tokens_before = yoagent::context::total_tokens(&messages) as u64;
+
+    // Find cut point in the recent entries (after last compaction)
+    let cut_idx = find_cut_point(recent_entries, 20_000)?;
+    let absolute_cut = start_idx + cut_idx;
+
+    let first_kept_id = entries[absolute_cut].id.clone();
+
+    // Collect messages to summarize (before the cut point, after last compaction)
+    let messages_to_summarize: Vec<AgentMessage> = entries[start_idx..absolute_cut]
+        .iter()
+        .filter_map(|e| {
+            if e.message.as_llm().is_some() {
+                Some(e.message.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    if messages_to_summarize.is_empty() {
+        return None;
+    }
+
+    Some(CompactionPreparation {
+        first_kept_entry_id: first_kept_id,
+        tokens_before,
+        messages_to_summarize,
+    })
 }
 
+pub(crate) fn estimate_context_tokens(messages: &[AgentMessage]) -> u64 {
+    yoagent::context::total_tokens(messages) as u64
+}
+
+/// Check whether the current context exceeds the compaction threshold.
 pub(crate) fn should_compact(
-    _total_tokens: u64,
-    _context_window: u64,
-    _settings: &CompactionSettings,
+    total_tokens: u64,
+    context_window: u64,
+    settings: &CompactionSettings,
 ) -> bool {
-    false
+    if !settings.enabled {
+        return false;
+    }
+    if context_window == 0 {
+        return false;
+    }
+    // Reserve 16K tokens for the summary prompt and output
+    let reserve_tokens: u64 = 16_384;
+    total_tokens > context_window.saturating_sub(reserve_tokens)
 }
 
 pub fn get_model_context_window(_model: &str) -> u64 {
+    // Default: use a conservative 200K context window
     200_000
 }
 
+/// Generate a compaction summary using the LLM provider.
+///
+/// This calls the provider (same model as the agent) to summarize the
+/// conversation history up to the cut point. When the provider is unavailable,
+/// falls back to yoagent's in-process compaction.
 pub(crate) async fn compact(
     prep: &CompactionPreparation,
-    _api_key: &str,
-    _model_name: &str,
-    _custom_instructions: Option<&str>,
-    _thinking_level: yoagent::types::ThinkingLevel,
-    _model_config: Option<yoagent::provider::model::ModelConfig>,
+    api_key: &str,
+    model_name: &str,
+    custom_instructions: Option<&str>,
+    thinking_level: yoagent::types::ThinkingLevel,
+    model_config: Option<yoagent::provider::model::ModelConfig>,
 ) -> Result<CompactionResult, String> {
-    Ok(CompactionResult {
-        summary: String::new(),
-        first_kept_entry_id: prep.first_kept_entry_id.clone(),
-        tokens_before: prep.tokens_before,
-        estimated_tokens_after: 0,
-        details: None,
-    })
+    // Serialize the messages to summarize into a text representation
+    let conversation_text = format_conversation_for_summary(&prep.messages_to_summarize);
+
+    let system_prompt = "You are a context summarization assistant. Your task is to read a conversation between a user and an AI assistant, then produce a structured summary.\n\nDo NOT continue the conversation. Do NOT respond to any questions in the conversation. ONLY output the structured summary.";
+
+    let base_prompt = r#"The messages above are a conversation to summarize. Create a structured context checkpoint summary that another LLM will use to continue the work.
+
+Use this EXACT format:
+
+## Goal
+[What is the user trying to accomplish?]
+
+## Progress
+### Done
+- [x] [Completed tasks/changes]
+
+### In Progress
+- [ ] [Current work]
+
+### Blocked
+- [Issues preventing progress]
+
+## Key Decisions
+- **[Decision]**: [Brief rationale]
+
+## Next Steps
+1. [What should happen next]
+
+## Critical Context
+- [Data, examples, or references needed to continue]
+
+Keep each section concise. Preserve exact file paths, function names, and error messages."#;
+
+    let prompt = if let Some(instructions) = custom_instructions {
+        format!(
+            "<conversation>\n{}\n</conversation>\n\n{}\n\nAdditional focus: {}",
+            conversation_text, base_prompt, instructions
+        )
+    } else {
+        format!(
+            "<conversation>\n{}\n</conversation>\n\n{}",
+            conversation_text, base_prompt
+        )
+    };
+
+    // Use yoagent to call the provider for summarization.
+    // Fall back to in-process compaction if the provider call fails.
+    let result = call_provider_for_summary(
+        api_key,
+        model_name,
+        system_prompt,
+        &prompt,
+        thinking_level,
+        model_config,
+    )
+    .await;
+
+    match result {
+        Ok(summary) => Ok(CompactionResult {
+            summary,
+            first_kept_entry_id: prep.first_kept_entry_id.clone(),
+            tokens_before: prep.tokens_before,
+            estimated_tokens_after: 0,
+            details: None,
+        }),
+        Err(e) => {
+            // Fallback: use yoagent's in-process compaction
+            tracing::warn!(
+                "LLM summarization failed ({}), falling back to in-process compaction",
+                e
+            );
+            let config = ContextConfig {
+                keep_recent: 10,
+                keep_first: 2,
+                tool_output_max_lines: 50,
+                ..ContextConfig::default()
+            };
+            let compacted =
+                yoagent::context::compact_messages(prep.messages_to_summarize.clone(), &config);
+            let summary_text: String = compacted
+                .iter()
+                .filter_map(|m| {
+                    let (content_opt, _) = match m {
+                        AgentMessage::Llm(Message::User { content, .. })
+                        | AgentMessage::Llm(Message::Assistant { content, .. }) => {
+                            (Some(content), false)
+                        }
+                        _ => (None, false),
+                    };
+                    content_opt
+                        .map(|content| {
+                            content
+                                .iter()
+                                .filter_map(|c| {
+                                    if let yoagent::types::Content::Text { text } = c {
+                                        Some(text.as_str())
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .collect::<String>()
+                        })
+                        .filter(|t| !t.is_empty())
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            let summary = if summary_text.is_empty() {
+                format!(
+                    "Conversation compacted ({} messages summarized)",
+                    prep.messages_to_summarize.len()
+                )
+            } else {
+                summary_text
+            };
+
+            Ok(CompactionResult {
+                summary,
+                first_kept_entry_id: prep.first_kept_entry_id.clone(),
+                tokens_before: prep.tokens_before,
+                estimated_tokens_after: 0, // recomputed after append
+                details: None,
+            })
+        }
+    }
+}
+
+/// Serialize conversation messages to plain text for the summarization prompt.
+fn format_conversation_for_summary(messages: &[AgentMessage]) -> String {
+    let mut parts = Vec::new();
+    for msg in messages {
+        match msg {
+            AgentMessage::Llm(llm) => match llm {
+                Message::User { content, .. } => {
+                    let text: String = content
+                        .iter()
+                        .filter_map(|c| {
+                            if let yoagent::types::Content::Text { text } = c {
+                                Some(text.as_str())
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
+                    if !text.is_empty() {
+                        parts.push(format!("[User]: {}", text));
+                    }
+                }
+                Message::Assistant { content, .. } => {
+                    let mut thinking_parts = Vec::new();
+                    let mut text_parts = Vec::new();
+                    let mut tool_calls = Vec::new();
+                    for c in content {
+                        match c {
+                            yoagent::types::Content::Text { text } => {
+                                text_parts.push(text.as_str());
+                            }
+                            yoagent::types::Content::Thinking { thinking, .. } => {
+                                thinking_parts.push(thinking.as_str());
+                            }
+                            yoagent::types::Content::ToolCall {
+                                name, arguments, ..
+                            } => {
+                                tool_calls.push(format!(
+                                    "{}({})",
+                                    name,
+                                    serde_json::to_string(arguments).unwrap_or_default()
+                                ));
+                            }
+                            _ => {}
+                        }
+                    }
+                    if !thinking_parts.is_empty() {
+                        parts.push(format!(
+                            "[Assistant thinking]: {}",
+                            thinking_parts.join("\n")
+                        ));
+                    }
+                    if !text_parts.is_empty() {
+                        parts.push(format!("[Assistant]: {}", text_parts.join(" ")));
+                    }
+                    if !tool_calls.is_empty() {
+                        parts.push(format!("[Assistant tool calls]: {}", tool_calls.join("; ")));
+                    }
+                }
+                Message::ToolResult {
+                    content, tool_name, ..
+                } => {
+                    let text: String = content
+                        .iter()
+                        .filter_map(|c| {
+                            if let yoagent::types::Content::Text { text } = c {
+                                Some(text.as_str())
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
+                    if !text.is_empty() {
+                        let truncated = if text.len() > 2000 {
+                            format!(
+                                "{}... [{} more characters]",
+                                &text[..2000],
+                                text.len() - 2000
+                            )
+                        } else {
+                            text.clone()
+                        };
+                        parts.push(format!("[Tool result ({}):] {}", tool_name, truncated));
+                    }
+                }
+            },
+            AgentMessage::Extension(ext) => {
+                if let Some(text) = ext.data.get("text").and_then(|v| v.as_str())
+                    && !text.is_empty()
+                {
+                    parts.push(format!("[{}]: {}", ext.kind, text));
+                }
+            }
+        }
+    }
+    parts.join("\n\n")
+}
+
+/// Call the LLM provider to generate a summary.
+async fn call_provider_for_summary(
+    api_key: &str,
+    model_name: &str,
+    system_prompt: &str,
+    prompt: &str,
+    thinking_level: yoagent::types::ThinkingLevel,
+    model_config: Option<yoagent::provider::model::ModelConfig>,
+) -> Result<String, String> {
+    use yoagent::provider::model::ApiProtocol;
+    use yoagent::types::*;
+
+    let mc = model_config.clone().unwrap_or_else(|| {
+        let mut mc = crate::agent::base_model_config(model_name);
+        mc.context_window = 200_000;
+        mc
+    });
+
+    let agent = match mc.api {
+        ApiProtocol::OpenAiCompletions => yoagent::agent::Agent::from_provider(
+            crate::provider::openai_compat::RabOpenAiCompatProvider,
+            mc.clone(),
+        ),
+        ApiProtocol::AnthropicMessages => yoagent::agent::Agent::from_provider(
+            crate::provider::anthropic::RabAnthropicProvider,
+            mc.clone(),
+        ),
+        _ => yoagent::agent::Agent::from_config(mc.clone()),
+    };
+
+    // Build summary messages
+    let summary_msg = AgentMessage::Llm(Message::User {
+        content: vec![Content::Text {
+            text: prompt.to_string(),
+        }],
+        timestamp: yoagent::types::now_ms(),
+    });
+
+    let mut agent = agent
+        .with_api_key(api_key)
+        .with_system_prompt(system_prompt)
+        .with_thinking(thinking_level)
+        .with_messages(vec![summary_msg])
+        .with_execution_limits(yoagent::context::ExecutionLimits {
+            max_total_tokens: 4096,
+            max_turns: 1,
+            max_duration: std::time::Duration::from_secs(60),
+        });
+
+    // Use prompt_structured to get a clean response
+    if let Ok(result) = agent
+        .prompt_structured::<serde_json::Value>(
+            "",
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "summary": {"type": "string"}
+                }
+            }),
+        )
+        .await
+        && let Some(s) = result.get("summary").and_then(|v| v.as_str())
+    {
+        return Ok(s.to_string());
+    }
+
+    // Fallback: get the raw assistant text
+    let messages = agent.messages().to_vec();
+    for msg in messages.iter().rev() {
+        if let AgentMessage::Llm(Message::Assistant { content, .. }) = msg {
+            let text: String = content
+                .iter()
+                .filter_map(|c| {
+                    if let Content::Text { text } = c {
+                        Some(text.as_str())
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            if !text.is_empty() {
+                return Ok(text);
+            }
+        }
+    }
+
+    Err("No summary generated by provider".to_string())
 }
 
 // ── Compaction lifecycle events ─────────────────────────────────────
