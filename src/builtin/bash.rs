@@ -1,12 +1,11 @@
-use crate::agent::extension::{Cancel, Extension, ToolDefinition};
-use crate::agent::extension::{ToolRenderContext, ToolRenderer};
+use crate::agent::extension::Cancel;
+use crate::agent::extension::{ToolDefinition, ToolRenderContext, ToolRenderer};
 use crate::tui::Style;
 use crate::tui::components::StyledSegment;
 use crate::tui::visual_truncate::truncate_to_visual_lines;
 use crate::tui::{Component, Theme, ThemeKey};
 use async_trait::async_trait;
 
-use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -44,58 +43,26 @@ pub struct BashToolOptions {
     pub shell_path: Option<String>,
 }
 
-pub struct BashExtension {
+/// Create a ToolDefinition for the bash tool.
+pub(crate) fn make_bash_tool(
     cwd: PathBuf,
-    options: BashToolOptions,
-}
-
-impl BashExtension {
-    pub fn new(cwd: PathBuf) -> Self {
-        Self {
+    shell_path: Option<String>,
+    command_prefix: Option<String>,
+    operations: Option<Arc<dyn BashOperations>>,
+) -> ToolDefinition {
+    ToolDefinition {
+        tool: Box::new(BashTool {
             cwd,
-            options: BashToolOptions::default(),
-        }
-    }
-
-    pub fn with_options(cwd: PathBuf, options: BashToolOptions) -> Self {
-        Self { cwd, options }
-    }
-
-    pub fn with_shell_path(cwd: PathBuf, shell_path: String) -> Self {
-        Self {
-            cwd,
-            options: BashToolOptions {
-                shell_path: Some(shell_path),
-                ..BashToolOptions::default()
-            },
-        }
-    }
-}
-
-impl Extension for BashExtension {
-    fn name(&self) -> Cow<'static, str> {
-        "bash".into()
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-
-    fn tools(&self) -> Vec<ToolDefinition> {
-        vec![ToolDefinition {
-            tool: Box::new(BashTool {
-                cwd: self.cwd.clone(),
-                shell_path: self.options.shell_path.clone(),
-                command_prefix: self.options.command_prefix.clone(),
-                operations: self.options.operations.clone(),
-            }),
-            snippet: "Execute bash commands (ls, grep, find, etc.)",
-            guidelines: &[],
-            prepare_arguments: None,
-            before_tool_call: None,
-            after_tool_call: None,
-            renderer: Some(std::sync::Arc::new(BashRenderer)),
-        }]
+            shell_path,
+            command_prefix,
+            operations,
+        }),
+        snippet: "Execute bash commands (ls, grep, find, etc.)",
+        guidelines: &[],
+        prepare_arguments: None,
+        before_tool_call: None,
+        after_tool_call: None,
+        renderer: Some(std::sync::Arc::new(BashRenderer)),
     }
 }
 

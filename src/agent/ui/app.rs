@@ -3592,7 +3592,7 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
                 for ext in app.extensions.iter() {
                     if let Some(cmd) = ext
                         .as_any()
-                        .downcast_ref::<crate::builtin::commands::CommandsExtension>()
+                        .downcast_ref::<crate::builtin::extension::BuiltinExtension>()
                     {
                         cmd.set_available_models(models.clone());
                         cmd.set_provider_models(provider_models.clone());

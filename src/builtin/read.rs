@@ -1,11 +1,10 @@
-use crate::agent::extension::{Extension, ToolDefinition};
+use crate::agent::extension::ToolDefinition;
 use crate::agent::extension::{ToolRenderContext, ToolRenderer};
 use crate::tui::Style;
 use crate::tui::components::StyledSegment;
 use crate::tui::{Component, Theme, ThemeKey};
 
 use base64::Engine as _;
-use std::borrow::Cow;
 use std::path::Path;
 use std::sync::Arc;
 use unicode_normalization::UnicodeNormalization;
@@ -25,7 +24,7 @@ pub trait ReadOperations: Send + Sync {
     fn read_text_file(&self, absolute_path: &Path) -> anyhow::Result<String>;
 }
 
-struct DefaultReadOperations;
+pub(crate) struct DefaultReadOperations;
 
 impl ReadOperations for DefaultReadOperations {
     fn read_file(&self, absolute_path: &Path) -> anyhow::Result<Vec<u8>> {
@@ -42,50 +41,22 @@ impl ReadOperations for DefaultReadOperations {
     }
 }
 
-pub struct ReadExtension {
+/// Create a ToolDefinition for the read tool.
+pub(crate) fn make_read_tool(
     cwd: std::path::PathBuf,
     operations: Arc<dyn ReadOperations>,
-}
-
-impl ReadExtension {
-    pub fn new(cwd: std::path::PathBuf) -> Self {
-        Self {
-            cwd,
-            operations: Arc::new(DefaultReadOperations),
-        }
-    }
-
-    /// Set custom read operations (e.g. for SSH targets).
-    pub fn with_operations(mut self, operations: Arc<dyn ReadOperations>) -> Self {
-        self.operations = operations;
-        self
-    }
-}
-
-impl Extension for ReadExtension {
-    fn name(&self) -> Cow<'static, str> {
-        "read".into()
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-
-    fn tools(&self) -> Vec<ToolDefinition> {
-        vec![ToolDefinition {
-            tool: Box::new(ReadTool {
-                cwd: self.cwd.clone(),
-                operations: self.operations.clone(),
-            }),
-            snippet: "Read file contents",
-            guidelines: &["Use read to examine files instead of cat or sed."],
-            prepare_arguments: None,
-            before_tool_call: None,
-            after_tool_call: None,
-            renderer: Some(std::sync::Arc::new(ReadRenderer {
-                cwd: self.cwd.clone(),
-            })),
-        }]
+) -> ToolDefinition {
+    ToolDefinition {
+        tool: Box::new(ReadTool {
+            cwd: cwd.clone(),
+            operations,
+        }),
+        snippet: "Read file contents",
+        guidelines: &["Use read to examine files instead of cat or sed."],
+        prepare_arguments: None,
+        before_tool_call: None,
+        after_tool_call: None,
+        renderer: Some(std::sync::Arc::new(ReadRenderer { cwd })),
     }
 }
 

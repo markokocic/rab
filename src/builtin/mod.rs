@@ -2,6 +2,7 @@ pub mod bash;
 pub mod commands;
 pub mod edit;
 pub mod export;
+pub mod extension;
 pub mod file_mutation_queue;
 pub mod read;
 pub mod write;

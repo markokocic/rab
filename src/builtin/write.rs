@@ -1,11 +1,10 @@
-use crate::agent::extension::{Extension, ToolDefinition};
+use crate::agent::extension::ToolDefinition;
 use crate::agent::extension::{ToolRenderContext, ToolRenderer};
 use crate::builtin;
 use crate::tui::Style;
 use crate::tui::components::StyledSegment;
 use crate::tui::{Component, Theme, ThemeKey};
 
-use std::borrow::Cow;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -79,7 +78,7 @@ where
     }
 }
 
-struct DefaultWriteOperations;
+pub(crate) struct DefaultWriteOperations;
 
 impl WriteOperations for DefaultWriteOperations {
     fn write_file(&self, absolute_path: &Path, content: &str) -> anyhow::Result<()> {
@@ -92,48 +91,19 @@ impl WriteOperations for DefaultWriteOperations {
 
 // ── Extension ─────────────────────────────────────────────────────
 
-pub struct WriteExtension {
+/// Create a ToolDefinition for the write tool.
+pub(crate) fn make_write_tool(
     cwd: std::path::PathBuf,
     operations: Arc<dyn WriteOperations>,
-}
-
-impl WriteExtension {
-    pub fn new(cwd: std::path::PathBuf) -> Self {
-        Self {
-            cwd,
-            operations: Arc::new(DefaultWriteOperations),
-        }
-    }
-
-    /// Set custom write operations (e.g. for SSH targets).
-    pub fn with_operations(mut self, operations: Arc<dyn WriteOperations>) -> Self {
-        self.operations = operations;
-        self
-    }
-}
-
-impl Extension for WriteExtension {
-    fn name(&self) -> Cow<'static, str> {
-        "write".into()
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-
-    fn tools(&self) -> Vec<ToolDefinition> {
-        vec![ToolDefinition {
-            tool: Box::new(WriteTool {
-                cwd: self.cwd.clone(),
-                operations: self.operations.clone(),
-            }),
-            snippet: "Create or overwrite files",
-            guidelines: &["Use write only for new files or complete rewrites."],
-            prepare_arguments: Some(prepare_write_args),
-            before_tool_call: None,
-            after_tool_call: None,
-            renderer: Some(std::sync::Arc::new(WriteRenderer::new())),
-        }]
+) -> ToolDefinition {
+    ToolDefinition {
+        tool: Box::new(WriteTool { cwd, operations }),
+        snippet: "Create or overwrite files",
+        guidelines: &["Use write only for new files or complete rewrites."],
+        prepare_arguments: Some(prepare_write_args),
+        before_tool_call: None,
+        after_tool_call: None,
+        renderer: Some(std::sync::Arc::new(WriteRenderer::new())),
     }
 }
 

@@ -1,10 +1,9 @@
-use crate::agent::extension::{Extension, ToolDefinition};
+use crate::agent::extension::ToolDefinition;
 use crate::agent::extension::{ToolRenderContext, ToolRenderer};
 use crate::tui::Style;
 use crate::tui::components::StyledSegment;
 use crate::tui::{Component, Theme, ThemeKey};
 use async_trait::async_trait;
-use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use unicode_normalization::UnicodeNormalization;
@@ -23,7 +22,7 @@ pub trait EditOperations: Send + Sync {
     async fn access(&self, absolute_path: &Path) -> anyhow::Result<()>;
 }
 
-struct DefaultEditOperations;
+pub(crate) struct DefaultEditOperations;
 
 #[async_trait]
 impl EditOperations for DefaultEditOperations {
@@ -46,53 +45,21 @@ impl EditOperations for DefaultEditOperations {
     }
 }
 
-pub struct EditExtension {
-    cwd: PathBuf,
-    operations: Arc<dyn EditOperations>,
-}
-
-impl EditExtension {
-    pub fn new(cwd: PathBuf) -> Self {
-        Self {
-            cwd,
-            operations: Arc::new(DefaultEditOperations),
-        }
-    }
-
-    /// Set custom edit operations (e.g. for SSH targets).
-    pub fn with_operations(mut self, operations: Arc<dyn EditOperations>) -> Self {
-        self.operations = operations;
-        self
-    }
-}
-
-impl Extension for EditExtension {
-    fn name(&self) -> Cow<'static, str> {
-        "edit".into()
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-
-    fn tools(&self) -> Vec<ToolDefinition> {
-        vec![ToolDefinition {
-            tool: Box::new(EditTool {
-                cwd: self.cwd.clone(),
-                operations: self.operations.clone(),
-            }),
-            snippet: "Make precise file edits with exact text replacement, including multiple disjoint edits in one call",
-            guidelines: &[
-                "Use edit for precise changes (edits[].oldText must match exactly)",
-                "When changing multiple separate locations in one file, use one edit call with multiple entries in edits[] instead of multiple edit calls",
-                "Each edits[].oldText is matched against the original file, not after earlier edits are applied. Do not emit overlapping or nested edits. Merge nearby changes into one edit.",
-                "Keep edits[].oldText as small as possible while still being unique in the file. Do not pad with large unchanged regions.",
-            ],
-            prepare_arguments: Some(prepare_edit_args),
-            before_tool_call: None,
-            after_tool_call: None,
-            renderer: Some(std::sync::Arc::new(EditRenderer::new())),
-        }]
+/// Create a ToolDefinition for the edit tool.
+pub(crate) fn make_edit_tool(cwd: PathBuf, operations: Arc<dyn EditOperations>) -> ToolDefinition {
+    ToolDefinition {
+        tool: Box::new(EditTool { cwd, operations }),
+        snippet: "Make precise file edits with exact text replacement, including multiple disjoint edits in one call",
+        guidelines: &[
+            "Use edit for precise changes (edits[].oldText must match exactly)",
+            "When changing multiple separate locations in one file, use one edit call with multiple entries in edits[] instead of multiple edit calls",
+            "Each edits[].oldText is matched against the original file, not after earlier edits are applied. Do not emit overlapping or nested edits. Merge nearby changes into one edit.",
+            "Keep edits[].oldText as small as possible while still being unique in the file. Do not pad with large unchanged regions.",
+        ],
+        prepare_arguments: Some(prepare_edit_args),
+        before_tool_call: None,
+        after_tool_call: None,
+        renderer: Some(std::sync::Arc::new(EditRenderer::new())),
     }
 }
 

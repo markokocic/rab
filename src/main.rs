@@ -2,13 +2,7 @@ use rab::agent::extension::Extension;
 
 use rab::agent::settings::Settings;
 use rab::agent::ui;
-use rab::builtin::{
-    bash::{BashExtension, BashToolOptions},
-    commands::CommandsExtension,
-    edit::EditExtension,
-    read::ReadExtension,
-    write::WriteExtension,
-};
+use rab::builtin::{bash::BashToolOptions, extension::BuiltinExtension};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -354,9 +348,19 @@ async fn main() -> anyhow::Result<()> {
     // Load history from session
     let context = session.session().build_context();
 
-    // Build extensions with session info for /session command
-    let commands_ext = CommandsExtension::new(available_models.clone(), provider_models.clone());
-    let session_info = commands_ext.session_info.clone();
+    // Build builtin extension with session info for /session command
+    let mut builtin_ext = BuiltinExtension::new(cwd.clone());
+    builtin_ext.set_available_models(available_models.clone());
+    builtin_ext.set_provider_models(provider_models.clone());
+    let session_info = builtin_ext.session_info.clone();
+
+    // Set bash options from settings
+    let bash_options = BashToolOptions {
+        command_prefix: settings.shell_command_prefix.clone(),
+        shell_path: settings.shell_path.clone(),
+        operations: None,
+    };
+    builtin_ext = builtin_ext.with_bash_options(bash_options);
 
     // Conditionally build extensions based on settings.
     // New tools (grep, find, ls) are disabled by default.
@@ -369,7 +373,7 @@ async fn main() -> anyhow::Result<()> {
             return false;
         }
 
-        let core_extensions: &[&str] = &["commands", "read", "write", "edit", "bash", "mcp"];
+        let core_extensions: &[&str] = &["builtin", "mcp"];
 
         // If tools whitelist is set, only those are active
         if !settings.tools.is_empty() {
@@ -382,29 +386,7 @@ async fn main() -> anyhow::Result<()> {
 
     let mut extensions: Vec<Box<dyn Extension>> = Vec::new();
 
-    if is_extension_active("commands", &settings) {
-        extensions.push(Box::new(commands_ext));
-    }
-    if is_extension_active("read", &settings) {
-        extensions.push(Box::new(ReadExtension::new(cwd.clone())));
-    }
-    if is_extension_active("write", &settings) {
-        extensions.push(Box::new(WriteExtension::new(cwd.clone())));
-    }
-    if is_extension_active("edit", &settings) {
-        extensions.push(Box::new(EditExtension::new(cwd.clone())));
-    }
-    if is_extension_active("bash", &settings) {
-        let bash_options = BashToolOptions {
-            command_prefix: settings.shell_command_prefix.clone(),
-            shell_path: settings.shell_path.clone(),
-            operations: None,
-        };
-        extensions.push(Box::new(BashExtension::with_options(
-            cwd.clone(),
-            bash_options,
-        )));
-    }
+    extensions.push(Box::new(builtin_ext));
     if is_extension_active("grep", &settings)
         || is_extension_active("find", &settings)
         || is_extension_active("ls", &settings)
