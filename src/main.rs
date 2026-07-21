@@ -45,6 +45,14 @@ async fn main() -> anyhow::Result<()> {
                     model_override = Some(args[i].clone());
                 }
             }
+            "--help" | "-h" => {
+                print_help();
+                std::process::exit(0);
+            }
+            "--version" | "-v" => {
+                println!("rab {}", env!("CARGO_PKG_VERSION"));
+                std::process::exit(0);
+            }
             "-c" | "--continue" => {
                 continue_session = true;
             }
@@ -803,6 +811,41 @@ async fn run_print_mode(
     }
 
     Ok(())
+}
+
+/// Print usage information and supported flags.
+fn print_help() {
+    let help = r#"rab — a lightweight, extensible, Rust-based coding agent.
+
+Usage:
+  rab [options] [<message>...]
+  rab generate-models
+
+Options:
+  --model <model>              Model override (e.g. "anthropic/claude-sonnet-4-20250514")
+  -c, --continue               Continue most recent session
+  -r, --resume                 Select a session to resume
+  --session <path|id>          Use specific session file or partial UUID
+  --session-id <id>            Use exact project session ID, creating it if missing
+  --fork <path|id>             Fork session into a new session
+  --export <file>              Export session to HTML (not yet implemented)
+  --no-session                 Don't save session (ephemeral)
+  -n, --name <name>            Set session display name
+  --no-context-files, -nc      Disable AGENTS.md / CLAUDE.md discovery
+  --system-prompt <text>       Override system prompt
+  --append-system-prompt <text> Append text to system prompt
+  --session-dir <dir>          Session storage directory
+  -h, --help                   Show this help
+  -v, --version                Show version
+
+Examples:
+  rab                           Interactive mode
+  rab "List all .rs files"      Interactive mode with initial prompt
+  rab -c "What did we discuss?" Continue previous session
+  rab -n "Refactor" "Fix this"  Named session with messages
+  rab generate-models           Generate model definitions
+"#;
+    print!("{help}");
 }
 
 /// Get the agent config directory (~/.rab/agent).
