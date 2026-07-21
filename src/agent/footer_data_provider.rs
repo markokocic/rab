@@ -139,6 +139,88 @@ impl FooterDataProvider {
     }
 }
 
+struct GitPaths {
+    _repo_dir: PathBuf,
+    head_path: PathBuf,
+}
+
+/// Walk up from `cwd` looking for `.git` (directory or worktree file).
+fn find_git_paths(cwd: &Path) -> Option<GitPaths> {
+    let mut dir = Some(cwd.to_path_buf());
+    while let Some(ref d) = dir {
+        let git_path = d.join(".git");
+        if git_path.exists() {
+            if git_path.is_file() {
+                // Worktree: .git is a file containing "gitdir: <path>"
+                let content = fs::read_to_string(&git_path).ok()?;
+                let content = content.trim();
+                if let Some(git_dir_str) = content.strip_prefix("gitdir: ") {
+                    let git_dir = d.join(git_dir_str);
+                    let head_path = git_dir.join("HEAD");
+                    if head_path.exists() {
+                        return Some(GitPaths {
+                            _repo_dir: d.clone(),
+                            head_path,
+                        });
+                    }
+                }
+            } else if git_path.is_dir() {
+                // Regular repo
+                let head_path = git_path.join("HEAD");
+                if head_path.exists() {
+                    return Some(GitPaths {
+                        _repo_dir: d.clone(),
+                        head_path,
+                    });
+                }
+            }
+        }
+        dir = d.parent().map(|p| p.to_path_buf());
+    }
+    None
+}
+
+/// Resolve the current git branch from HEAD, handling reftable repos.
+fn resolve_git_branch(cwd: &Path) -> Option<String> {
+    let paths = find_git_paths(cwd)?;
+    let content = fs::read_to_string(&paths.head_path).ok()?;
+    let content = content.trim();
+
+    if let Some(branch) = content.strip_prefix("ref: refs/heads/") {
+        if branch == ".invalid" {
+            // Reftable repo: HEAD is a placeholder, use git symbolic-ref
+            resolve_branch_with_git(&paths._repo_dir)
+        } else {
+            Some(branch.to_string())
+        }
+    } else {
+        // Detached HEAD
+        Some("detached".to_string())
+    }
+}
+
+/// Fallback for reftable repos: ask git for the current branch.
+fn resolve_branch_with_git(repo_dir: &Path) -> Option<String> {
+    let output = std::process::Command::new("git")
+        .args([
+            "--no-optional-locks",
+            "symbolic-ref",
+            "--quiet",
+            "--short",
+            "HEAD",
+        ])
+        .current_dir(repo_dir)
+        .output()
+        .ok()?;
+    if output.status.success() {
+        let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if !branch.is_empty() {
+            return Some(branch);
+        }
+    }
+    Some("detached".to_string())
+}
+
 // ── Tests ──────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -247,19 +329,10 @@ mod tests {
 
     #[test]
     fn test_refresh_from_session_extracts_latest_model_change() {
-        use crate::agent::SessionMetadata;
-        use crate::agent::session::InMemorySessionStorage;
-        use crate::agent::session::*;
+        use crate::agent::session::Session;
+        use std::path::Path;
 
-        let meta = SessionMetadata {
-            id: "test".into(),
-            created_at: String::new(),
-            cwd: "/tmp".into(),
-            path: None,
-            parent_session_path: None,
-        };
-        let storage = InMemorySessionStorage::new(meta);
-        let mut session = Session::new(Box::new(storage));
+        let mut session = Session::in_memory(Path::new("/tmp/test"));
         session.append_model_change("provider-a", "model-a");
         session.append_model_change("provider-b", "model-b");
 
@@ -272,19 +345,10 @@ mod tests {
 
     #[test]
     fn test_refresh_from_session_no_model_change() {
-        use crate::agent::SessionMetadata;
-        use crate::agent::session::InMemorySessionStorage;
-        use crate::agent::session::*;
+        use crate::agent::session::Session;
+        use std::path::Path;
 
-        let meta = SessionMetadata {
-            id: "test".into(),
-            created_at: String::new(),
-            cwd: "/tmp".into(),
-            path: None,
-            parent_session_path: None,
-        };
-        let storage = InMemorySessionStorage::new(meta);
-        let session = Session::new(Box::new(storage));
+        let session = Session::in_memory(Path::new("/tmp/test"));
 
         let mut provider = FooterDataProvider::new(PathBuf::from("/tmp"));
         // Set some values first
@@ -374,86 +438,4 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
-}
-
-struct GitPaths {
-    _repo_dir: PathBuf,
-    head_path: PathBuf,
-}
-
-/// Walk up from `cwd` looking for `.git` (directory or worktree file).
-fn find_git_paths(cwd: &Path) -> Option<GitPaths> {
-    let mut dir = Some(cwd.to_path_buf());
-    while let Some(ref d) = dir {
-        let git_path = d.join(".git");
-        if git_path.exists() {
-            if git_path.is_file() {
-                // Worktree: .git is a file containing "gitdir: <path>"
-                let content = fs::read_to_string(&git_path).ok()?;
-                let content = content.trim();
-                if let Some(git_dir_str) = content.strip_prefix("gitdir: ") {
-                    let git_dir = d.join(git_dir_str);
-                    let head_path = git_dir.join("HEAD");
-                    if head_path.exists() {
-                        return Some(GitPaths {
-                            _repo_dir: d.clone(),
-                            head_path,
-                        });
-                    }
-                }
-            } else if git_path.is_dir() {
-                // Regular repo
-                let head_path = git_path.join("HEAD");
-                if head_path.exists() {
-                    return Some(GitPaths {
-                        _repo_dir: d.clone(),
-                        head_path,
-                    });
-                }
-            }
-        }
-        dir = d.parent().map(|p| p.to_path_buf());
-    }
-    None
-}
-
-/// Resolve the current git branch from HEAD, handling reftable repos.
-fn resolve_git_branch(cwd: &Path) -> Option<String> {
-    let paths = find_git_paths(cwd)?;
-    let content = fs::read_to_string(&paths.head_path).ok()?;
-    let content = content.trim();
-
-    if let Some(branch) = content.strip_prefix("ref: refs/heads/") {
-        if branch == ".invalid" {
-            // Reftable repo: HEAD is a placeholder, use git symbolic-ref
-            resolve_branch_with_git(&paths._repo_dir)
-        } else {
-            Some(branch.to_string())
-        }
-    } else {
-        // Detached HEAD
-        Some("detached".to_string())
-    }
-}
-
-/// Fallback for reftable repos: ask git for the current branch.
-fn resolve_branch_with_git(repo_dir: &Path) -> Option<String> {
-    let output = std::process::Command::new("git")
-        .args([
-            "--no-optional-locks",
-            "symbolic-ref",
-            "--quiet",
-            "--short",
-            "HEAD",
-        ])
-        .current_dir(repo_dir)
-        .output()
-        .ok()?;
-    if output.status.success() {
-        let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        if !branch.is_empty() {
-            return Some(branch);
-        }
-    }
-    Some("detached".to_string())
 }

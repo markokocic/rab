@@ -411,19 +411,18 @@ impl Session {
 
     /// Entries on the root→head path.
     pub fn get_branch(&self, from_id: Option<&str>) -> Vec<&yoagent::session::SessionEntry> {
-        let target = from_id.unwrap_or_else(|| self.inner.head().unwrap_or(""));
-        let ids = if target.is_empty() {
-            return vec![];
-        } else {
-            // Walk from target to root.
-            let mut ids = vec![target.to_string()];
-            let mut cursor = self.inner.entry(target).and_then(|e| e.parent_id.clone());
-            while let Some(pid) = cursor {
-                ids.push(pid.clone());
-                cursor = self.inner.entry(&pid).and_then(|e| e.parent_id.clone());
+        let ids = match from_id {
+            Some(target) => {
+                let mut ids = vec![target.to_string()];
+                let mut cursor = self.inner.entry(target).and_then(|e| e.parent_id.clone());
+                while let Some(pid) = cursor {
+                    ids.push(pid.clone());
+                    cursor = self.inner.entry(&pid).and_then(|e| e.parent_id.clone());
+                }
+                ids.reverse();
+                ids
             }
-            ids.reverse();
-            ids
+            None => self.inner.path_ids(),
         };
         ids.iter().filter_map(|id| self.inner.entry(id)).collect()
     }
@@ -700,7 +699,7 @@ fn append_to_messages(entry: &yoagent::session::SessionEntry, msgs: &mut Vec<Age
                     timestamp: Utc::now().timestamp_millis() as u64,
                 }));
             }
-        } else if ext.kind == KIND_CUSTOM_MESSAGE || ext.kind.starts_with("session/") {
+        } else if ext.kind.starts_with("session/") {
             // Extension messages (metadata, etc.) are not sent to the LLM.
         } else {
             // Unknown extension kinds: include as extension messages.
@@ -959,62 +958,8 @@ fn get_path_to_root(
     path
 }
 
-// ── Backward-compatible shims for Session ────────────────────────
-
-impl Session {
-    /// Backward-compat: was `get_branch(None).unwrap_or_default()` returning `Result<Vec<SessionEntry>>`.
-    /// Now returns `Vec<&SessionEntry>` directly.
-    pub fn get_branch_result(&self, from_id: Option<&str>) -> Result<Vec<&SessionEntry>, String> {
-        Ok(self.get_branch(from_id))
-    }
-
-    /// Backward-compat: old name for `build_context`
-    pub fn build_session_context(&self) -> SessionContext {
-        self.build_context()
-    }
-
-    /// Backward-compat: metadata accessor (eliminated in new design)
-    pub fn metadata(&self) -> SessionMetaRef {
-        SessionMetaRef {
-            id: self.meta.id.clone(),
-            cwd: self.meta.cwd.clone(),
-            created_at: self.meta.created_at.clone(),
-            name: self.meta.name.clone(),
-            parent_session_path: self.meta.parent_session.clone(),
-        }
-    }
-}
-
-/// Backward-compat: replaces old SessionMetadata
-#[derive(Debug, Clone)]
-pub struct SessionMetaRef {
-    pub id: String,
-    pub cwd: String,
-    pub created_at: String,
-    pub name: Option<String>,
-    pub parent_session_path: Option<String>,
-}
 // Re-export yoagent's SessionEntry for convenience.
 pub use yoagent::session::SessionEntry;
-
-// ── Compatibility extension methods ────────────────────────────
-
-/// Extension trait providing old-style accessor methods on .
-/// This lets existing consumers use , , etc.
-/// without changing every call site.
-pub trait SessionEntryExt {
-    fn id(&self) -> &str;
-    fn parent_id(&self) -> Option<&str>;
-}
-
-impl SessionEntryExt for SessionEntry {
-    fn id(&self) -> &str {
-        &self.id
-    }
-    fn parent_id(&self) -> Option<&str> {
-        self.parent_id.as_deref()
-    }
-}
 
 // ── SessionTreeNode (for tree display) ─────────────────────────
 
@@ -1046,33 +991,28 @@ pub fn build_tree(session: &Session) -> Vec<SessionTreeNode> {
         );
     }
 
-    // Build parent-child edges.
-    let mut child_edges: Vec<(String, String)> = Vec::new();
-    let mut roots: Vec<String> = Vec::new();
+    // Use yoagent's children() to assign children to parents.
     for entry in entries {
-        let id = entry.id.clone();
-        match entry.parent_id.clone() {
-            None => roots.push(id),
-            Some(ref pid) if pid == &id => roots.push(id),
-            Some(pid) => {
-                if node_map.contains_key(&pid) {
-                    child_edges.push((pid, id));
-                } else {
-                    roots.push(id);
-                }
+        let children = session.get_children(&entry.id);
+        for child in children {
+            if let Some(child_node) = node_map.remove(&child.id)
+                && let Some(parent) = node_map.get_mut(&entry.id)
+            {
+                parent.children.push(child_node);
             }
         }
     }
 
-    // Process edges in reverse so children are moved into parents
-    // before parents are themselves moved upward.
-    for (pid, cid) in child_edges.into_iter().rev() {
-        if let Some(child) = node_map.remove(&cid)
-            && let Some(parent) = node_map.get_mut(&pid)
-        {
-            parent.children.push(child);
-        }
-    }
+    // Root = entries whose parent doesn't exist in the session or is self-referencing.
+    let roots: Vec<String> = entries
+        .iter()
+        .filter(|e| {
+            e.parent_id
+                .as_deref()
+                .is_none_or(|pid| pid == e.id || !node_map.contains_key(pid))
+        })
+        .map(|e| e.id.clone())
+        .collect();
 
     fn sort_tree(node: &mut SessionTreeNode) {
         node.children.sort_by_key(|c| c.entry.timestamp);
@@ -1138,7 +1078,7 @@ pub fn entry_display_title(entry: &SessionEntry) -> String {
     match &entry.message {
         AgentMessage::Llm(msg) => match msg {
             yoagent::types::Message::User { content, .. } => {
-                let text = content_text(content);
+                let text = crate::agent::types::content_text(content);
                 if text.len() > 80 {
                     format!("{}…", &text[..80])
                 } else {
@@ -1153,7 +1093,7 @@ pub fn entry_display_title(entry: &SessionEntry) -> String {
                     .iter()
                     .any(|c| matches!(c, yoagent::types::Content::ToolCall { .. }));
                 if has_text {
-                    let text = content_text(content);
+                    let text = crate::agent::types::content_text(content);
                     if text.len() > 80 {
                         format!("{}…", &text[..80])
                     } else {
@@ -1242,20 +1182,6 @@ pub fn entry_display_title(entry: &SessionEntry) -> String {
     }
 }
 
-fn content_text(content: &[yoagent::types::Content]) -> String {
-    content
-        .iter()
-        .filter_map(|c| {
-            if let yoagent::types::Content::Text { text } = c {
-                Some(text.as_str())
-            } else {
-                None
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("")
-}
-
 // ── Tests ─────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -1302,7 +1228,7 @@ mod tests {
         let cwd = tmp.path().join("project");
         std::fs::create_dir_all(&cwd).unwrap();
 
-        let mut s = Session::create(&cwd, &sessions_dir).unwrap();
+        let s = Session::create(&cwd, &sessions_dir).unwrap();
         assert!(s.is_persisted());
         assert!(s.session_file().unwrap().exists());
     }
@@ -1441,12 +1367,10 @@ mod tests {
 
         let ctx = s.build_context();
         // compaction summary + new message
-        assert!(
-            ctx.messages[0]
-                .as_llm()
-                .map(|m| crate::agent::types::message_is_user(m))
-                .unwrap_or(false)
-        );
+        assert!(matches!(
+            &ctx.messages[0],
+            AgentMessage::Llm(Message::User { .. })
+        ));
         let text = crate::agent::types::message_text(&ctx.messages[0]);
         assert!(text.contains("earlier work summarized"));
         assert_eq!(ctx.messages.len(), 2);
@@ -1525,7 +1449,7 @@ mod tests {
     fn test_branch_traversal() {
         let mut s = Session::in_memory(Path::new("/tmp/test"));
         s.append_message(user_msg("root"));
-        let m1 = s.append_message(asst_msg("first response"));
+        let _m1 = s.append_message(asst_msg("first response"));
 
         // children of root
         let root_id = &s.get_entries()[0].id;

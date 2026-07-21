@@ -352,7 +352,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // Load history from session
-    let context = session.session().build_session_context();
+    let context = session.session().build_context();
 
     // Build extensions with session info for /session command
     let commands_ext = CommandsExtension::new(available_models.clone(), provider_models.clone());

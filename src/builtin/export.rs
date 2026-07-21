@@ -140,7 +140,6 @@ pub fn export_to_jsonl(
     }
 
     // Build header (pi-compatible: uses fresh timestamp, not original createdAt)
-    let _meta = session.metadata();
     let header = serde_json::json!({
         "id": session.session_id(),
         "cwd": session.cwd(),
