@@ -3228,9 +3228,9 @@ fn build_fresh_agent(
 
     let context_window = mc.context_window;
     let execution_limits = yoagent::context::ExecutionLimits {
-        max_total_tokens: 10_000_000,
-        max_turns: 200,
-        max_duration: std::time::Duration::from_secs(3600),
+        max_total_tokens: usize::MAX,
+        max_turns: usize::MAX,
+        max_duration: std::time::Duration::from_secs(u64::MAX),
     };
     let context_config = yoagent::context::ContextConfig::from_context_window(context_window);
 
