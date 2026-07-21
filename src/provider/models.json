@@ -1785,29 +1785,6 @@
           "compat": {
             "maxTokensField": "max_tokens",
             "supportsDeveloperRole": false,
-            "supportsStore": false
-          },
-          "contextWindow": 190000,
-          "cost": {
-            "cacheRead": 0.0,
-            "cacheWrite": 0.0,
-            "input": 0.0,
-            "output": 0.0
-          },
-          "id": "hy3-free",
-          "input": [
-            "text"
-          ],
-          "maxTokens": 64000,
-          "name": "Hy3 Free",
-          "reasoning": true
-        },
-        {
-          "api": "openai-completions",
-          "baseUrl": "https://opencode.ai/zen/v1",
-          "compat": {
-            "maxTokensField": "max_tokens",
-            "supportsDeveloperRole": false,
             "supportsLongCacheRetention": false,
             "supportsStore": false
           },
