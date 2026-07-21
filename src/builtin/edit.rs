@@ -1229,7 +1229,7 @@ impl ToolRenderer for EditRenderer {
                 let bg_ansi = theme.bg_ansi("toolErrorBg");
                 let mut result_box = crate::tui::components::r#box::TuiBox::new(
                     1,
-                    0,
+                    1,
                     Some(crate::tui::Style::new().bg(bg_ansi.to_string())),
                 );
                 result_box.add_child(std::boxed::Box::new(crate::tui::components::Text::new(
