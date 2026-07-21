@@ -18,11 +18,10 @@ pub type BeforeHook = Arc<dyn Fn(&serde_json::Value) -> Option<BeforeToolCallRes
 pub type AfterHook =
     Arc<dyn Fn(&yoagent::types::ToolResult, bool) -> Option<AfterToolCallResult> + Send + Sync>;
 
-/// A tool hook registration: pairs a tool name (or "*" for all tools)
-/// with optional before/after hooks. Extensions return these from
-/// [`Extension::tool_hooks`].
+/// A tool hook registration: pairs a tool name with optional before/after hooks.
+/// Extensions return these from [`Extension::tool_hooks`].
 pub struct HookRegistration {
-    /// Tool name to hook into, or `"*"` for every tool.
+    /// Tool name to hook into.
     pub tool_name: &'static str,
     /// Optional before-execution hook.
     pub before: Option<BeforeHook>,
@@ -46,8 +45,13 @@ struct ToolHookSet {
 /// Empty by default — no hooks means no blocking.
 static EXTENSION_HOOKS: Mutex<Option<HashMap<&'static str, ToolHookSet>>> = Mutex::new(None);
 
+/// Clear all registered extension hooks.
+pub fn clear_tool_hooks() {
+    let mut map = EXTENSION_HOOKS.lock().unwrap();
+    *map = None;
+}
+
 /// Register extension hooks for a tool name (called during startup).
-/// `"*"` matches every tool.
 pub fn register_tool_hooks(registrations: &[HookRegistration]) {
     let mut map = EXTENSION_HOOKS.lock().unwrap();
     let map = map.get_or_insert_with(HashMap::new);
@@ -125,6 +129,25 @@ pub enum ExtensionDefault {
     Enabled,
     /// Disabled by default, user can toggle via /extensions.
     Disabled,
+}
+
+/// Check whether an extension is currently enabled.
+/// Builtin extensions are always enabled. Otherwise, check the settings overrides,
+/// falling back to the extension's `default_state()`.
+pub fn is_extension_enabled(
+    ext: &dyn Extension,
+    settings: &crate::agent::settings::Settings,
+) -> bool {
+    match ext.default_state() {
+        ExtensionDefault::Builtin => true,
+        _ => {
+            if let Some(&enabled) = settings.extensions_config.states.get(ext.name().as_ref()) {
+                enabled
+            } else {
+                ext.default_state() == ExtensionDefault::Enabled
+            }
+        }
+    }
 }
 
 // ── Tool call hooks (matching pi's beforeToolCall / afterToolCall) ──
@@ -976,9 +999,9 @@ pub trait Extension: Send + Sync + std::any::Any {
     /// Extensions can refresh internal state, re-read configs, reconnect, etc.
     fn on_reload(&self) {}
 
-    /// Register hooks into any tool (including tools owned by other extensions).
+    /// Register hooks into a specific tool (including tools owned by other extensions).
     /// Returned registrations are matched by `tool_name` against every registered
-    /// tool and applied at startup. Use `"*"` to hook every tool.
+    /// tool and applied at startup.
     fn tool_hooks(&self) -> Vec<HookRegistration> {
         vec![]
     }

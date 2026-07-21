@@ -17,6 +17,7 @@ pub use agent_session::{
 pub use context_files::{ContextFile, load_context_files};
 pub use extension::{
     CommandHandler, CommandResult, Extension, ExtensionDefault, SlashCommand, ToolDefinition,
+    is_extension_enabled,
 };
 pub use session::{MessageCost, Session, SessionContext, SessionInfo};
 pub use session::{

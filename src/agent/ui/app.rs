@@ -2820,7 +2820,6 @@ fn open_settings(app: &mut App, tui: &mut TUI) {
 
 /// Open the extension configuration overlay.
 fn open_extensions_selector(app: &mut App, tui: &mut TUI) {
-    use crate::agent::ExtensionDefault;
     use crate::agent::ui::components::extensions_selector::{
         ExtensionInfo, ExtensionsCallbacks, ExtensionsSelector,
     };
@@ -2841,16 +2840,8 @@ fn open_extensions_selector(app: &mut App, tui: &mut TUI) {
             let default_state = ext.default_state();
 
             // Determine current enabled state
-            let enabled = match default_state {
-                ExtensionDefault::Builtin => true,
-                _ => {
-                    if let Some(&state) = app.settings.extensions_config.states.get(&name) {
-                        state
-                    } else {
-                        default_state == ExtensionDefault::Enabled
-                    }
-                }
-            };
+            let enabled =
+                crate::agent::extension::is_extension_enabled(ext.as_ref(), &app.settings);
 
             ExtensionInfo {
                 name,
@@ -2927,19 +2918,8 @@ fn open_extensions_selector(app: &mut App, tui: &mut TUI) {
 /// - `/extensions` toggle (extension enablement changed)
 /// - `/reload` handler (files on disk may have changed)
 fn refresh_agent_config(app: &mut App) {
-    use crate::agent::ExtensionDefault;
-
     fn is_enabled(ext: &dyn Extension, settings: &crate::agent::settings::Settings) -> bool {
-        match ext.default_state() {
-            ExtensionDefault::Builtin => true,
-            _ => {
-                if let Some(&enabled) = settings.extensions_config.states.get(ext.name().as_ref()) {
-                    enabled
-                } else {
-                    ext.default_state() == ExtensionDefault::Enabled
-                }
-            }
-        }
+        crate::agent::extension::is_extension_enabled(ext, settings)
     }
 
     // ── Collect tools from enabled extensions ────────────────────
@@ -2967,6 +2947,15 @@ fn refresh_agent_config(app: &mut App) {
         .collect();
 
     let has_read_tool = tool_snippets.iter().any(|t| t.name == "read");
+
+    // ── Re-register hooks from enabled extensions ────────────────
+    use crate::agent::extension::HookRegistration;
+    let enabled_hooks: Vec<HookRegistration> = enabled_exts
+        .iter()
+        .flat_map(|ext| ext.tool_hooks())
+        .collect();
+    crate::agent::extension::clear_tool_hooks();
+    crate::agent::extension::register_tool_hooks(&enabled_hooks);
 
     // ── Collect skills: disk-loaded + enabled extensions ─────────
     let mut all_skills = yoagent::skills::SkillSet::load(&app.skill_dirs).unwrap_or_default();
@@ -3516,6 +3505,7 @@ fn build_fresh_agent(
     let tools: Vec<Box<dyn yoagent::types::AgentTool>> = app
         .extensions
         .iter()
+        .filter(|ext| crate::agent::extension::is_extension_enabled(ext.as_ref(), &app.settings))
         .flat_map(|ext| ext.tools())
         .map(|twm| Box::new(twm) as Box<dyn yoagent::types::AgentTool>)
         .collect();
@@ -3858,17 +3848,7 @@ fn handle_slash_command(app: &mut App, input: &str) {
 
     // Helper: is the extension that owns this command enabled?
     fn is_ext_enabled(ext: &dyn Extension, settings: &crate::agent::settings::Settings) -> bool {
-        use crate::agent::ExtensionDefault;
-        match ext.default_state() {
-            ExtensionDefault::Builtin => true,
-            _ => {
-                if let Some(&enabled) = settings.extensions_config.states.get(ext.name().as_ref()) {
-                    enabled
-                } else {
-                    ext.default_state() == ExtensionDefault::Enabled
-                }
-            }
-        }
+        crate::agent::extension::is_extension_enabled(ext, settings)
     }
 
     // Find the command handler first (before mutable borrow on app)

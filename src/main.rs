@@ -411,13 +411,19 @@ async fn main() -> anyhow::Result<()> {
         .map(|cf| format_context_path(&cf.path, &cwd))
         .collect();
 
-    // Collect tools from all extensions
-    let all_tools: Vec<rab::agent::extension::ToolDefinition> =
-        extensions.iter().flat_map(|ext| ext.tools()).collect();
+    // Collect tools from enabled extensions only
+    let all_tools: Vec<rab::agent::extension::ToolDefinition> = extensions
+        .iter()
+        .filter(|ext| rab::agent::extension::is_extension_enabled(ext.as_ref(), &settings))
+        .flat_map(|ext| ext.tools())
+        .collect();
 
-    // Collect hooks from all extensions and register them globally
-    let all_hooks: Vec<rab::agent::extension::HookRegistration> =
-        extensions.iter().flat_map(|ext| ext.tool_hooks()).collect();
+    // Collect hooks from enabled extensions only and register them globally
+    let all_hooks: Vec<rab::agent::extension::HookRegistration> = extensions
+        .iter()
+        .filter(|ext| rab::agent::extension::is_extension_enabled(ext.as_ref(), &settings))
+        .flat_map(|ext| ext.tool_hooks())
+        .collect();
     rab::agent::extension::register_tool_hooks(&all_hooks);
 
     // Build tool snippets and guidelines from ToolDefinition metadata
@@ -459,8 +465,11 @@ async fn main() -> anyhow::Result<()> {
         current = Some(parent);
     }
     let mut skill_set = yoagent::skills::SkillSet::load(&skill_dirs).unwrap_or_default();
-    // Merge skills from extensions
-    for ext in &extensions {
+    // Merge skills from enabled extensions
+    for ext in extensions
+        .iter()
+        .filter(|ext| rab::agent::extension::is_extension_enabled(ext.as_ref(), &settings))
+    {
         skill_set.merge(ext.skills());
     }
     let skills: Vec<yoagent::skills::Skill> = skill_set.skills().to_vec();
