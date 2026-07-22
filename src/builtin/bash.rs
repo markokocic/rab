@@ -230,16 +230,6 @@ fn sanitize_output(text: &str) -> String {
     result
 }
 
-fn format_size(bytes: usize) -> String {
-    if bytes < 1024 {
-        format!("{}B", bytes)
-    } else if bytes < 1024 * 1024 {
-        format!("{:.1}KB", bytes as f64 / 1024.0)
-    } else {
-        format!("{:.1}MB", bytes as f64 / (1024.0 * 1024.0))
-    }
-}
-
 /// Truncation result for tail-based truncation (keep last N lines/bytes).
 struct TailTruncation {
     content: String,
@@ -361,7 +351,7 @@ fn finish_bash_execution(
                 start_line,
                 end_line,
                 trunc.total_lines,
-                format_size(DEFAULT_MAX_BYTES),
+                crate::builtin::format_size(DEFAULT_MAX_BYTES),
                 saved
                     .as_ref()
                     .map(|p| p.display().to_string())
@@ -924,14 +914,6 @@ fn track_pid(pid: u32) {
 fn untrack_pid(pid: u32) {
     if let Ok(mut pids) = TRACKED_PIDS.lock() {
         pids.retain(|&p| p != pid);
-    }
-}
-
-/// Kill all tracked child process groups. Called on SIGTERM/SIGHUP.
-pub fn kill_tracked_children() {
-    let pids: Vec<u32> = TRACKED_PIDS.lock().map(|p| p.clone()).unwrap_or_default();
-    for pid in pids {
-        kill_process_group(pid);
     }
 }
 

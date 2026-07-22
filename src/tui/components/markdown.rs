@@ -26,10 +26,6 @@ pub type HighlightFn = Arc<dyn Fn(&str, Option<&str>) -> Vec<String>>;
 
 // ── Code block indent ───────────────────────────────────────────
 
-/// Indent prefix applied to each code line inside a fenced code block.
-/// Defaults to two spaces for visual inset from the backtick fence.
-pub const CODE_BLOCK_INDENT: &str = "  ";
-
 // ── MarkdownTheme ───────────────────────────────────────────────
 
 /// Theme functions for markdown elements.

@@ -1,11 +1,8 @@
+mod common;
+
 use rab::settings::Settings;
 
-fn write_file(path: &std::path::Path, json: &str) {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).unwrap();
-    }
-    std::fs::write(path, json).unwrap();
-}
+use crate::common::{tmp_dir, write_file};
 
 fn read_file(path: &std::path::Path) -> String {
     std::fs::read_to_string(path).unwrap()
@@ -15,12 +12,6 @@ fn read_file(path: &std::path::Path) -> String {
 fn resolve_model_override(args: &[&str]) -> Option<String> {
     let pos = args.iter().position(|a| a == &"--model")?;
     args.get(pos + 1).map(|s| s.to_string())
-}
-
-fn tmp_dir() -> std::path::PathBuf {
-    let d = std::env::temp_dir().join(format!("rab-test-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&d).unwrap();
-    d
 }
 
 // ── Loading / defaults ────────────────────────────────────────────

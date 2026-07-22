@@ -596,7 +596,6 @@ mod tests {
         screen.render(frame2, 40, 24, &mut output).unwrap();
 
         let content = String::from_utf8_lossy(&output);
-        eprintln!("Append-only diff output: {:?}", content);
 
         // The diff output should only contain the new line "e" plus ANSI codes
         // It must not repeat any of the unchanged lines ("a", "b", "c", "d")
@@ -641,7 +640,6 @@ mod tests {
         screen.render(frame2, 40, 24, &mut output).unwrap();
 
         let content = String::from_utf8_lossy(&output);
-        eprintln!("Insert-mid diff output: {:?}", content);
 
         // "a" should appear at most once (unchanged line shouldn't be re-written)
         assert!(
@@ -685,7 +683,6 @@ mod tests {
         screen.render(frame2, 30, 24, &mut output).unwrap();
 
         let content = String::from_utf8_lossy(&output);
-        eprintln!("Editor append empty line diff: {:?}", content);
 
         // "hello" should NOT be in the diff output (it didn't change)
         let hello_count = content.matches("hello").count();

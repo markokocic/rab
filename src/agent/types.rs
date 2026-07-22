@@ -190,22 +190,6 @@ pub fn assistant_message(text: impl Into<String>) -> AgentMessage {
     )
 }
 
-/// Create a ToolResult AgentMessage.
-pub fn tool_result_message(
-    tool_call_id: impl Into<String>,
-    tool_name: impl Into<String>,
-    text: impl Into<String>,
-    is_error: bool,
-) -> AgentMessage {
-    AgentMessage::Llm(Message::ToolResult {
-        tool_call_id: tool_call_id.into(),
-        tool_name: tool_name.into(),
-        content: vec![Content::Text { text: text.into() }],
-        is_error,
-        timestamp: yoagent::types::now_ms(),
-    })
-}
-
 /// Count how many tool calls are in an AgentMessage.
 pub fn message_tool_call_count(msg: &AgentMessage) -> usize {
     match msg {
@@ -257,23 +241,6 @@ pub fn extension_message(
         serde_json::json!({
             "text": text.into(),
             "display": display,
-        }),
-    ))
-}
-
-/// Create an Extension message with structured details.
-pub fn extension_message_with_details(
-    kind: impl Into<String>,
-    text: impl Into<String>,
-    display: bool,
-    details: serde_json::Value,
-) -> AgentMessage {
-    AgentMessage::Extension(yoagent::types::ExtensionMessage::new(
-        kind,
-        serde_json::json!({
-            "text": text.into(),
-            "display": display,
-            "details": details,
         }),
     ))
 }

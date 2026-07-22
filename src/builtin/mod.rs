@@ -12,6 +12,17 @@ pub use crate::util::paths::{resolve_path, shorten_path};
 
 use std::path::Path;
 
+/// Format a byte count into a human-readable string (e.g. "1.5KB", "2.0MB").
+pub(crate) fn format_size(bytes: usize) -> String {
+    if bytes < 1024 {
+        format!("{}B", bytes)
+    } else if bytes < 1024 * 1024 {
+        format!("{:.1}KB", bytes as f64 / 1024.0)
+    } else {
+        format!("{:.1}MB", bytes as f64 / (1024.0 * 1024.0))
+    }
+}
+
 /// Wrap a styled path string in an OSC 8 hyperlink if the terminal supports it.
 /// The `raw_path` is resolved against `cwd` to produce the file:// URL.
 pub fn link_path(styled_text: &str, raw_path: &str, cwd: &Path) -> String {

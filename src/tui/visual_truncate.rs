@@ -57,17 +57,6 @@ pub fn truncate_to_visual_lines<'a>(
     (lines[start..].to_vec(), start)
 }
 
-/// Convenience wrapper that also computes an info line about hidden lines.
-/// Returns `(preview_lines, hidden_count)`.
-/// Use `format_hidden_hint` to turn `hidden_count` into display text.
-pub fn truncate_preview<'a>(
-    lines: &'a [&'a str],
-    width: usize,
-    max_visual_lines: usize,
-) -> (Vec<&'a str>, usize) {
-    truncate_to_visual_lines(lines, width, max_visual_lines)
-}
-
 /// Format a hint about hidden lines for display (matching pi's format).
 /// Returns e.g. `"... (12 earlier lines, ctrl+o to expand)"`.
 pub fn format_hidden_hint(hidden: usize, expand_key: &str) -> String {

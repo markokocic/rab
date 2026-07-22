@@ -45,20 +45,6 @@ pub struct SessionPicker {
     pending_rename: Option<(PathBuf, String)>,
 }
 
-#[derive(Debug, Clone)]
-pub enum SessionPickerResult {
-    /// Switch to the session at the given path.
-    Select(PathBuf),
-    /// Dismiss without selecting.
-    Cancel,
-    /// Show session info for the selected session.
-    Info(PathBuf),
-    /// Delete the selected session.
-    Delete(PathBuf),
-    /// Rename a session (path, new name).
-    Rename(PathBuf, String),
-}
-
 impl SessionPicker {
     pub fn new() -> Self {
         Self {

@@ -147,7 +147,6 @@ mod tests {
 
         let width = 80;
         let lines = b.render(width);
-        eprintln!("TuiBox wrapped lines (width={}):", width);
         for (i, line) in lines.iter().enumerate() {
             let vw = visible_width(line);
             // Every line must be exactly `width` wide
@@ -170,7 +169,6 @@ mod tests {
                 i,
                 line
             );
-            eprintln!("  line {}: vis={} ✓", i, vw);
         }
     }
 

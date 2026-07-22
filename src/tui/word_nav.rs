@@ -1,7 +1,7 @@
 use unicode_segmentation::UnicodeSegmentation;
 
 /// Characters recognized as ASCII punctuation, matching pi's PUNCTUATION_REGEX.
-pub const PUNCTUATION_CHARS: &[char] = &[
+const PUNCTUATION_CHARS: &[char] = &[
     '.', ',', ';', ':', '!', '?', '(', ')', '[', ']', '{', '}', '<', '>', '\'', '"', '+', '-', '*',
     '/', '\\', '|', '&', '%', '$', '#', '@', '~', '`', '^', '=',
 ];

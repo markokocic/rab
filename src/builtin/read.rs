@@ -73,17 +73,6 @@ const DEFAULT_MAX_BYTES: usize = 50 * 1024; // 50KB
 
 // ── Helpers ──────────────────────────────────────────────────────
 
-/// Format bytes as a human-readable size string, matching pi's format.
-fn format_size(bytes: usize) -> String {
-    if bytes < 1024 {
-        format!("{}B", bytes)
-    } else if bytes < 1024 * 1024 {
-        format!("{:.1}KB", bytes as f64 / 1024.0)
-    } else {
-        format!("{:.1}MB", bytes as f64 / (1024.0 * 1024.0))
-    }
-}
-
 /// Trim trailing empty lines from a slice of lines.
 fn trim_trailing_empty_lines<'a>(lines: &'a [&'a str]) -> &'a [&'a str] {
     let mut end = lines.len();
@@ -386,7 +375,7 @@ impl yoagent::types::AgentTool for ReadTool {
                 "Read image file [{}] - {} ({})\n{}:{};base64,{}",
                 mime,
                 file_name,
-                format_size(file_len),
+                crate::builtin::format_size(file_len),
                 mime,
                 file_name,
                 b64,
@@ -446,12 +435,12 @@ impl yoagent::types::AgentTool for ReadTool {
         let trunc = truncate_head(&selected_content, DEFAULT_MAX_LINES, DEFAULT_MAX_BYTES);
 
         if trunc.first_line_exceeds_limit {
-            let first_line_bytes = format_size(all_lines[start_line].len());
+            let first_line_bytes = crate::builtin::format_size(all_lines[start_line].len());
             let msg = format!(
                 "[Line {} is {}, exceeds {} limit. Use bash: sed -n '{}p' {} | head -c {}]",
                 start_line + 1,
                 first_line_bytes,
-                format_size(DEFAULT_MAX_BYTES),
+                crate::builtin::format_size(DEFAULT_MAX_BYTES),
                 start_line + 1,
                 path,
                 DEFAULT_MAX_BYTES,
@@ -492,7 +481,7 @@ impl yoagent::types::AgentTool for ReadTool {
                     start_display,
                     end_display,
                     total_file_lines,
-                    format_size(DEFAULT_MAX_BYTES),
+                    crate::builtin::format_size(DEFAULT_MAX_BYTES),
                     next_offset,
                 );
             }
@@ -717,7 +706,7 @@ impl ToolRenderer for ReadRenderer {
                 .get("fileSize")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0);
-            let size_str = format_size(file_size as usize);
+            let size_str = crate::builtin::format_size(file_size as usize);
 
             // Try Kitty protocol image display (inline)
             if crate::tui::components::markdown::kitty_images_supported()
@@ -841,7 +830,7 @@ impl ToolRenderer for ReadRenderer {
                         as usize;
                     result.push(warning_style.apply(&format!(
                         "[First line exceeds {} limit]",
-                        format_size(max_bytes),
+                        crate::builtin::format_size(max_bytes),
                     )));
                 } else if let Some(truncated_by) =
                     truncation.get("truncatedBy").and_then(|v| v.as_str())
@@ -873,7 +862,7 @@ impl ToolRenderer for ReadRenderer {
                         result.push(warning_style.apply(&format!(
                             "[Truncated: {} lines shown ({} limit)]",
                             output_lines,
-                            format_size(max_bytes),
+                            crate::builtin::format_size(max_bytes),
                         )));
                     }
                 }
@@ -1002,10 +991,10 @@ mod tests {
 
     #[test]
     fn test_format_size() {
-        assert_eq!(format_size(500), "500B");
-        assert_eq!(format_size(1024), "1.0KB");
-        assert_eq!(format_size(50 * 1024), "50.0KB");
-        assert_eq!(format_size(1024 * 1024), "1.0MB");
+        assert_eq!(crate::builtin::format_size(500), "500B");
+        assert_eq!(crate::builtin::format_size(1024), "1.0KB");
+        assert_eq!(crate::builtin::format_size(50 * 1024), "50.0KB");
+        assert_eq!(crate::builtin::format_size(1024 * 1024), "1.0MB");
     }
 
     #[test]

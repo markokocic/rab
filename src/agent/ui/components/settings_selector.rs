@@ -2,23 +2,11 @@
 //!
 //! Lists all configurable settings and wires changes to App state and persistence.
 
-use std::cell::RefCell;
-use std::rc::Rc;
-
 use crate::agent::ui::components::settings_list::{SettingItem, SettingsList};
 use crate::agent::ui::theme::current_theme;
 use crate::tui::Component;
 use crate::tui::util::truncate_to_width;
 use crossterm::event::KeyEvent;
-
-/// Signal for submenu results: (option_id, selected_value).
-pub type SubmenuSignal = Rc<RefCell<Option<SubmenuResult>>>;
-
-#[derive(Debug, Clone)]
-pub struct SubmenuResult {
-    pub item_id: String,
-    pub new_value: String,
-}
 
 /// Callbacks for settings changes.
 pub struct SettingsCallbacks {
@@ -29,8 +17,6 @@ pub struct SettingsCallbacks {
 /// The settings selector component — wraps a SettingsList with all rab settings.
 pub struct SettingsSelector {
     settings_list: SettingsList,
-    /// Submenu overlay signal.
-    submenu_signal: SubmenuSignal,
 }
 
 impl SettingsSelector {
@@ -446,25 +432,12 @@ impl SettingsSelector {
             true,
         );
 
-        Self {
-            settings_list,
-            submenu_signal: Rc::new(RefCell::new(None)),
-        }
-    }
-
-    /// Check for submenu results and apply them.
-    pub fn poll_submenu(&mut self) {
-        if let Some(result) = self.submenu_signal.borrow_mut().take() {
-            self.settings_list
-                .update_value(&result.item_id, result.new_value.clone());
-        }
+        Self { settings_list }
     }
 }
 
 impl Component for SettingsSelector {
     fn render(&mut self, width: usize) -> Vec<String> {
-        self.poll_submenu();
-
         // Scope theme guard so it's dropped before settings_list.render()
         // which also calls current_theme(). Otherwise the non-reentrant mutex
         // deadlocks.

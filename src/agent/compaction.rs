@@ -743,14 +743,6 @@ pub fn build_summarization_prompt(
     }
 }
 
-/// Result of generating a summary.
-#[derive(Debug, Clone)]
-pub struct GeneratedSummary {
-    pub text: String,
-    pub input_tokens: u64,
-    pub output_tokens: u64,
-}
-
 // ═══════════════════════════════════════════════════════════════════════
 // Branch Summarization
 // ═══════════════════════════════════════════════════════════════════════
@@ -852,14 +844,6 @@ fn branch_entry_message(entry: &SessionEntry) -> Option<AgentMessage> {
             }
         }
     }
-}
-
-/// Result of generating a branch summary.
-#[derive(Debug, Clone)]
-pub struct BranchSummaryResult {
-    pub summary: String,
-    pub read_files: Vec<String>,
-    pub modified_files: Vec<String>,
 }
 
 /// Build the prompt for branch summarization.

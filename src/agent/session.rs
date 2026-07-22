@@ -26,17 +26,10 @@ pub const KIND_ACTIVE_TOOLS_CHANGE: &str = "session/active_tools_change";
 pub const KIND_COMPACTION: &str = "session/compaction";
 pub const KIND_BRANCH_SUMMARY: &str = "session/branch_summary";
 pub const KIND_LABEL: &str = "session/label";
-pub const KIND_CUSTOM_MESSAGE: &str = "session/custom_message";
+const KIND_CUSTOM_MESSAGE: &str = "session/custom_message";
 
 /// Extension kind for storing per-message cost (pre-computed at creation time).
 pub const KIND_SESSION_COST: &str = "session/cost";
-
-/// All metadata entry kinds that participate in context building.
-pub const METADATA_KINDS: &[&str] = &[
-    KIND_MODEL_CHANGE,
-    KIND_THINKING_LEVEL_CHANGE,
-    KIND_ACTIVE_TOOLS_CHANGE,
-];
 
 // ── MessageCost ───────────────────────────────────────────────────
 

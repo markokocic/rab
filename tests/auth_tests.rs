@@ -1,17 +1,8 @@
+mod common;
+
 use rab::provider::auth::AuthStorage;
 
-fn write_file(path: &std::path::Path, json: &str) {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).unwrap();
-    }
-    std::fs::write(path, json).unwrap();
-}
-
-fn tmp_dir() -> std::path::PathBuf {
-    let d = std::env::temp_dir().join(format!("rab-test-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&d).unwrap();
-    d
-}
+use crate::common::{tmp_dir, write_file};
 
 #[test]
 fn loads_empty_when_no_file() {
@@ -124,7 +115,6 @@ fn oauth_write_survives_file_lock() {
 
     // Read back the raw file content to check format
     let content = std::fs::read_to_string(&path).unwrap();
-    eprintln!("auth.json content:\n{}", content);
 
     // Must be valid JSON
     let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
