@@ -110,6 +110,7 @@ fn parse_provider(id: &str, def: ProviderDef) -> anyhow::Result<ProviderEntry> {
             "google-vertex" => ApiProtocol::GoogleVertex,
             "bedrock-converse-stream" => ApiProtocol::BedrockConverseStream,
             "azure-openai-responses" => ApiProtocol::AzureOpenAiResponses,
+            "mistral-conversations" => ApiProtocol::OpenAiCompletions,
             _ => anyhow::bail!("Unknown API type: {}", api_str),
         };
 
@@ -262,6 +263,31 @@ mod tests {
         assert!(model.reasoning);
         assert!(!model.headers.contains_key("_rab_compat"));
         assert_eq!(model.cost.input_per_million as u32, 1);
+    }
+
+    #[test]
+    fn test_mistral_api_type() {
+        let json = r#"{
+            "providers": {
+                "mistral": {
+                    "name": "Mistral",
+                    "baseUrl": "https://api.mistral.ai",
+                    "api": "mistral-conversations",
+                    "env": { "apiKey": "MISTRAL_API_KEY" },
+                    "models": [
+                        {
+                            "id": "mistral-large-latest"
+                        }
+                    ]
+                }
+            }
+        }"#;
+        let entries = load_builtin(json).unwrap();
+        assert_eq!(entries.len(), 1);
+        let entry = &entries[0];
+        assert_eq!(entry.id, "mistral");
+        assert_eq!(entry.models.len(), 1);
+        assert_eq!(entry.models[0].api, ApiProtocol::OpenAiCompletions);
     }
 
     #[test]
