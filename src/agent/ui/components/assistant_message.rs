@@ -78,7 +78,7 @@ impl AssistantMessageComponent {
             if i >= self.thinking_md.len() {
                 // Create new Markdown for this block
                 let color_fn: StyleFn = Arc::new(|s: &str| -> String {
-                    crate::agent::ui::theme::current_theme().fg_key(ThemeKey::ThinkingText, s)
+                    crate::agent::ui::theme::current_theme().fg(ThemeKey::ThinkingText.as_str(), s)
                 });
                 let default_style = DefaultTextStyle {
                     color: Some(color_fn),
@@ -224,7 +224,7 @@ impl Component for AssistantMessageComponent {
             }
             if self.hide_thinking {
                 let theme = current_theme();
-                let label = theme.italic(&theme.fg_key(ThemeKey::ThinkingText, "Thinking..."));
+                let label = theme.italic(&theme.fg(ThemeKey::ThinkingText.as_str(), "Thinking..."));
                 let padded = format!(" {} ", label);
                 lines.push(padded);
             } else {

@@ -24,23 +24,23 @@ fn key_hint(action_id: &str, description: &str) -> String {
         return String::new();
     }
     let theme = current_theme();
-    let key_part = theme.fg_key(ThemeKey::Dim, &kt);
-    let desc_part = theme.fg_key(ThemeKey::Muted, &format!(" {}", description));
+    let key_part = theme.fg(ThemeKey::Dim.as_str(), &kt);
+    let desc_part = theme.fg(ThemeKey::Muted.as_str(), &format!(" {}", description));
     format!("{}{}", key_part, desc_part)
 }
 
 /// Format a raw key hint: `<dim>raw_key</dim><muted> description</muted>` (matches pi's rawKeyHint).
 fn raw_key_hint(key: &str, description: &str) -> String {
     let theme = current_theme();
-    let key_part = theme.fg_key(ThemeKey::Dim, key);
-    let desc_part = theme.fg_key(ThemeKey::Muted, &format!(" {}", description));
+    let key_part = theme.fg(ThemeKey::Dim.as_str(), key);
+    let desc_part = theme.fg(ThemeKey::Muted.as_str(), &format!(" {}", description));
     format!("{}{}", key_part, desc_part)
 }
 
 /// Format a resource section header like `[Context]` (matches pi's sectionHeader).
 fn section_header(name: &str) -> String {
     let theme = current_theme();
-    theme.fg_key(ThemeKey::MdHeading, &format!("[{}]", name))
+    theme.fg(ThemeKey::MdHeading.as_str(), &format!("[{}]", name))
 }
 
 /// Header component matching pi's ExpandableText startup header.
@@ -137,7 +137,7 @@ impl HeaderComponent {
                     if *enabled {
                         name.clone()
                     } else {
-                        theme.strikethrough(&theme.fg_key(ThemeKey::Dim, name))
+                        theme.strikethrough(&theme.fg(ThemeKey::Dim.as_str(), name))
                     }
                 })
                 .collect();
@@ -189,7 +189,7 @@ impl HeaderComponent {
                 let line = if *enabled {
                     format!("  {}", name)
                 } else {
-                    theme.strikethrough(&theme.fg_key(ThemeKey::Dim, &format!("  {}", name)))
+                    theme.strikethrough(&theme.fg(ThemeKey::Dim.as_str(), &format!("  {}", name)))
                 };
                 lines.push(line);
             }
@@ -212,8 +212,8 @@ impl HeaderComponent {
             let theme = current_theme();
             format!(
                 " {}{}",
-                theme.bold(&theme.fg_key(ThemeKey::Accent, "rab")),
-                theme.fg_key(ThemeKey::Dim, &format!(" v{}", VERSION)),
+                theme.bold(&theme.fg(ThemeKey::Accent.as_str(), "rab")),
+                theme.fg(ThemeKey::Dim.as_str(), &format!(" v{}", VERSION)),
             )
         };
 
@@ -276,7 +276,7 @@ impl HeaderComponent {
             ];
             let separator = {
                 let theme = current_theme();
-                theme.fg_key(ThemeKey::Muted, " · ")
+                theme.fg(ThemeKey::Muted.as_str(), " · ")
             };
             lines.push(parts.join(&separator));
 

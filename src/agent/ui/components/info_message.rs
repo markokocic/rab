@@ -14,7 +14,7 @@ pub struct InfoMessageComponent {
 impl InfoMessageComponent {
     pub fn new(message: impl Into<String>) -> Self {
         let theme = current_theme();
-        let dim_style = Style::new().fg(theme.fg_ansi_key(ThemeKey::Dim).to_string());
+        let dim_style = Style::new().fg(theme.fg_ansi(ThemeKey::Dim.as_str()).to_string());
         Self {
             text: Text::new(format!(" {}", message.into()), 1, 0, Some(dim_style)),
         }

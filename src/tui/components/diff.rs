@@ -1,4 +1,3 @@
-use crate::agent::ui::theme::ThemeKey;
 use crate::tui::Theme;
 
 /// Diff line parsed into prefix, (optional) line number, and content.
@@ -156,26 +155,22 @@ pub fn render_diff(diff_text: &str, theme: &dyn Theme) -> Vec<String> {
                     let content = replace_tabs(r.content);
                     let line_num = r.line_num;
                     if line_num.is_empty() {
-                        lines.push(
-                            theme.fg_key(ThemeKey::ToolDiffRemoved, &format!("-{}", content)),
-                        );
+                        lines.push(theme.fg_key("toolDiffRemoved", &format!("-{}", content)));
                     } else {
-                        lines.push(theme.fg_key(
-                            ThemeKey::ToolDiffRemoved,
-                            &format!("-{} {}", line_num, content),
-                        ));
+                        lines.push(
+                            theme.fg_key("toolDiffRemoved", &format!("-{} {}", line_num, content)),
+                        );
                     }
                 }
                 for a in &added {
                     let content = replace_tabs(a.content);
                     let line_num = a.line_num;
                     if line_num.is_empty() {
-                        lines.push(theme.fg_key(ThemeKey::ToolDiffAdded, &format!("+{}", content)));
+                        lines.push(theme.fg_key("toolDiffAdded", &format!("+{}", content)));
                     } else {
-                        lines.push(theme.fg_key(
-                            ThemeKey::ToolDiffAdded,
-                            &format!("+{} {}", line_num, content),
-                        ));
+                        lines.push(
+                            theme.fg_key("toolDiffAdded", &format!("+{} {}", line_num, content)),
+                        );
                     }
                 }
             }
@@ -184,12 +179,9 @@ pub fn render_diff(diff_text: &str, theme: &dyn Theme) -> Vec<String> {
             let content = replace_tabs(parsed.content);
             let line_num = parsed.line_num;
             if line_num.is_empty() {
-                lines.push(theme.fg_key(ThemeKey::ToolDiffAdded, &format!("+{}", content)));
+                lines.push(theme.fg_key("toolDiffAdded", &format!("+{}", content)));
             } else {
-                lines.push(theme.fg_key(
-                    ThemeKey::ToolDiffAdded,
-                    &format!("+{} {}", line_num, content),
-                ));
+                lines.push(theme.fg_key("toolDiffAdded", &format!("+{} {}", line_num, content)));
             }
             i += 1;
         } else {
@@ -197,12 +189,9 @@ pub fn render_diff(diff_text: &str, theme: &dyn Theme) -> Vec<String> {
             let content = replace_tabs(parsed.content);
             let line_num = parsed.line_num;
             if line_num.is_empty() {
-                lines.push(theme.fg_key(ThemeKey::ToolDiffContext, &format!(" {}", content)));
+                lines.push(theme.fg_key("toolDiffContext", &format!(" {}", content)));
             } else {
-                lines.push(theme.fg_key(
-                    ThemeKey::ToolDiffContext,
-                    &format!(" {} {}", line_num, content),
-                ));
+                lines.push(theme.fg_key("toolDiffContext", &format!(" {} {}", line_num, content)));
             }
             i += 1;
         }
@@ -268,18 +257,18 @@ fn render_intra_line_diff(
     }
 
     if old_line_num.is_empty() {
-        output.push(theme.fg_key(ThemeKey::ToolDiffRemoved, &format!("-{}", removed_line)));
+        output.push(theme.fg_key("toolDiffRemoved", &format!("-{}", removed_line)));
     } else {
         output.push(theme.fg_key(
-            ThemeKey::ToolDiffRemoved,
+            "toolDiffRemoved",
             &format!("-{} {}", old_line_num, removed_line),
         ));
     }
     if new_line_num.is_empty() {
-        output.push(theme.fg_key(ThemeKey::ToolDiffAdded, &format!("+{}", added_line)));
+        output.push(theme.fg_key("toolDiffAdded", &format!("+{}", added_line)));
     } else {
         output.push(theme.fg_key(
-            ThemeKey::ToolDiffAdded,
+            "toolDiffAdded",
             &format!("+{} {}", new_line_num, added_line),
         ));
     }

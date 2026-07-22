@@ -1584,7 +1584,9 @@ fn compose_ui(app: &mut App, width: usize) {
     // ── Transient status text (pi-style: replaces previous status, not added to chat) ──
     let mut status_lines = Vec::new();
     if let Some(ref status) = app.status_text {
-        let line = app.theme.fg_key(ThemeKey::Dim, &format!(" {}", status));
+        let line = app
+            .theme
+            .fg(ThemeKey::Dim.as_str(), &format!(" {}", status));
         status_lines.push(crate::agent::ui::render_utils::pad_to_width(&line, width));
     }
     app.status_section.borrow_mut().set_lines(status_lines);
@@ -1618,7 +1620,7 @@ fn compose_ui(app: &mut App, width: usize) {
             if !preview.is_empty() {
                 let line = app
                     .theme
-                    .fg_key(ThemeKey::Dim, &format!(" Next turn: {}", preview));
+                    .fg(ThemeKey::Dim.as_str(), &format!(" Next turn: {}", preview));
                 pending_lines.push(crate::agent::ui::render_utils::pad_to_width(&line, width));
             }
         }
@@ -1634,7 +1636,7 @@ fn compose_ui(app: &mut App, width: usize) {
             if !preview.is_empty() {
                 let line = app
                     .theme
-                    .fg_key(ThemeKey::Dim, &format!(" Saved: {}", preview));
+                    .fg(ThemeKey::Dim.as_str(), &format!(" Saved: {}", preview));
                 pending_lines.push(crate::agent::ui::render_utils::pad_to_width(&line, width));
             }
         }
@@ -1648,7 +1650,7 @@ fn compose_ui(app: &mut App, width: usize) {
             };
             let line = app
                 .theme
-                .fg_key(ThemeKey::Dim, &format!(" 📝 queued: {}", preview));
+                .fg(ThemeKey::Dim.as_str(), &format!(" 📝 queued: {}", preview));
             pending_lines.push(crate::agent::ui::render_utils::pad_to_width(&line, width));
         }
 
@@ -1664,7 +1666,7 @@ fn compose_ui(app: &mut App, width: usize) {
                 if !preview.is_empty() {
                     let line = app
                         .theme
-                        .fg_key(ThemeKey::Dim, &format!(" Steering: {}", preview));
+                        .fg(ThemeKey::Dim.as_str(), &format!(" Steering: {}", preview));
                     pending_lines.push(crate::agent::ui::render_utils::pad_to_width(&line, width));
                 }
             }
@@ -1678,7 +1680,7 @@ fn compose_ui(app: &mut App, width: usize) {
                 if !preview.is_empty() {
                     let line = app
                         .theme
-                        .fg_key(ThemeKey::Dim, &format!(" Follow-up: {}", preview));
+                        .fg(ThemeKey::Dim.as_str(), &format!(" Follow-up: {}", preview));
                     pending_lines.push(crate::agent::ui::render_utils::pad_to_width(&line, width));
                 }
             }
@@ -2511,7 +2513,7 @@ fn show_auth_type_selector(app: &mut App, tui: &mut TUI) {
             lines.push(String::new());
             lines.push(format!(
                 "  {}",
-                theme.bold(&theme.fg_key(ThemeKey::Accent, "Select authentication method:"))
+                theme.bold(&theme.fg(ThemeKey::Accent.as_str(), "Select authentication method:"))
             ));
             lines.push(String::new());
 
@@ -2519,14 +2521,14 @@ fn show_auth_type_selector(app: &mut App, tui: &mut TUI) {
                 let item = &self.items[item_idx];
                 let is_selected = i == self.selected_index;
                 let prefix = if is_selected {
-                    theme.fg_key(ThemeKey::Accent, "→ ")
+                    theme.fg(ThemeKey::Accent.as_str(), "→ ")
                 } else {
                     "  ".to_string()
                 };
                 let text = if is_selected {
-                    theme.fg_key(ThemeKey::Accent, &item.label)
+                    theme.fg(ThemeKey::Accent.as_str(), &item.label)
                 } else {
-                    theme.fg_key(ThemeKey::Text, &item.label)
+                    theme.fg(ThemeKey::Text.as_str(), &item.label)
                 };
                 lines.push(format!("{}{}", prefix, text));
             }

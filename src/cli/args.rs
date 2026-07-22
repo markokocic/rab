@@ -292,10 +292,7 @@ mod tests {
 
     #[test]
     fn parse_args_append_system_prompt() {
-        let args = parse_args(&[
-            "--append-system-prompt".into(),
-            "extra instructions".into(),
-        ]);
+        let args = parse_args(&["--append-system-prompt".into(), "extra instructions".into()]);
         assert_eq!(
             args.append_system_prompt_override.unwrap(),
             "extra instructions"
@@ -365,4 +362,3 @@ mod tests {
         assert!(dir.ends_with(".rab/agent"));
     }
 }
-

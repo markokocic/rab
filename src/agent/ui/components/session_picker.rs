@@ -1,6 +1,6 @@
 use crate::agent::session::{SessionInfo, list_all_sessions, list_sessions};
+use crate::agent::ui::theme::ThemeKey;
 use crate::tui::Theme;
-use crate::tui::theme::ThemeKey;
 use std::path::{Path, PathBuf};
 
 /// Which group a session belongs to in the picker display.
@@ -316,7 +316,7 @@ impl SessionPicker {
 
         if self.loading {
             lines.push(theme.fg_key(
-                ThemeKey::Dim,
+                ThemeKey::Dim.as_str(),
                 &format!(
                     "Loading sessions... ({}/{})",
                     self.loaded_count, self.total_count
@@ -326,14 +326,14 @@ impl SessionPicker {
         }
 
         if self.sessions.is_empty() {
-            lines.push(theme.fg_key(ThemeKey::Dim, "No sessions found."));
+            lines.push(theme.fg(ThemeKey::Dim.as_str(), "No sessions found."));
             return (lines, 0);
         }
 
         // Header
         lines.push(theme.bold("Sessions"));
         lines.push(theme.fg_key(
-            ThemeKey::Dim,
+            ThemeKey::Dim.as_str(),
             &format!(
                 "{} total, {} shown",
                 self.sessions.len(),
@@ -356,7 +356,7 @@ impl SessionPicker {
                     SessionGroup::CurrentProject => "Current Project",
                     SessionGroup::OtherProjects => "Other Projects",
                 };
-                lines.push(theme.bold(&theme.fg_key(ThemeKey::Accent, section_title)));
+                lines.push(theme.bold(&theme.fg(ThemeKey::Accent.as_str(), section_title)));
                 prev_group = Some(gs.group.clone());
             }
 
@@ -370,8 +370,8 @@ impl SessionPicker {
                 let cursor = "\u{2588}"; // full block
                 lines.push(format!(
                     "  {} {}",
-                    theme.fg_key(ThemeKey::Accent, "Rename:"),
-                    theme.fg_key(ThemeKey::Text, &format!("{} {}", display, cursor))
+                    theme.fg(ThemeKey::Accent.as_str(), "Rename:"),
+                    theme.fg(ThemeKey::Text.as_str(), &format!("{} {}", display, cursor))
                 ));
                 cursor_y = lines.len() - 1;
                 continue;
@@ -401,10 +401,13 @@ impl SessionPicker {
         // Footer hint
         lines.push(String::new());
         if self.rename_mode {
-            lines.push(theme.fg_key(ThemeKey::Dim, "Enter: confirm rename · Esc: cancel"));
+            lines.push(theme.fg(
+                ThemeKey::Dim.as_str(),
+                "Enter: confirm rename · Esc: cancel",
+            ));
         } else {
             lines.push(theme.fg_key(
-                ThemeKey::Dim,
+                ThemeKey::Dim.as_str(),
                 "↑↓ navigate · Enter select · / filter · r rename · Esc cancel",
             ));
         }

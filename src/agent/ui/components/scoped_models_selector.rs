@@ -292,7 +292,7 @@ impl Component for ScopedModelsSelector {
         // Title (matches pi's theme.fg("accent", theme.bold("Model Configuration")))
         lines.push(format!(
             "  {}",
-            theme.bold(&theme.fg_key(ThemeKey::Accent, "Model Configuration"))
+            theme.bold(&theme.fg(ThemeKey::Accent.as_str(), "Model Configuration"))
         ));
 
         // Session-only hint (matches pi's "Session-only. <key> to save to settings.")
@@ -326,12 +326,12 @@ impl Component for ScopedModelsSelector {
                 let item = &self.all_items_sorted[self.filtered_indices[i]];
                 let is_selected = i == self.selected_index;
                 let prefix = if is_selected {
-                    theme.fg_key(ThemeKey::Accent, "→ ")
+                    theme.fg(ThemeKey::Accent.as_str(), "→ ")
                 } else {
                     "  ".to_string()
                 };
                 let model_text = if is_selected {
-                    theme.fg_key(ThemeKey::Accent, &item.model_id)
+                    theme.fg(ThemeKey::Accent.as_str(), &item.model_id)
                 } else {
                     item.model_id.clone()
                 };
@@ -341,7 +341,7 @@ impl Component for ScopedModelsSelector {
                     // All enabled: no ✓/✗ needed
                     String::new()
                 } else if item.enabled {
-                    theme.fg_key(ThemeKey::Success, " ✓")
+                    theme.fg(ThemeKey::Success.as_str(), " ✓")
                 } else {
                     theme.dim(" ✗")
                 };
@@ -389,7 +389,7 @@ impl Component for ScopedModelsSelector {
                 "{} {} {}",
                 theme.dim(&format!("  {}", hints.join(" · "))),
                 count_text,
-                theme.fg_key(ThemeKey::Warning, "(unsaved)"),
+                theme.fg(ThemeKey::Warning.as_str(), "(unsaved)"),
             )
         } else {
             format!(

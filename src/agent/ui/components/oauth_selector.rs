@@ -221,7 +221,7 @@ impl Component for OAuthSelector {
         };
         lines.push(format!(
             "  {}",
-            theme.bold(&theme.fg_key(ThemeKey::Accent, title))
+            theme.bold(&theme.fg(ThemeKey::Accent.as_str(), title))
         ));
         lines.push(String::new());
 
@@ -258,14 +258,14 @@ impl Component for OAuthSelector {
                 let is_selected = i == self.selected_index;
 
                 let prefix = if is_selected {
-                    theme.fg_key(ThemeKey::Accent, "→ ")
+                    theme.fg(ThemeKey::Accent.as_str(), "→ ")
                 } else {
                     "  ".to_string()
                 };
                 let name_text = if is_selected {
-                    theme.fg_key(ThemeKey::Accent, &item.name)
+                    theme.fg(ThemeKey::Accent.as_str(), &item.name)
                 } else {
-                    theme.fg_key(ThemeKey::Text, &item.name)
+                    theme.fg(ThemeKey::Text.as_str(), &item.name)
                 };
 
                 // Status indicator (matching pi's formatStatusIndicator)

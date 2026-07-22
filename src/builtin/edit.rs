@@ -1,8 +1,9 @@
+use crate::agent::ui::theme::ThemeKey;
 use crate::extension::ToolDefinition;
 use crate::extension::{ToolRenderContext, ToolRenderer};
 use crate::tui::Style;
 use crate::tui::components::StyledSegment;
-use crate::tui::{Component, Theme, ThemeKey};
+use crate::tui::{Component, Theme};
 use async_trait::async_trait;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -1023,7 +1024,7 @@ impl ToolRenderer for EditRenderer {
                 text: "edit".to_string(),
                 style: Some(
                     Style::new()
-                        .fg(theme.fg_ansi_key(ThemeKey::ToolTitle).to_string())
+                        .fg(theme.fg_ansi(ThemeKey::ToolTitle.as_str()).to_string())
                         .bold(),
                 ),
             },
@@ -1033,7 +1034,7 @@ impl ToolRenderer for EditRenderer {
                 } else {
                     format!(" {}", short)
                 },
-                style: Some(Style::new().fg(theme.fg_ansi_key(ThemeKey::Accent).to_string())),
+                style: Some(Style::new().fg(theme.fg_ansi(ThemeKey::Accent.as_str()).to_string())),
             },
         ];
         let header = crate::tui::components::Text::from_segments(header_segments, 0, 0, None);
@@ -1146,7 +1147,8 @@ impl ToolRenderer for EditRenderer {
                 // No diff to show (still computing or no preview input)
             } else if let Some(err_msg) = diff.strip_prefix("error: ") {
                 // Error preview: add error text
-                let error_style = Style::new().fg(theme.fg_ansi_key(ThemeKey::Error).to_string());
+                let error_style =
+                    Style::new().fg(theme.fg_ansi(ThemeKey::Error.as_str()).to_string());
                 edit_box.add_child(std::boxed::Box::new(crate::tui::components::Text::new(
                     err_msg.to_string(),
                     0,
@@ -1197,7 +1199,7 @@ impl ToolRenderer for EditRenderer {
                     msg.to_string(),
                     1,
                     0,
-                    Some(Style::new().fg(theme.fg_ansi_key(ThemeKey::Error).to_string())),
+                    Some(Style::new().fg(theme.fg_ansi(ThemeKey::Error.as_str()).to_string())),
                 )));
                 return Some(std::boxed::Box::new(container));
             }

@@ -130,9 +130,7 @@ mod tests {
 
     fn settings_with_ext(name: &str, enabled: bool) -> crate::settings::Settings {
         let mut s = crate::settings::Settings::default();
-        s.extensions_config
-            .states
-            .insert(name.to_string(), enabled);
+        s.extensions_config.states.insert(name.to_string(), enabled);
         s
     }
 
@@ -196,4 +194,3 @@ mod tests {
         assert!(is_extension_enabled(&ext, &s));
     }
 }
-

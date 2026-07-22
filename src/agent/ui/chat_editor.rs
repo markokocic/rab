@@ -163,7 +163,7 @@ impl ChatEditor {
     ) {
         let text = self.editor.get_text();
         if text.trim_start().starts_with('!') {
-            let ansi = theme.fg_key(ThemeKey::BashMode, "").to_string();
+            let ansi = theme.fg(ThemeKey::BashMode.as_str(), "").to_string();
             // Extract just the ANSI prefix (before any text).
             // Use find('m') to get only the color-set code, not the trailing reset.
             // theme.fg() returns "\x1b[...m\x1b[39m"; we want "\x1b[...m" only.

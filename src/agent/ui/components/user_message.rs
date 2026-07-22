@@ -22,7 +22,7 @@ impl UserMessageComponent {
         let text =
             crate::agent::ui::app::format_skill_block_for_display(&raw_text).unwrap_or(raw_text);
         let theme = current_theme();
-        let bg_ansi = theme.bg_ansi_key(ThemeKey::UserMessageBg).to_string();
+        let bg_ansi = theme.bg_ansi(ThemeKey::UserMessageBg.as_str()).to_string();
         drop(theme);
 
         let mut msg_box = TuiBox::new(1, 1, Some(crate::tui::Style::new().bg(bg_ansi)));
@@ -32,7 +32,7 @@ impl UserMessageComponent {
         let default_style = DefaultTextStyle {
             color: Some(std::sync::Arc::new(|s: &str| -> String {
                 let t = current_theme();
-                t.fg_key(ThemeKey::UserMessageText, s)
+                t.fg(ThemeKey::UserMessageText.as_str(), s)
             })),
             bold: false,
             italic: false,

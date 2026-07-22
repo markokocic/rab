@@ -227,187 +227,12 @@ impl Style {
     }
 }
 
-/// Compile-time safe theme color keys.
-/// Each variant corresponds to a named color in the theme JSON files.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ThemeKey {
-    Accent,
-    BashMode,
-    Border,
-    BorderAccent,
-    BorderMuted,
-    CustomMessageBg,
-    CustomMessageLabel,
-    CustomMessageText,
-    Dim,
-    Error,
-    MdCode,
-    MdCodeBlock,
-    MdCodeBlockBorder,
-    MdHeading,
-    MdHr,
-    MdLink,
-    MdLinkUrl,
-    MdListBullet,
-    MdQuote,
-    MdQuoteBorder,
-    Muted,
-    SelectedBg,
-    Success,
-    SyntaxComment,
-    SyntaxFunction,
-    SyntaxKeyword,
-    SyntaxNumber,
-    SyntaxOperator,
-    SyntaxPunctuation,
-    SyntaxString,
-    SyntaxType,
-    SyntaxVariable,
-    Text,
-    ThinkingHigh,
-    ThinkingLow,
-    ThinkingMedium,
-    ThinkingMinimal,
-    ThinkingOff,
-    ThinkingText,
-    ThinkingXhigh,
-    ToolDiffAdded,
-    ToolDiffContext,
-    ToolDiffRemoved,
-    ToolErrorBg,
-    ToolOutput,
-    ToolPendingBg,
-    ToolSuccessBg,
-    ToolTitle,
-    UserMessageBg,
-    UserMessageText,
-    Warning,
-}
-
-impl ThemeKey {
-    /// Return the string key used in theme JSON configuration.
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::Accent => "accent",
-            Self::BashMode => "bashMode",
-            Self::Border => "border",
-            Self::BorderAccent => "borderAccent",
-            Self::BorderMuted => "borderMuted",
-            Self::CustomMessageBg => "customMessageBg",
-            Self::CustomMessageLabel => "customMessageLabel",
-            Self::CustomMessageText => "customMessageText",
-            Self::Dim => "dim",
-            Self::Error => "error",
-            Self::MdCode => "mdCode",
-            Self::MdCodeBlock => "mdCodeBlock",
-            Self::MdCodeBlockBorder => "mdCodeBlockBorder",
-            Self::MdHeading => "mdHeading",
-            Self::MdHr => "mdHr",
-            Self::MdLink => "mdLink",
-            Self::MdLinkUrl => "mdLinkUrl",
-            Self::MdListBullet => "mdListBullet",
-            Self::MdQuote => "mdQuote",
-            Self::MdQuoteBorder => "mdQuoteBorder",
-            Self::Muted => "muted",
-            Self::SelectedBg => "selectedBg",
-            Self::Success => "success",
-            Self::SyntaxComment => "syntaxComment",
-            Self::SyntaxFunction => "syntaxFunction",
-            Self::SyntaxKeyword => "syntaxKeyword",
-            Self::SyntaxNumber => "syntaxNumber",
-            Self::SyntaxOperator => "syntaxOperator",
-            Self::SyntaxPunctuation => "syntaxPunctuation",
-            Self::SyntaxString => "syntaxString",
-            Self::SyntaxType => "syntaxType",
-            Self::SyntaxVariable => "syntaxVariable",
-            Self::Text => "text",
-            Self::ThinkingHigh => "thinkingHigh",
-            Self::ThinkingLow => "thinkingLow",
-            Self::ThinkingMedium => "thinkingMedium",
-            Self::ThinkingMinimal => "thinkingMinimal",
-            Self::ThinkingOff => "thinkingOff",
-            Self::ThinkingText => "thinkingText",
-            Self::ThinkingXhigh => "thinkingXhigh",
-            Self::ToolDiffAdded => "toolDiffAdded",
-            Self::ToolDiffContext => "toolDiffContext",
-            Self::ToolDiffRemoved => "toolDiffRemoved",
-            Self::ToolErrorBg => "toolErrorBg",
-            Self::ToolOutput => "toolOutput",
-            Self::ToolPendingBg => "toolPendingBg",
-            Self::ToolSuccessBg => "toolSuccessBg",
-            Self::ToolTitle => "toolTitle",
-            Self::UserMessageBg => "userMessageBg",
-            Self::UserMessageText => "userMessageText",
-            Self::Warning => "warning",
-        }
-    }
-
-    /// All theme keys, for iteration.
-    pub fn all() -> &'static [ThemeKey] {
-        use ThemeKey::*;
-        &[
-            Accent,
-            BashMode,
-            Border,
-            BorderAccent,
-            BorderMuted,
-            CustomMessageBg,
-            CustomMessageLabel,
-            CustomMessageText,
-            Dim,
-            Error,
-            MdCode,
-            MdCodeBlock,
-            MdCodeBlockBorder,
-            MdHeading,
-            MdHr,
-            MdLink,
-            MdLinkUrl,
-            MdListBullet,
-            MdQuote,
-            MdQuoteBorder,
-            Muted,
-            SelectedBg,
-            Success,
-            SyntaxComment,
-            SyntaxFunction,
-            SyntaxKeyword,
-            SyntaxNumber,
-            SyntaxOperator,
-            SyntaxPunctuation,
-            SyntaxString,
-            SyntaxType,
-            SyntaxVariable,
-            Text,
-            ThinkingHigh,
-            ThinkingLow,
-            ThinkingMedium,
-            ThinkingMinimal,
-            ThinkingOff,
-            ThinkingText,
-            ThinkingXhigh,
-            ToolDiffAdded,
-            ToolDiffContext,
-            ToolDiffRemoved,
-            ToolErrorBg,
-            ToolOutput,
-            ToolPendingBg,
-            ToolSuccessBg,
-            ToolTitle,
-            UserMessageBg,
-            UserMessageText,
-            Warning,
-        ]
-    }
-}
-
 /// Theme trait for components that need color styling.
 ///
 /// Implementations provide foreground and background color functions
 /// that take text and return ANSI-styled strings.
 pub trait Theme {
     /// Apply a foreground color to text.
-    /// `color` is a color name (e.g., "accent", "text", "success", "error", "muted").
     fn fg(&self, color: &str, text: &str) -> String;
 
     /// Apply a background color to text.
@@ -422,16 +247,6 @@ pub trait Theme {
     /// Apply reverse/inverse video styling (used for intra-line diff highlighting).
     fn inverse(&self, text: &str) -> String;
 
-    /// Apply a foreground color from a `ThemeKey`.
-    fn fg_key(&self, key: ThemeKey, text: &str) -> String {
-        self.fg(key.as_str(), text)
-    }
-
-    /// Apply a background color from a `ThemeKey`.
-    fn bg_key(&self, key: ThemeKey, text: &str) -> String {
-        self.bg(key.as_str(), text)
-    }
-
     /// Return the ANSI escape code for a named color (without text).
     /// Default implementation returns empty string — override in concrete themes.
     fn fg_ansi(&self, _color: &str) -> &str {
@@ -444,9 +259,24 @@ pub trait Theme {
         ""
     }
 
-    /// Return the ANSI escape code for a `ThemeKey` color (without text).
-    fn fg_ansi_key(&self, key: ThemeKey) -> &str {
-        self.fg_ansi(key.as_str())
+    /// Convenience: apply foreground color by string key (e.g. "accent", "toolDiffAdded").
+    fn fg_key(&self, key: &str, text: &str) -> String {
+        self.fg(key, text)
+    }
+
+    /// Convenience: apply background color by string key.
+    fn bg_key(&self, key: &str, text: &str) -> String {
+        self.bg(key, text)
+    }
+
+    /// Convenience: return ANSI escape code for a color key (without text).
+    fn fg_ansi_key(&self, key: &str) -> &str {
+        self.fg_ansi(key)
+    }
+
+    /// Convenience: return background ANSI escape code for a color key.
+    fn bg_ansi_key(&self, key: &str) -> &str {
+        self.bg_ansi(key)
     }
 }
 

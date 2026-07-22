@@ -203,11 +203,11 @@ impl Component for ModelSelector {
         let has_scoped = !self.scoped_model_ids.is_empty();
         if has_scoped {
             let all_text = match self.scope {
-                ModelScope::All => theme.fg_key(ThemeKey::Accent, "all"),
+                ModelScope::All => theme.fg(ThemeKey::Accent.as_str(), "all"),
                 ModelScope::Scoped => theme.dim("all"),
             };
             let scoped_text = match self.scope {
-                ModelScope::Scoped => theme.fg_key(ThemeKey::Accent, "scoped"),
+                ModelScope::Scoped => theme.fg(ThemeKey::Accent.as_str(), "scoped"),
                 ModelScope::All => theme.dim("scoped"),
             };
             lines.push(format!(
@@ -254,18 +254,18 @@ impl Component for ModelSelector {
                 let is_current = item.full_id == self.current_model;
 
                 let prefix = if is_selected {
-                    theme.fg_key(ThemeKey::Accent, "→ ")
+                    theme.fg(ThemeKey::Accent.as_str(), "→ ")
                 } else {
                     "  ".to_string()
                 };
                 let model_text = if is_selected {
-                    theme.fg_key(ThemeKey::Accent, &item.id)
+                    theme.fg(ThemeKey::Accent.as_str(), &item.id)
                 } else {
                     item.id.clone()
                 };
                 let provider_badge = theme.dim(&format!(" [{}]", item.provider));
                 let checkmark = if is_current {
-                    theme.fg_key(ThemeKey::Success, " ✓")
+                    theme.fg(ThemeKey::Success.as_str(), " ✓")
                 } else {
                     String::new()
                 };

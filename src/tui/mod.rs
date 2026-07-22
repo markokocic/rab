@@ -51,7 +51,7 @@ pub use overlay::{
 };
 pub use screen::Screen;
 pub use terminal::{ProcessTerminal, TerminalTrait};
-pub use theme::{Style, Theme, ThemeKey};
+pub use theme::{Style, Theme};
 pub use tui_core::{InputAction, ListenerId, TUI};
 pub use util::{
     CJK_BREAK_REGEX, is_cjk_break, is_whitespace_char, normalize_terminal_output, slice_by_column,

@@ -1,7 +1,8 @@
+use crate::agent::ui::theme::ThemeKey;
 use crate::extension::{Extension, ToolDefinition, ToolRenderContext, ToolRenderer};
 use crate::tui::Style;
 use crate::tui::components::StyledSegment;
-use crate::tui::{Component, Theme, ThemeKey};
+use crate::tui::{Component, Theme};
 use async_trait::async_trait;
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
@@ -981,7 +982,7 @@ impl ToolRenderer for ListRenderer {
             text: self.tool_name.to_string(),
             style: Some(
                 Style::new()
-                    .fg(theme.fg_ansi_key(ThemeKey::ToolTitle).to_string())
+                    .fg(theme.fg_ansi(ThemeKey::ToolTitle.as_str()).to_string())
                     .bold(),
             ),
         });
@@ -992,12 +993,13 @@ impl ToolRenderer for ListRenderer {
             let pattern_text = format!(" {}", self.pattern_format.replace("{}", p));
             segments.push(StyledSegment {
                 text: pattern_text,
-                style: Some(Style::new().fg(theme.fg_ansi_key(ThemeKey::Accent).to_string())),
+                style: Some(Style::new().fg(theme.fg_ansi(ThemeKey::Accent.as_str()).to_string())),
             });
         }
 
         // Path in toolOutput
-        let output_style = Style::new().fg(theme.fg_ansi_key(ThemeKey::ToolOutput).to_string());
+        let output_style =
+            Style::new().fg(theme.fg_ansi(ThemeKey::ToolOutput.as_str()).to_string());
         segments.push(StyledSegment {
             text: format!(" {}", path_display),
             style: Some(output_style.clone()),
@@ -1040,8 +1042,9 @@ impl ToolRenderer for ListRenderer {
         }
 
         let output = content.trim();
-        let output_style = Style::new().fg(theme.fg_ansi_key(ThemeKey::ToolOutput).to_string());
-        let muted_style = Style::new().fg(theme.fg_ansi_key(ThemeKey::Muted).to_string());
+        let output_style =
+            Style::new().fg(theme.fg_ansi(ThemeKey::ToolOutput.as_str()).to_string());
+        let muted_style = Style::new().fg(theme.fg_ansi(ThemeKey::Muted.as_str()).to_string());
 
         if output.is_empty() || output == self.no_results_text {
             return Some(std::boxed::Box::new(crate::tui::components::Text::new(
