@@ -6,7 +6,7 @@
 //! Uses shared `Rc<RefCell<bool>>` for close signalling: the component sets
 //! it to true when the user cancels or persists, and the main loop polls it.
 
-use crate::agent::ui::theme::ThemeKey;
+use crate::agent::ui::theme::color;
 use crate::agent::ui::theme::current_theme;
 use crate::tui::Component;
 use crate::tui::fuzzy::fuzzy_filter;
@@ -292,7 +292,7 @@ impl Component for ScopedModelsSelector {
         // Title (matches pi's theme.fg("accent", theme.bold("Model Configuration")))
         lines.push(format!(
             "  {}",
-            theme.bold(&theme.fg(ThemeKey::Accent.as_str(), "Model Configuration"))
+            theme.bold(&theme.fg(color::Accent, "Model Configuration"))
         ));
 
         // Session-only hint (matches pi's "Session-only. <key> to save to settings.")
@@ -326,12 +326,12 @@ impl Component for ScopedModelsSelector {
                 let item = &self.all_items_sorted[self.filtered_indices[i]];
                 let is_selected = i == self.selected_index;
                 let prefix = if is_selected {
-                    theme.fg(ThemeKey::Accent.as_str(), "→ ")
+                    theme.fg(color::Accent, "→ ")
                 } else {
                     "  ".to_string()
                 };
                 let model_text = if is_selected {
-                    theme.fg(ThemeKey::Accent.as_str(), &item.model_id)
+                    theme.fg(color::Accent, &item.model_id)
                 } else {
                     item.model_id.clone()
                 };
@@ -341,7 +341,7 @@ impl Component for ScopedModelsSelector {
                     // All enabled: no ✓/✗ needed
                     String::new()
                 } else if item.enabled {
-                    theme.fg(ThemeKey::Success.as_str(), " ✓")
+                    theme.fg(color::Success, " ✓")
                 } else {
                     theme.dim(" ✗")
                 };
@@ -389,7 +389,7 @@ impl Component for ScopedModelsSelector {
                 "{} {} {}",
                 theme.dim(&format!("  {}", hints.join(" · "))),
                 count_text,
-                theme.fg(ThemeKey::Warning.as_str(), "(unsaved)"),
+                theme.fg(color::Warning, "(unsaved)"),
             )
         } else {
             format!(

@@ -1,4 +1,4 @@
-use crate::agent::ui::theme::ThemeKey;
+use crate::agent::ui::theme::color;
 use crate::extension::ToolDefinition;
 use crate::extension::{ToolRenderContext, ToolRenderer};
 use crate::tui::Style;
@@ -590,35 +590,26 @@ impl ToolRenderer for ReadRenderer {
                         text: "[skill] ".to_string(),
                         style: Some(
                             Style::new()
-                                .fg(theme
-                                    .fg_ansi(ThemeKey::CustomMessageLabel.as_str())
-                                    .to_string())
+                                .fg(theme.fg_ansi(color::CustomMessageLabel).to_string())
                                 .bold(),
                         ),
                     });
                     segments.push(StyledSegment {
                         text: label,
                         style: Some(
-                            Style::new().fg(theme
-                                .fg_ansi(ThemeKey::CustomMessageText.as_str())
-                                .to_string()),
+                            Style::new().fg(theme.fg_ansi(color::CustomMessageText).to_string()),
                         ),
                     });
                     if !range_text.is_empty() {
                         segments.push(StyledSegment {
                             text: range_text,
-                            style: Some(
-                                Style::new()
-                                    .fg(theme.fg_ansi(ThemeKey::Warning.as_str()).to_string()),
-                            ),
+                            style: Some(Style::new().fg(theme.fg_ansi(color::Warning).to_string())),
                         });
                     }
                     if !expand_hint_text.is_empty() {
                         segments.push(StyledSegment {
                             text: expand_hint_text,
-                            style: Some(
-                                Style::new().fg(theme.fg_ansi(ThemeKey::Dim.as_str()).to_string()),
-                            ),
+                            style: Some(Style::new().fg(theme.fg_ansi(color::Dim).to_string())),
                         });
                     }
                     std::boxed::Box::new(crate::tui::components::Text::from_segments(
@@ -633,31 +624,24 @@ impl ToolRenderer for ReadRenderer {
                         text: "read resource ".to_string(),
                         style: Some(
                             Style::new()
-                                .fg(theme.fg_ansi(ThemeKey::ToolTitle.as_str()).to_string())
+                                .fg(theme.fg_ansi(color::ToolTitle).to_string())
                                 .bold(),
                         ),
                     });
                     segments.push(StyledSegment {
                         text: label,
-                        style: Some(
-                            Style::new().fg(theme.fg_ansi(ThemeKey::Accent.as_str()).to_string()),
-                        ),
+                        style: Some(Style::new().fg(theme.fg_ansi(color::Accent).to_string())),
                     });
                     if !range_text.is_empty() {
                         segments.push(StyledSegment {
                             text: range_text,
-                            style: Some(
-                                Style::new()
-                                    .fg(theme.fg_ansi(ThemeKey::Warning.as_str()).to_string()),
-                            ),
+                            style: Some(Style::new().fg(theme.fg_ansi(color::Warning).to_string())),
                         });
                     }
                     if !expand_hint_text.is_empty() {
                         segments.push(StyledSegment {
                             text: expand_hint_text,
-                            style: Some(
-                                Style::new().fg(theme.fg_ansi(ThemeKey::Dim.as_str()).to_string()),
-                            ),
+                            style: Some(Style::new().fg(theme.fg_ansi(color::Dim).to_string())),
                         });
                     }
                     std::boxed::Box::new(crate::tui::components::Text::from_segments(
@@ -678,30 +662,26 @@ impl ToolRenderer for ReadRenderer {
                 text: "read ".to_string(),
                 style: Some(
                     Style::new()
-                        .fg(theme.fg_ansi(ThemeKey::ToolTitle.as_str()).to_string())
+                        .fg(theme.fg_ansi(color::ToolTitle).to_string())
                         .bold(),
                 ),
             });
             if !short.is_empty() {
                 segments.push(StyledSegment {
                     text: short,
-                    style: Some(
-                        Style::new().fg(theme.fg_ansi(ThemeKey::Accent.as_str()).to_string()),
-                    ),
+                    style: Some(Style::new().fg(theme.fg_ansi(color::Accent).to_string())),
                 });
             }
             if !range_text.is_empty() {
                 segments.push(StyledSegment {
                     text: range_text,
-                    style: Some(
-                        Style::new().fg(theme.fg_ansi(ThemeKey::Warning.as_str()).to_string()),
-                    ),
+                    style: Some(Style::new().fg(theme.fg_ansi(color::Warning).to_string())),
                 });
             }
             if !expand_hint_text.is_empty() {
                 segments.push(StyledSegment {
                     text: expand_hint_text,
-                    style: Some(Style::new().fg(theme.fg_ansi(ThemeKey::Dim.as_str()).to_string())),
+                    style: Some(Style::new().fg(theme.fg_ansi(color::Dim).to_string())),
                 });
             }
             std::boxed::Box::new(crate::tui::components::Text::from_segments(
@@ -747,7 +727,7 @@ impl ToolRenderer for ReadRenderer {
                 let kitty_seq =
                     crate::tui::components::markdown::kitty_image_sequence(&binary, mime);
                 let output_line = crate::tui::Style::new()
-                    .fg(theme.fg_ansi(ThemeKey::ToolOutput.as_str()).to_string())
+                    .fg(theme.fg_ansi(color::ToolOutput).to_string())
                     .apply(&format!(
                         "Read image file [{}] - {} ({})",
                         mime, file_name, size_str
@@ -762,8 +742,8 @@ impl ToolRenderer for ReadRenderer {
             }
 
             // Fallback: text summary
-            let img_style = crate::tui::Style::new()
-                .fg(theme.fg_ansi(ThemeKey::ToolOutput.as_str()).to_string());
+            let img_style =
+                crate::tui::Style::new().fg(theme.fg_ansi(color::ToolOutput).to_string());
             let fallback = format!(
                 "\n{}\n{}\n{}",
                 img_style.apply(&format!("Read image file [{}]", mime)),
@@ -797,11 +777,9 @@ impl ToolRenderer for ReadRenderer {
 
         // Pre-compute Style objects for each color used in the result
         let output_style =
-            crate::tui::Style::new().fg(theme.fg_ansi(ThemeKey::ToolOutput.as_str()).to_string());
-        let muted_style =
-            crate::tui::Style::new().fg(theme.fg_ansi(ThemeKey::Muted.as_str()).to_string());
-        let warning_style =
-            crate::tui::Style::new().fg(theme.fg_ansi(ThemeKey::Warning.as_str()).to_string());
+            crate::tui::Style::new().fg(theme.fg_ansi(color::ToolOutput).to_string());
+        let muted_style = crate::tui::Style::new().fg(theme.fg_ansi(color::Muted).to_string());
+        let warning_style = crate::tui::Style::new().fg(theme.fg_ansi(color::Warning).to_string());
 
         // Pi: start with blank line (`\n` before content)
         let mut result = vec![String::new()];

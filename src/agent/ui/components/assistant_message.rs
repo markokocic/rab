@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::agent::ui::theme::ThemeKey;
+use crate::agent::ui::theme::color;
 use crate::agent::ui::theme::current_theme;
 use crate::tui::Component;
 use crate::tui::component::RenderCacheKey;
@@ -78,7 +78,7 @@ impl AssistantMessageComponent {
             if i >= self.thinking_md.len() {
                 // Create new Markdown for this block
                 let color_fn: StyleFn = Arc::new(|s: &str| -> String {
-                    crate::agent::ui::theme::current_theme().fg(ThemeKey::ThinkingText.as_str(), s)
+                    crate::agent::ui::theme::current_theme().fg(color::ThinkingText, s)
                 });
                 let default_style = DefaultTextStyle {
                     color: Some(color_fn),
@@ -224,7 +224,7 @@ impl Component for AssistantMessageComponent {
             }
             if self.hide_thinking {
                 let theme = current_theme();
-                let label = theme.italic(&theme.fg(ThemeKey::ThinkingText.as_str(), "Thinking..."));
+                let label = theme.italic(&theme.fg(color::ThinkingText, "Thinking..."));
                 let padded = format!(" {} ", label);
                 lines.push(padded);
             } else {

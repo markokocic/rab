@@ -4,7 +4,7 @@
 //! Shows provider name, ID, and current auth status (configured, env, etc.).
 //! Supports fuzzy filtering via search input.
 
-use crate::agent::ui::theme::ThemeKey;
+use crate::agent::ui::theme::color;
 use crate::agent::ui::theme::current_theme;
 use crate::tui::Component;
 use crate::tui::fuzzy::fuzzy_filter;
@@ -219,10 +219,7 @@ impl Component for OAuthSelector {
             SelectorMode::Login => "Select provider to configure:",
             SelectorMode::Logout => "Select provider to logout:",
         };
-        lines.push(format!(
-            "  {}",
-            theme.bold(&theme.fg(ThemeKey::Accent.as_str(), title))
-        ));
+        lines.push(format!("  {}", theme.bold(&theme.fg(color::Accent, title))));
         lines.push(String::new());
 
         // Search input line
@@ -258,14 +255,14 @@ impl Component for OAuthSelector {
                 let is_selected = i == self.selected_index;
 
                 let prefix = if is_selected {
-                    theme.fg(ThemeKey::Accent.as_str(), "→ ")
+                    theme.fg(color::Accent, "→ ")
                 } else {
                     "  ".to_string()
                 };
                 let name_text = if is_selected {
-                    theme.fg(ThemeKey::Accent.as_str(), &item.name)
+                    theme.fg(color::Accent, &item.name)
                 } else {
-                    theme.fg(ThemeKey::Text.as_str(), &item.name)
+                    theme.fg(color::Text, &item.name)
                 };
 
                 // Status indicator (matching pi's formatStatusIndicator)

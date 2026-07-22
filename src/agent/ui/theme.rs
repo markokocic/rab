@@ -328,195 +328,119 @@ impl RabTheme {
     }
 }
 
-/// Agent-specific theme color keys.
+/// Agent-specific color key constants.
 ///
-/// Each variant corresponds to a named color in the theme JSON files.
+/// Each constant corresponds to a named color in the theme JSON files.
 /// These are separate from the generic `tui::Theme` trait to keep
 /// agent-specific concepts out of the reusable TUI layer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum AgentThemeKey {
-    Accent,
-    BashMode,
-    Border,
-    BorderAccent,
-    BorderMuted,
-    CustomMessageBg,
-    CustomMessageLabel,
-    CustomMessageText,
-    Dim,
-    Error,
-    MdCode,
-    MdCodeBlock,
-    MdCodeBlockBorder,
-    MdHeading,
-    MdHr,
-    MdLink,
-    MdLinkUrl,
-    MdListBullet,
-    MdQuote,
-    MdQuoteBorder,
-    Muted,
-    SelectedBg,
-    Success,
-    SyntaxComment,
-    SyntaxFunction,
-    SyntaxKeyword,
-    SyntaxNumber,
-    SyntaxOperator,
-    SyntaxPunctuation,
-    SyntaxString,
-    SyntaxType,
-    SyntaxVariable,
-    Text,
-    ThinkingHigh,
-    ThinkingLow,
-    ThinkingMedium,
-    ThinkingMinimal,
-    ThinkingOff,
-    ThinkingText,
-    ThinkingXhigh,
-    ToolDiffAdded,
-    ToolDiffContext,
-    ToolDiffRemoved,
-    ToolErrorBg,
-    ToolOutput,
-    ToolPendingBg,
-    ToolSuccessBg,
-    ToolTitle,
-    UserMessageBg,
-    UserMessageText,
-    Warning,
-}
+#[allow(non_upper_case_globals)]
+pub mod color {
+    pub const Accent: &str = "accent";
+    pub const BashMode: &str = "bashMode";
+    pub const Border: &str = "border";
+    pub const BorderAccent: &str = "borderAccent";
+    pub const BorderMuted: &str = "borderMuted";
+    pub const CustomMessageBg: &str = "customMessageBg";
+    pub const CustomMessageLabel: &str = "customMessageLabel";
+    pub const CustomMessageText: &str = "customMessageText";
+    pub const Dim: &str = "dim";
+    pub const Error: &str = "error";
+    pub const MdCode: &str = "mdCode";
+    pub const MdCodeBlock: &str = "mdCodeBlock";
+    pub const MdCodeBlockBorder: &str = "mdCodeBlockBorder";
+    pub const MdHeading: &str = "mdHeading";
+    pub const MdHr: &str = "mdHr";
+    pub const MdLink: &str = "mdLink";
+    pub const MdLinkUrl: &str = "mdLinkUrl";
+    pub const MdListBullet: &str = "mdListBullet";
+    pub const MdQuote: &str = "mdQuote";
+    pub const MdQuoteBorder: &str = "mdQuoteBorder";
+    pub const Muted: &str = "muted";
+    pub const SelectedBg: &str = "selectedBg";
+    pub const Success: &str = "success";
+    pub const SyntaxComment: &str = "syntaxComment";
+    pub const SyntaxFunction: &str = "syntaxFunction";
+    pub const SyntaxKeyword: &str = "syntaxKeyword";
+    pub const SyntaxNumber: &str = "syntaxNumber";
+    pub const SyntaxOperator: &str = "syntaxOperator";
+    pub const SyntaxPunctuation: &str = "syntaxPunctuation";
+    pub const SyntaxString: &str = "syntaxString";
+    pub const SyntaxType: &str = "syntaxType";
+    pub const SyntaxVariable: &str = "syntaxVariable";
+    pub const Text: &str = "text";
+    pub const ThinkingHigh: &str = "thinkingHigh";
+    pub const ThinkingLow: &str = "thinkingLow";
+    pub const ThinkingMedium: &str = "thinkingMedium";
+    pub const ThinkingMinimal: &str = "thinkingMinimal";
+    pub const ThinkingOff: &str = "thinkingOff";
+    pub const ThinkingText: &str = "thinkingText";
+    pub const ThinkingXhigh: &str = "thinkingXhigh";
+    pub const ToolDiffAdded: &str = "toolDiffAdded";
+    pub const ToolDiffContext: &str = "toolDiffContext";
+    pub const ToolDiffRemoved: &str = "toolDiffRemoved";
+    pub const ToolErrorBg: &str = "toolErrorBg";
+    pub const ToolOutput: &str = "toolOutput";
+    pub const ToolPendingBg: &str = "toolPendingBg";
+    pub const ToolSuccessBg: &str = "toolSuccessBg";
+    pub const ToolTitle: &str = "toolTitle";
+    pub const UserMessageBg: &str = "userMessageBg";
+    pub const UserMessageText: &str = "userMessageText";
+    pub const Warning: &str = "warning";
 
-impl AgentThemeKey {
-    /// Return the string key used in theme JSON configuration.
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::Accent => "accent",
-            Self::BashMode => "bashMode",
-            Self::Border => "border",
-            Self::BorderAccent => "borderAccent",
-            Self::BorderMuted => "borderMuted",
-            Self::CustomMessageBg => "customMessageBg",
-            Self::CustomMessageLabel => "customMessageLabel",
-            Self::CustomMessageText => "customMessageText",
-            Self::Dim => "dim",
-            Self::Error => "error",
-            Self::MdCode => "mdCode",
-            Self::MdCodeBlock => "mdCodeBlock",
-            Self::MdCodeBlockBorder => "mdCodeBlockBorder",
-            Self::MdHeading => "mdHeading",
-            Self::MdHr => "mdHr",
-            Self::MdLink => "mdLink",
-            Self::MdLinkUrl => "mdLinkUrl",
-            Self::MdListBullet => "mdListBullet",
-            Self::MdQuote => "mdQuote",
-            Self::MdQuoteBorder => "mdQuoteBorder",
-            Self::Muted => "muted",
-            Self::SelectedBg => "selectedBg",
-            Self::Success => "success",
-            Self::SyntaxComment => "syntaxComment",
-            Self::SyntaxFunction => "syntaxFunction",
-            Self::SyntaxKeyword => "syntaxKeyword",
-            Self::SyntaxNumber => "syntaxNumber",
-            Self::SyntaxOperator => "syntaxOperator",
-            Self::SyntaxPunctuation => "syntaxPunctuation",
-            Self::SyntaxString => "syntaxString",
-            Self::SyntaxType => "syntaxType",
-            Self::SyntaxVariable => "syntaxVariable",
-            Self::Text => "text",
-            Self::ThinkingHigh => "thinkingHigh",
-            Self::ThinkingLow => "thinkingLow",
-            Self::ThinkingMedium => "thinkingMedium",
-            Self::ThinkingMinimal => "thinkingMinimal",
-            Self::ThinkingOff => "thinkingOff",
-            Self::ThinkingText => "thinkingText",
-            Self::ThinkingXhigh => "thinkingXhigh",
-            Self::ToolDiffAdded => "toolDiffAdded",
-            Self::ToolDiffContext => "toolDiffContext",
-            Self::ToolDiffRemoved => "toolDiffRemoved",
-            Self::ToolErrorBg => "toolErrorBg",
-            Self::ToolOutput => "toolOutput",
-            Self::ToolPendingBg => "toolPendingBg",
-            Self::ToolSuccessBg => "toolSuccessBg",
-            Self::ToolTitle => "toolTitle",
-            Self::UserMessageBg => "userMessageBg",
-            Self::UserMessageText => "userMessageText",
-            Self::Warning => "warning",
-        }
-    }
-
-    /// All theme keys, for iteration.
-    pub fn all() -> &'static [AgentThemeKey] {
-        use AgentThemeKey::*;
-        &[
-            Accent,
-            BashMode,
-            Border,
-            BorderAccent,
-            BorderMuted,
-            CustomMessageBg,
-            CustomMessageLabel,
-            CustomMessageText,
-            Dim,
-            Error,
-            MdCode,
-            MdCodeBlock,
-            MdCodeBlockBorder,
-            MdHeading,
-            MdHr,
-            MdLink,
-            MdLinkUrl,
-            MdListBullet,
-            MdQuote,
-            MdQuoteBorder,
-            Muted,
-            SelectedBg,
-            Success,
-            SyntaxComment,
-            SyntaxFunction,
-            SyntaxKeyword,
-            SyntaxNumber,
-            SyntaxOperator,
-            SyntaxPunctuation,
-            SyntaxString,
-            SyntaxType,
-            SyntaxVariable,
-            Text,
-            ThinkingHigh,
-            ThinkingLow,
-            ThinkingMedium,
-            ThinkingMinimal,
-            ThinkingOff,
-            ThinkingText,
-            ThinkingXhigh,
-            ToolDiffAdded,
-            ToolDiffContext,
-            ToolDiffRemoved,
-            ToolErrorBg,
-            ToolOutput,
-            ToolPendingBg,
-            ToolSuccessBg,
-            ToolTitle,
-            UserMessageBg,
-            UserMessageText,
-            Warning,
-        ]
-    }
-}
-
-pub use self::AgentThemeKey as ThemeKey;
-
-impl RabTheme {
-    /// Apply foreground color from a `ThemeKey`.
-    pub fn fg_key(&self, key: ThemeKey, text: &str) -> String {
-        self.fg(key.as_str(), text)
-    }
-
-    /// Apply background color from a `ThemeKey`.
-    pub fn bg_key(&self, key: ThemeKey, text: &str) -> String {
-        self.bg(key.as_str(), text)
-    }
+    /// All color key strings, for iteration over available theme keys.
+    pub const ALL: &[&str] = &[
+        "accent",
+        "bashMode",
+        "border",
+        "borderAccent",
+        "borderMuted",
+        "customMessageBg",
+        "customMessageLabel",
+        "customMessageText",
+        "dim",
+        "error",
+        "mdCode",
+        "mdCodeBlock",
+        "mdCodeBlockBorder",
+        "mdHeading",
+        "mdHr",
+        "mdLink",
+        "mdLinkUrl",
+        "mdListBullet",
+        "mdQuote",
+        "mdQuoteBorder",
+        "muted",
+        "selectedBg",
+        "success",
+        "syntaxComment",
+        "syntaxFunction",
+        "syntaxKeyword",
+        "syntaxNumber",
+        "syntaxOperator",
+        "syntaxPunctuation",
+        "syntaxString",
+        "syntaxType",
+        "syntaxVariable",
+        "text",
+        "thinkingHigh",
+        "thinkingLow",
+        "thinkingMedium",
+        "thinkingMinimal",
+        "thinkingOff",
+        "thinkingText",
+        "thinkingXhigh",
+        "toolDiffAdded",
+        "toolDiffContext",
+        "toolDiffRemoved",
+        "toolErrorBg",
+        "toolOutput",
+        "toolPendingBg",
+        "toolSuccessBg",
+        "toolTitle",
+        "userMessageBg",
+        "userMessageText",
+        "warning",
+    ];
 }
 
 impl Theme for RabTheme {

@@ -1,4 +1,4 @@
-use crate::agent::ui::theme::ThemeKey;
+use crate::agent::ui::theme::color;
 use crate::builtin;
 use crate::extension::ToolDefinition;
 use crate::extension::{ToolRenderContext, ToolRenderer};
@@ -411,7 +411,7 @@ impl ToolRenderer for WriteRenderer {
             text: "write".to_string(),
             style: Some(
                 Style::new()
-                    .fg(theme.fg_ansi(ThemeKey::ToolTitle.as_str()).to_string())
+                    .fg(theme.fg_ansi(color::ToolTitle).to_string())
                     .bold(),
             ),
         });
@@ -428,7 +428,7 @@ impl ToolRenderer for WriteRenderer {
             let linked = builtin::link_path(&path_text, p, cwd);
             segments.push(StyledSegment {
                 text: linked,
-                style: Some(Style::new().fg(theme.fg_ansi(ThemeKey::Accent.as_str()).to_string())),
+                style: Some(Style::new().fg(theme.fg_ansi(color::Accent).to_string())),
             });
         }
 
@@ -446,9 +446,7 @@ impl ToolRenderer for WriteRenderer {
                 });
                 segments.push(StyledSegment {
                     text: "[invalid content arg - expected string]".to_string(),
-                    style: Some(
-                        Style::new().fg(theme.fg_ansi(ThemeKey::Error.as_str()).to_string()),
-                    ),
+                    style: Some(Style::new().fg(theme.fg_ansi(color::Error).to_string())),
                 });
             }
             Some("") => {}
@@ -512,11 +510,9 @@ impl ToolRenderer for WriteRenderer {
                     style: None,
                 });
 
-                let output_style =
-                    Style::new().fg(theme.fg_ansi(ThemeKey::ToolOutput.as_str()).to_string());
-                let muted_style =
-                    Style::new().fg(theme.fg_ansi(ThemeKey::Muted.as_str()).to_string());
-                let dim_style = Style::new().fg(theme.fg_ansi(ThemeKey::Dim.as_str()).to_string());
+                let output_style = Style::new().fg(theme.fg_ansi(color::ToolOutput).to_string());
+                let muted_style = Style::new().fg(theme.fg_ansi(color::Muted).to_string());
+                let dim_style = Style::new().fg(theme.fg_ansi(color::Dim).to_string());
 
                 for line in display_lines {
                     let line_text = if has_highlighting {
@@ -569,7 +565,7 @@ impl ToolRenderer for WriteRenderer {
         if !_ctx.is_error || content.is_empty() {
             return None;
         }
-        let error_style = Style::new().fg(theme.fg_ansi(ThemeKey::Error.as_str()).to_string());
+        let error_style = Style::new().fg(theme.fg_ansi(color::Error).to_string());
         Some(std::boxed::Box::new(crate::tui::components::Text::new(
             content.to_string(),
             0,

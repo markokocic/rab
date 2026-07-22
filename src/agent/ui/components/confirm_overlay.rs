@@ -87,12 +87,12 @@ impl Component for ConfirmOverlay {
 
         // Yes/No buttons
         let yes_style = if self.selected {
-            theme.bold(&theme.fg_key(crate::agent::ui::theme::ThemeKey::Success, "[Y] Yes"))
+            theme.bold(&theme.fg("success", "[Y] Yes"))
         } else {
             theme.dim("[Y] Yes")
         };
         let no_style = if !self.selected {
-            theme.bold(&theme.fg_key(crate::agent::ui::theme::ThemeKey::Error, "[N] No"))
+            theme.bold(&theme.fg("error", "[N] No"))
         } else {
             theme.dim("[N] No")
         };

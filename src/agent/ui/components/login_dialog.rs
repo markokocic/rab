@@ -12,7 +12,7 @@
 //! - showAuth(url, instructions?)
 //! - showDeviceCode(info)
 
-use crate::agent::ui::theme::ThemeKey;
+use crate::agent::ui::theme::color;
 use crate::agent::ui::theme::current_theme;
 use crate::tui::Component;
 use crate::tui::keybindings::{
@@ -182,10 +182,7 @@ impl Component for LoginDialog {
         // Title
         lines.push(format!(
             "  {}",
-            theme.bold(&theme.fg_key(
-                ThemeKey::Accent,
-                &format!("Login to {}", self.provider_name)
-            ))
+            theme.bold(&theme.fg(color::Accent, &format!("Login to {}", self.provider_name)))
         ));
         lines.push(String::new());
 
@@ -204,7 +201,7 @@ impl Component for LoginDialog {
                 placeholder,
             } => {
                 // Prompt message
-                lines.push(format!("  {}", theme.fg(ThemeKey::Text.as_str(), message)));
+                lines.push(format!("  {}", theme.fg(color::Text, message)));
                 if let Some(placeholder) = placeholder {
                     lines.push(format!(
                         "  {}",
@@ -222,7 +219,7 @@ impl Component for LoginDialog {
                 let cursor = "\u{2588}"; // full block
                 lines.push(format!(
                     "  {}",
-                    theme.fg(ThemeKey::Text.as_str(), &format!("{} {}", masked, cursor))
+                    theme.fg(color::Text, &format!("{} {}", masked, cursor))
                 ));
 
                 if !self.input_buffer.is_empty() {
@@ -240,7 +237,7 @@ impl Component for LoginDialog {
                 // Show submitted value (matching pi's replaceInputWithSubmittedText)
                 lines.push(format!(
                     "  {}",
-                    theme.fg(ThemeKey::Text.as_str(), &format!("> {}", value))
+                    theme.fg(color::Text, &format!("> {}", value))
                 ));
                 if self.submitted {
                     lines.push(String::new());
@@ -250,14 +247,11 @@ impl Component for LoginDialog {
             DialogState::Auth { url, instructions } => {
                 // Show URL as clickable link hint
                 let linked = format!("\x1b]8;;{url}\x07{url}\x1b]8;;\x07", url = url);
-                lines.push(format!(
-                    "  {}",
-                    theme.fg(ThemeKey::Accent.as_str(), &linked)
-                ));
+                lines.push(format!("  {}", theme.fg(color::Accent, &linked)));
                 lines.push(format!("  {}", theme.dim("Ctrl+click to open in browser")));
                 if let Some(instr) = instructions {
                     lines.push(String::new());
-                    lines.push(format!("  {}", theme.fg(ThemeKey::Warning.as_str(), instr)));
+                    lines.push(format!("  {}", theme.fg(color::Warning, instr)));
                 }
                 lines.push(String::new());
                 lines.push(format!("  {}", theme.dim("Esc: cancel")));
@@ -267,30 +261,24 @@ impl Component for LoginDialog {
                 user_code,
             } => {
                 let linked = format!("\x1b]8;;{uri}\x07{uri}\x1b]8;;\x07", uri = verification_uri);
-                lines.push(format!(
-                    "  {}",
-                    theme.fg(ThemeKey::Accent.as_str(), &linked)
-                ));
+                lines.push(format!("  {}", theme.fg(color::Accent, &linked)));
                 lines.push(format!("  {}", theme.dim("Ctrl+click to open in browser")));
                 lines.push(String::new());
                 lines.push(format!(
                     "  {}",
-                    theme.fg(
-                        ThemeKey::Warning.as_str(),
-                        &format!("Enter code: {}", user_code)
-                    )
+                    theme.fg(color::Warning, &format!("Enter code: {}", user_code))
                 ));
                 lines.push(String::new());
                 lines.push(format!("  {}", theme.dim("Esc: cancel")));
             }
             DialogState::Waiting { message } => {
-                lines.push(format!("  {}", theme.fg(ThemeKey::Dim.as_str(), message)));
+                lines.push(format!("  {}", theme.fg(color::Dim, message)));
                 lines.push(String::new());
                 lines.push(format!("  {}", theme.dim("Esc: cancel")));
             }
             DialogState::Progress { messages } => {
                 for msg in messages {
-                    lines.push(format!("  {}", theme.fg(ThemeKey::Dim.as_str(), msg)));
+                    lines.push(format!("  {}", theme.fg(color::Dim, msg)));
                 }
                 lines.push(String::new());
                 lines.push(format!("  {}", theme.dim("Esc: cancel")));
@@ -298,7 +286,7 @@ impl Component for LoginDialog {
             DialogState::ManualInput { prompt } => {
                 // Don't clear existing lines — show prompt below current content.
                 // The prompt is followed by the input field.
-                lines.push(format!("  {}", theme.fg(ThemeKey::Dim.as_str(), prompt)));
+                lines.push(format!("  {}", theme.fg(color::Dim, prompt)));
                 lines.push(String::new());
 
                 // Input line (not masked — shows actual URL/code)
@@ -310,7 +298,7 @@ impl Component for LoginDialog {
                 let cursor = "\u{2588}";
                 lines.push(format!(
                     "  {}",
-                    theme.fg(ThemeKey::Text.as_str(), &format!("{} {}", display, cursor))
+                    theme.fg(color::Text, &format!("{} {}", display, cursor))
                 ));
                 lines.push(String::new());
                 lines.push(format!("  {}", theme.dim("Enter: submit · Esc: cancel")));

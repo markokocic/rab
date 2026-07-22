@@ -83,7 +83,7 @@ pub enum OverlayResult {
 }
 
 use crate::agent::ui::components::oauth_selector::AuthType;
-use crate::agent::ui::theme::ThemeKey;
+use crate::agent::ui::theme::color;
 use crate::tui::components::Spacer;
 use crate::tui::components::Text;
 use crate::tui::terminal::{self, ProcessTerminal, TerminalTrait};
@@ -1584,9 +1584,7 @@ fn compose_ui(app: &mut App, width: usize) {
     // ── Transient status text (pi-style: replaces previous status, not added to chat) ──
     let mut status_lines = Vec::new();
     if let Some(ref status) = app.status_text {
-        let line = app
-            .theme
-            .fg(ThemeKey::Dim.as_str(), &format!(" {}", status));
+        let line = app.theme.fg(color::Dim, &format!(" {}", status));
         status_lines.push(crate::agent::ui::render_utils::pad_to_width(&line, width));
     }
     app.status_section.borrow_mut().set_lines(status_lines);
@@ -1620,7 +1618,7 @@ fn compose_ui(app: &mut App, width: usize) {
             if !preview.is_empty() {
                 let line = app
                     .theme
-                    .fg(ThemeKey::Dim.as_str(), &format!(" Next turn: {}", preview));
+                    .fg(color::Dim, &format!(" Next turn: {}", preview));
                 pending_lines.push(crate::agent::ui::render_utils::pad_to_width(&line, width));
             }
         }
@@ -1634,9 +1632,7 @@ fn compose_ui(app: &mut App, width: usize) {
                 text
             };
             if !preview.is_empty() {
-                let line = app
-                    .theme
-                    .fg(ThemeKey::Dim.as_str(), &format!(" Saved: {}", preview));
+                let line = app.theme.fg(color::Dim, &format!(" Saved: {}", preview));
                 pending_lines.push(crate::agent::ui::render_utils::pad_to_width(&line, width));
             }
         }
@@ -1650,7 +1646,7 @@ fn compose_ui(app: &mut App, width: usize) {
             };
             let line = app
                 .theme
-                .fg(ThemeKey::Dim.as_str(), &format!(" 📝 queued: {}", preview));
+                .fg(color::Dim, &format!(" 📝 queued: {}", preview));
             pending_lines.push(crate::agent::ui::render_utils::pad_to_width(&line, width));
         }
 
@@ -1664,9 +1660,7 @@ fn compose_ui(app: &mut App, width: usize) {
                     text
                 };
                 if !preview.is_empty() {
-                    let line = app
-                        .theme
-                        .fg(ThemeKey::Dim.as_str(), &format!(" Steering: {}", preview));
+                    let line = app.theme.fg(color::Dim, &format!(" Steering: {}", preview));
                     pending_lines.push(crate::agent::ui::render_utils::pad_to_width(&line, width));
                 }
             }
@@ -1680,7 +1674,7 @@ fn compose_ui(app: &mut App, width: usize) {
                 if !preview.is_empty() {
                     let line = app
                         .theme
-                        .fg(ThemeKey::Dim.as_str(), &format!(" Follow-up: {}", preview));
+                        .fg(color::Dim, &format!(" Follow-up: {}", preview));
                     pending_lines.push(crate::agent::ui::render_utils::pad_to_width(&line, width));
                 }
             }
@@ -1689,8 +1683,8 @@ fn compose_ui(app: &mut App, width: usize) {
             let dequeue_keys = crate::tui::keybindings::get_keybindings()
                 .get_keys(crate::tui::keybindings::ACTION_APP_MESSAGE_DEQUEUE);
             if !dequeue_keys.is_empty() {
-                let hint = app.theme.fg_key(
-                    ThemeKey::Dim,
+                let hint = app.theme.fg(
+                    color::Dim,
                     &format!(" ↳ {} to edit all queued messages", dequeue_keys[0]),
                 );
                 pending_lines.push(crate::agent::ui::render_utils::pad_to_width(&hint, width));
@@ -2513,7 +2507,7 @@ fn show_auth_type_selector(app: &mut App, tui: &mut TUI) {
             lines.push(String::new());
             lines.push(format!(
                 "  {}",
-                theme.bold(&theme.fg(ThemeKey::Accent.as_str(), "Select authentication method:"))
+                theme.bold(&theme.fg(color::Accent, "Select authentication method:"))
             ));
             lines.push(String::new());
 
@@ -2521,14 +2515,14 @@ fn show_auth_type_selector(app: &mut App, tui: &mut TUI) {
                 let item = &self.items[item_idx];
                 let is_selected = i == self.selected_index;
                 let prefix = if is_selected {
-                    theme.fg(ThemeKey::Accent.as_str(), "→ ")
+                    theme.fg(color::Accent, "→ ")
                 } else {
                     "  ".to_string()
                 };
                 let text = if is_selected {
-                    theme.fg(ThemeKey::Accent.as_str(), &item.label)
+                    theme.fg(color::Accent, &item.label)
                 } else {
-                    theme.fg(ThemeKey::Text.as_str(), &item.label)
+                    theme.fg(color::Text, &item.label)
                 };
                 lines.push(format!("{}{}", prefix, text));
             }

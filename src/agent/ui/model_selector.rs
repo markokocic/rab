@@ -3,7 +3,7 @@
 //! Full-screen overlay for selecting a model with search.
 //! Supports switching between "all" and "scoped" model views (Tab).
 
-use crate::agent::ui::theme::ThemeKey;
+use crate::agent::ui::theme::color;
 use crate::agent::ui::theme::current_theme;
 use crate::tui::Component;
 use crate::tui::fuzzy::fuzzy_filter;
@@ -203,11 +203,11 @@ impl Component for ModelSelector {
         let has_scoped = !self.scoped_model_ids.is_empty();
         if has_scoped {
             let all_text = match self.scope {
-                ModelScope::All => theme.fg(ThemeKey::Accent.as_str(), "all"),
+                ModelScope::All => theme.fg(color::Accent, "all"),
                 ModelScope::Scoped => theme.dim("all"),
             };
             let scoped_text = match self.scope {
-                ModelScope::Scoped => theme.fg(ThemeKey::Accent.as_str(), "scoped"),
+                ModelScope::Scoped => theme.fg(color::Accent, "scoped"),
                 ModelScope::All => theme.dim("scoped"),
             };
             lines.push(format!(
@@ -220,8 +220,8 @@ impl Component for ModelSelector {
         } else {
             lines.push(format!(
                 " {}",
-                theme.fg_key(
-                    ThemeKey::Warning,
+                theme.fg(
+                    color::Warning,
                     "Only showing models from configured providers. Use /login to add providers."
                 )
             ));
@@ -254,18 +254,18 @@ impl Component for ModelSelector {
                 let is_current = item.full_id == self.current_model;
 
                 let prefix = if is_selected {
-                    theme.fg(ThemeKey::Accent.as_str(), "→ ")
+                    theme.fg(color::Accent, "→ ")
                 } else {
                     "  ".to_string()
                 };
                 let model_text = if is_selected {
-                    theme.fg(ThemeKey::Accent.as_str(), &item.id)
+                    theme.fg(color::Accent, &item.id)
                 } else {
                     item.id.clone()
                 };
                 let provider_badge = theme.dim(&format!(" [{}]", item.provider));
                 let checkmark = if is_current {
-                    theme.fg(ThemeKey::Success.as_str(), " ✓")
+                    theme.fg(color::Success, " ✓")
                 } else {
                     String::new()
                 };

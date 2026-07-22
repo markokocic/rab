@@ -1,4 +1,4 @@
-use crate::agent::ui::theme::ThemeKey;
+use crate::agent::ui::theme::color;
 use crate::extension::Cancel;
 use crate::extension::{ToolDefinition, ToolRenderContext, ToolRenderer};
 use crate::tui::Style;
@@ -438,14 +438,14 @@ impl ToolRenderer for BashRenderer {
             text: format!("$ {}", cmd),
             style: Some(
                 Style::new()
-                    .fg(theme.fg_ansi(ThemeKey::ToolTitle.as_str()).to_string())
+                    .fg(theme.fg_ansi(color::ToolTitle).to_string())
                     .bold(),
             ),
         });
         if let Some(t) = timeout {
             segments.push(StyledSegment {
                 text: format!(" (timeout {}s)", t),
-                style: Some(Style::new().fg(theme.fg_ansi(ThemeKey::Muted.as_str()).to_string())),
+                style: Some(Style::new().fg(theme.fg_ansi(color::Muted).to_string())),
             });
         }
 
@@ -482,9 +482,9 @@ impl ToolRenderer for BashRenderer {
         let mut container = crate::tui::container::Container::new();
 
         // Pre-compute styles
-        let muted_style = Style::new().fg(theme.fg_ansi(ThemeKey::Muted.as_str()).to_string());
-        let dim_style = Style::new().fg(theme.fg_ansi(ThemeKey::Dim.as_str()).to_string());
-        let warning_style = Style::new().fg(theme.fg_ansi(ThemeKey::Warning.as_str()).to_string());
+        let muted_style = Style::new().fg(theme.fg_ansi(color::Muted).to_string());
+        let dim_style = Style::new().fg(theme.fg_ansi(color::Dim).to_string());
+        let warning_style = Style::new().fg(theme.fg_ansi(color::Warning).to_string());
         let output_fg_key = if ctx.is_error { "error" } else { "toolOutput" };
         let output_style = Style::new().fg(theme.fg_ansi(output_fg_key).to_string());
 

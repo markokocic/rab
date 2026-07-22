@@ -1,4 +1,4 @@
-use crate::agent::ui::theme::ThemeKey;
+use crate::agent::ui::theme::color;
 use crate::agent::ui::theme::current_theme;
 use crate::tui::Component;
 use crate::tui::Style;
@@ -14,7 +14,7 @@ pub struct InfoMessageComponent {
 impl InfoMessageComponent {
     pub fn new(message: impl Into<String>) -> Self {
         let theme = current_theme();
-        let dim_style = Style::new().fg(theme.fg_ansi(ThemeKey::Dim.as_str()).to_string());
+        let dim_style = Style::new().fg(theme.fg_ansi(color::Dim).to_string());
         Self {
             text: Text::new(format!(" {}", message.into()), 1, 0, Some(dim_style)),
         }

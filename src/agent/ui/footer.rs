@@ -4,7 +4,7 @@ use std::rc::Rc;
 use crate::agent::footer_data_provider::FooterDataProvider;
 use crate::agent::session::Session;
 use crate::agent::ui::theme::RabTheme;
-use crate::agent::ui::theme::ThemeKey;
+use crate::agent::ui::theme::color;
 use crate::tui::util::{truncate_to_width, visible_width};
 use crate::util::paths;
 
@@ -286,28 +286,20 @@ impl crate::tui::Component for Footer {
 
         // ── Line 1: pwd (git branch) • session-name ──
         let home = std::env::var("HOME").ok();
-        let icon = theme.bold(&theme.fg(ThemeKey::Accent.as_str(), "Ⱀ"));
+        let icon = theme.bold(&theme.fg(color::Accent, "Ⱀ"));
         let dir = format_cwd_for_footer(&self.cwd, home.as_deref());
-        let mut pwd = format!("{} {}", icon, theme.fg(ThemeKey::Dim.as_str(), &dir));
+        let mut pwd = format!("{} {}", icon, theme.fg(color::Dim, &dir));
 
         if let Some(ref branch) = git_branch {
-            pwd = format!(
-                "{} {}",
-                pwd,
-                theme.fg(ThemeKey::Dim.as_str(), &format!("({})", branch))
-            );
+            pwd = format!("{} {}", pwd, theme.fg(color::Dim, &format!("({})", branch)));
         }
         if let Some(ref name) = self.session_name {
-            pwd = format!(
-                "{} {}",
-                pwd,
-                theme.fg(ThemeKey::Dim.as_str(), &format!("• {}", name))
-            );
+            pwd = format!("{} {}", pwd, theme.fg(color::Dim, &format!("• {}", name)));
         }
         let pwd_line = truncate_to_width(
             &pwd,
             w,
-            &theme.fg(ThemeKey::Dim.as_str(), "..."),
+            &theme.fg(color::Dim, "..."),
             false, // pi: no padding
         );
 
@@ -347,9 +339,9 @@ impl crate::tui::Component for Footer {
                     format!("{:.1}%/{}", p, window_str)
                 };
                 if p > 90.0 {
-                    theme.fg(ThemeKey::Error.as_str(), &display)
+                    theme.fg(color::Error, &display)
                 } else if p > 70.0 {
-                    theme.fg(ThemeKey::Warning.as_str(), &display)
+                    theme.fg(color::Warning, &display)
                 } else {
                     display
                 }
@@ -376,8 +368,8 @@ impl crate::tui::Component for Footer {
         if self.experimental_enabled {
             stats_parts.push(format!(
                 "{} {}",
-                theme.fg(ThemeKey::Dim.as_str(), "•"),
-                theme.bold(&theme.fg(ThemeKey::Warning.as_str(), "xp"))
+                theme.fg(color::Dim, "•"),
+                theme.bold(&theme.fg(color::Warning, "xp"))
             ));
         }
 
@@ -444,12 +436,7 @@ impl crate::tui::Component for Footer {
                 } else {
                     // Don't fit on one line — put on separate lines
                     let model_for_line = if right_side_width > w {
-                        truncate_to_width(
-                            &right_side,
-                            w,
-                            &theme.fg(ThemeKey::Dim.as_str(), "..."),
-                            false,
-                        )
+                        truncate_to_width(&right_side, w, &theme.fg(color::Dim, "..."), false)
                     } else {
                         right_side.clone()
                     };
@@ -458,12 +445,7 @@ impl crate::tui::Component for Footer {
             } else {
                 // Don't fit on one line — put on separate lines
                 let model_for_line = if right_side_width > w {
-                    truncate_to_width(
-                        &right_side,
-                        w,
-                        &theme.fg(ThemeKey::Dim.as_str(), "..."),
-                        false,
-                    )
+                    truncate_to_width(&right_side, w, &theme.fg(color::Dim, "..."), false)
                 } else {
                     right_side.clone()
                 };
@@ -471,9 +453,9 @@ impl crate::tui::Component for Footer {
             };
 
         // Pi-style: dim statsLeft and remainder separately
-        let dim_stats_left = theme.fg(ThemeKey::Dim.as_str(), &stats_left);
+        let dim_stats_left = theme.fg(color::Dim, &stats_left);
         let remainder = &stats_line[stats_left.len()..]; // padding + rightSide (if combined)
-        let dim_remainder = theme.fg(ThemeKey::Dim.as_str(), remainder);
+        let dim_remainder = theme.fg(color::Dim, remainder);
 
         let stats_line_formatted = format!("{}{}", dim_stats_left, dim_remainder);
 
@@ -481,7 +463,7 @@ impl crate::tui::Component for Footer {
 
         // ── Extra line: model info on its own line (when stats+model don't fit together) ──
         if let Some(model_line) = extra_model_line {
-            lines.push(theme.fg(ThemeKey::Dim.as_str(), &model_line));
+            lines.push(theme.fg(color::Dim, &model_line));
         }
 
         // ── Last line(s): extension statuses (sorted by key, sanitized) ──
@@ -494,7 +476,7 @@ impl crate::tui::Component for Footer {
             let truncated = truncate_to_width(
                 &status_line,
                 w,
-                &theme.fg(ThemeKey::Dim.as_str(), "..."),
+                &theme.fg(color::Dim, "..."),
                 false, // pi: no padding
             );
             if !truncated.trim().is_empty() {
