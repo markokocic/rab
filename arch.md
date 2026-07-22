@@ -2,7 +2,7 @@
 
 A lightweight, extensible Rust coding agent inspired by [pi-coding-agent](https://pi.dev).
 rab delegates the core agent loop, types, and provider abstraction to the **yoagent** crate
-(MIT, published crate 0.10.0), providing the session layer, TUI, built-in tools, slash commands,
+(MIT, published crate 0.13.1), providing the session layer, TUI, built-in tools, slash commands,
 file search tools (grep/find/ls), file mutation queue, lifecycle management, and a
 **custom provider layer** with a model registry and rich OpenAI-compatible streaming support.
 
@@ -15,47 +15,74 @@ file search tools (grep/find/ls), file mutation queue, lifecycle management, and
 │                          rab (EPL-2.0)                               │
 │                                                                      │
 │  ┌──────────────────────────────────────────────────────────────┐   │
-│  │               main.rs (manual arg parsing)                    │   │
-│  │  arg parsing, env reading, session init,                     │   │
-│  │  mode dispatch (print / interactive), extension gating,      │   │
-│  │  context file loading, skills, auth, provider resolution     │   │
-│  │  subcommand: rab generate-models                             │   │
+│  │               main.rs (thin entry point)                     │   │
+│  │  subcommand: rab generate-models                            │   │
+│  │  delegates to rab::cli::run                                 │   │
 │  └────────────────────┬─────────────────────────────────────────┘   │
 │                       │                                              │
 │  ┌────────────────────▼─────────────────────────────────────────┐   │
+│  │              rab::cli (src/cli/)                              │   │
+│  │                                                              │   │
+│  │  ┌──────────────────────────────────────────────────────┐   │   │
+│  │  │           args.rs                                     │   │   │
+│  │  │  CliArgs struct, parse_args, get_agent_dir,          │   │   │
+│  │  │  load_system_md/load_append_system_md                │   │   │
+│  │  └──────────────────────────────────────────────────────┘   │   │
+│  │  ┌──────────────────────────────────────────────────────┐   │   │
+│  │  │           run.rs                                     │   │   │
+│  │  │  Startup orchestration: validate_flag_conflicts,     │   │   │
+│  │  │  build_session, build_builtin_extension,             │   │   │
+│  │  │  build_extensions, build_tools_and_snippets,         │   │   │
+│  │  │  register_hooks, load_skills, load_prompt_templates, │   │   │
+│  │  │  run_interactive, run_print                          │   │   │
+│  │  └──────────────────────────────────────────────────────┘   │   │
+│  │  ┌──────────────────────────────────────────────────────┐   │   │
+│  │  │           print_mode.rs                              │   │   │
+│  │  │  Agent loop for non-interactive mode (stdin/stdout) │   │   │
+│  │  └──────────────────────────────────────────────────────┘   │   │
+│  │  ┌──────────────────────────────────────────────────────┐   │   │
+│  │  │           session.rs                                 │   │   │
+│  │  │  Session resolution helper (resolve_session_arg)    │   │   │
+│  │  └──────────────────────────────────────────────────────┘   │   │
+│  │                                                              │   │
+│  └──────────────────────────────────────────────────────────────┘   │
+│                       │                                              │
+│  ┌────────────────────▼─────────────────────────────────────────┐   │
 │  │              AgentSession (agent_session.rs)                  │   │
-│  │  Primary entry point; owns Session + config (cwd, dir,       │   │
-│  │  persist, lazy write). Factory methods: create, open, etc.  │   │
-│  │  - Event-driven message persistence (crash-safe)             │   │
+│  │  Primary entry point; owns Session directly (not via         │   │
+│  │  SessionManager). Factory methods: create, open, etc.       │   │
+│  │  - Event-driven message persistence                          │   │
 │  │  - Model/thinking/tool change detection & recording          │   │
 │  │  - Auto/manual compaction (compaction.rs)                    │   │
 │  │  - Branch summarization (branch_summary.rs)                  │   │
 │  │  - Branch navigation (set_branch)                            │   │
 │  │  - Pi-compatible persist_message_end pattern                 │   │
+│  │  - Compaction cancellation (Cancel token)                    │   │
+│  │  - Provider registry for per-message cost config             │   │
 │  └──────────┬───────────────────────────────────────────────────┘   │
 │             │                                                       │
 │  ┌──────────▼───────────────────────────────────────────────────┐   │
-│  │              Session (agent/session/mod.rs + model.rs)        │   │
-│  │  High-level API wrapping SessionStorage. Pi-compatible:      │   │
-│  │  append_*, build_context, move_to, metadata.                │   │
-│  │  SessionError, SessionTreeNode, SessionManager (internal)   │   │
-│  │  ~3183 lines                                                │   │
-│  └──────────┬───────────────────────────────────────────────────┘   │
-│             │                                                       │
-│  ┌──────────▼───────────────────────────────────────────────────┐   │
-│  │              SessionStorage (agent/session/storage.rs)        │   │
-│  │  Low-level CRUD: leaf mgmt, labels, path queries.            │   │
-│  │  Impls: InMemorySessionStorage, JsonlSessionStorage          │   │
-│  │  ~710 lines                                                  │   │
+│  │              Session (agent/session.rs)                       │   │
+│  │  Simplified: wraps yoagent::Session directly                 │   │
+│  │  - Costs stored as ExtensionMessage entries in JSONL stream  │   │
+│  │  - Metadata as ExtensionMessage (model_change, compaction,   │   │
+│  │    thinking_level_change, etc.)                              │   │
+│  │  - No SessionStorage trait, no InMemory/Jsonl distinction    │   │
+│  │  - No SessionManager, no lazy write                          │   │
+│  │  - ~1424 lines                                               │   │
+│  │                                                              │   │
+│  │  Format (yoagent JSONL):                                     │   │
+│  │    Line 1: metadata JSON (id, cwd, createdAt, name, ...)    │   │
+│  │    Lines 2+: yoagent JSONL entries (append-friendly)        │   │
 │  └──────────────────────────────────────────────────────────────┘   │
 │                                                                      │
 │  ┌────▼──┐ ┌────▼──┐ ┌────▼──┐ ┌────▼──┐ ┌────▼──┐ ┌────▼──┐      │
-│  │builtin│ │  tui/  │ │commands│ │extens-│ │settings│ │ auth  │      │
+│  │builtin│ │  tui/ │ │commands│ │extens-│ │settings│ │ auth  │      │
 │  │read   │ │ agent/ │ │.rs     │ │ions/  │ │.rs     │ │.rs    │      │
 │  │write  │ │ ui/    │ │22 slash│ ┌──────────────┐ │~/.rab/ │ │API    │
 │  │edit   │ │screen  │ │commands│ │file_search (3)│ │settings│ │keys,  │
-│  │bash   │ │editor  │ │        │ │mcp/ (6 mods,  │ │AGENTS  │ │OAuth  │
-│  │file_  │ │list    │ │        │ │ ~2160 lines)  │ │.md     │ │       │
+│  │bash   │ │editor  │ │+ /ext. │ │mcp/ (6 mods)  │ │AGENTS  │ │OAuth  │
+│  |file_  | │list    │ │/nextTurn│ │tree_sitter/   │ │.md     │ │       │
 │  │mutation│ └───────┘ │        │ │AGENTS.md       │ │skills  │ │       │
 │  │_queue │            │        │ │skills          │ │        │ │       │
 │  │cancel │            │        │ │prompts/        │ │        │ │       │
@@ -65,17 +92,36 @@ file search tools (grep/find/ls), file mutation queue, lifecycle management, and
 │     │     impl Extension trait + yoagent::types::AgentTool          │
 │     │                                                               │
 │  ┌──▼──────────────────────────────────────────────────────────┐   │
-│  │              agent/extension.rs (Extension trait)             │   │
-│  │  pub trait Extension: Send + Sync {                          │   │
-│  │    fn name(&self) -> Cow<'static, str>;                      │   │
-│  │    fn tools(&self) -> Vec<ToolDefinition>;                   │   │
-│  │    fn commands(&self) -> Vec<SlashCommand>;                  │   │
-│  │    fn skills(&self) -> SkillSet;                             │   │
-│  │  }                                                           │   │
-│  │  ToolDefinition wraps AgentTool with: snippet, guidelines,   │   │
-│  │  prepare_arguments, before_tool_call hook, after_tool_call   │   │
-│  │  hook, before_compact hook, and bundled ToolRenderer.        │   │
-│  │  validate_tool_arguments() + coerce_with_json_schema()       │   │
+│  │              src/extension/ (Extension trait + types)         │   │
+│  │  Split from the old agent/extension.rs into 5 modules:       │   │
+│  │                                                              │   │
+│  │  ┌──────────────────────────────────────────────────────┐   │   │
+│  │  │           traits.rs — pub trait Extension              │   │   │
+│  │  │  ExtensionDefault (Builtin/Enabled/Disabled)          │   │   │
+│  │  │  is_extension_enabled()                               │   │   │
+│  │  │  ToolRenderer trait (pi-compatible render_call/       │   │   │
+│  │  │    render_result/render_self)                         │   │   │
+│  │  │  Lifecycle: on_reload, on_session_shutdown,           │   │   │
+│  │  │    on_session_start                                   │   │   │
+│  │  └──────────────────────────────────────────────────────┘   │   │
+│  │  ┌──────────────────────────────────────────────────────┐   │   │
+│  │  │           types.rs — ToolDefinition, SlashCommand,    │   │   │
+│  │  │  CommandResult, HookRegistration, BeforeHook/AfterHook│   │   │
+│  │  │  AfterToolCallResult, BeforeToolCallResult, Cancel    │   │   │
+│  │  │  ToolRenderContext, AutocompleteItem                  │   │   │
+│  │  │  ToolDefinition::execute() with coercion + validation │   │   │
+│  │  └──────────────────────────────────────────────────────┘   │   │
+│  │  ┌──────────────────────────────────────────────────────┐   │   │
+│  │  │           hooks.rs — Global extension hook registry   │   │   │
+│  │  │  register_tool_hooks(), clear_tool_hooks(),           │   │   │
+│  │  │  run_before_hooks(), run_after_hooks()                │   │   │
+│  │  │  Global RwLock<HashMap<tool_name, ToolHookSet>>       │   │   │
+│  │  └──────────────────────────────────────────────────────┘   │   │
+│  │  ┌──────────────────────────────────────────────────────┐   │   │
+│  │  │           coerce.rs — coerce_with_json_schema(),      │   │   │
+│  │  │  validate_tool_arguments(), ValidationError           │   │   │
+│  │  └──────────────────────────────────────────────────────┘   │   │
+│  │                                                              │   │
 │  │  Builtin + user extensions share this trait                  │   │
 │  └──────────────────────────────────────────────────────────────┘   │
 │                       │                                              │
@@ -86,7 +132,12 @@ file search tools (grep/find/ls), file mutation queue, lifecycle management, and
 │  │  │           ProviderRegistry (mod.rs)                   │   │   │
 │  │  │  Loads built-in + user models.json → ProviderEntry[]  │   │   │
 │  │  │  resolve(model_id, preferred_provider) → ResolvedModel│   │   │
-│  │  │  list_models(), provider_for_model(), count_providers │   │   │
+│  │  │  list_models(), list_providers(), count_providers     │   │   │
+│  │  │  list_authenticated_model_ids()                       │   │   │
+│  │  │  provider_has_auth(), auth_status_for_provider()      │   │   │
+│  │  │  list_model_provider_tuples()                         │   │   │
+│  │  │  ResolvedModel carries: ModelConfig, api_key,         │   │   │
+│  │  │    rab_compat (RabOpenAiCompat), thinking_map         │   │   │
 │  │  └──────────────────────────────────────────────────────┘   │   │
 │  │  ┌──────────────────────────────────────────────────────┐   │   │
 │  │  │           models.rs (models.json parsing)             │   │   │
@@ -106,25 +157,23 @@ file search tools (grep/find/ls), file mutation queue, lifecycle management, and
 │  │  └──────────────────────────────────────────────────────┘   │   │
 │  │  ┌──────────────────────────────────────────────────────┐   │   │
 │  │  │           compat.rs (RabOpenAiCompat)                │   │   │
-│  │  │  Rich compat flags stored as JSON in model headers:  │   │   │
+│  │  │  Rich compat flags parsed from model config:         │   │   │
 │  │  │  supports_store, supports_developer_role,            │   │   │
 │  │  │  supports_reasoning_effort, supports_thinking_control│   │   │
 │  │  │  supports_usage_in_streaming, max_tokens_field,      │   │   │
 │  │  │  requires_tool_result_name,                          │   │   │
 │  │  │  requires_assistant_after_tool_result,               │   │   │
-│  │  │  requires_thinking_as_text,                          │   │   │
 │  │  │  requires_reasoning_content_on_assistant_messages,   │   │   │
-│  │  │  thinking_format (OpenAi/OpenRouter/DeepSeek/...,    │   │   │
-│  │  │  supports_strict_mode, supports_long_cache_retention │   │   │
+│  │  │  thinking_format (OpenAi/OpenRouter/DeepSeek/...)    │   │   │
+│  │  │  Removed: requires_thinking_as_text,                 │   │   │
+│  │  │    supports_strict_mode, supports_long_cache_retention│   │   │
 │  │  └──────────────────────────────────────────────────────┘   │   │
 │  │  ┌──────────────────────────────────────────────────────┐   │   │
 │  │  │           RabAnthropicProvider (anthropic.rs)         │   │   │
-│  │  │  Custom Anthropic Messages API provider that uses    │   │   │
-│  │  │  model_config.base_url and model_config.headers —     │   │   │
-│  │  │  unlike yoagent's hardcoded AnthropicProvider.       │   │   │
-│  │  │  Enables GitHub Copilot (and other proxies) to serve │   │   │
-│  │  │  Anthropic-format models through their own endpoints. │   │   │
-│  │  │  OAuth token refresh on each turn.                   │   │   │
+│  │  │  Thin wrapper around yoagent's AnthropicProvider.    │   │   │
+│  │  │  Fixes the hardcoded "anthropic" provider name in    │   │   │
+│  │  │  assistant messages to the per-model provider from   │   │   │
+│  │  │  ModelConfig (for correct cost tracking/display).    │   │   │
 │  │  └──────────────────────────────────────────────────────┘   │   │
 │  │  ┌──────────────────────────────────────────────────────┐   │   │
 │  │  │           OAuth device flow (oauth/)                  │   │   │
@@ -144,32 +193,48 @@ file search tools (grep/find/ls), file mutation queue, lifecycle management, and
 │  │  │  Preserves user edits to non-target providers       │   │   │
 │  │  │  Writes src/provider/models.json                    │   │   │
 │  │  └──────────────────────────────────────────────────────┘   │   │
+│  │  ┌──────────────────────────────────────────────────────┐   │   │
+│  │  │           auth.rs (src/provider/auth.rs)             │   │   │
+│  │  │  Moved from src/auth.rs to provider module.          │   │   │
+│  │  │  Pi-compatible credential store, AuthStorageBackend  │   │   │
+│  │  │  pattern (File/InMemory), file locking, OAuth refresh│   │   │
+│  │  └──────────────────────────────────────────────────────┘   │   │
 │  │                                                              │   │
 │  └──────────────────────────────────────────────────────────────┘   │
 │                       │                                              │
 │  ┌────────────────────▼─────────────────────────────────────────┐   │
-│  │                   yoagent 0.10.0 (MIT)                        │   │
+│  │                   yoagent 0.13.1 (MIT)                        │   │
 │  │                                                              │   │
 │  │  ┌──────────────────────────────────────────────────────┐   │   │
 │  │  │           yoagent::types                             │   │   │
 │  │  │  AgentMessage, Message (User/Assistant/ToolResult),   │   │   │
-│  │  │  Content, AgentTool, AgentEvent, Usage, etc.          │   │   │
+│  │  │  Content, AgentTool, AgentEvent, Usage, StreamDelta   │   │   │
+│  │  │  ExtensionMessage, ToolResult                        │   │   │
 │  │  └──────────────────────────────────────────────────────┘   │   │
 │  │  ┌──────────────────────────────────────────────────────┐   │   │
 │  │  │           yoagent::provider                          │   │   │
 │  │  │  Provider trait + StreamProvider trait               │   │   │
-│  │  │  OpenAiCompatProvider (fallback), AnthropicProvider,  │   │   │
+│  │  │  OpenAiCompatProvider, AnthropicProvider,             │   │   │
 │  │  │  OpenAiResponsesProvider, GoogleProvider             │   │   │
-│  │  │  ModelConfig, CostConfig, ApiProtocol, ThinkingFormat│   │   │
+│  │  │  ModelConfig, CostConfig, ApiProtocol                │   │   │
 │  │  └──────────────────────────────────────────────────────┘   │   │
 │  │  ┌──────────────────────────────────────────────────────┐   │   │
 │  │  │           yoagent::agent                             │   │   │
 │  │  │  Agent struct, run_agent_loop(),                     │   │   │
 │  │  │  text/tool streaming, event emission                 │   │   │
+│  │  │  follow_up(), steer()                                │   │   │
+│  │  └──────────────────────────────────────────────────────┘   │   │
+│  │  ┌──────────────────────────────────────────────────────┐   │   │
+│  │  │           yoagent::session                           │   │   │
+│  │  │  Session struct, SessionEntry, session tree model    │   │   │
 │  │  └──────────────────────────────────────────────────────┘   │   │
 │  │  ┌──────────────────────────────────────────────────────┐   │   │
 │  │  │           yoagent::skills                            │   │   │
-│  │  │  Skill type, frontmatter parsing                     │   │   │
+│  │  │  Skill type, frontmatter parsing, SkillSet           │   │   │
+│  │  └──────────────────────────────────────────────────────┘   │   │
+│  │  ┌──────────────────────────────────────────────────────┐   │   │
+│  │  │           yoagent::mcp                              │   │   │
+│  │  │  MCP types: McpToolInfo, McpContent                 │   │   │
 │  │  └──────────────────────────────────────────────────────┘   │   │
 │  │                                                              │   │
 │  └──────────────────────────────────────────────────────────────┘   │
@@ -179,20 +244,26 @@ file search tools (grep/find/ls), file mutation queue, lifecycle management, and
 │  │  OpenCode Go (opencode.ai/zen/go/v1) — default               │   │
 │  │  OpenCode (opencode.ai/zen/v1)                               │   │
 │  │  Anthropic — auto-detected by model API config               │   │
-│  │  OpenAI — auto-detected by model API config (via npm)        │   │
+│  │  OpenAI — auto-detected by model API config                  │   │
 │  │  Google / Ollama — auto-detected by model API config         │   │
 │  │  GitHub Copilot (api.individual.githubcopilot.com)           │   │
 │  │  DeepSeek (api.deepseek.com)                                 │   │
 │  └──────────────────────────────────────────────────────────────┘   │
 │                                                                      │
 │  ┌──────────────────────────────────────────────────────────────┐   │
-│  │  TUI (src/tui/ + src/agent/ui/) — 101 source modules,        │   │
-│  │  ~56.9K lines, ~713 tests                                    │   │
+│  │  TUI (src/tui/ + src/agent/ui/) — 59 source modules,         │   │
+│  │  ~28.5K lines, ~688 tests                                    │   │
 │  │  Direct Rust port on crossterm 0.29                          │   │
 │  │  Image (Kitty protocol), TerminalColors (OSC 11 detection),  │   │
 │  │  TreeSelector, ConfirmOverlay, LoginDialog, OAuthSelector,   │   │
 │  │  ScopedModelsSelector, ForkSelector, SettingsList,           │   │
-│  │  SettingsSelector                                             │   │
+│  │  SettingsSelector                                            │   │
+│  └──────────────────────────────────────────────────────────────┘   │
+│                                                                      │
+│  ┌──────────────────────────────────────────────────────────────┐   │
+│  │  Utility (src/util/) — paths.rs, tls.rs, mod.rs              │   │
+│  │  Centralized path handling (canonicalize, resolve, display)  │   │
+│  │  TLS platform verification patched for Android/Termux        │   │
 │  └──────────────────────────────────────────────────────────────┘   │
 └──────────────────────────────────────────────────────────────────────┘
 ```
@@ -200,23 +271,20 @@ file search tools (grep/find/ls), file mutation queue, lifecycle management, and
 ## Key architectural decisions
 
 - **yoagent is the core dependency**, not genai. rab delegates the agent loop,
-  provider abstraction, and message types to yoagent 0.10.0 (published crate).
-  rab provides the session layer, TUI, built-in tools,
+  provider abstraction, message types, and session tree model to yoagent 0.13.1
+  (published crate). rab provides the session layer, TUI, built-in tools,
   file search tools, slash commands, lifecycle management, and a custom provider
   layer on top.
 
 - **Custom provider layer over yoagent** — rab has its own `ProviderRegistry` that
-  loads a built-in model catalog (`src/provider/models.json`) merged with user
-  overrides (`~/.rab/agent/models.json`). On top of yoagent's providers, rab also
-  provides:
+  loads a built-in model catalog (`src/provider/models.json`, ~17910 lines)
+  merged with user overrides (`~/.rab/agent/models.json`). On top of yoagent's
+  providers, rab also provides:
   - `RabOpenAiCompatProvider` — custom streaming provider that handles DeepSeek
     thinking format, `reasoning_content`, configurable `max_tokens_field`, and all
-    pi `OpenAICompletionsCompat` flags stored in model config headers.
-  - `RabAnthropicProvider` — custom Anthropic Messages API provider that respects
-    `model_config.base_url` and `model_config.headers`, unlike yoagent's hardcoded
-    `AnthropicProvider`. Enables GitHub Copilot (and other proxies) to serve
-    Anthropic-format models through their own endpoints. Performs OAuth token
-    refresh on each turn and reclassifies HTTP 421 as retryable.
+    pi `OpenAICompletionsCompat` flags stored in model config.
+  - `RabAnthropicProvider` — thin wrapper correcting the provider name in assistant
+    messages (yoagent hardcodes "anthropic", this uses the per-model provider name).
 
 - **`rab generate-models` subcommand** — fetches `https://models.dev/api.json`,
   applies pi-style corrections (DeepSeek, Qwen, Grok, Kimi, Anthropic Messages API
@@ -225,10 +293,16 @@ file search tools (grep/find/ls), file mutation queue, lifecycle management, and
   Preserves user edits to non-target providers (currently targets: github-copilot,
   opencode, opencode-go, deepseek).
 
+- **Simplified session layer** — rab wraps `yoagent::Session` directly instead of
+  the old three-layer architecture (Session → SessionManager → SessionStorage).
+  Metadata entries (model changes, compaction, thinking level changes) and costs
+  are stored as `ExtensionMessage` entries in the JSONL stream. No traits, no
+  separate storage implementations, no lazy write mechanism — persistence is
+  straightforward file I/O through yoagent.
+
 - **Multi-protocol agent selection** — `main.rs` resolves the model via
   `ProviderRegistry`, then selects the appropriate yoagent provider based on
-  `ApiProtocol` using `Agent::from_provider()` for custom providers and
-  `Agent::from_config()` for built-in ones:
+  `ApiProtocol`:
   - `OpenAiCompletions` → `Agent::from_provider(RabOpenAiCompatProvider, mc)`
   - `AnthropicMessages` → `Agent::from_provider(RabAnthropicProvider, mc)`
   - `OpenAiResponses` → `Agent::from_config(mc)`
@@ -237,13 +311,19 @@ file search tools (grep/find/ls), file mutation queue, lifecycle management, and
 
 - **One extension mechanism** — built-in tools and user extensions use the same
   `Extension` trait. No separate tool registration path. All tools, commands,
-  renderers, and skills go through `Extension`.
+  renderers, and skills go through `Extension`. Extensions have a `default_state()`
+  (Builtin/Enabled/Disabled) and can be toggled via `/extensions` at runtime.
 
 - **ToolDefinition wraps every tool** — each `AgentTool` is wrapped in a
   `ToolDefinition` that carries prompt snippet metadata, guidelines, argument
   preparation hooks (`prepare_arguments`), `before_tool_call` and
-  `after_tool_call` hooks (pi-compatible), `before_compact` hook, and automatic
-  JSON Schema argument coercion + validation.
+  `after_tool_call` hooks (pi-compatible), and automatic JSON Schema argument
+  coercion + validation.
+
+- **Global hook system** — `src/extension/hooks.rs` provides a global registry
+  for before/after tool hooks. Extensions register hooks at startup via
+  `Extension::tool_hooks()`, and they are invoked by `run_before_hooks()` /
+  `run_after_hooks()` during tool execution.
 
 - **Pluggable operations** — every built-in tool (read, write, edit, bash,
   grep, find, ls) delegates filesystem/shell operations through a trait
@@ -259,74 +339,140 @@ file search tools (grep/find/ls), file mutation queue, lifecycle management, and
   struct handles streaming, tool execution, and event emission. rab subscribes
   to events via `AgentEvent` for persistence and UI updates. A fresh `Agent`
   is created per turn (new agent loop per user message), using yoagent's
-  native `follow_up()` for mid-turn message queuing and `steer()` for
+  native `follow_up()` for mid-turn message queuing, `steer()` for
   turn-level message injection.
 
-- **Types from yoagent** — `AgentMessage`, `Message`, `Content`, `AgentTool`
-  are all re-exported from `yoagent::types`. rab's `types.rs` is a thin shim
-  with helper functions only (no rab-specific enums).
+- **Types from yoagent** — `AgentMessage`, `Message`, `Content`, `AgentTool`,
+  `AgentEvent`, `StreamDelta`, `ExtensionMessage`, `ToolResult` are all
+  re-exported from `yoagent::types`. rab's `types.rs` is a thin shim with
+  helper functions only (no rab-specific enums).
 
 - **File mutation queue** — concurrent file writes/edits to the same file are
   serialized via `with_file_mutation_queue()` so the model can issue multiple
   sequential edits to the same file without races.
 
+- **Steering / follow-up** — rab implements pi's `steering_mode` and
+  `follow_up_mode` settings (configurable per-session), and the `/nextTurn`
+  slash command for queueing messages during a turn.
+
+---
+
 ## Pi component mapping
 
 | pi component | rab equivalent | Status |
 |---|---|---|
-| `pi-tui` (terminal UI, components, editor) | `src/tui/` + `src/agent/ui/` | ✅ Complete — 101 source modules, ~56.9K lines, ~713 tests. Direct Rust port on crossterm 0.29. Includes Image (Kitty), TerminalColors (OSC 11), TreeSelector, ConfirmOverlay, LoginDialog, OAuthSelector, ScopedModelsSelector, ForkSelector, SettingsList, SettingsSelector. |
-| `pi-agent-core` (agent loop, session, compaction, skills) | Delegated to **yoagent** (agent loop, types, provider, skills) + rab's `AgentSession` (session lifecycle, compaction, branching) | ✅ Agent loop in yoagent (`yoagent::agent::Agent`). ✅ Session in `session/model.rs` (~3183 lines). ✅ SessionStorage in `session/storage.rs` (~710 lines). ✅ Compaction in `compaction.rs` (~1130 lines). ✅ Branch summarization in `branch_summary.rs` (~455 lines). ✅ Skills loaded via `yoagent::skills::SkillSet`. |
-| `coding-agent` (CLI, extensions, tools, settings, commands) | `main.rs`, `builtin/`, `extensions/`, `settings.rs`, `auth.rs`, `commands.rs`, `prompt_templates.rs`, `export.rs` | ✅ Tools (read/write/edit/bash/grep/find/ls), settings, auth, CLI done. ✅ 22+ slash commands including `/export`, `/import`, `/share`, `/fork`, `/clone`, `/settings`, `/hotkeys`, `/session`, `/tree`, `/compact`, `/resume`. ✅ Prompt templates as `/name` commands. ✅ Extension trait with tools, commands, renderers, skills, hooks. |
+| `pi-tui` (terminal UI, components, editor) | `src/tui/` + `src/agent/ui/` | ✅ Complete — 59 modules, ~28.5K lines, ~688 tests. Direct Rust port on crossterm 0.29. Includes Image (Kitty), TerminalColors (OSC 11), TreeSelector, ConfirmOverlay, LoginDialog, OAuthSelector, ScopedModelsSelector, ForkSelector, SettingsList, SettingsSelector. |
+| `pi-agent-core` (agent loop, session, compaction, skills) | Delegated to **yoagent** (agent loop, types, provider, session tree, skills) + rab's `AgentSession` (session lifecycle, compaction, branching) | ✅ Agent loop in yoagent (`yoagent::agent::Agent`). ✅ Simplified Session in `agent/session.rs` (~1424 lines), wraps `yoagent::Session`. ✅ Compaction in `compaction.rs` (~946 lines). ✅ Branch summarization (~455 lines). ✅ Skills loaded via `yoagent::skills::SkillSet`. |
+| `coding-agent` (CLI, extensions, tools, settings, commands) | `main.rs`, `cli/`, `builtin/`, `extensions/`, `settings.rs`, `provider/auth.rs`, `src/extension/` | ✅ CLI args in `cli/args.rs`, startup in `cli/run.rs`, print mode in `cli/print_mode.rs`. ✅ Tools (read/write/edit/bash/grep/find/ls), settings, auth, CLI done. ✅ 22 slash commands including `/export`, `/import`, `/settings`, `/extensions`, `/nextTurn`, `/stop`. ✅ Prompt templates as `/name` commands. ✅ Extension trait with tools, commands, renderers, skills, hooks. |
 | `GrepTool`, `FindTool`, `LsTool` (pi agent tools) | `src/extensions/file_search.rs` | ✅ grep (ripgrep/grep fallback), find (fd/find fallback), ls — all with pluggable operations. |
-| provider registry + model catalog | `src/provider/` | ✅ `ProviderRegistry` loading built-in + user models.json. ✅ `RabOpenAiCompatProvider` for rich OpenAI-compatible streaming. ✅ `RabAnthropicProvider` for custom Anthropic API. ✅ OAuth support (device code flow, GitHub Copilot). ✅ `rab generate-models` subcommand (targets github-copilot, opencode, opencode-go, deepseek). |
-| MCP adapter (pi-mcp-adapter) | `src/extensions/mcp/` (6 modules, ~2160 lines) | ✅ Proxy `mcp` tool, direct tool adapters, SSE-aware HTTP transport, config loading (global+project merge), server lifecycle (lazy connect, idle timeout), persistent metadata cache, tool renderers. |
+| provider registry + model catalog | `src/provider/` | ✅ `ProviderRegistry` loading built-in + user models.json. ✅ `RabOpenAiCompatProvider` for rich OpenAI-compatible streaming. ✅ `RabAnthropicProvider` (thin wrapper). ✅ OAuth support (device code flow, GitHub Copilot). ✅ `rab generate-models` subcommand. |
+| MCP adapter (pi-mcp-adapter) | `src/extensions/mcp/` (6 modules) | ✅ Proxy `mcp` tool, direct tool adapters, config loading (global+project merge), server lifecycle (lazy connect, idle timeout), persistent metadata cache, tool renderers. |
 | provider | `yoagent::provider::*` + `rab::provider::RabOpenAiCompatProvider` + `rab::provider::RabAnthropicProvider` | ✅ Multi-protocol: RabOpenAiCompatProvider (OpenAiCompletions), RabAnthropicProvider (AnthropicMessages), OpenAiResponsesProvider, GoogleProvider. Auto-detection by model config's `ApiProtocol`. |
-| `beforeToolCall` / `afterToolCall` | `ToolDefinition.before_tool_call` / `.after_tool_call` | ✅ Per-tool hooks for blocking/preprocessing/postprocessing |
-| `validateToolArguments` | `extension::validate_tool_arguments()` | ✅ Full JSON Schema validation with pi-compatible error paths |
-| Argument coercion | `extension::coerce_with_json_schema()` | ✅ Type coercion matching pi's `Value.Convert` + `coerceWithJsonSchema` |
-| Theme system | `src/agent/ui/theme.rs` | ✅ JSON theme system with resolution, fallback, detection (715 lines) |
+| `beforeToolCall` / `afterToolCall` | `ToolDefinition.before_tool_call` / `.after_tool_call` + global hook system | ✅ Per-tool hooks + global `Extension::tool_hooks()` registration for blocking/preprocessing/postprocessing |
+| `validateToolArguments` | `extension::coerce::validate_tool_arguments()` | ✅ Full JSON Schema validation with pi-compatible error paths |
+| Argument coercion | `extension::coerce::coerce_with_json_schema()` | ✅ Type coercion matching pi's `Value.Convert` + `coerceWithJsonSchema` |
+| Theme system | `src/agent/ui/theme.rs` | ✅ JSON theme system with resolution, fallback, detection (~794 lines) |
 | Resource loading (AGENTS.md/CLAUDE.md) | `src/agent/context_files.rs` | ✅ AGENTS.md/CLAUDE.md discovery, `<project_context>` wrapping |
 | Skills | `yoagent::skills::SkillSet` + `SystemPromptBuilder.skills()` | ✅ Skill loading, frontmatter, prompt formatting, /skill:name expansion |
 | Image support (Kitty protocol) | `src/tui/components/image.rs` + markdown.rs hyperlinks | ✅ Image display via Kitty protocol with dedicated Image component. Input (clipboard paste) TBD. |
 | Config files | `~/.rab/` | ✅ Same schema as pi. Auth at `~/.rab/agent/auth.json`. |
-| Footer data (git branch, extensions) | `src/agent/footer_data_provider.rs` | ✅ Git branch resolution (worktree/reftable support), extension statuses, provider count. Ⱀ icon styled with `ThemeKey::Accent`. |
+| Footer data (git branch, extensions) | `src/agent/footer_data_provider.rs` | ✅ Git branch resolution (worktree/reftable support), extension statuses, provider count. |
 | File mutation queue | `src/builtin/file_mutation_queue.rs` | ✅ Per-file serialization using tokio::sync::Notify, same pattern as pi |
-| MCP extension | `src/extensions/mcp/` (6 mods, ~2160 lines) | ✅ Proxy `mcp` tool, direct tools, config loading, server lifecycle, cache, renderers |
-| Export/Import | `src/builtin/export.rs` | ✅ `/export` (HTML/JSONL), `/import`, `/share` with embedded template assets |
+| MCP extension | `src/extensions/mcp/` (6 mods) | ✅ Proxy `mcp` tool, direct tools, config loading, server lifecycle, cache, renderers |
+| Export/Import | `src/builtin/export.rs` | ✅ `/export` (HTML/JSONL), `/import` with embedded template assets |
 | Prompt templates | `src/agent/prompt_templates.rs` | ✅ `/name` commands from `.md` files, frontmatter, placeholder expansion |
-| Path utilities | `src/paths.rs` | ✅ Canonicalization, resolution, display (cross-platform) |
+| Path utilities | `src/util/paths.rs` | ✅ Canonicalization, resolution, display (cross-platform) |
 | OAuth | `src/provider/oauth/` | ✅ Device code flow (RFC 8628), GitHub Copilot provider, credential storage. Token refresh on each turn. |
 | Interactive fork /settings menu | `fork_selector.rs`, `settings_list.rs`, `settings_selector.rs` | ✅ `/fork` with interactive message selector overlay. `/settings` with SettingsSelector overlay listing all configurable fields. |
-| Settings deep merge | `settings.rs` — `DeepMerge` trait, nested config structs | ✅ Full pi-compatible settings with nested blocks: `compaction`, `terminal`, `images`, `retry`, `markdown`, `warnings`, `branchSummary`, `thinkingBudgets`, `packages`. Deep merge with field-level tracking for partial writes. |
-| Auth backend pattern | `auth.rs` — `AuthStorageBackend` enum (File/InMemory) | ✅ Lock-based read-modify-write semantics, pi-compatible `AuthStorageBackend` pattern. |
+| Settings deep merge | `settings.rs` — `DeepMerge` trait, nested config structs | ✅ Full pi-compatible settings with nested blocks. `ExtensionsConfig` for extension enable/disable. |
+| Auth backend pattern | `src/provider/auth.rs` — `AuthStorageBackend` enum (File/InMemory) | ✅ Lock-based read-modify-write semantics, pi-compatible `AuthStorageBackend` pattern. |
+| Extension enable/disable | `/extensions` command + `ExtensionsConfig` | ✅ Per-extension toggle, persists to settings.json. `ExtensionDefault::Builtin/Enabled/Disabled`. |
+| Steering / follow-up | `steering_mode`, `follow_up_mode` settings, `/nextTurn` command | ✅ Pi-compatible turn-steering with one-at-a-time, all, manual modes. |
+| Tree-sitter | `src/extensions/tree_sitter/` | ✅ Skeleton implementation for AST-aware tools. |
 | WASM plugin system | Not started | ⬜ Phase 2 |
 
 ---
 
-## Core type system (`src/agent/types.rs`)
+## CLI (`src/cli/`) — extracted from main.rs
 
-A thin shim over `yoagent::types`. Provides helper functions and rab-specific enums.
+The CLI module was factored out of `main.rs` for testability:
 
-### yoagent types (re-exported)
+### args.rs — `CliArgs` struct + `parse_args()`
 
-```rust
-// From yoagent::types:
-pub use yoagent::types::{AgentMessage, Content, Message};
-// AgentMessage is an enum:
-//   AgentMessage::Llm(Message) — user, assistant, tool_result
-//   AgentMessage::Extension(...) — extension-specific data
-// Message::User { content, timestamp, ... }
-// Message::Assistant { content, model, provider, usage, error_message, ... }
-// Message::ToolResult { tool_call_id, tool_name, content, is_error, ... }
-// Content::Text { text }
-// Content::ToolCall { id, name, arguments }
-// Content::Thinking { text, signature }
+```
+rab [MESSAGE]...
+
+Subcommands:
+  rab generate-models         Fetch and update built-in model catalog
+
+Session:
+  -c, --continue             Continue most recent session in cwd
+  -r, --resume               Open interactive session picker
+  --session PATH             Open specific session file (path or partial ID)
+  --session-id ID            Create/open session with explicit ID
+  --fork PATH                Fork a session from another session file
+  --export PATH              Export session and exit
+  --no-session               Ephemeral, don't save
+  -n, --name <name>          Set session name
+
+Model:
+  --model MODEL              Model name (default: from settings.json)
+
+Context:
+  -nc, --no-context-files    Skip AGENTS.md/CLAUDE.md loading
+  --system-prompt <text>     Replace default system prompt
+  --append-system-prompt <text>  Append to system prompt
+
+Other:
+  --session-dir <path>       Session storage directory override
 ```
 
-### Helper functions
+### run.rs — Startup orchestration
+
+`validate_flag_conflicts()` prevents contradictory flags (e.g. `--fork` + `--continue`).
+
+`build_session()` creates/opens/forks/continues a session based on CLI flags.
+
+`build_builtin_extension()` constructs a single `BuiltinExtension` with all built-in
+tools and slash commands.
+
+`build_extensions()` loads file search, MCP, tree-sitter extensions.
+
+`build_tools_and_snippets()` collects tools, snippets, and guidelines from enabled extensions.
+
+`register_hooks()` calls `register_tool_hooks()` for each enabled extension.
+
+`load_skills()` loads skills from skill dirs + extensions.
+
+`load_prompt_templates()` loads prompt templates from prompt dirs.
+
+Extension gating: `is_extension_enabled()` checks `settings.extensions_config.states`
+(managed by `/extensions` command). Core builtins are always enabled.
+
+### print_mode.rs — Non-interactive agent loop
+
+Streams response to stdout. Thinking blocks shown dimmed on stderr.
+Tool calls and results shown prefixed with colored indicators. 120s timeout.
+
+### session.rs — Session resolution
+
+`resolve_session_arg()` resolves session paths and partial UUID prefixes.
+
+---
+
+## Core type system (`src/agent/types.rs` + `src/extension/types.rs`)
+
+### yoagent types (re-exported from `agent/types.rs`)
 
 ```rust
-pub fn content_text(content: &[Content]) -> String;       // text parts joined
+pub use yoagent::types::{AgentMessage, Content, Message, AgentEvent, StreamDelta,
+                          ExtensionMessage, ToolResult};
+```
+
+### Helper functions (`agent/types.rs`)
+
+```rust
+pub fn content_text(content: &[Content]) -> String;
 pub fn content_tool_calls(content: &[Content]) -> Vec<(id, name, args)>;
 pub fn message_text(msg: &AgentMessage) -> String;
 pub fn message_is_user(msg: &AgentMessage) -> bool;
@@ -337,75 +483,98 @@ pub fn message_tool_call_id(msg: &AgentMessage) -> Option<&str>;
 pub fn message_usage(msg: &AgentMessage) -> Option<Usage>;
 pub fn message_error(msg: &AgentMessage) -> Option<&str>;
 pub fn message_tool_call_count(msg: &AgentMessage) -> usize;
-pub fn message_dedup_key(msg: &AgentMessage) -> String;  // distinguishes messages with same text but different tool calls
-pub fn message_is_system_stop(msg: &AgentMessage) -> bool;  // checks for "[Agent stopped:" prefix
+pub fn message_dedup_key(msg: &AgentMessage) -> String;
+pub fn message_is_system_stop(msg: &AgentMessage) -> bool;
 pub fn message_is_extension(msg: &AgentMessage) -> bool;
 pub fn message_extension_kind(msg: &AgentMessage) -> Option<&str>;
 pub fn message_extension_text(msg: &AgentMessage) -> Option<String>;
 pub fn user_message(text: &str) -> AgentMessage;
 pub fn assistant_message(text: &str) -> AgentMessage;
 pub fn tool_result_message(tool_call_id: &str, tool_name: &str, text: String, is_error: bool) -> AgentMessage;
-pub fn extension_message(kind: &str, text: &str, display: bool) -> AgentMessage;  // pi-compatible custom_message
+pub fn extension_message(kind: &str, text: &str, display: bool) -> AgentMessage;
 pub fn extension_message_with_details(kind: &str, text: &str, display: bool, details: Value) -> AgentMessage;
+pub fn base_model_config(config: &ModelConfig) -> BaseModelConfig;
+```
+
+### Extension types (`extension/types.rs`)
+
+```rust
+pub struct ToolDefinition {
+    pub tool: Box<dyn AgentTool>,
+    pub snippet: &'static str,
+    pub guidelines: &'static [&'static str],
+    pub prepare_arguments: Option<fn(Value) -> Result<Value, String>>,
+    pub before_tool_call: Option<fn(&Value) -> Option<BeforeToolCallResult>>,
+    pub after_tool_call: Option<fn(&ToolResult, bool) -> Option<AfterToolCallResult>>,
+    pub renderer: Option<Arc<dyn ToolRenderer>>,
+}
+
+pub struct SlashCommand {
+    pub name: String,
+    pub description: String,
+    pub handler: Box<dyn CommandHandler>,
+}
+
+pub enum CommandResult {
+    Info(String), Quit, ModelChanged(String), ShowHelp, Reloaded,
+    NewSession, SessionSwitched, SessionInfo, OpenSessionSelector,
+    SessionNamed, OpenSettings, ScopedModels, ExportSession,
+    ImportSession, CopyLastMessage, ShowChangelog, ForkSession,
+    CloneSession, SessionTree, TrustDecision, Login, Logout,
+    CompactSession, Stop, NextTurn, ExtensionsToggle,
+    ...
+}
+
+pub struct BeforeToolCallResult { pub block: bool, pub reason: String }
+pub struct AfterToolCallResult { ... }
+pub struct HookRegistration { pub tool_name: &'static str, pub before: Option<BeforeHook>, pub after: Option<AfterHook> }
+pub struct ToolRenderContext { ... }
+pub struct AutocompleteItem { pub value: String, pub label: String, ... }
+pub struct Cancel { ... }  // shared cancellation flag
 ```
 
 ---
 
-## Agent lifecycle (`src/agent/agent_session.rs`)
+## Agent lifecycle (`src/agent/agent_session.rs`) — ~839 lines
 
 The `AgentSession` struct is the primary entry point for session management.
 It owns a `Session` directly (not `SessionManager`) plus app-level config.
-Factory methods (`create`, `open`, `in_memory`, etc.) replace the
-`SessionManager::create()` pattern.
 
 ```rust
 pub struct AgentSession {
-    session: crate::agent::session::Session,
-    session_dir: PathBuf,
-    cwd: PathBuf,
-    persist: bool,
-    flushed: bool,                           // lazy-write state
+    inner: Session,
+    session_dir: Option<PathBuf>,
     last_model: Option<(String, String)>,
     last_thinking_level: String,
     last_active_tools: Option<Vec<String>>,
-    persisted_message_ids: HashSet<String>,
-    persisted_tool_call_ids: HashSet<String>,
     compaction_settings: CompactionSettings,
     context_window: u64,
     model_name: String,
     compaction_api_key: Option<String>,
-    model_config: Option<yoagent::provider::model::ModelConfig>,
-    thinking_level: yoagent::types::ThinkingLevel,
-    extensions: Vec<Box<dyn Extension>>,
+    model_config: Option<ModelConfig>,
+    rab_compat: Option<RabOpenAiCompat>,
+    thinking_level: ThinkingLevel,
     event_listeners: Vec<CompactionEventCallback>,
     overflow_recovery_attempted: bool,
+    compaction_cancel: Cancel,
+    registry: Option<Arc<ProviderRegistry>>,
 }
 ```
 
 ### Responsibilities
 
-1. **Factory methods** — `AgentSession::create()`, `.open()`, `.in_memory()`,
-   `.continue_recent()`, `.fork_from()` — create sessions directly.
-
-2. **Lazy write** — `ensure_flushed()` migrates from in-memory to file-backed
-   storage on the first assistant message (pi-compatible deferred persistence).
-
-3. **Event-driven persistence** — `handle_yo_event()` persists tool results
-   immediately (crash-safe). `on_agent_end()` persists remaining messages.
-
-4. **Model/thinking/tool change tracking** — `on_model_change()`,
+1. **Factory methods** — `AgentSession::new()`, `.create()`, `.open()`,
+   `.in_memory()`, `.continue_recent()`, `.fork_from()`.
+2. **Event-driven persistence** — `on_agent_event()` persists messages and
+   metadata entries from `AgentEvent` stream.
+3. **Model/thinking/tool change tracking** — `on_model_change()`,
    `on_thinking_level_change()`, `on_active_tools_change()` append metadata
    entries only when values differ from last known (diff-based).
-
-5. **Auto-compaction** — `check_auto_compact()` runs after the agent finishes
-   a turn. Calls `compact()` to generate a summary.
-
-6. **Manual compaction** — `run_manual_compact()` for `/compact`.
-
-7. **Branch summarization** — `summarize_branch_navigation()` summarises
-   abandoned branches. `set_branch()` moves the leaf pointer.
-
-8. **New session** — `new_session()` creates a fresh in-memory session.
+4. **Auto-compaction** — `check_auto_compact()` runs after agent finishes a turn.
+5. **Manual compaction** — `run_manual_compact()` for `/compact`.
+6. **Branch summarization** — `summarize_branch_navigation()` summarises abandoned
+   branches. `set_branch()` moves the leaf pointer.
+7. **Overflow recovery** — `reset_overflow_recovery()` / `overflow_recovery_attempted`.
 
 ### Typical usage in print mode
 
@@ -413,195 +582,134 @@ pub struct AgentSession {
 let mut agent_session = AgentSession::create(&cwd, session_dir.as_deref());
 agent_session.set_compaction_config(api_key, &model, context_window, Some(model_config));
 
-// Submit user message
 let msg = user_message("list .rs files");
 agent_session.send_user_message_obj(&msg);
 
-// Spawn yoagent agent loop
-let agent = yoagent::agent::Agent::new(RabOpenAiCompatProvider)  // or AnthropicProvider, etc.
-    .with_model(&model)
+let agent = yoagent::agent::Agent::from_provider(RabOpenAiCompatProvider, mc)
     .with_api_key(&api_key)
-    .with_model_config(model_config)
     .with_system_prompt(&system_prompt)
-    .with_tools(agent_tools);
+    .with_thinking(thinking_level)
+    .with_messages(messages)
+    .with_tools(tools)
+    .without_context_management();
 
 agent.prompt_with_sender(msg_text, tx).await;
 
-// Process events — AgentSession persists tool results immediately
 while let Some(event) = rx.recv().await {
     agent_session.on_agent_event(&event);
-    // Update UI ...
 }
 
-// AgentEnd persists remaining messages
 agent_session.check_auto_compact().await;
 ```
 
 ---
 
-## Session layer (`src/agent/session/`) — `mod.rs` + `model.rs`, ~3183 lines
+## Session layer (`src/agent/session.rs`) — ~1424 lines
 
-Pi-compatible three-layer architecture:
-
-```
-AgentSession → Session → SessionStorage
-                (high-level)  (low-level CRUD)
-```
+Simplified compared to the old architecture. Wraps `yoagent::Session` directly.
 
 ### Session (high-level wrapper)
 
-Wraps `Box<dyn SessionStorage>` and provides pi-compatible entry construction,
-context building, and branch navigation. All `append_*` methods generate typed
-`SessionEntry` values with auto-generated IDs, parent chains, and timestamps.
-
 ```rust
 pub struct Session {
-    storage: Box<dyn SessionStorage>,
+    inner: YoagentSession,
+    meta: SessionMeta,
+    file_path: Option<PathBuf>,
 }
 ```
 
-Key methods: `append_message()`, `append_model_change()`,
-`append_thinking_level_change()`, `append_compaction()`,
-`append_branch_summary()`, `append_label_change()`, `append_custom_entry()`,
-`append_custom_message_entry()`, `build_context()`, `move_to()`,
-`get_branch()`, `get_entries()`, `get_entry()`, `get_leaf_id()`,
-`get_label()`, `get_session_name()`, `find_entries()`, `session_id()`,
-`session_file()`, `session_name()`, `metadata()`, `set_leaf_id()`.
-
-### SessionManager (internal helper)
-
-`SessionManager` still exists as an internal helper behind the scenes.
-It provides factory methods (`create`, `open`, `in_memory`, etc.) and
-lazy-write tracking that `AgentSession` uses during construction.
-Not in the public API path — `main.rs` and `App` use `AgentSession` directly.
+Key methods: `append_message()`, `append_message_with_cost()`, `entry_cost()`,
+`append_model_change()`, `append_thinking_level_change()`,
+`append_active_tools_change()`, `append_compaction()`, `append_branch_summary()`,
+`append_session_info()`, `append_label_change()`, `append_custom_message_entry()`,
+`build_context()`, `get_leaf_id()`, `set_leaf_id()`, `get_entries()`,
+`get_entry()`, `get_branch()`, `get_children()`, `find_entries()`,
+`get_label()`, `session_id()`, `session_file()`, `session_name()`,
+`metadata()`, `flush()`, `ensure_flushed()`, `is_persisted()`, `fork_from()`.
 
 ### Format
 
-JSONL file, one object per line. Same format as pi's sessions.
+```
+Line 1: metadata JSON (id, cwd, createdAt, optional name, parentSession)
+Lines 2+: yoagent JSONL entries via yoagent::Session::append()
 
-```jsonl
-{"type":"session","version":3,"id":"01J...","cwd":"/home/user/project",...}
-{"type":"message","id":"m1","parentId":null,"role":"user","content":"list .rs files","timestamp":"..."}
-{"type":"model_change","id":"mc1","parentId":"m1","provider":"opencode_go","model_id":"deepseek-v4-pro","timestamp":"..."}
-{"type":"message","id":"m2","parentId":"mc1","role":"assistant","content":"Found 3 files...","timestamp":"..."}
-{"type":"message","id":"m3","parentId":"m2","role":"toolResult","toolCallId":"tool_01","content":"src/main.rs\n",...}
-{"type":"compaction","id":"c1","parentId":"...","summary":"...","firstKeptEntryId":"...","tokensBefore":45000,...}
-{"type":"branch_summary","id":"bs1","parentId":"...","fromId":"m10","summary":"Explored refactoring...",...}
+Costs stored as AgentMessage::Extension with kind = "session/cost"
+Metadata entries stored as AgentMessage::Extension with well-known kinds:
+  "session/model_change"
+  "session/thinking_level_change"
+  "session/active_tools_change"
+  "session/compaction"
+  "session/branch_summary"
+  "session/label"
+  "session/custom_message"
 ```
 
-### Entry types
+### Factory methods
 
 ```rust
-pub enum SessionEntry {
-    Message(MessageEntry),                          // conversation messages
-    ThinkingLevelChange(ThinkingLevelChangeEntry),  // metadata
-    ModelChange(ModelChangeEntry),                  // metadata
-    ActiveToolsChange(ActiveToolsChangeEntry),      // metadata
-    Compaction(CompactionEntry),                    // compaction summary
-    BranchSummary(BranchSummaryEntry),              // branch navigation summary
-    SessionInfo(SessionInfoEntry),                  // session name
-    Label(LabelEntry),                              // tree node labels
-    Custom(CustomEntry),                            // extension data
-    CustomMessage(CustomMessageEntry),              // extension messages
-    Leaf(LeafEntry),                                // tree leaf pointer
-}
+pub fn new(cwd: &Path) -> Self;                    // in-memory
+pub fn create(cwd: &Path, dir: &Path) -> Self;    // creates new persisted session
+pub fn open(path: &Path, cwd_override) -> Self;   // opens existing session file
+pub fn in_memory(cwd: &Path) -> Self;              // pure in-memory
+pub fn continue_recent(cwd: &Path, dir: &Path) -> Self;  // latest or new
+pub fn fork_from(source: &Self, ...) -> Self;      // forks session tree
 ```
-
-### Versioning
-
-Current session version: **3**. Rab only produces v3 sessions (no migration
-path for v1/v2 — rab never created them). Each entry has a unique `id` and
-optional `parentId`, forming a tree. Branching writes a persistent `LeafEntry`
-(pi-compatible durability — leaf position survives crashes).
 
 ---
 
-## Session storage (`src/agent/session/storage.rs`) — ~710 lines
+## Session repo (`src/agent/session.rs` — functions, not trait)
 
-Pi-compatible `SessionStorage` trait with full CRUD operations.
-Both implementations fully own their state (entries, by_id, labels, leaf_id).
-
-### SessionStorage trait
+Session listing/deletion/forking is handled by free functions in `session.rs`:
 
 ```rust
-pub trait SessionStorage: Send {
-    fn metadata(&self) -> SessionMetadata;
-    fn get_leaf_id(&self) -> Option<String>;
-    fn set_leaf_id(&mut self, leaf_id: Option<&str>) -> Result<(), String>;
-    fn create_entry_id(&self) -> String;
-    fn append_entry(&mut self, entry: SessionEntry) -> Result<(), String>;
-    fn get_entry(&self, id: &str) -> Option<SessionEntry>;
-    fn find_entries(&self, type_name: &str) -> Vec<SessionEntry>;
-    fn get_label(&self, id: &str) -> Option<String>;
-    fn get_path_to_root(&self, leaf_id: Option<&str>) -> Result<Vec<SessionEntry>, String>;
-    fn get_entries(&self) -> Vec<SessionEntry>;
-    fn path(&self) -> Option<&Path>;
+pub fn get_default_session_dir(cwd: &Path) -> PathBuf;
+pub fn encode_cwd_for_dir(cwd: &Path) -> String;
+pub fn list_sessions(session_dir: &Path, filter_cwd: Option<&Path>, ...) -> Vec<SessionInfo>;
+pub fn load_session_info(path: &Path) -> Option<SessionInfo>;
+pub fn delete_session(path: &Path) -> io::Result<()>;
+pub fn fork_session(source_path: &Path, target_dir: &Path, entry_id, position) -> io::Result<String>;
+```
+
+No trait, no `DefaultSessionRepo` — just free functions for simplicity.
+
+### SessionInfo
+
+```rust
+pub struct SessionInfo {
+    pub id: String,
+    pub path: PathBuf,
+    pub cwd: String,
+    pub name: Option<String>,
+    pub created_at: String,
+    pub message_count: usize,
+    pub total_tokens: u64,
+    pub total_cost: f64,
 }
 ```
 
-### Implementations
-
-- **`JsonlSessionStorage`** — file-backed. Loads all entries into memory on
-  open, persists on every `append_entry()` / `set_leaf_id()`. Leaf entries
-  are written as `type: "leaf"` JSONL lines (pi-compatible).
-- **`InMemorySessionStorage`** — fully in-memory. Used for `--no-session` mode
-  and as initial storage before the first lazy flush.
-
-### Leaf persistence
-
-Branch navigation (`move_to` / `set_branch`) writes a persistent `LeafEntry`
-with `type: "leaf"` and `targetId`, matching pi's durability model. The leaf
-position survives crashes and is restored when the session file is reopened.
-
 ---
 
-## Session repo (`src/agent/session/repo.rs`)
-
-Higher-level session lifecycle management:
-
-```rust
-pub trait SessionRepo {
-    fn list(&self, session_dir: &Path, filter_cwd: Option<&Path>,
-            progress: Option<&dyn Fn(usize, usize)>) -> Vec<SessionInfo>;
-    fn list_all(&self, progress: Option<&dyn Fn(usize, usize)>) -> Vec<SessionInfo>;
-    fn delete(&self, path: &Path) -> io::Result<()>;
-    fn fork(&self, source_path: &Path, target_dir: &Path,
-            entry_id: Option<&str>, position: Option<&str>) -> io::Result<String>;
-    fn load_info(&self, path: &Path) -> Option<SessionInfo>;
-}
-```
-
-`DefaultSessionRepo` provides progress-aware, concurrent listing with
-cwd filtering for the session picker UI.
-
----
-
-## Compaction (`src/agent/compaction.rs`) — ~1130 lines ✅ IMPLEMENTED
+## Compaction (`src/agent/compaction.rs`) — ~946 lines ✅ IMPLEMENTED
 
 When the conversation approaches the model's context window, older messages
-are summarized to free space. Ported from pi's compaction algorithm.
+are summarized to free space. Pi-style compaction using yoagent token estimation.
 
 ### Algorithm
 
-1. **Prepare** (`prepare_compaction()`) — Find the previous compaction
-   boundary, scan entries, detect the cut point based on `keep_recent_tokens`.
-   Handles split-turn detection (user message vs. mid-turn cut).
-
-2. **Check threshold** (`should_compact()`) — If total tokens exceed
+1. **Check threshold** (`should_compact()`) — If total tokens exceed
    `context_window - reserve_tokens`, compaction triggers.
-
-3. **Summarize** (`compact()`) — Send older messages to the provider with a
+2. **Summarize** (`compact()`) — Send older messages to the provider with a
    structured summarization prompt. Supports incremental updates (previous
-   summary in `<previous-summary>` tags). Handles turn-prefix summarization
-   for split turns.
+   summary in `<previous-summary>` tags).
+3. **Replace** — Append a `CompactionEntry` to the session with summary,
+   `first_kept_entry_id`, token count, and file operation details.
 
-4. **Replace** — Append a `CompactionEntry` to the session. The entry
-   contains the summary, `first_kept_entry_id`, token count, and file
-   operation details (readFiles/modifiedFiles).
+### Compaction cancellation
+
+Uses `Cancel` token for abort (pi-compatible). When compaction is cancelled
+mid-way, the session state remains consistent.
 
 ### Settings
-
-Compaction settings are now nested under `settings.json → compaction`:
 
 ```json
 {
@@ -615,49 +723,13 @@ Compaction settings are now nested under `settings.json → compaction`:
 
 Defaults: enabled, 16K reserve, 20K keep recent.
 
-### Manual trigger
-
-Via `/compact` slash command → `AgentSession::run_manual_compact()` →
-`compact()` → append `CompactionEntry`.
-
-### Shared summarization helper
-
-`summarize_text()` (shared with `branch_summary.rs`) calls the provider
-with a non-streaming text completion (no tools, low temperature) to
-generate summaries.
-
 ---
 
 ## Branch summarization (`src/agent/branch_summary.rs`) — ~455 lines ✅ IMPLEMENTED
 
 When the user navigates to a different branch in the session tree, the
-abandoned branch is summarized so context is preserved.
-
-### Algorithm
-
-1. **Collect entries** (`collect_entries_for_branch_summary()`) — Walk from
-   `old_leaf_id` back to the common ancestor with `target_id`. Produces
-   chronological list of abandoned entries.
-
-2. **Prepare messages** (`prepare_branch_entries()`) — Filter entries,
-   respecting token budget. Tool results are skipped (context in assistant's
-   tool calls). Compaction/branch summary entries are prioritized.
-
-3. **Generate summary** (`generate_branch_summary()`) — Call the provider
-   with a structured prompt (Goal / Progress / Key Decisions / Next Steps).
-   Append a `BranchSummaryEntry` with file operation details (readFiles,
-   modifiedFiles extracted from tool calls).
-
-Branch summary settings are nested under `settings.json → branchSummary`:
-
-```json
-{
-  "branchSummary": {
-    "reserveTokens": 4000,
-    "skipPrompt": false
-  }
-}
-```
+abandoned branch is summarized so context is preserved. Same algorithm as
+before (collect entries → prepare messages → call provider → append entry).
 
 ---
 
@@ -665,249 +737,78 @@ Branch summary settings are nested under `settings.json → branchSummary`:
 
 ### ProviderRegistry (`mod.rs`)
 
-The provider registry loads a built-in model catalog from `src/provider/models.json`
-and overlays user overrides from `~/.rab/agent/models.json`. It resolves model IDs
-to `ResolvedModel` structs containing the `ModelConfig` (base URL, API protocol,
-compat flags, pricing, context window) and the API key.
+The provider registry loads a built-in model catalog and overlays user overrides.
+Each `ResolvedModel` carries `ModelConfig` + `api_key` + `RabOpenAiCompat` +
+`thinking_map` (model-specific thinking level filtering).
 
 ```rust
-pub struct ProviderRegistry {
-    entries: Vec<models::ProviderEntry>,
-    auth_storage: crate::auth::AuthStorage,
-}
-
-impl ProviderRegistry {
-    pub fn load(agent_dir: &Path) -> anyhow::Result<Self>;
-    pub fn reload(&mut self, agent_dir: &Path) -> anyhow::Result<()>;
-    pub fn resolve(&self, model_id: &str, preferred_provider: Option<&str>)
-        -> anyhow::Result<ResolvedModel>;
-    pub fn list_models(&self) -> Vec<String>;
-    pub fn provider_for_model(&self, model_id: &str, preferred_provider: Option<&str>)
-        -> Option<String>;
-    pub fn api_key_for_provider(&self, provider_id: &str) -> Option<String>;
-    pub fn count_providers(&self) -> usize;
-    pub fn list_authenticated_model_ids(&self) -> Vec<String>;  // only models from providers with valid auth
-    pub fn list_model_provider_tuples(&self) -> Vec<(String, String, String)>;  // (provider, model_id, model_name)
-    pub fn list_providers(&self) -> Vec<(String, String)>;  // (provider_id, provider_name)
-    pub fn configured_providers(&self) -> Vec<String>;  // providers with stored credentials
-    pub fn provider_has_auth(&self, provider_id: &str) -> bool;
-    pub fn auth_status_for_provider(&self, provider_id: &str) -> ProviderAuthStatus;
+pub struct ResolvedModel {
+    pub model_config: ModelConfig,
+    pub api_key: String,
+    pub rab_compat: RabOpenAiCompat,
+    pub thinking_map: Option<HashMap<String, serde_json::Value>>,
 }
 ```
 
-### Model resolution
+### RabOpenAiCompat (`compat.rs`) — simplified
 
-Resolution order:
-1. If `preferred_provider` is set, that provider is checked first
-2. Otherwise returns the first provider that has the given model ID
-3. API key resolved from: `auth.json` → environment variable → empty string
+Removed unused compat fields that were in the previous version:
+- `requires_thinking_as_text` — removed
+- `supports_strict_mode` — removed
+- `supports_long_cache_retention` — removed
 
-### models.rs — models.json parsing
+Compat data is carried alongside `ModelConfig` (not smuggled through `_rab_` headers).
 
-Parses the built-in and user `models.json` files. Each provider entry contains:
+### RabAnthropicProvider (`anthropic.rs`) — simplified
 
-```json
-{
-  "providers": {
-    "opencode-go": {
-      "name": "OpenCode Zen Go",
-      "baseUrl": "https://opencode.ai/zen/go",
-      "api": "openai-completions",
-      "env": { "apiKey": "OPENCODE_API_KEY" },
-      "models": [
-        {
-          "id": "deepseek-v4-flash",
-          "name": "DeepSeek V4 Flash",
-          "api": "openai-completions",
-          "reasoning": true,
-          "input": ["text"],
-          "cost": { "input": 0.15, "output": 0.6, "cacheRead": 0.0, "cacheWrite": 0.0 },
-          "contextWindow": 128000,
-          "maxTokens": 16384,
-          "compat": {
-            "supportsStore": false,
-            "supportsDeveloperRole": false,
-            "maxTokensField": "max_tokens",
-            "requiresReasoningContentOnAssistantMessages": true,
-            "thinkingFormat": "deepseek"
-          }
-        }
-      ]
-    }
-  }
-}
-```
-
-Supported `api` types: `openai-completions`, `anthropic-messages`,
-`openai-responses`, `google-generative-ai`, `google-vertex`,
-`bedrock-converse-stream`, `azure-openai-responses`.
-
-User-provided providers with the same `id` replace built-in entries entirely (merge semantics).
-
-### RabOpenAiCompatProvider (`openai_compat.rs`)
-
-Custom streaming provider implementing `yoagent::provider::traits::StreamProvider`.
-Replaces yoagent's `OpenAiCompatProvider` with richer compat handling:
-
-- **Thinking format**: supports `reasoning_content` in delta chunks for DeepSeek,
-  OpenRouter, Together, ZAI, Qwen, and other providers
-- **Thinking control**: DeepSeek uses `thinking: { type: "enabled" | "disabled" }`
-  instead of `reasoning_effort`
-- **`requires_reasoning_content_on_assistant_messages`**: for providers like DeepSeek
-  that need `reasoning_content` on replayed assistant messages
-- **Configurable `max_tokens_field`**: `max_tokens` vs `max_completion_tokens`
-- **`requires_assistant_after_tool_result`**: inserts empty assistant message after
-  tool results for providers that require it
-- **`requires_tool_result_name`**: includes `name` field in tool result messages
-- **Full SSE streaming**: parses OpenAI-compatible SSE chunks, handles
-  `reasoning_content` delta, tool call deltas, usage info
-
-Request body construction accounts for all compat flags:
-- `developer` vs `system` role
-- `thinking: { type }` vs `reasoning_effort`
-- `max_tokens` vs `max_completion_tokens`
-- Tool definition format with `strict` mode (default: true)
-
-### RabOpenAiCompat (`compat.rs`)
-
-Rich compatibility flags matching pi's `OpenAICompletionsCompat` schema,
-stored as JSON in `ModelConfig::headers["_rab_compat"]`:
-
-```rust
-pub struct RabOpenAiCompat {
-    pub supports_store: bool,
-    pub supports_developer_role: bool,
-    pub supports_reasoning_effort: bool,
-    pub supports_thinking_control: bool,
-    pub supports_usage_in_streaming: bool,
-    pub max_tokens_field: RabMaxTokensField,         // MaxTokens | MaxCompletionTokens
-    pub requires_tool_result_name: bool,
-    pub requires_assistant_after_tool_result: bool,
-    pub requires_thinking_as_text: bool,
-    pub requires_reasoning_content_on_assistant_messages: bool,
-    pub thinking_format: RabThinkingFormat,          // OpenAi | OpenRouter | DeepSeek | Together | Zai | Qwen | ChatTemplate | QwenChatTemplate | StringThinking | AntLing
-    pub supports_strict_mode: bool,
-    pub supports_long_cache_retention: bool,
-}
-```
-
-### RabAnthropicProvider (`anthropic.rs`)
-
-Custom Anthropic Messages API provider that uses `model_config.base_url`
-and forwards `model_config.headers` — unlike yoagent's `AnthropicProvider`
-which hardcodes `https://api.anthropic.com` and ignores headers.
-This allows GitHub Copilot (and other proxies) to serve Anthropic-format
-models through their own endpoints. OAuth tokens are refreshed on each
-agent turn. HTTP 421 responses are reclassified as retryable.
-
-### OAuth (`oauth/`)
-
-Generic OAuth provider trait and registry matching pi's `OAuthProviderInterface`.
-
-| Module | Description |
-|--------|-------------|
-| `oauth/mod.rs` | `OAuthProvider` trait, `OAuthCredentials`, `DeviceCodeInfo`, registry with `register()`, `get()`, `list_ids()`, `is_built_in()`, `register_builtins()` |
-| `oauth/device_code.rs` | RFC 8628 device code flow poller with timeout, slow-down handling, cancellation |
-| `oauth/github_copilot.rs` | GitHub Copilot OAuth: device code login, model fetch, auto-enable, dynamic endpoint derivation |
-
-### generate_models.rs — `rab generate-models` subcommand
-
-Fetches `https://models.dev/api.json`, processes target providers
-(currently: `github-copilot`, `opencode`, `opencode-go`, `deepseek`),
-applies pi-style corrections, and writes `src/provider/models.json`.
-
-Preserves existing file contents (non-target providers not overwritten).
-
-Corrections applied:
-
-| Model | Correction |
-|-------|-----------|
-| `deepseek-v4*` | `requiresReasoningContentOnAssistantMessages: true`, `thinkingFormat: deepseek`, `supportsReasoningEffort: false`, `thinkingLevelMap` with `high`/`max` mapping |
-| `deepseek-reasoner` | Same as deepseek-v4* + `supportsThinkingControl: true` |
-| `kimi-k2.6` | `thinkingFormat: deepseek`, `supportsReasoningEffort: false`, `supportsLongCacheRetention: false` |
-| `kimi-k2.5` | `supportsLongCacheRetention: false` |
-| `minimax-m2.7` | `supportsLongCacheRetention: false` |
-| `grok-build-0.1` | `supportsReasoningEffort: false`, `thinkingLevelMap` limiting levels |
-| `qwen3*` (opencode-go) | `thinkingFormat: qwen` |
-| Anthropic Messages (GitHub Copilot) | `forceAdaptiveThinking` for extended-thinking models, `supportsTemperature: false` for opus-4.7/4.8, `thinkingLevelMap` overrides per model |
-| GitHub Copilot `gpt-5.x` | `minimal: "low"` in thinkingLevelMap |
+Now a thin wrapper around `yoagent::provider::AnthropicProvider`. Its only job is
+correcting the hardcoded `"anthropic"` provider name in assistant messages to the
+per-model provider name from `ModelConfig` (for correct cost tracking and display).
 
 ---
 
-## Extension trait (`src/agent/extension.rs`) — ~1191 lines
+## Extension system (`src/extension/`)
 
-All capability — built-in or user-provided — comes through the same trait.
-Supports pi-compatible `beforeToolCall` / `afterToolCall` hooks, `before_compact` hook,
-argument type coercion via JSON Schema, and full schema validation.
+The old `src/agent/extension.rs` (~1191 lines) was split into 5 modules:
+
+### Extension trait (`traits.rs`)
 
 ```rust
-#[async_trait]
-pub trait Extension: Send + Sync {
+pub enum ExtensionDefault { Builtin, Enabled, Disabled }
+
+pub trait Extension: Send + Sync + Any {
     fn name(&self) -> Cow<'static, str>;
+    fn as_any(&self) -> &dyn Any;
+    fn default_state(&self) -> ExtensionDefault { Enabled }
     fn tools(&self) -> Vec<ToolDefinition> { vec![] }
     fn commands(&self) -> Vec<SlashCommand> { vec![] }
-    fn skills(&self) -> yoagent::skills::SkillSet { yoagent::skills::SkillSet::empty() }
+    fn skills(&self) -> SkillSet { SkillSet::empty() }
+    fn tool_hooks(&self) -> Vec<HookRegistration> { vec![] }
+    fn on_reload(&self) {}
+    fn on_session_shutdown(&self, _reason: &str) {}
+    fn on_session_start(&self, _reason: &str) {}
 }
 ```
 
-### Supporting types
+### ToolRenderer trait (`traits.rs`)
 
 ```rust
-pub struct ToolDefinition {
-    pub tool: Box<dyn yoagent::types::AgentTool>,
-    pub snippet: &'static str,
-    pub guidelines: &'static [&'static str],
-    pub prepare_arguments: Option<fn(serde_json::Value) -> Result<serde_json::Value, String>>,
-    pub before_tool_call: Option<fn(&serde_json::Value) -> Option<BeforeToolCallResult>>,
-    pub after_tool_call: Option<fn(&yoagent::types::ToolResult, bool) -> Option<AfterToolCallResult>>,
-    pub renderer: Option<Arc<dyn ToolRenderer>>,  // TUI renderer for this tool
-}
-
-pub struct BeforeToolCallResult { pub block: bool, pub reason: String }
-pub struct AfterToolCallResult { pub content: Option<Vec<Content>>, pub details: Option<Value>, pub is_error: Option<bool> }
-pub struct BeforeCompactResult { pub cancel: bool, pub summary: Option<String>, pub details: Option<Value> }
-
-pub struct AutocompleteItem { pub value: String, pub label: String, pub description: Option<String> }
-
-pub trait CommandHandler: Send + Sync {
-    fn execute(&self, args: &str) -> anyhow::Result<CommandResult>;
-    fn argument_completions(&self, prefix: &str) -> Vec<AutocompleteItem>;
-}
-
-pub enum CommandResult { Info(String), Quit, ModelChanged(String), ShowHelp, Reloaded,
-    NewSession, SessionSwitched, SessionInfo, OpenSessionSelector, SessionNamed,
-    OpenSettings, ScopedModels, ExportSession, ImportSession, ShareSession,
-    CopyLastMessage, ShowChangelog, ForkSession, CloneSession, SessionTree,
-    TrustDecision, Login, Logout, CompactSession, ... }
-
-pub struct SlashCommand { pub name: String, pub description: String, pub handler: Box<dyn CommandHandler> }
-
 pub trait ToolRenderer: Send + Sync {
-    fn render_call(&self, args: &Value, width: usize, theme: &dyn Theme, ctx: &ToolRenderContext) -> Vec<String>;
-    fn render_result(&self, content: &str, width: usize, theme: &dyn Theme, ctx: &ToolRenderContext) -> Vec<String>;
-    fn render_self(&self) -> bool;
-    fn render_bg_key(&self) -> Option<&'static str>;
-}
-
-pub struct ToolRenderContext {
-    pub expanded: bool,
-    pub args_complete: bool,
-    pub is_partial: bool,
-    pub is_error: bool,
-    pub cwd: String,
-    pub duration_secs: Option<f64>,
-    pub exit_code: Option<i32>,
-    pub cancelled: bool,
-    pub was_truncated: bool,
-    pub full_output_path: Option<String>,
-    pub file_path: Option<String>,
-    pub expand_key: String,
-    pub details: Option<serde_json::Value>,
-    pub invalidate: Option<UnboundedSender<()>>,
+    fn render_call(&self, args: &Value, theme: &dyn Theme, ctx: &ToolRenderContext) -> Box<dyn Component>;
+    fn render_result(&self, content: &str, theme: &dyn Theme, ctx: &ToolRenderContext) -> Option<Box<dyn Component>>;
+    fn render_self(&self) -> bool { false }
 }
 ```
 
-### Argument coercion and validation
+### Extension enable/disable
+
+- `/extensions` command lists all extensions with their enabled/disabled status.
+- User toggles with Enter. Changes persist to `settings.json → extensionsConfig`.
+- `is_extension_enabled()` checks `settings.extensions_config.states`, falling
+  back to the extension's `default_state()`.
+- Builtin extensions (`ExtensionDefault::Builtin`) are always enabled.
+
+### Argument coercion and validation (`coerce.rs`)
 
 Every tool call goes through `ToolDefinition::execute()`:
 
@@ -918,180 +819,90 @@ Every tool call goes through `ToolDefinition::execute()`:
 5. **Execute** — call inner `AgentTool::execute()`
 6. **`after_tool_call`** — optional hook that can modify the result
 
-At startup, extensions are collected from builtins + file_search + mcp:
-
-```rust
-let extensions: Vec<Box<dyn Extension>> = vec![
-    Box::new(CommandsExtension::new(available_models.clone(), provider_models.clone())),
-    Box::new(ReadExtension::new(cwd)),
-    Box::new(WriteExtension::new(cwd)),
-    Box::new(EditExtension::new(cwd)),
-    Box::new(BashExtension::new(cwd)),
-    Box::new(FileSearchExtension::new(cwd)),  // grep, find, ls
-    Box::new(McpExtension::from_cwd(&cwd)),   // MCP tools
-];
-```
-
-Extension gating is done via `is_extension_active()` which checks
-`settings.tools` (whitelist) and `settings.exclude_tools` (blacklist).
-Core extensions (commands, read, write, edit, bash, mcp) are always active
-when no whitelist is set. Grep/find/ls are opt-in and bundled as a single
-`FileSearchExtension`, activated if any of `"grep"`, `"find"`, or `"ls"`
-is whitelisted in `settings.tools`.
-
 ---
 
-## Built-in extensions (`builtin/`)
+## Builtin extension (`src/builtin/extension.rs`)
 
-### export — `/export`, `/import`, `/share`
+Single `BuiltinExtension` consolidating all built-in tools and slash commands.
 
-Pi-compatible session export/import with embedded template assets:
+### BuiltinOptions
 
-| Command | Description |
-|---------|-------------|
-| `/export [path]` | Export session to HTML (default) or JSONL (`.jsonl` extension) |
-| `/import <path>` | Import and resume a session from a JSONL file |
-| `/share` | Share as secret GitHub gist (requires `gh` CLI) |
+```rust
+pub struct BuiltinOptions {
+    pub cwd: PathBuf,
+    pub read_operations: Arc<dyn ReadOperations>,
+    pub write_operations: Arc<dyn WriteOperations>,
+    pub edit_operations: Arc<dyn EditOperations>,
+    pub bash_options: BashToolOptions,
+}
+```
 
-Template assets (`template.html`, `template.css`, `template.js`, `marked.min.js`,
-`highlight.min.js`) are embedded via `include_bytes!` at compile time.
+### Built-in tools
 
-### commands — ✅ 19 slash commands
+| Tool | Key features |
+|------|-------------|
+| **read** | Path resolution, line numbers, 50KB truncation. Image support (base64 data URL). Pluggable `ReadOperations`. |
+| **write** | Temp file + atomic rename, parent dir creation. Preview rendering with syntax highlighting. |
+| **edit** | Exact-match search/replace, error on zero/multiple matches. Diff rendering with intra-line character-level inverse. Pluggable `EditOperations`. File mutation queue. |
+| **bash** | `sh -c <command>`, configurable timeout, streaming via ToolProgress. Pluggable `BashOperations`, command prefix, custom shell. |
+
+### File search extension (`src/extensions/file_search.rs`)
+
+| Tool | Key features |
+|------|-------------|
+| **grep** | ripgrep (`rg`) with `--json`, fallback to `grep`. Respects .gitignore. Pluggable `GrepOperations`. |
+| **find** | `fd` with glob matching, fallback to `find -name`. Pluggable `FindOperations`. |
+| **ls** | Pure Rust via `std::fs::read_dir`. Pluggable `LsOperations`. |
+
+### File mutation queue (`src/builtin/file_mutation_queue.rs`)
+
+Serializes concurrent file mutations targeting the same file path.
+Different files run in parallel. Uses `tokio::sync::Notify`.
+
+### DefaultToolRenderer (`src/agent/default_renderer.rs`)
+
+Fallback renderer when no custom `ToolRenderer` is provided.
+Provides a simple text-based display for tool calls and results.
+
+### Slash commands — ✅ 22 commands
 
 | Command | Result | Description |
 |---------|--------|-------------|
 | `/quit` | `Quit` | Graceful shutdown |
+| `/stop` | `Stop` | Abort streaming |
 | `/model <name>` | `ModelChanged(name)` / `Info` / `OpenModelSelector` | Switch model; no args opens selector; `provider/model` format supported |
 | `/settings` | `OpenSettings` | Open interactive settings menu overlay |
 | `/scoped-models` | `ScopedModels` | Enable/disable models for Ctrl+P cycling |
+| `/extensions` | `ExtensionsToggle` | Enable/disable extensions |
 | `/export [path]` | `ExportSession { path }` | Export session (HTML or .jsonl) |
 | `/import <path>` | `ImportSession { path }` | Import and resume a session |
-| `/share` | `ShareSession` | Share as secret GitHub gist |
-| `/copy` | `CopyLastMessage` | Copy last assistant message to clipboard |
-| `/name <name>` | `SessionNamed { name }` | Set session display name |
-| `/session` | `SessionInfo { ... }` | Show session info and stats |
-| `/changelog` | `ShowChangelog` | Show changelog entries |
-| `/hotkeys` | `ShowHelp` | Show keyboard shortcuts (dismiss on any key) |
-| `/fork [msg-id]` | `ForkSession { message_id }` | Fork from a previous message (interactive selector if no ID) |
 | `/clone` | `CloneSession` | Duplicate the current session at current position |
+| `/fork [msg-id]` | `ForkSession { message_id }` | Fork from a previous message (interactive selector if no ID) |
 | `/tree` | `SessionTree` | Navigate session tree |
-| `/trust <decision>` | `TrustDecision { decision }` | Save project trust decision |
+| `/session` | `SessionInfo { ... }` | Show session info and stats |
+| `/name <name>` | `SessionNamed { name }` | Set session display name |
 | `/login [provider] [api-key]` | `Login { provider, api_key }` | Configure provider auth |
 | `/logout [provider]` | `Logout { provider }` | Remove provider auth |
 | `/new` | `NewSession` | Clear conversation |
 | `/compact [instructions]` | `CompactSession(Option<String>)` | Manually compact session context with optional custom instructions |
 | `/resume` | `OpenSessionSelector` | Open session selector |
 | `/reload` | `Reloaded` | Reload keybindings, extensions, skills, prompts, themes |
-| `/changelog` | `ShowChangelog` | Show changelog entries |
+| `/copy` | `CopyLastMessage` | Copy last assistant message to clipboard |
+| `/hotkeys` | `ShowHelp` | Show keyboard shortcuts (dismiss on any key) |
+| `/nextTurn` | `NextTurn { text }` | Queue a message for the next turn |
 
-### Built-in tools
+### Changes from previous version
 
-| Tool | Key features |
-|------|-------------|
-| **read** | Path resolution, line numbers, 50KB truncation. Image support (base64 data URL). Pluggable `ReadOperations` trait. |
-| **write** | Temp file + atomic rename, parent dir creation. `prepare_write_args` for type coercion. Preview rendering with syntax highlighting (partial+full). |
-| **edit** | Exact-match search/replace, error on zero/multiple matches. Diff rendering with intra-line character-level inverse. Pluggable `EditOperations` trait. File mutation queue for serialized concurrent edits. |
-| **bash** | `sh -c <command>`, configurable timeout, streaming via ToolProgress. Last 2000 lines / 50KB truncation. Pluggable `BashOperations` trait, command prefix, custom shell path. |
-
-### File search extension (`src/extensions/file_search.rs`)
-
-| Tool | Key features |
-|------|-------------|
-| **grep** | Uses ripgrep (`rg`) with `--json` output, falls back to `grep`. Respects .gitignore. Options: pattern, path, glob, ignoreCase, literal, context, limit (default 100). Pluggable `GrepOperations`. Shared `run_shell_command()` helper. |
-| **find** | Uses `fd` (rust rewrite of find) with glob matching and .gitignore awareness, falls back to `find -name`. Options: pattern, path, limit (default 1000). Pluggable `FindOperations`. Shared `run_shell_command()` helper. |
-| **ls** | Directory listing with `/` suffix for directories, dotfiles included. Options: path, limit (default 500). Pluggable `LsOperations`. Pure Rust via `std::fs::read_dir`. |
-
-### File mutation queue (`src/builtin/file_mutation_queue.rs`)
-
-Serializes concurrent file mutations targeting the same file path.
-Different files run in parallel. Uses `tokio::sync::Notify` stored in a
-global `LazyLock<Mutex<HashMap>>`. Operations chain through `Notify`
-signals (each operation waits for the previous one's signal, then stores
-its own for the next). Cleanup removes stale entries.
-
-```rust
-pub async fn with_file_mutation_queue<T, E, F, Fut>(
-    file_path: &str,
-    cwd: &Path,
-    f: F,
-) -> Result<T, E>
-```
+- **New**: `/extensions`, `/nextTurn`, `/stop`
+- **Removed**: `/share`, `/changelog`, `/trust`
+- `/stop` replaces Ctrl+C interrupt semantics
+- `/extensions` provides runtime toggle for extension enable/disable
 
 ---
 
-## Auth (`src/auth.rs`)
+## Settings (`src/settings.rs`) — ~1851 lines
 
-Pi-compatible credential store using the `AuthStorageBackend` pattern
-(File / InMemory variants) with file locking and OAuth auto-refresh.
-
-```rust
-pub enum AuthCredential {
-    ApiKey { key: String },
-    Oauth {
-        access: String,
-        refresh: Option<String>,
-        expires: Option<i64>,
-        enterprise_url: Option<String>,
-    },
-}
-
-pub enum AuthStorageBackend {
-    File(FileAuthStorageBackend),
-    InMemory(InMemoryAuthStorageBackend),
-}
-
-pub struct AuthStorage {
-    backend: Mutex<AuthStorageBackend>,
-}
-```
-
-Every access (read or write) goes through a locked path, ensuring atomic
-read-modify-write semantics. This prevents race conditions where a lock-free
-read observes a truncated/partial file during a concurrent write.
-
-Load order: `~/.rab/agent/auth.json`. Supports multiple providers (api_key
-or oauth). Methods: `api_key(provider)`, `oauth_token(provider)`, `oauth_token_past_buffer(provider)`,
-`oauth_credential(provider)`, `refresh_oauth_token(provider)` (async, returns refreshed key or empty).
-
----
-
-## Footer data provider (`src/agent/footer_data_provider.rs`)
-
-Provides git branch, extension statuses, and provider count to the Footer
-on a **pull** basis. Owned by the App behind `Rc<RefCell<>>`.
-
-Git branch resolution:
-1. Walk up from `cwd` looking for `.git`
-2. If `.git` is a file → worktree: parse `gitdir:` path, find HEAD
-3. If `.git` is a directory → regular repo: find HEAD
-4. Read HEAD file; if `ref: refs/heads/.invalid` → fall back to git
-5. Otherwise treat as detached HEAD
-
-Reftable repos are detected via the `.invalid` sentinel and fall back to
-`git symbolic-ref --short HEAD`.
-
-```rust
-pub struct FooterDataProvider {
-    cwd: PathBuf,
-    git_branch: Option<String>,
-    extension_statuses: BTreeMap<String, String>,
-    available_provider_count: usize,
-}
-```
-
----
-
-## Path utilities (`src/paths.rs`) — ~250 lines
-
-Centralized path handling matching pi's `packages/coding-agent/src/utils/paths.ts`:
-
-- `canonicalize()` — canonicalize with Windows `\\\\?` prefix stripping
-- `resolve_path()` — resolve relative/absolute paths, expand `~`
-- `display_path()` — display path relative to cwd or home
-
-## Settings (`src/agent/settings.rs`) — ~1796 lines
-
-Same file names and format as pi, under `~/.rab/agent/`.
+Same file names and format as pi, under `~/.rab/agent/`. Moved from `src/agent/settings.rs`.
 
 ### Config files
 
@@ -1108,90 +919,85 @@ Same file names and format as pi, under `~/.rab/agent/`.
 | `~/.pi/agent/skills/` | `~/.rab/skills/` | ✅ |
 | `~/.pi/agent/themes/` | `~/.rab/themes/` + embedded | ✅ |
 
-### `settings.json` format (pi-compatible nested schema)
+### New settings fields since previous version
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `transport` | `Option<String>` | Transport preference: sse, websocket, websocket-cached, auto |
+| `steering_mode` | `Option<String>` | Turn steering mode: one-at-a-time, all, manual |
+| `follow_up_mode` | `Option<String>` | Follow-up queue processing mode: all, manual |
+| `quiet_startup` | `Option<bool>` | Suppress startup screen |
+| `collapse_changelog` | `Option<bool>` | Collapse changelog on startup |
+| `enable_skill_commands` | `Option<bool>` | Enable `/skill:name` expansions |
+| `enable_install_telemetry` | `Option<bool>` | Install telemetry opt-in |
+| `double_escape_action` | `Option<String>` | Action on double Escape |
+| `tree_filter_mode` | `Option<String>` | Session tree filter mode |
+| `editor_padding_x` | `Option<i32>` | Horizontal editor padding |
+| `output_pad` | `Option<i32>` | Output padding |
+| `autocomplete_max_visible` | `Option<i32>` | Max visible autocomplete items |
+| `show_hardware_cursor` | `Option<bool>` | Use hardware cursor |
+| `default_project_trust` | `Option<String>` | Default project trust decision |
+| `npm_command` | `Option<Vec<String>>` | NPM command for extensions |
+| `websocket_connect_timeout_ms` | `Option<u64>` | WebSocket connect timeout |
+| `extensions` | `Vec<String>` | Extension script paths |
+| `extensions_config` | `ExtensionsConfig` | Extension enable/disable overrides |
+| `skills` | `Vec<String>` | Additional skill paths |
+| `prompts` | `Vec<String>` | Additional prompt paths |
+| `themes` | `Vec<String>` | Additional theme paths |
+| `packages` | `Vec<PackageSource>` | Package sources (npm/git) |
+
+### Settings schema
 
 ```json
 {
   "defaultModel": "deepseek-v4-flash",
   "defaultThinkingLevel": "high",
   "defaultProvider": "opencode_go",
-  "tools": ["read", "write", "edit", "bash"],
-  "excludeTools": [],
+  "transport": "sse",
+  "steeringMode": "one-at-a-time",
+  "followUpMode": "all",
   "theme": "dark",
   "verbose": false,
   "hideThinkingBlock": true,
   "collapseToolOutput": true,
-  "compaction": {
-    "enabled": true,
-    "reserveTokens": 16384,
-    "keepRecentTokens": 20000
-  },
-  "terminal": {
-    "showImages": true,
-    "imageWidthCells": null,
-    "clearOnShrink": true,
-    "showTerminalProgress": true
-  },
-  "images": {
-    "autoResize": true,
-    "blockImages": false
-  },
-  "retry": {
-    "enabled": true,
-    "maxRetries": 3,
-    "baseDelayMs": 1000,
-    "provider": {
-      "timeoutMs": 30000,
-      "maxRetries": 2,
-      "maxRetryDelayMs": 30000
-    }
-  },
-  "markdown": {
-    "codeBlockIndent": "  "
-  },
-  "warnings": {
-    "anthropicExtraUsage": true
-  },
-  "branchSummary": {
-    "reserveTokens": 4000,
-    "skipPrompt": false
-  },
-  "thinkingBudgets": {
-    "minimal": 2000,
-    "low": 4000,
-    "medium": 8000,
-    "high": 16000
-  },
+  "quietStartup": false,
+  "collapseChangelog": false,
   "shellPath": null,
   "shellCommandPrefix": "shopt -s expand_aliases",
   "externalEditor": null,
-  "enabledModels": ["deepseek-v4-*", "claude-sonnet-4*"],
+  "defaultProjectTrust": null,
   "httpProxy": null,
   "httpIdleTimeoutMs": 30000,
+  "websocketConnectTimeoutMs": 10000,
   "sessionDir": null,
-  "packages": [
-    "npm:@rab/extension-example",
-    {
-      "source": "git:https://github.com/user/repo.git",
-      "extensions": ["my-ext"],
-      "skills": ["my-skill"]
-    }
-  ]
+  "enabledModels": [],
+  "doubleEscapeAction": "clear",
+  "treeFilterMode": "fuzzy",
+  "editorPaddingX": 2,
+  "outputPad": 1,
+  "autocompleteMaxVisible": 8,
+  "showHardwareCursor": false,
+  "extensions": [],
+  "extensionsConfig": {},
+  "skills": [],
+  "prompts": [],
+  "themes": [],
+  "packages": [],
+  "compaction": { "enabled": true, "reserveTokens": 16384, "keepRecentTokens": 20000 },
+  "branchSummary": { "reserveTokens": 4000, "skipPrompt": false },
+  "terminal": { "showImages": true, "imageWidthCells": null, "clearOnShrink": true, "showTerminalProgress": true },
+  "images": { "autoResize": true, "blockImages": false },
+  "retry": { "enabled": true, "maxRetries": 3, "baseDelayMs": 1000, "provider": { "timeoutMs": 30000, "maxRetries": 2, "maxRetryDelayMs": 30000 } },
+  "markdown": { "codeBlockIndent": "  " },
+  "warnings": { "anthropicExtraUsage": true },
+  "thinkingBudgets": { "minimal": 2000, "low": 4000, "medium": 8000, "high": 16000 },
+  "lastChangelogVersion": null,
+  "enableAnalytics": false,
+  "trackingId": null,
+  "enableSkillCommands": true,
+  "enableInstallTelemetry": false
 }
 ```
-
-Load order: global `~/.rab/agent/settings.json`, then project `.rab/settings.json`
-overlays. CLI flags (`--model`, `--thinking`, `--no-context-files`, etc.) take
-precedence over both. Settings modifications during a session (Ctrl+T, Ctrl+O,
-Ctrl+Shift+C toggles) are tracked via `modified_fields` and only written
-back for fields that were explicitly changed (preserving project-level overrides).
-
-Settings modifications during a session (Ctrl+T, Ctrl+O, Ctrl+Shift+C toggles) are tracked
-via `modified_fields` and only written back for fields that were explicitly changed
-(preserving project-level overrides).
-
-Nested configs use a `DeepMerge` trait for recursive field-by-field merging.
-Arrays are replaced entirely (not merged element-by-element).
 
 ---
 
@@ -1209,229 +1015,34 @@ Built via `SystemPromptBuilder`:
 5. **Skills** — available skills listed as `<available_skills>` XML.
 6. **Date and cwd** — `Current date: YYYY-MM-DD`, `Current working directory: /path`.
 
-Skills from extensions are merged via `skill_set.merge(ext.skills())`.
+---
+
+## Auth (`src/provider/auth.rs`)
+
+Pi-compatible credential store using the `AuthStorageBackend` pattern
+(File / InMemory variants) with file locking and OAuth auto-refresh.
+Moved from `src/auth.rs` to the provider module.
 
 ---
 
 ## Prompt templates (`src/agent/prompt_templates.rs`) — ~570 lines
 
 Loads `.md` files from `~/.rab/agent/prompts/` (global) and `.rab/prompts/` (project)
-and registers them as `/name` commands. Follows pi's prompt template system:
-
-- Filename (minus `.md`) becomes the `/name` command
-- Frontmatter supports `description` and `argument-hint`
-- Body supports `$1`, `$2`, `$@`, `$ARGUMENTS`, `${N:-default}`, `${@:N}`, `${@:N:L}`
-- Later entries override earlier ones on name conflict
-
-## CLI (`main.rs`) — manual arg parsing
-
-```
-rab [MESSAGE]...
-
-Subcommands:
-  rab generate-models         Fetch and update built-in model catalog
-
-Session:
-  -c, --continue             Continue most recent session in cwd
-  -r, --resume               Open interactive session picker
-  --session PATH             Open specific session file (path or partial ID)
-  --session-id ID            Create/open session with explicit ID
-  --fork PATH                Fork a session from another session file
-                              (supports interactive message selector via ui)
-  --export PATH              Export session and exit (⚠ not yet implemented)
-  --no-session               Ephemeral, don't save
-  -n, --name <name>          Set session name
-
-Model:
-  --model MODEL              Model name (default: from settings.json)
-
-Context:
-  -nc, --no-context-files    Skip AGENTS.md/CLAUDE.md loading
-  --system-prompt <text>     Replace default system prompt
-  --append-system-prompt <text>  Append to system prompt
-
-Other:
-  --session-dir <path>       Session storage directory override
-```
-
-Session resolution supports both paths and partial UUID prefixes.
-`--fork` resolves the session file, validates no conflicts with `--session-id`,
-calls `AgentSession::fork_from()`, and supports interactive message selector
-when no entry_id is specified.
-
-Extension gating: `is_extension_active()` checks `settings.tools` whitelist
-and `settings.exclude_tools` blacklist. Core extensions (commands, read,
-write, edit, bash, mcp) are always active when no whitelist is set. File
-search tools (grep, find, ls) are opt-in via the bundled `FileSearchExtension`.
-MCP extension calls `restore_cache()` and `bootstrap_direct_tools()` at startup
-so configured direct tools are available from the first turn.`
+and registers them as `/name` commands. Pi-compatible frontmatter and placeholder expansion.
 
 ---
 
-## Run modes
+## App layer (`src/agent/ui/app/`) — split from single app.rs
 
-### Print mode
+The former `app.rs` (~5K+ lines) was split into:
 
-```
-$ rab "What does git status do?"
-Shows the current state of the working directory and staging area...
-```
-
-```
-$ cat README.md | rab "Summarize this"
-```
-
-Streams the response to stdout. Thinking blocks shown dimmed on stderr.
-Tool calls and results shown prefixed with colored indicators. Has a 120s
-timeout to prevent hanging on stuck providers. Uses a simple event loop:
-`yoagent::agent::Agent::prompt_with_sender()` → process `AgentEvent` stream →
-`agent_session.on_agent_event()` for persistence.
-
-Provider selection in print mode matches interactive mode — the model is
-resolved through `ProviderRegistry`, then the appropriate provider is chosen
-based on `ApiProtocol`:
-
-```rust
-let agent = match mc.api {
-    ApiProtocol::OpenAiCompletions =>
-        yoagent::agent::Agent::from_provider(RabOpenAiCompatProvider, mc.clone()),
-    ApiProtocol::AnthropicMessages =>
-        yoagent::agent::Agent::from_provider(RabAnthropicProvider, mc.clone()),
-    ApiProtocol::OpenAiResponses =>
-        yoagent::agent::Agent::from_config(mc.clone()),
-    ApiProtocol::GoogleGenerativeAi =>
-        yoagent::agent::Agent::from_config(mc.clone()),
-    _ => yoagent::agent::Agent::from_config(mc.clone()),
-};
-
-agent
-    .with_api_key(api_key)
-    .with_system_prompt(&system_prompt)
-    .with_thinking(thinking_level)
-    .with_messages(messages)
-    .with_tools(tools)
-    .without_context_management()
-```
-
-### Interactive (TUI) mode
-
-Same agent loop, different sink: `App` in `src/agent/ui/` subscribes to the
-agent event stream and renders to a pi-tui-style main-screen TUI instead of
-stdout. Uses `yoagent::agent::Agent::prompt_with_sender()` with event channels.
-
----
-
-## TUI (`src/tui/` + `src/agent/ui/`) — 101 source modules, ~56.9K lines, ~713 tests
-
-The TUI library is a direct Rust port of pi's `@earendil-works/pi-tui`.
-
-### Core (`src/tui/`)
-
-| Module | Description |
-|--------|-------------|
-| `tui_core.rs` | `TUI` struct — event loop, render loop, overlay system, screen diff |
-| `component.rs` | `Component` trait, `Size`, `RenderContext` |
-| `container.rs` | Container layout — vertical, centered, flex-grow, children |
-| `focusable.rs` | Focus management — `Focusable` trait, focus ring |
-| `screen.rs` | Screen diff renderer — line-by-line comparison with cursor markers |
-| `overlay.rs` | Overlay system — show/hide/composite, anchor-based positioning |
-| `terminal.rs` | Terminal abstraction — `TerminalTrait`, `ProcessTerminal`, raw mode, cursor hide/show, synchronized output, `TerminalEvent::Key`/`Paste`/`Resize` |
-| `keys.rs` | Key event handling — `key_event_to_id()`, 30+ action IDs, kitty protocol key encoding |
-| `keybindings.rs` | JSON keybinding loading from `~/.rab/keybindings.json`, merge, resolution, 50+ action constants |
-| `theme.rs` | Theme trait + default JSON theme loader |
-| `fuzzy.rs` | Fuzzy matching for autocomplete |
-| `autocomplete.rs` | Editor autocomplete popup — completions, rendering, keyboard navigation |
-| `kill_ring.rs` | Kill ring for editor cut/copy/paste |
-| `undo_stack.rs` | Undo/redo for editor |
-| `word_nav.rs` | Word-boundary navigation utilities |
-| `visual_truncate.rs` | Shared `truncate_to_visual_lines()` utility |
-| `terminal_colors.rs` | Terminal color scheme detection — parses OSC 11 responses |
-| `util.rs` | Shared utilities |
-
-### Components (`src/tui/components/`)
-
-| Module | Description |
-|--------|-------------|
-| `editor.rs` | Multi-line editor — word-wrap, undo stack, kill ring, paste markers, bracketed paste, history recall, character jump, sticky column, border_color, autocomplete |
-| `markdown.rs` | comrak-based renderer with syntax highlighting, tables, code blocks, Kitty hyperlinks, blank lines between list items |
-| `diff.rs` | Unified diff with colored +/lines and intra-line character-level inverse |
-| `image.rs` | Inline image via Kitty terminal protocol, fallback to text summary |
-| `box.rs` | `Box` component with render cache, borders, backgrounds |
-| `text.rs` | `Text` / `TruncatedText` with RefCell cache |
-| `spacer.rs` | Vertical spacer |
-| `select_list.rs` | Two-column selectable list with prefix filter |
-| `loader.rs` | Animated loader with timer, colors, abort support |
-| `dynamic_lines.rs` | Dynamically-sized section component |
-| `rc_ref_cell_component.rs` | `RcRefCellComponent` bridge for shared ownership components |
-
-### App layer (`src/agent/ui/`)
-
-| Module | Description |
-|--------|-------------|
-| `app.rs` | Main `App` struct — event handler, agent loop management, message queuing, compose_ui, bang commands (!/!!), skills expansion, overlay lifecycle |
-| `chat_editor.rs` | `ChatEditor` wrapper — input processing, slash command dispatch, /skill:name expansion. `InputAction` enum with `Handled`, `Escape`, `Clear`, `Exit`, `ThinkingCycle`, `ModelSelector`, `ModelCycleForward`, `ModelCycleBackward`, `ToggleThinking`, `ToolsExpand`, `EditorExternal`, `Help`, `Submit`, `FollowUp`, `Dequeue`, `CompactToggle` |
-| `theme.rs` | `RabTheme` — JSON theme resolution, fallback, color detection, 130+ theme keys |
-| `working.rs` | `WorkingIndicator` — timer-based working animation |
-| `model_selector.rs` | `ModelSelector` — Ctrl+P model cycling with scoped-models support |
-| `footer.rs` | `Footer` — cwd, git branch, token usage, model, auto-compact indicator |
-| `help.rs` | Help overlay with keybinding display (dismissed on any key press) |
-| `render_utils.rs` | Shared rendering utilities |
-| `components/header.rs` | Header — "rab" logo, keybinding hints |
-| `components/footer_component.rs` | Footer component |
-| `components/editor_component.rs` | Editor component with border_color |
-| `components/user_message.rs` | User message component (box + markdown) |
-| `components/assistant_message.rs` | Streaming assistant message with thinking blocks |
-| `components/tool_messages.rs` | Tool execution components (read, write, edit, bash, grep, find, ls) with dedicated renderers |
-| `components/info_message.rs` | Info message component (dim text) |
-| `components/session_picker.rs` | Session selector overlay |
-| `components/tree_selector.rs` | Full-screen session tree navigation with filtering, folding, labels |
-| `components/confirm_overlay.rs` | Generic confirmation dialog with yes/no |
-| `components/login_dialog.rs` | Login dialog for OAuth flows (prompt, device code, auth URL) |
-| `components/oauth_selector.rs` | Provider selector with search and auth status display |
-| `components/scoped_models_selector.rs` | Enable/disable models for Ctrl+P cycling |
-| `components/fork_selector.rs` | User message selector overlay for `/fork` command (matching pi's `UserMessageSelectorComponent`) |
-| `components/settings_list.rs` | `SettingsList` component — label/value layout, optional search, value cycling (Enter/Space) |
-| `components/settings_selector.rs` | `SettingsSelector` — main settings menu overlay, lists all configurable settings, wires changes to App state and persistence |
-| `components/mod.rs` | Component re-exports |
-
-### Layout (component tree)
-
-```
-Terminal (no alternate screen):
-TUI.root (Container):
-  ├── HeaderComponent ("rab" logo, keybinding hints)
-  ├── chat_container (RefContainer)
-  │   ├── UserMessageComponent
-  │   ├── ToolExecComponent (read/write/edit/bash/grep/find/ls)
-  │   ├── RcRefCellComponent → AssistantMessageComponent
-  │   ├── RcRefCellComponent → InfoMessageComponent
-  │   └── Spacer(1) between each
-  ├── pending_section (DynamicLines — streaming text/thinking)
-  ├── status_section (DynamicLines — transient status like toggles, interrupts)
-  ├── queued_section (DynamicLines — ◷ queued follow-up messages)
-  ├── working_section (DynamicLines — ⠋ Working... animation)
-  ├── EditorComponent (border color: thinking level / bash mode indicator)
-  └── FooterComponent (cwd, git branch, token usage, model, auto-compact indicator)
-```
-
-### Message queuing and follow-up
-
-When the user submits a message while streaming, it is queued via yoagent's
-native `follow_up()` method. The agent loop's outer loop picks it up when the
-current turn finishes — no concurrent agent loops. Queued messages appear
-between chat and editor. On `AgentEnd`, the next queued message is
-auto-submitted.
-
-- **Follow-up** (`app.message.followUp`, default Alt+Enter) — queues a message
-  during streaming without aborting the current turn.
-- **Dequeue** (`app.message.dequeue`, default Alt+Up) — restores the queued
-  message back to the editor.
-- **Interrupt** (`app.interrupt`, default Ctrl+C) — aborts streaming and
-  restores any queued messages to the editor.
+| File | Description |
+|------|-------------|
+| `mod.rs` | Main `App` struct, `TUI` event loop, `compose_ui()`, overlay lifecycle, route_input, message queuing |
+| `events.rs` | `handle_agent_event()` — processes `AgentEvent` stream for UI updates and persistence |
+| `helpers.rs` | `parse_bang_command()`, `xml_escape()`, `strip_frontmatter()`, skill formatting helpers |
 
 ### Keybinding actions
-
-Keybinding actions are defined as constants in `src/tui/keybindings.rs`:
 
 | Action constant | ID string | Default binding |
 |-----------------|-----------|----------------|
@@ -1462,17 +1073,7 @@ Keybinding actions are defined as constants in `src/tui/keybindings.rs`:
 | `ACTION_INPUT_NEW_LINE` | `tui.input.newLine` | Alt+Enter (when idle) |
 | `ACTION_INPUT_COPY` | `tui.input.copy` | Ctrl+Shift+C |
 
-All bindings are customizable via `~/.rab/keybindings.json`.
-
-### Transient status
-
-Toggle messages (Ctrl+T thinking, Ctrl+O tool output, model switch, interrupt)
-use `status_section` that appears for one frame then clears.
-
-### Bang commands
-
-- `!command` — run command, persist output to session as tool result
-- `!!command` — run command, don't persist output, useful for viewing help/man
+All bindings customizable via `~/.rab/keybindings.json`.
 
 ---
 
@@ -1481,7 +1082,7 @@ use `status_section` that appears for one frame then clears.
 ```
 ~/.rab/
 ├── agent/
-│   ├── settings.json          # global settings (nested pi-compatible format)
+│   ├── settings.json          # global settings (pi-compatible nested format)
 │   ├── auth.json              # API keys and OAuth credentials
 │   ├── models.json            # user provider/model overrides (merged with built-in)
 │   ├── SYSTEM.md              # custom system prompt (full override)
@@ -1513,7 +1114,8 @@ use `status_section` that appears for one frame then clears.
 
 ```
 rab (EPL-2.0)
-├── yoagent 0.10.0        (MIT)                - agent loop, provider, types, skills
+├── yoagent 0.13.1        (MIT)                - agent loop, provider, types, session tree,
+│                                                 skills, MCP types
 │   └── reqwest          (Apache 2.0)           - HTTP client (inside yoagent)
 ├── tokio 1              (MIT)                  - async runtime
 ├── tokio-util 0.7       (MIT)                  - CancellationToken
@@ -1529,17 +1131,18 @@ rab (EPL-2.0)
 ├── unicode-segmentation 1 (MIT)                - grapheme-aware cursor movement
 ├── unicode-width 0.2    (MIT)                  - character display width
 ├── unicode-normalization 0.1 (MIT)             - Unicode normalization
-├── comrak 0.53          (MIT)                  - markdown parsing (GFM)
-├── syntect 5.3          (MIT, optional)        - syntax highlighting
+├── comrak 0.54          (MIT)                  - markdown parsing (GFM)
+├── syntect 5.3          (MIT/MPL 2.0, optional) - syntax highlighting
 ├── base64 0.22          (MIT)                  - image data URL encoding
 ├── regex 1.12           (MIT)                  - regex
 ├── reqwest 0.13         (MIT/Apache 2.0)       - HTTP client (rustls-tls, socks)
 ├── kameleoon-reqwest-eventsource 0.6 (Apache 2.0) - SSE streaming
 ├── tracing 0.1          (MIT)                  - diagnostic logging
-├── rustls-platform-verifier (patched)          - Android/Termux fix
+├── fs2 0.4              (MIT)                  - cross-platform file locks
+├── rustls 0.23          (Apache 2.0/ISC)       - TLS (replaces rustls-platform-verifier)
+├── webpki-root-certs 1  (Apache 2.0)           - root certificate store for Android/Termux
 ├── libc 0.2             (MIT)                  - system calls
 ├── url 2.5              (MIT)                  - URL parsing
-├── fs2 0.4              (MIT)                  - cross-platform file locks
 # wasmtime 26+ (Phase 2, Apache 2.0)
 # notify 7    (Phase 2, CC0-1.0)
 # rmcp 1      (Phase 2, MIT)
@@ -1553,9 +1156,20 @@ Key dependency changes from earlier versions:
 - `reqwest` upgraded from 0.12 to 0.13 (rustls-tls, socks)
 - `reqwest-eventsource` replaced with `kameleoon-reqwest-eventsource` 0.6
 - `openssl-sys` removed (fully rustls-based)
-- `rustls-platform-verifier` patched with `webpki-roots` to fix Android/Termux panic
+- `rustls-platform-verifier` replaced with `rustls` + `webpki-root-certs` for Android/Termux fix
+- `comrak` upgraded from 0.53 to 0.54
 - `edition = "2024"` (Rust 1.96.0) for `impl Trait` in const contexts and RPIT lifetime capture
-- `yoagent` is a published crate at version 0.10.0
+- `yoagent` is a published crate at version 0.13.1
+- `fs2` 0.4 added for cross-platform file locking
+
+---
+
+## Module count
+
+- **Source modules**: 113 `*.rs` files
+- **Total lines**: ~53,176
+- **Tests**: ~688 `#[test]` annotations
+- **TUI modules**: 31 `src/tui/` + 28 `src/agent/ui/` = 59 modules (~28.5K lines)
 
 ---
 
@@ -1569,42 +1183,26 @@ bindings. Hot reload via file watcher.
 
 ### MCP adapter — ✅ IMPLEMENTED
 
-The `src/extensions/mcp/` module (6 modules, ~2160 lines) provides a full MCP
+The `src/extensions/mcp/` module (6 modules, ~1200+ lines) provides a full MCP
 adapter matching pi-mcp-adapter's architecture. Configured via `~/.rab/agent/mcp.json`
-(global) and `.rab/mcp.json` (project-local overrides).
+(global) and `.rab/mcp.json` (project-local overrides). See the MCP section in the
+diagram for details.
 
-#### Key components:
+### Tree-sitter — 🟡 SKELETON
 
-| Module | Description |
-|--------|-------------|
-| `mcp/mod.rs` | `McpExtension` struct, proxy `mcp` tool, `McpDirectTool` adapter |
-| `mcp/config.rs` | Config loading + merging (global + project), server config hashing |
-| `mcp/server.rs` | `ServerManager` — lazy connection, idle timeout, keep-alive, SSE-aware HTTP transport |
-| `mcp/types.rs` | `McpConfig`, `ServerEntry`, `McpSettings`, `MetadataCache`, tool name formatting |
-| `mcp/cache.rs` | Persistent metadata cache (`mcp-cache.json`) for fast startup |
-| `mcp/renderer.rs` | `McpToolRenderer` and `McpProxyToolRenderer` for TUI rendering |
+`src/extensions/tree_sitter/mod.rs` — skeleton implementation for AST-aware tools.
+Not yet fully wired.
 
-#### Dual architecture:
-- **Proxy tool** (`mcp` gateway) — status, list, search, describe, connect, call, auth actions
-- **Direct tools** — servers with `directTools` enabled register individual tools as native `AgentTool`s
+### Models.json — ✅ IMPLEMENTED
 
-#### Server lifecycle:
-- `lazy` (default) — connects on first use, disconnects after idle timeout
-- `eager` — connects at agent startup
-- `keep-alive` — never disconnects
-
-### models.json — ✅ IMPLEMENTED
-
-Custom provider/model definitions are now supported via `~/.rab/agent/models.json`,
-merged with the built-in catalog (`src/provider/models.json`, ~2200 lines).
-User entries with the same provider ID replace built-in entries entirely.
-The `rab generate-models` subcommand fetches the latest models from `models.dev`
-and updates the built-in catalog.
+Built-in catalog at `src/provider/models.json` (~17910 lines). User overrides
+merge via `~/.rab/agent/models.json`. The `rab generate-models` subcommand
+fetches the latest models from `models.dev` and updates the built-in catalog.
 
 ### User extensions (compile-time)
 
 Already possible today — implement the `Extension` trait and register in
-`main.rs`. No dynamic loading yet.
+`main.rs` → `cli/run.rs`. No dynamic loading yet.
 
 ---
 
@@ -1616,5 +1214,6 @@ Already possible today — implement the `Extension` trait and register in
   sandbox (bubblewrap, landlock) should be configurable.
 - **Provider fallback** — if the primary provider fails, should rab retry
   with another? yoagent handles basic retry; full fallback chain TBD.
-- **Multi-model cycling** — Ctrl+P model switching uses a static list.
-  A full model registry with metadata (context window, costs) is future work.
+- **Multi-model cycling** — Ctrl+P model switching uses a scoped-models list.
+  A full model registry with metadata (context window, costs) is already
+  implemented via `ProviderRegistry` and `ScopedModelsSelector`.
