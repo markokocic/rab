@@ -5,5 +5,6 @@ pub mod extension;
 pub mod extensions;
 pub mod provider;
 pub mod settings;
-pub mod tui;
 pub mod util;
+
+pub use rab_tui as tui;

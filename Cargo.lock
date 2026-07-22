@@ -1567,30 +1567,82 @@ dependencies = [
  "base64",
  "chrono",
  "colored",
- "comrak",
  "crossterm",
  "directories",
- "fs2",
- "futures",
- "kameleoon-reqwest-eventsource",
  "libc",
+ "rab-extension",
+ "rab-provider",
+ "rab-tui",
+ "rab-util",
  "regex",
  "reqwest",
- "rustls",
  "serde",
  "serde_json",
  "syntect",
  "tempfile",
  "tokio",
  "tokio-util",
- "tracing",
  "unicode-normalization",
+ "uuid",
+ "yoagent",
+]
+
+[[package]]
+name = "rab-extension"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "rab-tui",
+ "serde",
+ "serde_json",
+ "tokio",
+ "yoagent",
+]
+
+[[package]]
+name = "rab-provider"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "base64",
+ "directories",
+ "fs2",
+ "futures",
+ "kameleoon-reqwest-eventsource",
+ "rab-util",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "url",
+ "yoagent",
+]
+
+[[package]]
+name = "rab-tui"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "comrak",
+ "crossterm",
+ "regex",
+ "serde",
+ "serde_json",
+ "syntect",
  "unicode-segmentation",
  "unicode-width",
- "url",
- "uuid",
+]
+
+[[package]]
+name = "rab-util"
+version = "0.1.0"
+dependencies = [
+ "reqwest",
+ "rustls",
  "webpki-root-certs",
- "yoagent",
 ]
 
 [[package]]

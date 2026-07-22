@@ -1,0 +1,21 @@
+[package]
+name = "rab-provider"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rab-util = { path = "../util" }
+yoagent = "0.13.1"
+async-trait = "0.1"
+anyhow = "1"
+tokio = { version = "1", features = ["sync", "time"] }
+tokio-util = "0.7"
+futures = "0.3"
+reqwest-eventsource = { package = "kameleoon-reqwest-eventsource", version = "0.6" }
+tracing = "0.1"
+base64 = "0.22"
+directories = "6"
+url = "2.5.8"
+fs2 = "0.4"

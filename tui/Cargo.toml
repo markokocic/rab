@@ -1,0 +1,19 @@
+[package]
+name = "rab-tui"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+crossterm = "0.29"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+unicode-segmentation = "1"
+unicode-width = "0.2"
+comrak = "0.54"
+regex = "1.12.4"
+base64 = "0.22"
+syntect = { version = "5.3.0", optional = true }
+
+[features]
+default = []
+syntect = ["dep:syntect"]

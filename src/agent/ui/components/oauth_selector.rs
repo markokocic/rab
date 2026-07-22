@@ -6,6 +6,7 @@
 
 use crate::agent::ui::theme::color;
 use crate::agent::ui::theme::current_theme;
+use crate::provider::ProviderAuthStatus;
 use crate::tui::Component;
 use crate::tui::fuzzy::fuzzy_filter;
 use crate::tui::keybindings::{
@@ -69,13 +70,6 @@ impl ProviderItem {
 }
 
 // ── Auth status function ───────────────────────────────────────────
-
-/// Status information for a provider (matching pi's AuthStatus interface).
-pub struct ProviderAuthStatus {
-    pub configured: bool,
-    pub source: Option<String>,
-    pub label: Option<String>,
-}
 
 // ── OAuthSelector component ────────────────────────────────────────
 
