@@ -577,7 +577,7 @@ async fn main() -> anyhow::Result<()> {
                 api_key
             }
         };
-        let mc = resolved
+        let mut mc = resolved
             .as_ref()
             .map(|r| r.model_config.clone())
             .unwrap_or_else(|| rab::agent::base_model_config(&model));
@@ -585,6 +585,16 @@ async fn main() -> anyhow::Result<()> {
             .as_ref()
             .map(|r| r.rab_compat.clone())
             .unwrap_or_default();
+
+        // Inject provider attribution/session headers (pi-compatible).
+        let session_id = Some(agent_session.session_id());
+        let enable_telemetry = settings.enable_install_telemetry.unwrap_or(false);
+        rab::provider::inject_provider_attribution_headers(
+            &mut mc,
+            session_id.as_deref(),
+            enable_telemetry,
+        );
+
         agent_session.set_compaction_config(
             api_key.clone(),
             &model,

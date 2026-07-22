@@ -3501,7 +3501,7 @@ fn build_fresh_agent(
     };
 
     let resolved = app.registry.resolve(&app.model, preferred).ok();
-    let mc = resolved
+    let mut mc = resolved
         .as_ref()
         .map(|r| r.model_config.clone())
         .unwrap_or_else(|| crate::agent::base_model_config(&app.model));
@@ -3510,6 +3510,15 @@ fn build_fresh_agent(
         .map(|r| r.api_key.as_str())
         .filter(|k| !k.is_empty())
         .unwrap_or(api_key);
+
+    // Inject provider attribution/session headers (pi-compatible).
+    let session_id = app.session.as_ref().map(|s| s.session_id());
+    let enable_telemetry = app.settings.enable_install_telemetry.unwrap_or(false);
+    crate::provider::inject_provider_attribution_headers(
+        &mut mc,
+        session_id.as_deref(),
+        enable_telemetry,
+    );
 
     let rab_compat = resolved
         .as_ref()

@@ -419,6 +419,65 @@ fn inject_github_copilot_headers(model_config: &mut ModelConfig, api_key: &str) 
         .or_insert_with(|| "cli".into());
 }
 
+/// Inject provider-specific attribution and session headers into a ModelConfig.
+///
+/// Pi-compatible: mirrors pi's `mergeProviderAttributionHeaders` in
+/// `provider-attribution.ts`. Adds:
+/// - OpenCode: `x-opencode-session` + `x-opencode-client` (always, when session ID
+///   is available and provider is opencode or base URL matches opencode.ai)
+/// - OpenRouter: `HTTP-Referer`, `X-OpenRouter-Title`, `X-OpenRouter-Categories`
+/// - NVIDIA NIM: `X-BILLING-INVOKE-ORIGIN`
+///
+/// Attribution headers (OpenRouter, NVIDIA) are only added when telemetry is enabled.
+pub fn inject_provider_attribution_headers(
+    model_config: &mut ModelConfig,
+    session_id: Option<&str>,
+    enable_telemetry: bool,
+) {
+    // Session headers for OpenCode (always sent when session ID is available).
+    if let Some(sid) = session_id {
+        let is_opencode = model_config.provider == "opencode"
+            || model_config.provider == "opencode-go"
+            || model_config.base_url.contains("opencode.ai");
+        if is_opencode {
+            model_config
+                .headers
+                .entry("x-opencode-session".into())
+                .or_insert_with(|| sid.to_string());
+            model_config
+                .headers
+                .entry("x-opencode-client".into())
+                .or_insert_with(|| "rab".into());
+        }
+    }
+
+    // Attribution headers (only when install telemetry is enabled).
+    if enable_telemetry {
+        if model_config.provider == "openrouter" || model_config.base_url.contains("openrouter.ai")
+        {
+            model_config
+                .headers
+                .entry("HTTP-Referer".into())
+                .or_insert_with(|| "https://rab.dev".into());
+            model_config
+                .headers
+                .entry("X-OpenRouter-Title".into())
+                .or_insert_with(|| "rab".into());
+            model_config
+                .headers
+                .entry("X-OpenRouter-Categories".into())
+                .or_insert_with(|| "cli-agent".into());
+        } else if model_config.provider == "nvidia"
+            || model_config.base_url.contains("integrate.api.nvidia.com")
+        {
+            model_config
+                .headers
+                .entry("X-BILLING-INVOKE-ORIGIN".into())
+                .or_insert_with(|| "Rab".into());
+        }
+    }
+}
+
 pub fn get_agent_dir() -> std::path::PathBuf {
     directories::BaseDirs::new()
         .map(|d| d.home_dir().join(".rab").join("agent"))
