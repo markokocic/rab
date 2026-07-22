@@ -393,31 +393,8 @@ impl App {
         // Build chat_container from AgentMessages directly.
         let cwd_string = config.cwd.to_string_lossy().to_string();
 
-        // Collect context file paths for header resource display.
-        let context_file_paths: Vec<String> = config
-            .context_files
-            .iter()
-            .map(|s| {
-                if let Some(rel) = s.strip_prefix(&cwd_string) {
-                    if rel.is_empty() {
-                        s.clone()
-                    } else {
-                        format!("./{}", rel.trim_start_matches('/'))
-                    }
-                } else if let Some(home) =
-                    std::env::var_os("HOME").and_then(|h| h.into_string().ok())
-                    && let Some(rel) = s.strip_prefix(&home)
-                {
-                    if rel.is_empty() {
-                        s.clone()
-                    } else {
-                        format!("~/{}", rel.trim_start_matches('/'))
-                    }
-                } else {
-                    s.clone()
-                }
-            })
-            .collect();
+        // Context file paths already formatted by format_context_path in main.rs.
+        let context_file_paths: Vec<String> = config.context_files.clone();
         let skill_names: Vec<String> = config.skills.iter().map(|s| s.name.clone()).collect();
         let template_names: Vec<String> = config
             .prompt_templates

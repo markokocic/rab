@@ -419,10 +419,10 @@ pub fn refresh_agent_config(app: &mut App) {
         }
     };
 
-    // Update header context file display names
+    // Update header context file display names (same format as startup)
     let context_file_list: Vec<String> = context_files
         .iter()
-        .map(|cf| crate::util::paths::format_for_display(&cf.path, &app.cwd))
+        .map(|cf| crate::cli::args::format_context_path(&cf.path, &app.cwd))
         .collect();
     app.context_files = context_file_list;
 

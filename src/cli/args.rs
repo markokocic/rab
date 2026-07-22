@@ -193,17 +193,17 @@ pub fn format_context_path(path: &Path, cwd: &Path) -> String {
     if let Ok(rel) = path.strip_prefix(cwd) {
         return rel.to_string_lossy().to_string();
     }
-    // Try parent of cwd (for subdirectory cases)
-    if let Some(parent) = cwd.parent()
-        && let Ok(rel) = path.strip_prefix(parent)
-    {
-        return "..".to_string() + std::path::MAIN_SEPARATOR_STR + &rel.to_string_lossy();
-    }
     // Replace home dir with ~/
     if let Some(home) = directories::BaseDirs::new().map(|d| d.home_dir().to_path_buf())
         && let Ok(rel) = path.strip_prefix(&home)
     {
         return "~/".to_string() + &rel.to_string_lossy();
+    }
+    // Try parent of cwd (for subdirectory cases)
+    if let Some(parent) = cwd.parent()
+        && let Ok(rel) = path.strip_prefix(parent)
+    {
+        return "..".to_string() + std::path::MAIN_SEPARATOR_STR + &rel.to_string_lossy();
     }
     // Fallback: absolute path
     path.to_string_lossy().to_string()
