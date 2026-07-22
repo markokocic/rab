@@ -1132,7 +1132,6 @@
             "maxTokensField": "max_tokens",
             "requiresReasoningContentOnAssistantMessages": true,
             "supportsDeveloperRole": false,
-            "supportsLongCacheRetention": false,
             "supportsStore": false,
             "thinkingFormat": "openai"
           },
@@ -1165,7 +1164,6 @@
             "maxTokensField": "max_tokens",
             "requiresReasoningContentOnAssistantMessages": true,
             "supportsDeveloperRole": false,
-            "supportsLongCacheRetention": false,
             "supportsStore": false,
             "thinkingFormat": "openai"
           },
@@ -1198,7 +1196,6 @@
             "maxTokensField": "max_tokens",
             "requiresReasoningContentOnAssistantMessages": true,
             "supportsDeveloperRole": false,
-            "supportsLongCacheRetention": false,
             "supportsStore": false,
             "thinkingFormat": "openai"
           },
@@ -1279,6 +1276,44 @@
           ],
           "maxTokens": 65536,
           "name": "Gemini 3.5 Flash",
+          "reasoning": true
+        },
+        {
+          "api": "google-generative-ai",
+          "baseUrl": "https://opencode.ai/zen/v1",
+          "contextWindow": 1048576,
+          "cost": {
+            "cacheRead": 0.03,
+            "cacheWrite": 0.0,
+            "input": 0.3,
+            "output": 2.5
+          },
+          "id": "gemini-3.5-flash-lite",
+          "input": [
+            "text",
+            "image"
+          ],
+          "maxTokens": 65536,
+          "name": "Gemini 3.5 Flash Lite",
+          "reasoning": true
+        },
+        {
+          "api": "google-generative-ai",
+          "baseUrl": "https://opencode.ai/zen/v1",
+          "contextWindow": 1048576,
+          "cost": {
+            "cacheRead": 0.15,
+            "cacheWrite": 0.0,
+            "input": 1.5,
+            "output": 7.5
+          },
+          "id": "gemini-3.6-flash",
+          "input": [
+            "text",
+            "image"
+          ],
+          "maxTokens": 65536,
+          "name": "Gemini 3.6 Flash",
           "reasoning": true
         },
         {
@@ -1785,7 +1820,6 @@
           "compat": {
             "maxTokensField": "max_tokens",
             "supportsDeveloperRole": false,
-            "supportsLongCacheRetention": false,
             "supportsStore": false
           },
           "contextWindow": 262144,
@@ -1810,7 +1844,6 @@
           "compat": {
             "maxTokensField": "max_tokens",
             "supportsDeveloperRole": false,
-            "supportsLongCacheRetention": false,
             "supportsReasoningEffort": false,
             "supportsStore": false,
             "thinkingFormat": "deepseek"
@@ -1853,6 +1886,29 @@
           ],
           "maxTokens": 262144,
           "name": "Kimi K2.7 Code",
+          "reasoning": true
+        },
+        {
+          "api": "openai-completions",
+          "baseUrl": "https://opencode.ai/zen/v1",
+          "compat": {
+            "maxTokensField": "max_tokens",
+            "supportsDeveloperRole": false,
+            "supportsStore": false
+          },
+          "contextWindow": 256000,
+          "cost": {
+            "cacheRead": 0.0,
+            "cacheWrite": 0.0,
+            "input": 0.0,
+            "output": 0.0
+          },
+          "id": "laguna-s-2.1-free",
+          "input": [
+            "text"
+          ],
+          "maxTokens": 32000,
+          "name": "Laguna S 2.1 Free",
           "reasoning": true
         },
         {
@@ -1908,7 +1964,6 @@
           "compat": {
             "maxTokensField": "max_tokens",
             "supportsDeveloperRole": false,
-            "supportsLongCacheRetention": false,
             "supportsStore": false
           },
           "contextWindow": 204800,
@@ -2179,7 +2234,6 @@
           "compat": {
             "maxTokensField": "max_tokens",
             "supportsDeveloperRole": false,
-            "supportsLongCacheRetention": false,
             "supportsReasoningEffort": false,
             "supportsStore": false,
             "thinkingFormat": "deepseek"

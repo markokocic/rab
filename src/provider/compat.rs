@@ -65,16 +65,10 @@ pub struct RabOpenAiCompat {
     pub requires_tool_result_name: bool,
     /// Whether an assistant message must be inserted after tool results.
     pub requires_assistant_after_tool_result: bool,
-    /// Whether thinking blocks must be converted to text with `<thinking>` tags.
-    pub requires_thinking_as_text: bool,
     /// Whether replayed assistant messages must include `reasoning_content`.
     pub requires_reasoning_content_on_assistant_messages: bool,
     /// How thinking/reasoning is formatted in the API.
     pub thinking_format: RabThinkingFormat,
-    /// Whether the provider supports the `strict` field in tool definitions.
-    pub supports_strict_mode: bool,
-    /// Whether the provider supports long cache retention.
-    pub supports_long_cache_retention: bool,
 }
 
 impl Default for RabOpenAiCompat {
@@ -88,11 +82,8 @@ impl Default for RabOpenAiCompat {
             max_tokens_field: RabMaxTokensField::MaxCompletionTokens,
             requires_tool_result_name: false,
             requires_assistant_after_tool_result: false,
-            requires_thinking_as_text: false,
             requires_reasoning_content_on_assistant_messages: false,
             thinking_format: RabThinkingFormat::OpenAi,
-            supports_strict_mode: true,
-            supports_long_cache_retention: true,
         }
     }
 }
