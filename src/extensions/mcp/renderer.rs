@@ -4,6 +4,7 @@
 //! and truncated text output on the result. The proxy `mcp` tool gets its own renderer
 //! that formats the operation type differently.
 
+use crate::agent::default_renderer::{format_jsonish, has_useful_args, render_compact_result};
 use crate::agent::extension::{ToolRenderContext, ToolRenderer};
 use crate::tui::Style;
 use crate::tui::components::StyledSegment;
@@ -75,69 +76,6 @@ impl ToolRenderer for McpToolRenderer {
         }
         render_compact_result(content, theme, ctx)
     }
-}
-
-/// Shared result rendering for both proxy and direct MCP tools.
-/// Returns None when there's nothing to show.
-fn render_compact_result(
-    content: &str,
-    theme: &dyn Theme,
-    ctx: &ToolRenderContext,
-) -> Option<Box<dyn Component>> {
-    let text_lines: Vec<&str> = content.lines().collect();
-    if text_lines.is_empty() || (text_lines.len() == 1 && text_lines[0].is_empty()) {
-        let muted_style = Style::new().fg(theme.fg_ansi("muted").to_string());
-        return Some(std::boxed::Box::new(crate::tui::components::Text::new(
-            "(empty result)".to_string(),
-            0,
-            0,
-            Some(muted_style),
-        )));
-    }
-
-    let is_truncated = !ctx.is_error && !ctx.expanded && text_lines.len() > 3;
-    let display_lines: &[&str] = if is_truncated {
-        &text_lines[..3]
-    } else {
-        &text_lines[..]
-    };
-
-    let output_style = Style::new().fg(theme.fg_ansi("toolOutput").to_string());
-    let muted_style = Style::new().fg(theme.fg_ansi("muted").to_string());
-    let mut segments = Vec::new();
-
-    for line in display_lines {
-        if !line.is_empty() {
-            segments.push(StyledSegment {
-                text: line.to_string(),
-                style: Some(output_style.clone()),
-            });
-        }
-        segments.push(StyledSegment {
-            text: "\n".to_string(),
-            style: None,
-        });
-    }
-
-    if is_truncated {
-        segments.push(StyledSegment {
-            text: "…".to_string(),
-            style: Some(muted_style.clone()),
-        });
-        let expand_key = if ctx.expand_key.is_empty() {
-            "Ctrl+O"
-        } else {
-            &ctx.expand_key
-        };
-        segments.push(StyledSegment {
-            text: format!("({} to expand)", expand_key),
-            style: Some(muted_style.clone()),
-        });
-    }
-
-    Some(std::boxed::Box::new(
-        crate::tui::components::Text::from_segments(segments, 0, 0, None),
-    ))
 }
 
 /// Renderer for the proxy `mcp` tool (multi-purpose gateway, matching pi's renderMcpProxyToolCall).
@@ -229,38 +167,4 @@ fn format_mcp_proxy_call(args: &Value) -> String {
     }
 
     "mcp status".to_string()
-}
-
-/// Check if args have useful (non-empty) content to display.
-fn has_useful_args(args: &Value) -> bool {
-    match args {
-        Value::Object(m) => !m.is_empty(),
-        _ => false,
-    }
-}
-
-/// Format a value as pretty JSON for display (matching pi's formatJsonish).
-fn format_jsonish(value: &Value) -> String {
-    match value {
-        Value::String(s) => {
-            // Try to parse as JSON and re-pretty-print
-            if let Ok(parsed) = serde_json::from_str::<Value>(s) {
-                serde_json::to_string_pretty(&parsed).unwrap_or_else(|_| s.clone())
-            } else {
-                truncate_text(s, 1500)
-            }
-        }
-        other => {
-            let s = serde_json::to_string_pretty(other).unwrap_or_default();
-            truncate_text(&s, 1500)
-        }
-    }
-}
-
-/// Truncate text to max_chars with ellipsis.
-fn truncate_text(value: &str, max_chars: usize) -> String {
-    if value.len() <= max_chars {
-        return value.to_string();
-    }
-    format!("{}…", &value[..max_chars.saturating_sub(1)])
 }

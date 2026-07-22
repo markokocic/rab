@@ -3,6 +3,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Instant;
 
+use crate::agent::default_renderer::DefaultToolRenderer;
 use crate::agent::extension::{ToolRenderContext, ToolRenderer};
 use crate::agent::ui::theme::{RabTheme, current_theme};
 use crate::tui::Component;
@@ -10,14 +11,10 @@ use crate::tui::Style;
 use crate::tui::component::{RenderCache, RenderCacheKey};
 use crate::tui::components::r#box::TuiBox;
 use crate::tui::components::spacer::Spacer;
-use crate::tui::components::{StyledSegment, Text};
 use crate::tui::container::Container;
 
-/// Maximum preview lines when collapsed.
-const PREVIEW_LINES: usize = 10;
-
 /// Combined tool execution component — delegates rendering to tool-specific
-/// ToolRenderer when available, falls back to a simple name+args+output display.
+/// ToolRenderer when available, falls back to DefaultToolRenderer.
 ///
 /// Background transitions:
 /// - Pending (call only, no result) → `toolPendingBg`
@@ -230,13 +227,17 @@ impl Component for ToolExecComponent {
     fn render(&mut self, width: usize) -> Vec<String> {
         let theme = current_theme();
 
-        // If tool has a renderer, delegate to it
-        if let Some(ref renderer) = self.renderer {
-            return self.render_with_renderer(renderer.as_ref(), &theme, width);
-        }
+        // Resolve the renderer: if none provided, use the default
+        let default_renderer: DefaultToolRenderer;
+        let renderer: &dyn ToolRenderer = match self.renderer {
+            Some(ref r) => r.as_ref(),
+            None => {
+                default_renderer = DefaultToolRenderer::new(&self.name);
+                &default_renderer
+            }
+        };
 
-        // ── Generic fallback (no tool-specific renderer) ──
-        self.render_generic(&theme, width)
+        self.render_with_renderer(renderer, &theme, width)
     }
 
     fn invalidate(&mut self) {
@@ -311,85 +312,6 @@ impl ToolExecComponent {
             outer.add_child(std::boxed::Box::new(msg_box));
         }
 
-        outer.render(width)
-    }
-
-    /// Generic fallback rendering for tools with no renderer.
-    fn render_generic(&self, theme: &RabTheme, width: usize) -> Vec<String> {
-        let mut outer = Container::new();
-        outer.add_child(std::boxed::Box::new(Spacer::new(1)));
-
-        let bg_key = self.bg_key();
-        let bg_ansi = theme.bg_ansi(bg_key);
-        let mut msg_box = TuiBox::new(1, 1, Some(Style::new().bg(bg_ansi)));
-
-        // Header: bold tool name + JSON args
-        let args_str = serde_json::to_string(&self.args).unwrap_or_default();
-        let header = if args_str.is_empty() || args_str == "{}" {
-            let title_style = Style::new()
-                .fg(theme.fg_ansi("toolTitle").to_string())
-                .bold();
-            Text::new(self.name.clone(), 0, 0, Some(title_style))
-        } else {
-            let title_style = Style::new()
-                .fg(theme.fg_ansi("toolTitle").to_string())
-                .bold();
-            let muted_style = Style::new().fg(theme.fg_ansi("muted").to_string());
-            Text::from_segments(
-                vec![
-                    StyledSegment {
-                        text: self.name.clone(),
-                        style: Some(title_style),
-                    },
-                    StyledSegment {
-                        text: format!("  {}", args_str),
-                        style: Some(muted_style),
-                    },
-                ],
-                0,
-                0,
-                None,
-            )
-        };
-        msg_box.add_child(std::boxed::Box::new(header));
-
-        // Output text (collapsed if longer than PREVIEW_LINES, no tool-specific formatting)
-        if let Some(ref output) = self.output {
-            let display_text = if self.expanded {
-                output.clone()
-            } else {
-                let lines: Vec<&str> = output.lines().collect();
-                if lines.len() > PREVIEW_LINES {
-                    let preview = lines[..PREVIEW_LINES].join("\n");
-                    let muted_style = Style::new().fg(theme.fg_ansi("muted").to_string());
-                    let remaining = lines.len() - PREVIEW_LINES;
-                    format!(
-                        "{}\n{}",
-                        preview,
-                        muted_style.apply(&format!("... ({} more lines)", remaining)),
-                    )
-                } else {
-                    output.clone()
-                }
-            };
-
-            let fg_key = if self.is_error { "error" } else { "toolOutput" };
-            let output_style = Style::new().fg(theme.fg_ansi(fg_key).to_string());
-            let styled = display_text
-                .lines()
-                .map(|line| {
-                    if line.is_empty() {
-                        String::new()
-                    } else {
-                        output_style.apply(line)
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join("\n");
-            msg_box.add_child(std::boxed::Box::new(Text::new(styled, 0, 0, None)));
-        }
-
-        outer.add_child(std::boxed::Box::new(msg_box));
         outer.render(width)
     }
 }

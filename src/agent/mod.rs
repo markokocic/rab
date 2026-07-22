@@ -1,6 +1,7 @@
 pub mod agent_session;
 pub mod compaction;
 pub mod context_files;
+pub mod default_renderer;
 pub mod extension;
 pub mod footer_data_provider;
 pub mod prompt_templates;
