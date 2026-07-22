@@ -111,28 +111,19 @@ impl HeaderComponent {
         if !self.context_files.is_empty() {
             lines.push(String::new());
             lines.push(section_header("Context"));
-            let theme = current_theme();
-            lines.push(theme.fg_key(
-                ThemeKey::Dim,
-                &format!("  {}", self.context_files.join(", ")),
-            ));
+            lines.push(format!("  {}", self.context_files.join(", ")));
         }
 
         if !self.skills.is_empty() {
             lines.push(String::new());
             lines.push(section_header("Skills"));
-            let theme = current_theme();
-            lines.push(theme.fg_key(ThemeKey::Dim, &format!("  {}", self.skills.join(", "))));
+            lines.push(format!("  {}", self.skills.join(", ")));
         }
 
         if !self.prompt_templates.is_empty() {
             lines.push(String::new());
             lines.push(section_header("Prompts"));
-            let theme = current_theme();
-            lines.push(theme.fg_key(
-                ThemeKey::Dim,
-                &format!("  /{}", self.prompt_templates.join(", /")),
-            ));
+            lines.push(format!("  /{}", self.prompt_templates.join(", /")));
         }
 
         if !self.extensions.is_empty() {
@@ -150,14 +141,13 @@ impl HeaderComponent {
                     }
                 })
                 .collect();
-            lines.push(theme.fg_key(ThemeKey::Dim, &format!("  {}", parts.join(", "))));
+            lines.push(format!("  {}", parts.join(", ")));
         }
 
         if !self.themes.is_empty() {
             lines.push(String::new());
             lines.push(section_header("Themes"));
-            let theme = current_theme();
-            lines.push(theme.fg_key(ThemeKey::Dim, &format!("  {}", self.themes.join(", "))));
+            lines.push(format!("  {}", self.themes.join(", ")));
         }
 
         lines
@@ -170,27 +160,24 @@ impl HeaderComponent {
         if !self.context_files.is_empty() {
             lines.push(String::new());
             lines.push(section_header("Context"));
-            let theme = current_theme();
             for cf in &self.context_files {
-                lines.push(theme.fg_key(ThemeKey::Dim, &format!("  {}", cf)));
+                lines.push(format!("  {}", cf));
             }
         }
 
         if !self.skills.is_empty() {
             lines.push(String::new());
             lines.push(section_header("Skills"));
-            let theme = current_theme();
             for skill in &self.skills {
-                lines.push(theme.fg_key(ThemeKey::Dim, &format!("  {}", skill)));
+                lines.push(format!("  {}", skill));
             }
         }
 
         if !self.prompt_templates.is_empty() {
             lines.push(String::new());
             lines.push(section_header("Prompts"));
-            let theme = current_theme();
             for tmpl in &self.prompt_templates {
-                lines.push(theme.fg_key(ThemeKey::Dim, &format!("  /{}", tmpl)));
+                lines.push(format!("  /{}", tmpl));
             }
         }
 
@@ -200,7 +187,7 @@ impl HeaderComponent {
             let theme = current_theme();
             for (name, enabled) in &self.extensions {
                 let line = if *enabled {
-                    theme.fg_key(ThemeKey::Dim, &format!("  {}", name))
+                    format!("  {}", name)
                 } else {
                     theme.strikethrough(&theme.fg_key(ThemeKey::Dim, &format!("  {}", name)))
                 };
@@ -211,9 +198,8 @@ impl HeaderComponent {
         if !self.themes.is_empty() {
             lines.push(String::new());
             lines.push(section_header("Themes"));
-            let theme = current_theme();
             for t in &self.themes {
-                lines.push(theme.fg_key(ThemeKey::Dim, &format!("  {}", t)));
+                lines.push(format!("  {}", t));
             }
         }
 
