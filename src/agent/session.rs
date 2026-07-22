@@ -132,11 +132,9 @@ impl Session {
         }
     }
 
-    /// Create a new session and flush to disk immediately.
-    pub fn create(cwd: &Path, session_dir: &Path) -> std::io::Result<Self> {
-        let mut s = Self::new(cwd);
-        s.flush(Some(session_dir))?;
-        Ok(s)
+    /// Create a new session (in-memory). The session is persisted on first mutation.
+    pub fn create(cwd: &Path, _session_dir: &Path) -> std::io::Result<Self> {
+        Ok(Self::new(cwd))
     }
 
     /// Open an existing session file. Falls back to a new session on error.
@@ -182,11 +180,8 @@ impl Session {
 
     /// Continue the most recent session in `session_dir`, or create new.
     pub fn continue_recent(cwd: &Path, session_dir: &Path) -> std::io::Result<Self> {
-        let dir_meta = encode_cwd_for_dir(cwd);
-        let per_cwd_dir = session_dir.join(&dir_meta);
-
         let mut files: Vec<(PathBuf, std::time::SystemTime)> = Vec::new();
-        if let Ok(entries) = fs::read_dir(&per_cwd_dir) {
+        if let Ok(entries) = fs::read_dir(session_dir) {
             for entry in entries.flatten() {
                 let p = entry.path();
                 if p.extension().is_some_and(|e| e == "jsonl")
@@ -263,11 +258,10 @@ impl Session {
         Ok(())
     }
 
-    /// Ensure the session file has been flushed at least once.
+    /// Ensure the session file has been flushed to disk.
+    /// Creates the file on first call, updates it on subsequent calls.
     pub fn ensure_flushed(&mut self, session_dir: Option<&Path>) {
-        if self.file_path.is_none() {
-            let _ = self.flush(session_dir);
-        }
+        let _ = self.flush(session_dir);
     }
 
     /// Whether this session has been persisted to disk.
@@ -1133,13 +1127,22 @@ mod tests {
     }
 
     #[test]
-    fn test_create_and_flush() {
+    fn test_create_does_not_flush() {
         let tmp = tempfile::TempDir::new().unwrap();
         let sessions_dir = tmp.path().join("sessions");
         let cwd = tmp.path().join("project");
         std::fs::create_dir_all(&cwd).unwrap();
 
-        let s = Session::create(&cwd, &sessions_dir).unwrap();
+        let mut s = Session::create(&cwd, &sessions_dir).unwrap();
+        // create no longer flushes — session is persisted on first mutation
+        assert!(!s.is_persisted());
+
+        // First mutation triggers flush
+        s.append_message(user_msg("hello"));
+        // append_message doesn't auto-flush at Session level either —
+        // ensure_flushed is called from AgentSession level.
+        // Verify flush works when called explicitly.
+        s.flush(Some(&sessions_dir)).unwrap();
         assert!(s.is_persisted());
         assert!(s.session_file().unwrap().exists());
     }
@@ -1354,5 +1357,68 @@ mod tests {
         let s = Session::continue_recent(&cwd, &sessions_dir).unwrap();
         assert!(!s.session_id().is_empty());
         assert!(s.get_entries().is_empty());
+    }
+
+    #[test]
+    fn test_full_persistence_flow() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let cwd = tmp.path().join("project");
+        std::fs::create_dir_all(&cwd).unwrap();
+
+        let mut session = crate::agent::AgentSession::create(&cwd, None);
+        assert!(!session.is_persisted(), "should not persist on create");
+
+        session.on_model_change("anthropic", "claude-sonnet-4-20250514");
+        session.on_thinking_level_change("high");
+        assert!(
+            !session.is_persisted(),
+            "should not persist on metadata only"
+        );
+
+        use yoagent::types::*;
+        let user_msg = AgentMessage::Llm(Message::User {
+            content: vec![Content::Text {
+                text: "hello".to_string(),
+            }],
+            timestamp: 1000,
+        });
+        session.on_agent_event(&AgentEvent::MessageEnd { message: user_msg });
+
+        assert!(session.is_persisted(), "should persist after first message");
+        let path = session.session_file().expect("should have a file path");
+        assert!(path.exists(), "file should exist on disk");
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            content.contains("hello"),
+            "file should contain the message text"
+        );
+        assert!(
+            content.contains("claude-sonnet-4-20250514"),
+            "file should contain model info"
+        );
+
+        // Second message — ensure_flushed now always writes, so it should update the file
+        let asst_msg = AgentMessage::Llm(Message::assistant(
+            vec![Content::Text {
+                text: "hi there".to_string(),
+            }],
+            yoagent::types::StopReason::Stop,
+            "claude-sonnet-4-20250514",
+            "anthropic",
+            yoagent::types::Usage::default(),
+        ));
+        session.on_agent_event(&AgentEvent::MessageEnd { message: asst_msg });
+
+        let content2 = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            content2.contains("hello"),
+            "file should still contain user message"
+        );
+        assert!(
+            content2.contains("hi there"),
+            "file should contain assistant response"
+        );
+        assert!(content2.len() > content.len(), "file should have grown");
     }
 }

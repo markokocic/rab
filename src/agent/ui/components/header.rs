@@ -55,8 +55,8 @@ pub struct HeaderComponent {
     skills: Vec<String>,
     /// Prompt template command names (e.g. "/explain", "/review").
     prompt_templates: Vec<String>,
-    /// Extension names loaded for the session.
-    extensions: Vec<String>,
+    /// Extension names loaded for the session (name, enabled).
+    extensions: Vec<(String, bool)>,
     /// Custom theme names loaded for the session.
     themes: Vec<String>,
 }
@@ -93,7 +93,7 @@ impl HeaderComponent {
         context_files: Vec<String>,
         skills: Vec<String>,
         prompt_templates: Vec<String>,
-        extensions: Vec<String>,
+        extensions: Vec<(String, bool)>,
         themes: Vec<String>,
     ) {
         self.context_files = context_files;
@@ -139,7 +139,18 @@ impl HeaderComponent {
             lines.push(String::new());
             lines.push(section_header("Extensions"));
             let theme = current_theme();
-            lines.push(theme.fg_key(ThemeKey::Dim, &format!("  {}", self.extensions.join(", "))));
+            let parts: Vec<String> = self
+                .extensions
+                .iter()
+                .map(|(name, enabled)| {
+                    if *enabled {
+                        name.clone()
+                    } else {
+                        theme.strikethrough(&theme.fg_key(ThemeKey::Dim, name))
+                    }
+                })
+                .collect();
+            lines.push(theme.fg_key(ThemeKey::Dim, &format!("  {}", parts.join(", "))));
         }
 
         if !self.themes.is_empty() {
@@ -187,8 +198,13 @@ impl HeaderComponent {
             lines.push(String::new());
             lines.push(section_header("Extensions"));
             let theme = current_theme();
-            for ext in &self.extensions {
-                lines.push(theme.fg_key(ThemeKey::Dim, &format!("  {}", ext)));
+            for (name, enabled) in &self.extensions {
+                let line = if *enabled {
+                    theme.fg_key(ThemeKey::Dim, &format!("  {}", name))
+                } else {
+                    theme.strikethrough(&theme.fg_key(ThemeKey::Dim, &format!("  {}", name)))
+                };
+                lines.push(line);
             }
         }
 

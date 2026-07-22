@@ -124,16 +124,20 @@ impl AgentSession {
     // ── Static factory methods ─────────────────────────────────
 
     /// Create a new persisted session.
+    /// Defaults to get_default_session_dir(cwd) when session_dir is None,
+    /// matching the behaviour of continue_recent.
     pub fn create(cwd: &Path, session_dir: Option<&Path>) -> Self {
         let sd = session_dir.map(|p| p.to_path_buf());
-        let inner = match sd.as_ref() {
-            Some(dir) => Session::create(cwd, dir).unwrap_or_else(|e| {
-                eprintln!("Warning: failed to create session file: {}", e);
-                Session::new(cwd)
-            }),
-            None => Session::new(cwd),
+        let default_sd = crate::agent::session::get_default_session_dir(cwd);
+        let (dir, effective_sd) = match sd.as_ref() {
+            Some(dir) => (dir.as_path(), sd.clone()),
+            None => (default_sd.as_path(), Some(default_sd.clone())),
         };
-        Self::new(inner, sd)
+        let inner = Session::create(cwd, dir).unwrap_or_else(|e| {
+            eprintln!("Warning: failed to create session file: {}", e);
+            Session::new(cwd)
+        });
+        Self::new(inner, effective_sd)
     }
 
     /// Open a specific session file.
@@ -151,14 +155,16 @@ impl AgentSession {
     /// Continue most recent session or create new.
     pub fn continue_recent(cwd: &Path, session_dir: Option<&Path>) -> Self {
         let sd = session_dir.map(|p| p.to_path_buf());
-        let inner = match sd.as_ref() {
-            Some(dir) => Session::continue_recent(cwd, dir).unwrap_or_else(|e| {
-                eprintln!("Warning: failed to continue recent session: {}", e);
-                Session::new(cwd)
-            }),
-            None => Session::new(cwd),
+        let default_sd = crate::agent::session::get_default_session_dir(cwd);
+        let (dir, effective_sd) = match sd.as_ref() {
+            Some(dir) => (dir.as_path(), sd.clone()),
+            None => (default_sd.as_path(), Some(default_sd.clone())),
         };
-        Self::new(inner, sd)
+        let inner = Session::continue_recent(cwd, dir).unwrap_or_else(|e| {
+            eprintln!("Warning: failed to continue recent session: {}", e);
+            Session::new(cwd)
+        });
+        Self::new(inner, effective_sd)
     }
 
     /// Fork a session from another project directory.
@@ -391,13 +397,17 @@ impl AgentSession {
     /// Returns the entry id.
     pub fn send_user_message(&mut self, content: &str) -> String {
         let msg = user_message(content);
-        self.inner.append_message(msg)
+        let id = self.inner.append_message(msg);
+        self.ensure_flushed();
+        id
     }
 
     /// Append a user message (pre-constructed) to the session.
     /// Returns the entry id.
     pub fn send_user_message_obj(&mut self, msg: &AgentMessage) -> String {
-        self.inner.append_message(msg.clone())
+        let id = self.inner.append_message(msg.clone());
+        self.ensure_flushed();
+        id
     }
 
     // ── Event-driven persistence ──────────────────────────────────
@@ -431,6 +441,7 @@ impl AgentSession {
                 let cost = self.compute_message_cost(message);
                 self.inner.append_message_with_cost(message.clone(), cost);
             }
+            self.ensure_flushed();
         }
     }
 

@@ -526,10 +526,14 @@ impl App {
             .iter()
             .map(|t| t.name.clone())
             .collect();
-        let extension_names: Vec<String> = config
+        let extension_names: Vec<(String, bool)> = config
             .extensions
             .iter()
-            .map(|e| e.name().to_string())
+            .map(|e| {
+                let enabled =
+                    crate::agent::extension::is_extension_enabled(e.as_ref(), &config.settings);
+                (e.name().to_string(), enabled)
+            })
             .collect();
         // Custom theme names (excluding built-in dark/light), matching pi's showLoadedResources
         let theme_names: Vec<String> = crate::agent::ui::theme::get_available_themes()
@@ -4045,10 +4049,16 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
                     .iter()
                     .map(|t| t.name.clone())
                     .collect();
-                let extension_names: Vec<String> = app
+                let extension_names: Vec<(String, bool)> = app
                     .extensions
                     .iter()
-                    .map(|e| e.name().to_string())
+                    .map(|e| {
+                        let enabled = crate::agent::extension::is_extension_enabled(
+                            e.as_ref(),
+                            &app.settings,
+                        );
+                        (e.name().to_string(), enabled)
+                    })
                     .collect();
                 let theme_names: Vec<String> = crate::agent::ui::theme::get_available_themes()
                     .into_iter()
