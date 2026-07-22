@@ -32,6 +32,11 @@ use crate::tui::Component;
 use crate::tui::TUI;
 use crate::tui::focusable::Focusable;
 
+pub mod events;
+pub mod helpers;
+pub(crate) use events::*;
+pub(crate) use helpers::*;
+
 /// Pending label changes accumulator (used by tree selector, flushed each frame).
 pub type PendingLabelChanges = Rc<RefCell<Vec<(String, Option<String>)>>>;
 
@@ -343,18 +348,22 @@ pub struct App {
 impl App {
     fn new(config: AppConfig, session: AgentSession) -> Self {
         let mut agent_session = session;
-        let model_config = config
+        let resolved = config
             .registry
             .resolve(&config.model, Some(&config.provider))
-            .ok()
+            .ok();
+        let model_config = resolved
+            .as_ref()
             .map(|r| r.model_config.clone())
             .unwrap_or_else(|| crate::agent::base_model_config(&config.model));
         let context_window = model_config.context_window;
+        let rab_compat = resolved.as_ref().map(|r| r.rab_compat.clone());
         agent_session.set_compaction_config(
             config.api_key.clone(),
             &config.model,
             context_window as u64,
             Some(model_config),
+            rab_compat,
         );
         agent_session.set_registry(config.registry.clone());
         agent_session.set_auto_compact(config.settings.get_auto_compact());
@@ -3498,6 +3507,11 @@ fn build_fresh_agent(
         .filter(|k| !k.is_empty())
         .unwrap_or(api_key);
 
+    let rab_compat = resolved
+        .as_ref()
+        .map(|r| r.rab_compat.clone())
+        .unwrap_or_default();
+
     let tools: Vec<Box<dyn yoagent::types::AgentTool>> = app
         .extensions
         .iter()
@@ -3506,15 +3520,9 @@ fn build_fresh_agent(
         .map(|twm| Box::new(twm) as Box<dyn yoagent::types::AgentTool>)
         .collect();
 
-    let compat = mc
-        .compat
-        .as_ref()
-        .map(crate::provider::compat::RabOpenAiCompat::from)
-        .unwrap_or_default();
-
     let agent = match mc.api {
         ApiProtocol::OpenAiCompletions => yoagent::agent::Agent::from_provider(
-            crate::provider::openai_compat::RabOpenAiCompatProvider::new(compat),
+            crate::provider::openai_compat::RabOpenAiCompatProvider::new(rab_compat),
             mc.clone(),
         ),
         ApiProtocol::AnthropicMessages => yoagent::agent::Agent::from_provider(
@@ -4454,7 +4462,7 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
 }
 
 /// Look up a tool renderer by name from extensions (bundled in ToolDefinition.renderer).
-fn find_tool_renderer(
+pub(super) fn find_tool_renderer(
     extensions: &[Box<dyn crate::agent::extension::Extension>],
     name: &str,
 ) -> Option<Arc<dyn ToolRenderer>> {
@@ -4947,7 +4955,7 @@ fn show_summarization_prompt(app: &mut App, tui: &mut TUI, _entry_id: &str) {
 /// (spacer + InfoMessageComponent), they are replaced in-place rather than
 /// appending new entries. This prevents multiple consecutive status messages
 /// from accumulating at the end of the chat session.
-fn show_status(app: &mut App, message: impl Into<String>) {
+pub(super) fn show_status(app: &mut App, message: impl Into<String>) {
     let mut chat = app.chat_container.borrow_mut();
     // Check if previous status children are still the last in the container
     // (pi-style: last two are Spacer + Text, replaced in-place)
@@ -4969,7 +4977,7 @@ fn show_status(app: &mut App, message: impl Into<String>) {
 }
 
 /// Concatenate all Text content from a slice of Content values.
-fn extract_text_content(content: &[yoagent::types::Content]) -> String {
+pub(super) fn extract_text_content(content: &[yoagent::types::Content]) -> String {
     content
         .iter()
         .filter_map(|c| {
@@ -5126,421 +5134,4 @@ fn copy_to_clipboard(text: &str) -> bool {
     }
 
     copied
-}
-
-/// Handle agent events from the channel.
-///
-/// Delegates persistence to `AgentSession::on_agent_event()` (single source of truth)
-/// and only handles display/UI logic here. This mirrors pi's single _handleAgentEvent
-/// that all modes share — the mode-agnostic persistence lives on AgentSession, and each
-/// mode adds display on top.
-fn handle_agent_event(app: &mut App, event: yoagent::types::AgentEvent) {
-    // ── Persistence: delegate to the shared handler (single source of truth) ──
-    // Handle with &event before the display match consumes it.
-    {
-        let ev = &event;
-        if let E::MessageEnd { message } = ev {
-            if crate::agent::types::message_is_user(message)
-                && let Some(ref mut s) = app.session
-            {
-                s.reset_overflow_recovery();
-            }
-            if crate::agent::types::message_error(message).is_none()
-                && !crate::agent::types::message_is_system_stop(message)
-                && let Some(ref mut s) = app.session
-            {
-                s.on_agent_event(ev);
-            }
-        }
-        if let E::ToolExecutionEnd { tool_call_id, .. } = ev
-            && tool_call_id != "__bang__"
-            && let Some(ref mut s) = app.session
-        {
-            s.on_agent_event(ev);
-        }
-        if let E::AgentEnd { .. } = ev
-            && let Some(ref mut s) = app.session
-        {
-            s.on_agent_event(ev);
-        }
-    }
-
-    // ── Display logic (consumes owned event) ──
-    use yoagent::types::AgentEvent as E;
-    match event {
-        E::AgentStart => {
-            app.is_streaming = true;
-            app.working.start();
-            app.refresh_git_branch();
-        }
-        E::TurnStart => {}
-        E::MessageStart { message } => {
-            // Add user messages to chat when the agent loop processes them.
-            // Covers both the initial prompt (non-streaming) and
-            // steered/follow-up messages queued during streaming.
-            if crate::agent::types::message_is_user(&message) {
-                let text = crate::agent::types::message_text(&message);
-                if !text.is_empty() {
-                    // pi: add Spacer(1) before user messages when chat isn't empty
-                    let mut chat = app.chat_container.borrow_mut();
-                    if !chat.children().is_empty() {
-                        chat.add_child(std::boxed::Box::new(Spacer::new(1)));
-                    }
-                    chat.add_child(std::boxed::Box::new(
-                        crate::agent::ui::components::UserMessageComponent::new(&text),
-                    ));
-                }
-            }
-        }
-        E::MessageUpdate { delta, .. } => {
-            use yoagent::types::StreamDelta;
-            match delta {
-                StreamDelta::Text { delta } => {
-                    if let Some(weak) = app.streaming_component.as_ref().and_then(|w| w.upgrade()) {
-                        weak.borrow_mut().append_text(&delta);
-                    } else {
-                        use crate::tui::components::rc_ref_cell_component::RcRefCellComponent;
-                        let comp = Rc::new(RefCell::new(
-                            crate::agent::ui::components::AssistantMessageComponent::new(&delta),
-                        ));
-                        if app.hide_thinking {
-                            comp.borrow_mut().set_hide_thinking(true);
-                        }
-                        app.streaming_component = Some(Rc::downgrade(&comp));
-                        app.chat_container
-                            .borrow_mut()
-                            .add_child(std::boxed::Box::new(RcRefCellComponent(comp)));
-                    }
-                }
-                StreamDelta::Thinking { delta } => {
-                    if let Some(weak) = app.streaming_component.as_ref().and_then(|w| w.upgrade()) {
-                        weak.borrow_mut()
-                            .add_thinking(&delta, app.thinking_level.clone());
-                    } else {
-                        use crate::tui::components::rc_ref_cell_component::RcRefCellComponent;
-                        let mut comp =
-                            crate::agent::ui::components::AssistantMessageComponent::new("");
-                        comp.add_thinking(&delta, app.thinking_level.clone());
-                        if app.hide_thinking {
-                            comp.set_hide_thinking(true);
-                        }
-                        let comp = Rc::new(RefCell::new(comp));
-                        app.streaming_component = Some(Rc::downgrade(&comp));
-                        app.chat_container
-                            .borrow_mut()
-                            .add_child(std::boxed::Box::new(RcRefCellComponent(comp)));
-                    }
-                }
-                StreamDelta::ToolCallDelta { .. } => {}
-            }
-        }
-        E::ToolExecutionStart {
-            tool_call_id,
-            tool_name,
-            args,
-        } => {
-            app.pending_tool_executions += 1;
-            app.streaming_component = None;
-            let name = tool_name;
-            let renderer = find_tool_renderer(&app.extensions, &name);
-            let started_at = std::time::Instant::now();
-            let (invalidate_tx, invalidate_rx) =
-                crate::agent::ui::components::ToolExecComponent::make_invalidation_channel();
-            app.invalidate_rxs.push(invalidate_rx);
-            let comp: Rc<RefCell<_>> = {
-                let mut tool = crate::agent::ui::components::ToolExecComponent::new(
-                    &name,
-                    renderer,
-                    args.clone(),
-                    app.cwd.to_string_lossy().to_string(),
-                    tool_call_id.clone(),
-                );
-                tool.set_started_at(std::time::Instant::now());
-                tool.set_invalidate_tx(invalidate_tx);
-                Rc::new(RefCell::new(tool))
-            };
-            comp.borrow_mut().set_expanded(app.tools_expanded);
-            app.pending_tools
-                .insert(tool_call_id.clone(), Rc::downgrade(&comp));
-            app.tool_call_start_times
-                .insert(tool_call_id.clone(), started_at);
-            chat_add(
-                app,
-                std::boxed::Box::new(crate::agent::ui::components::RcToolExec(comp)),
-            );
-        }
-        E::ToolExecutionUpdate {
-            tool_call_id,
-            partial_result,
-            ..
-        } => {
-            // Forward partial results to the pending tool component (live streaming).
-            let partial_text = extract_text_content(&partial_result.content);
-            if !partial_text.is_empty()
-                && let Some(weak) = app.pending_tools.get(&tool_call_id)
-                && let Some(comp) = weak.upgrade()
-            {
-                comp.borrow_mut().append_output(&partial_text);
-            }
-        }
-        E::ToolExecutionEnd {
-            tool_call_id,
-            tool_name: _,
-            result,
-            is_error,
-        } => {
-            app.pending_tool_executions = app.pending_tool_executions.saturating_sub(1);
-            let content = extract_text_content(&result.content);
-            if let Some(weak) = app.pending_tools.get(&tool_call_id)
-                && let Some(comp) = weak.upgrade()
-            {
-                comp.borrow_mut()
-                    .set_result_with_details(&content, is_error, Some(result.details));
-                app.tool_call_start_times.remove(&tool_call_id);
-            }
-        }
-        E::ProgressMessage {
-            text, tool_name, ..
-        } => {
-            // Bang (") command progress feeds into pending_tools["__bang__"]
-            if let Some(weak) = app.pending_tools.get("__bang__")
-                && let Some(comp) = weak.upgrade()
-            {
-                comp.borrow_mut().append_output(&text);
-            } else if tool_name.is_empty() {
-                // General progress message (not tool-specific) — show as status
-                app.status_text = Some(text.trim().to_string());
-            }
-        }
-        E::TurnEnd { message, .. } => {
-            app.streaming_component = None;
-            // Refresh footer stats after each turn completes (sooner than
-            // AgentEnd, but still bounded by turn frequency — not every frame).
-            if let Some(ref s) = app.session {
-                app.footer.borrow_mut().refresh_from_session(s.session());
-            }
-            // Surface provider errors carried by the turn's final message.
-            if let Some(err) = crate::agent::types::message_error(&message) {
-                show_status(app, format!("Provider error: {}", err));
-            }
-            // Pi-compatible shouldStopAfterTurn: if stop was requested, save
-            // the steer/follow-up queues so they're preserved for the next run
-            // and the agent loop exits (queues are empty).
-            if app.stop_requested.load(Ordering::Relaxed) {
-                if let Some(ref agent) = app.agent {
-                    app.saved_queued_msgs
-                        .append(&mut agent.take_steering_queue());
-                    app.saved_queued_msgs
-                        .append(&mut agent.take_follow_up_queue());
-                }
-                app.stop_requested.store(false, Ordering::Relaxed);
-            }
-        }
-        E::AgentEnd { messages } => {
-            app.streaming_component = None;
-            app.is_streaming = false;
-            app.working.stop();
-            app.footer.borrow_mut().set_streaming(false);
-            // Refresh footer cached stats from session at turn end (pull-based)
-            if let Some(ref s) = app.session {
-                app.footer.borrow_mut().refresh_from_session(s.session());
-            }
-            // Pi-compatible: schedule auto-compaction check after agent ends.
-            // check_auto_compact() is called asynchronously in the main loop.
-            app.pending_auto_compact = app.auto_compact;
-            // Detect silent stops / provider errors: surface any assistant message
-            // that ended without visible output (empty content or provider error).
-            // Provider errors with error_message set were never forwarded as
-            // MessageEnd events (the provider returned Err() without streaming),
-            // so they must be surfaced here.
-            for msg in messages.iter().rev() {
-                if let Some(yoagent::types::Message::Assistant {
-                    content,
-                    stop_reason,
-                    error_message,
-                    ..
-                }) = msg.as_llm()
-                    && stop_reason != &yoagent::types::StopReason::ToolUse
-                {
-                    if let Some(err) = error_message {
-                        show_status(app, format!("Provider error: {}", err));
-                        break;
-                    }
-                    // Check for any visible content: non-empty text or tool calls.
-                    // Thinking blocks alone don't count as visible output
-                    // (they may be hidden or just cut-off thoughts).
-                    let has_visible = content.iter().any(|c| match c {
-                        yoagent::types::Content::Text { text } => !text.trim().is_empty(),
-                        yoagent::types::Content::ToolCall { .. } => true,
-                        _ => false,
-                    });
-                    if !has_visible {
-                        show_status(
-                            app,
-                            "The agent returned an empty response. \
-                                 This can happen when the provider's context \
-                                 limit is exceeded or the model declined to \
-                                 respond. Try sending a new message."
-                                .to_string(),
-                        );
-                        break;
-                    }
-                }
-            }
-        }
-        E::MessageEnd { message } => {
-            // Special cases: persist as extension (excluded from LLM context).
-            // Normal persistence handled by if-let above before the display match.
-            if let Some(err) = crate::agent::types::message_error(&message) {
-                show_status(app, err.to_string());
-                let ext = crate::agent::types::extension_message("error", err, true);
-                if let Some(ref mut s) = app.session {
-                    s.persist_extension_message(&ext);
-                }
-            } else if crate::agent::types::message_is_system_stop(&message) {
-                let text = crate::agent::types::message_text(&message);
-                show_status(app, text.clone());
-                if let Some(ref mut s) = app.session {
-                    let ext = crate::agent::types::extension_message("system_stop", text, true);
-                    s.persist_extension_message(&ext);
-                }
-            } else if crate::agent::types::message_is_extension(&message) {
-                // Extension messages: display in chat (persisted by on_agent_event).
-                if let Some(text) = crate::agent::types::message_extension_text(&message) {
-                    show_status(app, text);
-                }
-            }
-        }
-        E::InputRejected { reason } => {
-            let msg = format!("Input rejected: {}", reason);
-            show_status(app, msg);
-        }
-    }
-}
-
-/// Parse a ! or !! bang command from input.
-fn parse_bang_command(input: &str) -> Option<(String, bool)> {
-    if let Some(rest) = input.strip_prefix("!!") {
-        let cmd = rest.trim();
-        if cmd.is_empty() {
-            None
-        } else {
-            Some((cmd.to_string(), true))
-        }
-    } else if let Some(rest) = input.strip_prefix('!') {
-        let cmd = rest.trim();
-        if cmd.is_empty() {
-            None
-        } else {
-            Some((cmd.to_string(), false))
-        }
-    } else {
-        None
-    }
-}
-
-// ── Skills utilities (moved inline from skills.rs) ─────────────────
-
-fn xml_escape(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&apos;")
-}
-
-fn strip_frontmatter(content: &str) -> String {
-    let content = content.trim_start();
-    if !content.starts_with("---") {
-        return content.to_string();
-    }
-    let remaining = &content[3..];
-    let end = match remaining.find("---") {
-        Some(pos) => pos,
-        None => return content.to_string(),
-    };
-    let body_start = 3 + end + 3;
-    content[body_start..].trim().to_string()
-}
-
-fn read_skill_body(file_path: &std::path::Path) -> Option<String> {
-    let content = std::fs::read_to_string(file_path).ok()?;
-    Some(strip_frontmatter(&content))
-}
-
-fn format_skill_invocation(skill: &yoagent::skills::Skill, extra: Option<&str>) -> Option<String> {
-    let body = read_skill_body(&skill.file_path)?;
-    let block = format!(
-        r#"<skill name="{}" location="{}">
-References are relative to {}.
-
-{}
-</skill>"#,
-        xml_escape(&skill.name),
-        xml_escape(&skill.file_path.to_string_lossy()),
-        xml_escape(&skill.base_dir.to_string_lossy()),
-        body
-    );
-    Some(match extra {
-        Some(instr) if !instr.is_empty() => format!("{}\n\n{}", block, instr),
-        _ => block,
-    })
-}
-
-fn expand_skill_command(text: &str, skills: &[yoagent::skills::Skill]) -> String {
-    if !text.starts_with("/skill:") {
-        return text.to_string();
-    }
-    let rest = &text[7..];
-    let (skill_name, args) = match rest.find(' ') {
-        Some(pos) => (&rest[..pos], rest[pos + 1..].trim()),
-        None => (rest, ""),
-    };
-    match skills.iter().find(|s| s.name == skill_name) {
-        Some(s) => format_skill_invocation(s, if args.is_empty() { None } else { Some(args) })
-            .unwrap_or_else(|| text.to_string()),
-        None => text.to_string(),
-    }
-}
-
-/// Parse a skill block from text (pi-compatible).
-/// Returns Some((name, body, user_message)) if the text is a skill block.
-pub fn parse_skill_block(text: &str) -> Option<(&str, &str, Option<&str>)> {
-    let text = text.trim();
-    let after_open = text.strip_prefix("<skill name=\"")?;
-    let (name, rest) = after_open.split_once("\" location=\"")?;
-    let (_location, rest) = rest.split_once("\">\n")?;
-    // Find closing tag to extract body
-    let close_tag = "\n</skill>";
-    let content_end = rest.rfind(close_tag)?;
-    let body = rest[..content_end].trim();
-    let after_close = rest[content_end + close_tag.len()..].trim();
-    let user_message = if after_close.is_empty() {
-        None
-    } else {
-        Some(after_close)
-    };
-    Some((name, body, user_message))
-}
-
-/// Format a skill block for display (prettify XML into a readable form).
-/// Returns None if the text is not a skill block.
-pub fn format_skill_block_for_display(text: &str) -> Option<String> {
-    let (name, body, user_message) = parse_skill_block(text)?;
-    let mut result = String::new();
-    // Markdown bold label: **[skill] name**
-    result.push_str("**[");
-    result.push_str("skill] ");
-    result.push_str(name);
-    result.push_str("**\n\n");
-    // Body content
-    result.push_str(body);
-    result.push('\n');
-    // Append user message if present
-    if let Some(msg) = user_message {
-        result.push_str("\n---\n");
-        result.push_str(msg);
-        result.push('\n');
-    }
-    Some(result)
 }

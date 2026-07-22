@@ -6,11 +6,9 @@ use std::path::Path;
 
 use anyhow::Context;
 use serde::Deserialize;
-use yoagent::provider::model::{
-    ApiProtocol, CostConfig, MaxTokensField, ModelConfig, OpenAiCompat, ThinkingFormat,
-};
+use yoagent::provider::model::{ApiProtocol, CostConfig, ModelConfig};
 
-use super::compat::{RabMaxTokensField, RabOpenAiCompat, RabThinkingFormat};
+use super::compat::RabOpenAiCompat;
 
 /// Root structure of models.json
 #[derive(Debug, Deserialize)]
@@ -51,8 +49,6 @@ struct ModelDef {
     reasoning: bool,
     #[serde(default)]
     thinking_level_map: Option<HashMap<String, serde_json::Value>>,
-    #[serde(default)]
-    input: Option<Vec<String>>,
     #[serde(default)]
     cost: Option<CostDef>,
     #[serde(default)]
@@ -123,9 +119,6 @@ fn parse_provider(id: &str, def: ProviderDef) -> anyhow::Result<ProviderEntry> {
             .or_else(|| def.base_url.clone())
             .unwrap_or_default();
 
-        let input = m.input.clone().unwrap_or_else(|| vec!["text".to_string()]);
-        let _has_image = input.iter().any(|s| s == "image");
-
         let cost = m
             .cost
             .as_ref()
@@ -139,15 +132,6 @@ fn parse_provider(id: &str, def: ProviderDef) -> anyhow::Result<ProviderEntry> {
 
         let context_window = m.context_window.unwrap_or(128_000);
         let max_tokens = m.max_tokens.unwrap_or(16_384);
-
-        // Build rab compat and yoagent compat for this model
-        let rab_compat = m.compat.clone().unwrap_or_default();
-
-        let yoagent_compat = if api == ApiProtocol::OpenAiCompletions {
-            Some(convert_to_yoagent_compat(&rab_compat))
-        } else {
-            None
-        };
 
         // Collect user-specified headers only (no internal metadata)
         let mut headers = HashMap::new();
@@ -174,8 +158,6 @@ fn parse_provider(id: &str, def: ProviderDef) -> anyhow::Result<ProviderEntry> {
         model.max_tokens = max_tokens;
         model.cost = cost;
         model.headers = headers;
-        model.compat = yoagent_compat;
-
         models.push(model);
     }
 
@@ -201,40 +183,6 @@ fn parse_provider(id: &str, def: ProviderDef) -> anyhow::Result<ProviderEntry> {
         thinking_maps,
         env_var_hint: env_var,
     })
-}
-
-/// Convert our rich compat to yoagent's OpenAiCompat for the fields they share.
-fn convert_to_yoagent_compat(rab: &RabOpenAiCompat) -> OpenAiCompat {
-    let max_tokens_field = match rab.max_tokens_field {
-        RabMaxTokensField::MaxTokens => MaxTokensField::MaxTokens,
-        RabMaxTokensField::MaxCompletionTokens => MaxTokensField::MaxCompletionTokens,
-    };
-
-    let thinking_format = match rab.thinking_format {
-        RabThinkingFormat::OpenAi
-        | RabThinkingFormat::OpenRouter
-        | RabThinkingFormat::DeepSeek
-        | RabThinkingFormat::Together
-        | RabThinkingFormat::Zai
-        | RabThinkingFormat::ChatTemplate
-        | RabThinkingFormat::QwenChatTemplate
-        | RabThinkingFormat::StringThinking
-        | RabThinkingFormat::AntLing => ThinkingFormat::OpenAi,
-        RabThinkingFormat::Qwen => ThinkingFormat::Qwen,
-    };
-
-    OpenAiCompat {
-        supports_store: rab.supports_store,
-        supports_developer_role: rab.supports_developer_role,
-        supports_reasoning_effort: rab.supports_reasoning_effort,
-        supports_thinking_control: rab.supports_thinking_control
-            || rab.thinking_format == RabThinkingFormat::DeepSeek,
-        supports_usage_in_streaming: rab.supports_usage_in_streaming,
-        max_tokens_field,
-        requires_tool_result_name: rab.requires_tool_result_name,
-        requires_assistant_after_tool_result: rab.requires_assistant_after_tool_result,
-        thinking_format,
-    }
 }
 
 /// Load providers from an embedded JSON string (from `include_str!`).

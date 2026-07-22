@@ -72,6 +72,8 @@ pub struct AgentSession {
     compaction_api_key: Option<String>,
     /// Model configuration for compaction LLM calls (base URL, compat flags, etc.).
     model_config: Option<yoagent::provider::model::ModelConfig>,
+    /// Rab compat flags for compaction LLM calls.
+    rab_compat: Option<crate::provider::compat::RabOpenAiCompat>,
     /// Current thinking level from the session (for compaction summarization).
     thinking_level: yoagent::types::ThinkingLevel,
     /// Lifecycle event listeners.
@@ -110,6 +112,7 @@ impl AgentSession {
             model_name: String::new(),
             compaction_api_key: None,
             model_config: None,
+            rab_compat: None,
             thinking_level: yoagent::types::ThinkingLevel::Off,
             event_listeners: Vec::new(),
             overflow_recovery_attempted: false,
@@ -182,6 +185,7 @@ impl AgentSession {
         model_name: &str,
         context_window: u64,
         model_config: Option<yoagent::provider::model::ModelConfig>,
+        rab_compat: Option<crate::provider::compat::RabOpenAiCompat>,
     ) {
         self.compaction_api_key = Some(api_key);
         self.model_name = model_name.to_string();
@@ -190,6 +194,7 @@ impl AgentSession {
             .as_ref()
             .map_or(context_window, |mc| mc.context_window as u64);
         self.model_config = model_config;
+        self.rab_compat = rab_compat;
     }
 
     /// Apply compaction settings from the user's settings config.
@@ -512,14 +517,11 @@ impl AgentSession {
             mc
         });
 
+        let rab_compat = self.rab_compat.clone().unwrap_or_default();
+
         let agent = match mc.api {
             ApiProtocol::OpenAiCompletions => yoagent::agent::Agent::from_provider(
-                crate::provider::openai_compat::RabOpenAiCompatProvider::new(
-                    mc.compat
-                        .as_ref()
-                        .map(crate::provider::compat::RabOpenAiCompat::from)
-                        .unwrap_or_default(),
-                ),
+                crate::provider::openai_compat::RabOpenAiCompatProvider::new(rab_compat),
                 mc.clone(),
             ),
             ApiProtocol::AnthropicMessages => yoagent::agent::Agent::from_provider(

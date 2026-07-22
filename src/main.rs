@@ -10,6 +10,73 @@ use yoagent::types::AgentTool as _;
 
 use rab::tui::keybindings::{Keybindings, init_keybindings};
 
+// ── Session resolution helpers (used by --session, --fork, --resume) ──
+
+enum ResolvedSession {
+    Path(std::path::PathBuf),
+    Found {
+        path: std::path::PathBuf,
+        cwd: String,
+    },
+}
+
+impl ResolvedSession {
+    fn path(&self) -> &std::path::Path {
+        match self {
+            ResolvedSession::Path(p) => p.as_path(),
+            ResolvedSession::Found { path, .. } => path.as_path(),
+        }
+    }
+
+    fn cwd(&self) -> Option<&str> {
+        match self {
+            ResolvedSession::Path(_) => None,
+            ResolvedSession::Found { cwd, .. } => Some(cwd.as_str()),
+        }
+    }
+}
+
+/// Resolve a session argument (path or partial ID) for --session and --fork.
+fn resolve_session_arg(
+    arg: &str,
+    cwd: &std::path::Path,
+    _session_dir: Option<&std::path::Path>,
+) -> Result<ResolvedSession, String> {
+    // If it looks like a path (contains separator or ends with .jsonl), use as-is
+    if arg.contains('/') || arg.contains('\\') || arg.ends_with(".jsonl") {
+        let path = std::path::PathBuf::from(arg);
+        if path.is_absolute() {
+            return Ok(ResolvedSession::Path(path));
+        }
+        return Ok(ResolvedSession::Path(cwd.join(&path)));
+    }
+
+    // Try to match as session ID prefix (first exact, then prefix)
+    let session_dir = _session_dir
+        .map(|d| d.to_path_buf())
+        .unwrap_or_else(|| rab::agent::session::get_default_session_dir(cwd));
+    let sessions = rab::agent::session::list_sessions(&session_dir);
+
+    // Exact match first
+    if let Some(s) = sessions.iter().find(|s| s.id == arg) {
+        return Ok(ResolvedSession::Found {
+            path: s.path.clone(),
+            cwd: s.cwd.clone(),
+        });
+    }
+
+    // Prefix match
+    let matches: Vec<_> = sessions.iter().filter(|s| s.id.starts_with(arg)).collect();
+    if matches.len() == 1 {
+        return Ok(ResolvedSession::Found {
+            path: matches[0].path.clone(),
+            cwd: matches[0].cwd.clone(),
+        });
+    }
+
+    Err(format!("No session found matching '{}'", arg))
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
@@ -198,71 +265,6 @@ async fn main() -> anyhow::Result<()> {
     init_keybindings(keybindings);
 
     let session_dir = session_dir_override.as_ref().map(std::path::PathBuf::from);
-
-    // Resolve session arg (path or partial ID) for --session and --fork
-    fn resolve_session_arg(
-        arg: &str,
-        cwd: &std::path::Path,
-        _session_dir: Option<&std::path::Path>,
-    ) -> Result<ResolvedSession, String> {
-        // If it looks like a path (contains separator or ends with .jsonl), use as-is
-        if arg.contains('/') || arg.contains('\\') || arg.ends_with(".jsonl") {
-            let path = std::path::PathBuf::from(arg);
-            if path.is_absolute() {
-                return Ok(ResolvedSession::Path(path));
-            }
-            return Ok(ResolvedSession::Path(cwd.join(&path)));
-        }
-
-        // Try to match as session ID prefix (first exact, then prefix)
-        let session_dir = _session_dir
-            .map(|d| d.to_path_buf())
-            .unwrap_or_else(|| rab::agent::session::get_default_session_dir(cwd));
-        let sessions = rab::agent::session::list_sessions(&session_dir);
-
-        // Exact match first
-        if let Some(s) = sessions.iter().find(|s| s.id == arg) {
-            return Ok(ResolvedSession::Found {
-                path: s.path.clone(),
-                cwd: s.cwd.clone(),
-            });
-        }
-
-        // Prefix match
-        let matches: Vec<_> = sessions.iter().filter(|s| s.id.starts_with(arg)).collect();
-        if matches.len() == 1 {
-            return Ok(ResolvedSession::Found {
-                path: matches[0].path.clone(),
-                cwd: matches[0].cwd.clone(),
-            });
-        }
-
-        Err(format!("No session found matching '{}'", arg))
-    }
-
-    enum ResolvedSession {
-        Path(std::path::PathBuf),
-        Found {
-            path: std::path::PathBuf,
-            cwd: String,
-        },
-    }
-
-    impl ResolvedSession {
-        fn path(&self) -> &std::path::Path {
-            match self {
-                ResolvedSession::Path(p) => p.as_path(),
-                ResolvedSession::Found { path, .. } => path.as_path(),
-            }
-        }
-
-        fn cwd(&self) -> Option<&str> {
-            match self {
-                ResolvedSession::Path(_) => None,
-                ResolvedSession::Found { cwd, .. } => Some(cwd.as_str()),
-            }
-        }
-    }
 
     // Handle --export: export session and exit
     if let Some(ref _export_dest) = export_path {
@@ -579,11 +581,16 @@ async fn main() -> anyhow::Result<()> {
             .as_ref()
             .map(|r| r.model_config.clone())
             .unwrap_or_else(|| rab::agent::base_model_config(&model));
+        let rab_compat = resolved
+            .as_ref()
+            .map(|r| r.rab_compat.clone())
+            .unwrap_or_default();
         agent_session.set_compaction_config(
             api_key.clone(),
             &model,
             mc.context_window as u64,
             Some(mc.clone()),
+            Some(rab_compat.clone()),
         );
         if let Some(ref cc) = settings.compaction {
             agent_session.apply_compaction_config(cc);
@@ -593,6 +600,7 @@ async fn main() -> anyhow::Result<()> {
             message,
             api_key,
             mc,
+            rab_compat,
             system_prompt,
             agent_tools,
             &mut agent_session,
@@ -605,21 +613,16 @@ async fn run_print_mode(
     message: String,
     api_key: String,
     mc: yoagent::provider::model::ModelConfig,
+    rab_compat: rab::provider::compat::RabOpenAiCompat,
     system_prompt: String,
     agent_tools: Vec<Box<dyn yoagent::types::AgentTool>>,
     agent_session: &mut rab::agent::AgentSession,
 ) -> anyhow::Result<()> {
     use yoagent::provider::model::ApiProtocol;
 
-    let compat = mc
-        .compat
-        .as_ref()
-        .map(rab::provider::compat::RabOpenAiCompat::from)
-        .unwrap_or_default();
-
     let agent = match mc.api {
         ApiProtocol::OpenAiCompletions => yoagent::agent::Agent::from_provider(
-            rab::provider::openai_compat::RabOpenAiCompatProvider::new(compat),
+            rab::provider::openai_compat::RabOpenAiCompatProvider::new(rab_compat),
             mc.clone(),
         ),
         ApiProtocol::AnthropicMessages => yoagent::agent::Agent::from_provider(

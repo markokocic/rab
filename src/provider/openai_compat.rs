@@ -313,10 +313,6 @@ fn build_request_body(
     }
 
     for msg in &config.messages {
-        if !matches!(msg, Message::ToolResult { .. } | Message::Assistant { .. }) {
-            maybe_insert_assistant_after_tool_results(&mut messages, rab_compat);
-        }
-
         match msg {
             Message::User { content, .. } => {
                 messages.push(serde_json::json!({

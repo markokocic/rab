@@ -32,7 +32,7 @@ pub struct HookRegistration {
 // ── External hook registry ──────────────────────────────────
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::RwLock;
 
 struct ToolHookSet {
     before: Vec<BeforeHook>,
@@ -43,17 +43,17 @@ struct ToolHookSet {
 /// Populated once at startup via [`register_tool_hooks`], read by
 /// [`run_before_hooks`] / [`run_after_hooks`] during tool execution.
 /// Empty by default — no hooks means no blocking.
-static EXTENSION_HOOKS: Mutex<Option<HashMap<&'static str, ToolHookSet>>> = Mutex::new(None);
+static EXTENSION_HOOKS: RwLock<Option<HashMap<&'static str, ToolHookSet>>> = RwLock::new(None);
 
 /// Clear all registered extension hooks.
 pub fn clear_tool_hooks() {
-    let mut map = EXTENSION_HOOKS.lock().unwrap();
+    let mut map = EXTENSION_HOOKS.write().unwrap();
     *map = None;
 }
 
 /// Register extension hooks for a tool name (called during startup).
 pub fn register_tool_hooks(registrations: &[HookRegistration]) {
-    let mut map = EXTENSION_HOOKS.lock().unwrap();
+    let mut map = EXTENSION_HOOKS.write().unwrap();
     let map = map.get_or_insert_with(HashMap::new);
     for reg in registrations {
         let entry = map.entry(reg.tool_name).or_insert_with(|| ToolHookSet {
@@ -71,7 +71,7 @@ pub fn register_tool_hooks(registrations: &[HookRegistration]) {
 
 /// Run all registered before-hooks for a tool. Returns the first blocking result.
 pub fn run_before_hooks(tool_name: &str, args: &serde_json::Value) -> Option<BeforeToolCallResult> {
-    let map = EXTENSION_HOOKS.lock().ok()?;
+    let map = EXTENSION_HOOKS.read().ok()?;
     let map = map.as_ref()?;
     if let Some(set) = map.get(tool_name) {
         for hook in &set.before {
@@ -91,7 +91,7 @@ pub fn run_after_hooks(
     result: &yoagent::types::ToolResult,
     is_error: bool,
 ) -> Option<AfterToolCallResult> {
-    let map = EXTENSION_HOOKS.lock().ok()?;
+    let map = EXTENSION_HOOKS.read().ok()?;
     let map = map.as_ref()?;
     let mut merged: Option<AfterToolCallResult> = None;
     if let Some(set) = map.get(tool_name) {
