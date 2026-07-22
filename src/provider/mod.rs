@@ -4,11 +4,14 @@
 //! overlays user overrides from `~/.rab/agent/models.json`,
 //! and provides the right `StreamProvider` for each model's API protocol.
 
+use std::collections::HashMap;
 use std::path::Path;
 
 use anyhow::bail;
 use yoagent::provider::model::{CostConfig, ModelConfig};
 use yoagent::types::Usage;
+
+use crate::provider::compat::RabOpenAiCompat;
 
 pub mod anthropic;
 pub mod compat;
@@ -24,6 +27,10 @@ pub struct ResolvedModel {
     pub model_config: ModelConfig,
     /// The API key for this provider (from auth.json or env var).
     pub api_key: String,
+    /// Rich rab compat flags for this model.
+    pub rab_compat: RabOpenAiCompat,
+    /// Thinking-level filter map for this model (model_id → supported levels).
+    pub thinking_map: Option<HashMap<String, serde_json::Value>>,
 }
 
 /// The provider registry — holds all known providers and their models.
@@ -127,6 +134,8 @@ impl ProviderRegistry {
                 return Ok(ResolvedModel {
                     model_config,
                     api_key,
+                    rab_compat: entry.compats.get(model_id).cloned().unwrap_or_default(),
+                    thinking_map: entry.thinking_maps.get(model_id).cloned(),
                 });
             }
         }
@@ -184,6 +193,8 @@ impl ProviderRegistry {
         Some(ResolvedModel {
             model_config,
             api_key,
+            rab_compat: entry.compats.get(model_id).cloned().unwrap_or_default(),
+            thinking_map: entry.thinking_maps.get(model_id).cloned(),
         })
     }
 

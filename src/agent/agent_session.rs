@@ -514,7 +514,12 @@ impl AgentSession {
 
         let agent = match mc.api {
             ApiProtocol::OpenAiCompletions => yoagent::agent::Agent::from_provider(
-                crate::provider::openai_compat::RabOpenAiCompatProvider,
+                crate::provider::openai_compat::RabOpenAiCompatProvider::new(
+                    mc.compat
+                        .as_ref()
+                        .map(crate::provider::compat::RabOpenAiCompat::from)
+                        .unwrap_or_default(),
+                ),
                 mc.clone(),
             ),
             ApiProtocol::AnthropicMessages => yoagent::agent::Agent::from_provider(

@@ -611,9 +611,15 @@ async fn run_print_mode(
 ) -> anyhow::Result<()> {
     use yoagent::provider::model::ApiProtocol;
 
+    let compat = mc
+        .compat
+        .as_ref()
+        .map(rab::provider::compat::RabOpenAiCompat::from)
+        .unwrap_or_default();
+
     let agent = match mc.api {
         ApiProtocol::OpenAiCompletions => yoagent::agent::Agent::from_provider(
-            rab::provider::openai_compat::RabOpenAiCompatProvider,
+            rab::provider::openai_compat::RabOpenAiCompatProvider::new(compat),
             mc.clone(),
         ),
         ApiProtocol::AnthropicMessages => yoagent::agent::Agent::from_provider(

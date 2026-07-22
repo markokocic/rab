@@ -14,15 +14,24 @@ use reqwest_eventsource::EventSource;
 use serde::Deserialize;
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
-use yoagent::provider::model::{ModelConfig, OpenAiCompat};
+use yoagent::provider::model::ModelConfig;
 use yoagent::provider::traits::*;
 use yoagent::types::*;
 
 /// Our custom OpenAI-compatible streaming provider.
 ///
-/// Reads rich compat from `ModelConfig::headers["_rab_compat"]` (a JSON-serialized
-/// `RabOpenAiCompat`). Falls back to yoagent's `ModelConfig::compat` if absent.
-pub struct RabOpenAiCompatProvider;
+/// Rich compat is passed directly via the `compat` field (no longer read
+/// from `ModelConfig::headers`). Falls back to yoagent's `OpenAiCompat`
+/// if absent.
+pub struct RabOpenAiCompatProvider {
+    pub compat: RabOpenAiCompat,
+}
+
+impl RabOpenAiCompatProvider {
+    pub fn new(compat: RabOpenAiCompat) -> Self {
+        Self { compat }
+    }
+}
 
 #[async_trait]
 impl StreamProvider for RabOpenAiCompatProvider {
@@ -36,19 +45,12 @@ impl StreamProvider for RabOpenAiCompatProvider {
             ProviderError::Other("ModelConfig required for OpenAI provider".into())
         })?;
 
-        // Resolve rich compat from headers["_rab_compat"], fall back to yoagent OpenAiCompat
-        let rab_compat: RabOpenAiCompat = model_config
-            .headers
-            .get("_rab_compat")
-            .and_then(|json| serde_json::from_str(json).ok())
-            .unwrap_or_default();
-
-        let yoagent_compat = model_config.compat.clone().unwrap_or_default();
+        let rab_compat = &self.compat;
 
         let base_url = &model_config.base_url;
         let url = format!("{}/chat/completions", base_url);
 
-        let body = build_request_body(&config, model_config, &rab_compat, &yoagent_compat);
+        let body = build_request_body(&config, model_config, rab_compat);
         debug!("OpenAI compat request: model={} url={}", config.model, url);
 
         let client = tls::reqwest_client();
@@ -58,10 +60,10 @@ impl StreamProvider for RabOpenAiCompatProvider {
             .header("authorization", format!("Bearer {}", config.api_key));
 
         // Add any extra headers from model config.
-        // Skip internal `_rab_*` and `anthropic-*` headers (the latter are
-        // injected for Anthropic provider models at resolution time).
+        // Skip `anthropic-*` headers injected for Anthropic provider models
+        // at resolution time — they must not be sent to OpenAI-compatible endpoints.
         for (k, v) in &model_config.headers {
-            if !k.starts_with("_rab_") && !k.starts_with("anthropic-") {
+            if !k.starts_with("anthropic-") {
                 request = request.header(k, v);
             }
         }
@@ -74,6 +76,7 @@ impl StreamProvider for RabOpenAiCompatProvider {
         let mut content: Vec<Content> = Vec::new();
         let mut usage = Usage::default();
         let mut stop_reason = StopReason::Stop;
+        let mut saw_finish_reason = false;
         let mut tool_call_buffers: Vec<ToolCallBuffer> = Vec::new();
 
         let _ = tx.send(StreamEvent::Start);
@@ -203,6 +206,7 @@ impl StreamProvider for RabOpenAiCompatProvider {
 
                                 // Handle finish reason
                                 if let Some(reason) = &choice.finish_reason {
+                                    saw_finish_reason = true;
                                     stop_reason = match reason.as_str() {
                                         "stop" => StopReason::Stop,
                                         "length" => StopReason::Length,
@@ -211,6 +215,18 @@ impl StreamProvider for RabOpenAiCompatProvider {
                                     };
                                 }
                             }
+                        }
+                        // Some providers (e.g. MiniMax) close the connection
+                        // without the OpenAI-standard `data: [DONE]` terminator.
+                        // If a finish_reason was already received, the response
+                        // is complete — treat as clean EOF. (This eventsource
+                        // surfaces every body close as StreamEnded; network
+                        // drops surface as Transport instead.) A StreamEnded
+                        // with NO finish_reason is genuine truncation and
+                        // stays an error.
+                        Some(Err(reqwest_eventsource::Error::StreamEnded)) if saw_finish_reason => {
+                            debug!("provider closed stream without [DONE] after finish_reason");
+                            break;
                         }
                         Some(Err(e)) => {
                             let provider_err = classify_eventsource_error(e).await;
@@ -233,8 +249,16 @@ impl StreamProvider for RabOpenAiCompatProvider {
 
         // Finalize tool calls
         for buf in &tool_call_buffers {
-            let args = serde_json::from_str(&buf.arguments)
-                .unwrap_or(serde_json::Value::Object(Default::default()));
+            let args = serde_json::from_str(&buf.arguments).unwrap_or_else(|e| {
+                if !buf.arguments.is_empty() {
+                    warn!(
+                        tool = %buf.name,
+                        len = buf.arguments.len(),
+                        "tool-call arguments failed to parse ({e}); using empty object"
+                    );
+                }
+                serde_json::Value::Object(Default::default())
+            });
             content.push(Content::tool_call(buf.id.clone(), buf.name.clone(), args));
             let _ = tx.send(StreamEvent::ToolCallEnd {
                 content_index: content.len() - 1,
@@ -272,7 +296,6 @@ fn build_request_body(
     config: &StreamConfig,
     model_config: &ModelConfig,
     rab_compat: &RabOpenAiCompat,
-    _yoagent_compat: &OpenAiCompat,
 ) -> serde_json::Value {
     let mut messages: Vec<serde_json::Value> = Vec::new();
 

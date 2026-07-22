@@ -96,28 +96,24 @@ const ALL_THINKING_LEVELS: &[&str] = &["max", "high", "medium", "low", "off"];
 /// in the map (other levels are available unless nulled).
 fn available_thinking_levels(app: &App) -> Vec<&'static str> {
     // Try to read thinkingLevelMap from the resolved model
-    let thinking_map: Option<std::collections::HashMap<String, Option<serde_json::Value>>> = app
+    let thinking_map: Option<std::collections::HashMap<String, serde_json::Value>> = app
         .registry
         .resolve(&app.model, Some(&app.current_provider))
         .ok()
-        .and_then(|r| {
-            r.model_config
-                .headers
-                .get("_rab_thinking_map")
-                .and_then(|json| serde_json::from_str(json).ok())
-        });
+        .and_then(|r| r.thinking_map);
 
     match thinking_map {
         Some(map) => ALL_THINKING_LEVELS
             .iter()
             .filter(|level| {
                 let mapped = map.get(**level);
-                if matches!(mapped, Some(None)) {
-                    return false; // explicitly unsupported
+                // null means explicitly unsupported
+                if matches!(mapped, Some(v) if v.is_null()) {
+                    return false;
                 }
                 // Pi: "xhigh" / "max" require explicit presence in the map
                 if **level == "max" {
-                    return matches!(mapped, Some(Some(_)));
+                    return mapped.is_some();
                 }
                 true
             })
@@ -3510,9 +3506,15 @@ fn build_fresh_agent(
         .map(|twm| Box::new(twm) as Box<dyn yoagent::types::AgentTool>)
         .collect();
 
+    let compat = mc
+        .compat
+        .as_ref()
+        .map(crate::provider::compat::RabOpenAiCompat::from)
+        .unwrap_or_default();
+
     let agent = match mc.api {
         ApiProtocol::OpenAiCompletions => yoagent::agent::Agent::from_provider(
-            crate::provider::openai_compat::RabOpenAiCompatProvider,
+            crate::provider::openai_compat::RabOpenAiCompatProvider::new(compat),
             mc.clone(),
         ),
         ApiProtocol::AnthropicMessages => yoagent::agent::Agent::from_provider(

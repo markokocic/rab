@@ -1,5 +1,5 @@
 //! models.json — parses built-in and user models.json files
-//! and constructs yoagent ModelConfigs with rich compat stored in headers.
+//! and constructs yoagent ModelConfigs with rab compat carried alongside.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -82,6 +82,10 @@ pub struct ProviderEntry {
     pub id: String,
     pub name: String,
     pub models: Vec<ModelConfig>,
+    /// Rich compat flags per model (keyed by model id).
+    pub compats: HashMap<String, RabOpenAiCompat>,
+    /// Thinking-level maps per model (keyed by model id).
+    pub thinking_maps: HashMap<String, HashMap<String, serde_json::Value>>,
     pub env_var_hint: Option<String>,
 }
 
@@ -136,26 +140,17 @@ fn parse_provider(id: &str, def: ProviderDef) -> anyhow::Result<ProviderEntry> {
         let context_window = m.context_window.unwrap_or(128_000);
         let max_tokens = m.max_tokens.unwrap_or(16_384);
 
-        // Build the compat and store it as JSON in headers["_rab_compat"]
-        let compat = m.compat.clone().unwrap_or_default();
-        let compat_json = serde_json::to_string(&compat).unwrap_or_else(|_| "{}".to_string());
+        // Build rab compat and yoagent compat for this model
+        let rab_compat = m.compat.clone().unwrap_or_default();
 
-        // Also build yoagent's OpenAiCompat for models that use openai-completions
         let yoagent_compat = if api == ApiProtocol::OpenAiCompletions {
-            Some(convert_to_yoagent_compat(&compat))
+            Some(convert_to_yoagent_compat(&rab_compat))
         } else {
             None
         };
 
+        // Collect user-specified headers only (no internal metadata)
         let mut headers = HashMap::new();
-        headers.insert("_rab_compat".to_string(), compat_json);
-        if let Some(tlm) = &m.thinking_level_map
-            && let Ok(json) = serde_json::to_string(tlm)
-        {
-            headers.insert("_rab_thinking_map".to_string(), json);
-        }
-
-        // Merge provider-level headers, then model-level headers
         if let Some(provider_headers) = &def.headers {
             for (k, v) in provider_headers {
                 headers.entry(k.clone()).or_insert_with(|| v.clone());
@@ -184,12 +179,26 @@ fn parse_provider(id: &str, def: ProviderDef) -> anyhow::Result<ProviderEntry> {
         models.push(model);
     }
 
+    // Collect compat and thinking_map per model id
+    let mut compats = HashMap::new();
+    let mut thinking_maps = HashMap::new();
+    for m in &def.models {
+        if let Some(ref compat) = m.compat {
+            compats.insert(m.id.clone(), compat.clone());
+        }
+        if let Some(ref tlm) = m.thinking_level_map {
+            thinking_maps.insert(m.id.clone(), tlm.clone());
+        }
+    }
+
     let env_var = def.env.as_ref().and_then(|e| e.get("apiKey")).cloned();
 
     Ok(ProviderEntry {
         id: id.to_string(),
         name: def.name.unwrap_or_else(|| id.to_string()),
         models,
+        compats,
+        thinking_maps,
         env_var_hint: env_var,
     })
 }
@@ -303,7 +312,7 @@ mod tests {
         assert_eq!(model.id, "test-model");
         assert_eq!(model.api, ApiProtocol::OpenAiCompletions);
         assert!(model.reasoning);
-        assert!(model.headers.contains_key("_rab_compat"));
+        assert!(!model.headers.contains_key("_rab_compat"));
         assert_eq!(model.cost.input_per_million as u32, 1);
     }
 

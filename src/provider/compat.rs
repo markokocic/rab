@@ -1,8 +1,9 @@
 //! Rich compatibility flags matching pi's OpenAICompletionsCompat structure.
-//! Deserialized from the `compat` field in models.json, then serialized into
-//! `ModelConfig::headers["_rab_compat"]` for our custom provider to read.
+//! Deserialized from the `compat` field in models.json and passed directly
+//! to `RabOpenAiCompatProvider`.
 
 use serde::{Deserialize, Serialize};
+use yoagent::provider::model::OpenAiCompat;
 
 /// Thinking format strategies (maps pi's `thinkingFormat`).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -92,6 +93,33 @@ impl Default for RabOpenAiCompat {
             thinking_format: RabThinkingFormat::OpenAi,
             supports_strict_mode: true,
             supports_long_cache_retention: true,
+        }
+    }
+}
+
+impl From<&OpenAiCompat> for RabOpenAiCompat {
+    fn from(c: &OpenAiCompat) -> Self {
+        use yoagent::provider::model::MaxTokensField;
+        let max_tokens_field = match c.max_tokens_field {
+            MaxTokensField::MaxTokens => RabMaxTokensField::MaxTokens,
+            MaxTokensField::MaxCompletionTokens => RabMaxTokensField::MaxCompletionTokens,
+        };
+        use yoagent::provider::model::ThinkingFormat;
+        let thinking_format = match c.thinking_format {
+            ThinkingFormat::OpenAi | ThinkingFormat::Xai => RabThinkingFormat::OpenAi,
+            ThinkingFormat::Qwen => RabThinkingFormat::Qwen,
+        };
+        Self {
+            supports_store: c.supports_store,
+            supports_developer_role: c.supports_developer_role,
+            supports_reasoning_effort: c.supports_reasoning_effort,
+            supports_thinking_control: c.supports_thinking_control,
+            supports_usage_in_streaming: c.supports_usage_in_streaming,
+            max_tokens_field,
+            requires_tool_result_name: c.requires_tool_result_name,
+            requires_assistant_after_tool_result: c.requires_assistant_after_tool_result,
+            thinking_format,
+            ..Default::default()
         }
     }
 }
