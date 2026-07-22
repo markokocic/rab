@@ -208,3 +208,161 @@ pub fn format_context_path(path: &Path, cwd: &Path) -> String {
     // Fallback: absolute path
     path.to_string_lossy().to_string()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_args_empty() {
+        let args = parse_args(&[]);
+        assert!(args.message_parts.is_empty());
+        assert!(!args.continue_session);
+        assert!(args.model_override.is_none());
+    }
+
+    #[test]
+    fn parse_args_model_override() {
+        let args = parse_args(&["--model".into(), "anthropic/claude-4".into()]);
+        assert_eq!(args.model_override.unwrap(), "anthropic/claude-4");
+    }
+
+    #[test]
+    fn parse_args_continue_flags() {
+        let args = parse_args(&["-c".into()]);
+        assert!(args.continue_session);
+
+        let args = parse_args(&["--continue".into()]);
+        assert!(args.continue_session);
+
+        let args = parse_args(&["-r".into()]);
+        assert!(args.resume_session);
+
+        let args = parse_args(&["--resume".into()]);
+        assert!(args.resume_session);
+    }
+
+    #[test]
+    fn parse_args_session_path() {
+        let args = parse_args(&["--session".into(), "/tmp/mysession.jsonl".into()]);
+        assert_eq!(args.session_path.unwrap(), "/tmp/mysession.jsonl");
+    }
+
+    #[test]
+    fn parse_args_session_id() {
+        let args = parse_args(&["--session-id".into(), "abc-123".into()]);
+        assert_eq!(args.session_id.unwrap(), "abc-123");
+    }
+
+    #[test]
+    fn parse_args_fork() {
+        let args = parse_args(&["--fork".into(), "abc-123".into()]);
+        assert_eq!(args.fork_source.unwrap(), "abc-123");
+    }
+
+    #[test]
+    fn parse_args_no_session() {
+        let args = parse_args(&["--no-session".into()]);
+        assert!(args.no_session);
+    }
+
+    #[test]
+    fn parse_args_name() {
+        let args = parse_args(&["-n".into(), "my-session".into()]);
+        assert_eq!(args.session_name.unwrap(), "my-session");
+
+        let args = parse_args(&["--name".into(), "other".into()]);
+        assert_eq!(args.session_name.unwrap(), "other");
+    }
+
+    #[test]
+    fn parse_args_no_context_files() {
+        let args = parse_args(&["--no-context-files".into()]);
+        assert!(args.no_context_files);
+
+        let args = parse_args(&["-nc".into()]);
+        assert!(args.no_context_files);
+    }
+
+    #[test]
+    fn parse_args_system_prompt() {
+        let args = parse_args(&["--system-prompt".into(), "be concise".into()]);
+        assert_eq!(args.system_prompt_override.unwrap(), "be concise");
+    }
+
+    #[test]
+    fn parse_args_append_system_prompt() {
+        let args = parse_args(&[
+            "--append-system-prompt".into(),
+            "extra instructions".into(),
+        ]);
+        assert_eq!(
+            args.append_system_prompt_override.unwrap(),
+            "extra instructions"
+        );
+    }
+
+    #[test]
+    fn parse_args_session_dir() {
+        let args = parse_args(&["--session-dir".into(), "/tmp/sessions".into()]);
+        assert_eq!(args.session_dir_override.unwrap(), "/tmp/sessions");
+    }
+
+    #[test]
+    fn parse_args_message_parts() {
+        let args = parse_args(&["hello".into(), "world".into()]);
+        assert_eq!(args.message_parts, vec!["hello", "world"]);
+    }
+
+    #[test]
+    fn parse_args_mixed_flags_and_message() {
+        let args = parse_args(&[
+            "--model".into(),
+            "claude-4".into(),
+            "list".into(),
+            "files".into(),
+        ]);
+        assert_eq!(args.model_override.unwrap(), "claude-4");
+        assert_eq!(args.message_parts, vec!["list", "files"]);
+    }
+
+    #[test]
+    fn parse_args_unknown_flags_ignored() {
+        let args = parse_args(&["--unknown-flag".into(), "value".into(), "hello".into()]);
+        // --unknown-flag is consumed but value becomes a message part
+        // because parse_args only recognizes known flags
+        assert_eq!(args.message_parts, vec!["value", "hello"]);
+    }
+
+    #[test]
+    fn format_context_path_relative_to_cwd() {
+        let path = Path::new("/project/sub/AGENTS.md");
+        let cwd = Path::new("/project");
+        let result = format_context_path(path, cwd);
+        assert_eq!(result, "sub/AGENTS.md");
+    }
+
+    #[test]
+    fn format_context_path_absolute_fallback() {
+        let path = Path::new("/some/other/path");
+        let cwd = Path::new("/project");
+        let result = format_context_path(path, cwd);
+        // Falls through to parent check: cwd.parent() = "/", path starts with "/"
+        assert!(result.ends_with("some/other/path"));
+    }
+
+    #[test]
+    fn format_context_path_with_parent() {
+        let path = Path::new("/project/sibling/file.md");
+        let cwd = Path::new("/project/sub");
+        let result = format_context_path(path, cwd);
+        assert_eq!(result, "../sibling/file.md");
+    }
+
+    #[test]
+    fn get_agent_dir_returns_something() {
+        let dir = get_agent_dir();
+        assert!(dir.ends_with(".rab/agent"));
+    }
+}
+

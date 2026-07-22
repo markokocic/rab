@@ -103,3 +103,97 @@ pub trait ToolRenderer: Send + Sync {
         false
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::borrow::Cow;
+
+    struct MockExt {
+        name: &'static str,
+        state: ExtensionDefault,
+    }
+
+    impl Extension for MockExt {
+        fn name(&self) -> Cow<'static, str> {
+            Cow::Borrowed(self.name)
+        }
+
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+
+        fn default_state(&self) -> ExtensionDefault {
+            self.state
+        }
+    }
+
+    fn settings_with_ext(name: &str, enabled: bool) -> crate::settings::Settings {
+        let mut s = crate::settings::Settings::default();
+        s.extensions_config
+            .states
+            .insert(name.to_string(), enabled);
+        s
+    }
+
+    #[test]
+    fn builtin_always_enabled() {
+        let ext = MockExt {
+            name: "builtin",
+            state: ExtensionDefault::Builtin,
+        };
+        let s = crate::settings::Settings::default();
+        assert!(is_extension_enabled(&ext, &s));
+    }
+
+    #[test]
+    fn enabled_by_default_when_not_in_settings() {
+        let ext = MockExt {
+            name: "my-ext",
+            state: ExtensionDefault::Enabled,
+        };
+        let s = crate::settings::Settings::default();
+        assert!(is_extension_enabled(&ext, &s));
+    }
+
+    #[test]
+    fn disabled_by_default_when_not_in_settings() {
+        let ext = MockExt {
+            name: "my-ext",
+            state: ExtensionDefault::Disabled,
+        };
+        let s = crate::settings::Settings::default();
+        assert!(!is_extension_enabled(&ext, &s));
+    }
+
+    #[test]
+    fn settings_overrides_enabled() {
+        let ext = MockExt {
+            name: "my-ext",
+            state: ExtensionDefault::Disabled, // disabled by default
+        };
+        let s = settings_with_ext("my-ext", true); // but enabled in settings
+        assert!(is_extension_enabled(&ext, &s));
+    }
+
+    #[test]
+    fn settings_overrides_disabled() {
+        let ext = MockExt {
+            name: "my-ext",
+            state: ExtensionDefault::Enabled, // enabled by default
+        };
+        let s = settings_with_ext("my-ext", false); // but disabled in settings
+        assert!(!is_extension_enabled(&ext, &s));
+    }
+
+    #[test]
+    fn settings_for_different_ext_does_not_affect() {
+        let ext = MockExt {
+            name: "my-ext",
+            state: ExtensionDefault::Enabled,
+        };
+        let s = settings_with_ext("other-ext", false);
+        assert!(is_extension_enabled(&ext, &s));
+    }
+}
+
