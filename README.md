@@ -66,7 +66,7 @@ Model and provider information (base URLs, model costs, capabilities, etc.) is s
 cargo run -- generate-models
 ```
 
-This fetches provider/model data for GitHub Copilot, OpenCode (Zen), OpenCode Go, and DeepSeek, applies corrections, and writes it to `src/provider/models.json`.
+This fetches provider/model data for GitHub Copilot, OpenCode (Zen), OpenCode Go, and DeepSeek, applies corrections, and writes it to `provider/src/models.json`.
 
 ## ⚖️ License
 

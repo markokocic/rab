@@ -6,6 +6,20 @@ rab delegates the core agent loop, types, and provider abstraction to the **yoag
 file search tools (grep/find/ls), file mutation queue, lifecycle management, and a
 **custom provider layer** with a model registry and rich OpenAI-compatible streaming support.
 
+The project is a **Cargo workspace** with five crates:
+
+| Crate | Directory | Lines | Purpose |
+|-------|-----------|-------|---------|
+| `rab-agent` | `src/` | ~37K | Agent loop, CLI, built-in tools, settings, agent UI |
+| `rab-tui` | `tui/` | ~15K | Reusable terminal UI framework (Component, Theme, editor, markdown) |
+| `rab-extension` | `extension/` | ~1.5K | Extension + ToolRenderer traits, types, hooks, JSON Schema coerce |
+| `rab-provider` | `provider/` | ~3.8K | Provider registry, auth, OAuth, model catalog, streaming providers |
+| `rab-util` | `util/` | ~307 | Path utilities, TLS client (Android/Termux compat) |
+
+Thin wrapper modules in `src/extension/`, `src/provider/`, `src/util/` re-export
+their respective crates so existing `crate::extension::*`, `crate::provider::*`,
+`crate::util::*`, and `crate::tui::*` references continue to work.
+
 ---
 
 ## Layered architecture
@@ -92,7 +106,7 @@ file search tools (grep/find/ls), file mutation queue, lifecycle management, and
 │     │     impl Extension trait + yoagent::types::AgentTool          │
 │     │                                                               │
 │  ┌──▼──────────────────────────────────────────────────────────┐   │
-│  │              src/extension/ (Extension trait + types)         │   │
+│  │              extension/src/ (Extension trait + types)         │   │
 │  │  Split from the old agent/extension.rs into 5 modules:       │   │
 │  │                                                              │   │
 │  │  ┌──────────────────────────────────────────────────────┐   │   │
@@ -126,7 +140,7 @@ file search tools (grep/find/ls), file mutation queue, lifecycle management, and
 │  └──────────────────────────────────────────────────────────────┘   │
 │                       │                                              │
 │  ┌────────────────────▼─────────────────────────────────────────┐   │
-│  │              rab Provider Layer (src/provider/)               │   │
+│  │              rab Provider Layer (provider/src/)               │   │
 │  │                                                              │   │
 │  │  ┌──────────────────────────────────────────────────────┐   │   │
 │  │  │           ProviderRegistry (mod.rs)                   │   │   │
@@ -191,10 +205,10 @@ file search tools (grep/find/ls), file mutation queue, lifecycle management, and
 │  │  │  Applies pi-style corrections (DeepSeek, Qwen,      │   │   │
 │  │  │   Grok, Kimi, Anthropic, GitHub Copilot)            │   │   │
 │  │  │  Preserves user edits to non-target providers       │   │   │
-│  │  │  Writes src/provider/models.json                    │   │   │
+│  │  │  Writes provider/src/models.json                    │   │   │
 │  │  └──────────────────────────────────────────────────────┘   │   │
 │  │  ┌──────────────────────────────────────────────────────┐   │   │
-│  │  │           auth.rs (src/provider/auth.rs)             │   │   │
+│  │  │           auth.rs (provider/src/auth.rs)             │   │   │
 │  │  │  Moved from src/auth.rs to provider module.          │   │   │
 │  │  │  Pi-compatible credential store, AuthStorageBackend  │   │   │
 │  │  │  pattern (File/InMemory), file locking, OAuth refresh│   │   │
@@ -251,7 +265,7 @@ file search tools (grep/find/ls), file mutation queue, lifecycle management, and
 │  └──────────────────────────────────────────────────────────────┘   │
 │                                                                      │
 │  ┌──────────────────────────────────────────────────────────────┐   │
-│  │  TUI (src/tui/ + src/agent/ui/) — 59 source modules,         │   │
+│  │  TUI (tui/src/ + src/agent/ui/) — 59 source modules,         │   │
 │  │  ~28.5K lines, ~688 tests                                    │   │
 │  │  Direct Rust port on crossterm 0.29                          │   │
 │  │  Image (Kitty protocol), TerminalColors (OSC 11 detection),  │   │
@@ -261,7 +275,7 @@ file search tools (grep/find/ls), file mutation queue, lifecycle management, and
 │  └──────────────────────────────────────────────────────────────┘   │
 │                                                                      │
 │  ┌──────────────────────────────────────────────────────────────┐   │
-│  │  Utility (src/util/) — paths.rs, tls.rs, mod.rs              │   │
+│  │  Utility (util/src/) — paths.rs, tls.rs, mod.rs              │   │
 │  │  Centralized path handling (canonicalize, resolve, display)  │   │
 │  │  TLS platform verification patched for Android/Termux        │   │
 │  └──────────────────────────────────────────────────────────────┘   │
@@ -277,7 +291,7 @@ file search tools (grep/find/ls), file mutation queue, lifecycle management, and
   layer on top.
 
 - **Custom provider layer over yoagent** — rab has its own `ProviderRegistry` that
-  loads a built-in model catalog (`src/provider/models.json`, ~17910 lines)
+  loads a built-in model catalog (`provider/src/models.json`, ~17910 lines)
   merged with user overrides (`~/.rab/agent/models.json`). On top of yoagent's
   providers, rab also provides:
   - `RabOpenAiCompatProvider` — custom streaming provider that handles DeepSeek
@@ -289,7 +303,7 @@ file search tools (grep/find/ls), file mutation queue, lifecycle management, and
 - **`rab generate-models` subcommand** — fetches `https://models.dev/api.json`,
   applies pi-style corrections (DeepSeek, Qwen, Grok, Kimi, Anthropic Messages API
   compat flags for GitHub Copilot Claude models), and writes
-  `src/provider/models.json`. All-or-nothing: any error aborts before writing.
+  `provider/src/models.json`. All-or-nothing: any error aborts before writing.
   Preserves user edits to non-target providers (currently targets: github-copilot,
   opencode, opencode-go, deepseek).
 
@@ -320,7 +334,7 @@ file search tools (grep/find/ls), file mutation queue, lifecycle management, and
   `after_tool_call` hooks (pi-compatible), and automatic JSON Schema argument
   coercion + validation.
 
-- **Global hook system** — `src/extension/hooks.rs` provides a global registry
+- **Global hook system** — `extension/src/hooks.rs` provides a global registry
   for before/after tool hooks. Extensions register hooks at startup via
   `Extension::tool_hooks()`, and they are invoked by `run_before_hooks()` /
   `run_after_hooks()` during tool execution.
@@ -330,7 +344,7 @@ file search tools (grep/find/ls), file mutation queue, lifecycle management, and
   (e.g. `ReadOperations`, `BashOperations`, `GrepOperations`, `FindOperations`,
   `LsOperations`), making it possible to replace local execution with remote (SSH) execution.
 
-- **OAuth support** — `src/provider/oauth/` implements pi's `OAuthProviderInterface`
+- **OAuth support** — `provider/src/oauth/` implements pi's `OAuthProviderInterface`
   with device code flow (RFC 8628) for headless authentication. The GitHub Copilot
   OAuth provider fetches available models after login and auto-enables them. OAuth
   tokens are refreshed on each agent turn.
@@ -361,11 +375,11 @@ file search tools (grep/find/ls), file mutation queue, lifecycle management, and
 
 | pi component | rab equivalent | Status |
 |---|---|---|
-| `pi-tui` (terminal UI, components, editor) | `src/tui/` + `src/agent/ui/` | ✅ Complete — 59 modules, ~28.5K lines, ~688 tests. Direct Rust port on crossterm 0.29. Includes Image (Kitty), TerminalColors (OSC 11), TreeSelector, ConfirmOverlay, LoginDialog, OAuthSelector, ScopedModelsSelector, ForkSelector, SettingsList, SettingsSelector. |
+| `pi-tui` (terminal UI, components, editor) | `tui/src/` + `src/agent/ui/` | ✅ Complete — 59 modules, ~28.5K lines, ~688 tests. Direct Rust port on crossterm 0.29. Includes Image (Kitty), TerminalColors (OSC 11), TreeSelector, ConfirmOverlay, LoginDialog, OAuthSelector, ScopedModelsSelector, ForkSelector, SettingsList, SettingsSelector. |
 | `pi-agent-core` (agent loop, session, compaction, skills) | Delegated to **yoagent** (agent loop, types, provider, session tree, skills) + rab's `AgentSession` (session lifecycle, compaction, branching) | ✅ Agent loop in yoagent (`yoagent::agent::Agent`). ✅ Simplified Session in `agent/session.rs` (~1424 lines), wraps `yoagent::Session`. ✅ Compaction in `compaction.rs` (~946 lines). ✅ Branch summarization (~455 lines). ✅ Skills loaded via `yoagent::skills::SkillSet`. |
-| `coding-agent` (CLI, extensions, tools, settings, commands) | `main.rs`, `cli/`, `builtin/`, `extensions/`, `settings.rs`, `provider/auth.rs`, `src/extension/` | ✅ CLI args in `cli/args.rs`, startup in `cli/run.rs`, print mode in `cli/print_mode.rs`. ✅ Tools (read/write/edit/bash/grep/find/ls), settings, auth, CLI done. ✅ 22 slash commands including `/export`, `/import`, `/settings`, `/extensions`, `/nextTurn`, `/stop`. ✅ Prompt templates as `/name` commands. ✅ Extension trait with tools, commands, renderers, skills, hooks. |
+| `coding-agent` (CLI, extensions, tools, settings, commands) | `main.rs`, `cli/`, `builtin/`, `extensions/`, `settings.rs`, `provider/auth.rs`, `extension/src/` | ✅ CLI args in `cli/args.rs`, startup in `cli/run.rs`, print mode in `cli/print_mode.rs`. ✅ Tools (read/write/edit/bash/grep/find/ls), settings, auth, CLI done. ✅ 22 slash commands including `/export`, `/import`, `/settings`, `/extensions`, `/nextTurn`, `/stop`. ✅ Prompt templates as `/name` commands. ✅ Extension trait with tools, commands, renderers, skills, hooks. |
 | `GrepTool`, `FindTool`, `LsTool` (pi agent tools) | `src/extensions/file_search.rs` | ✅ grep (ripgrep/grep fallback), find (fd/find fallback), ls — all with pluggable operations. |
-| provider registry + model catalog | `src/provider/` | ✅ `ProviderRegistry` loading built-in + user models.json. ✅ `RabOpenAiCompatProvider` for rich OpenAI-compatible streaming. ✅ `RabAnthropicProvider` (thin wrapper). ✅ OAuth support (device code flow, GitHub Copilot). ✅ `rab generate-models` subcommand. |
+| provider registry + model catalog | `provider/src/` | ✅ `ProviderRegistry` loading built-in + user models.json. ✅ `RabOpenAiCompatProvider` for rich OpenAI-compatible streaming. ✅ `RabAnthropicProvider` (thin wrapper). ✅ OAuth support (device code flow, GitHub Copilot). ✅ `rab generate-models` subcommand. |
 | MCP adapter (pi-mcp-adapter) | `src/extensions/mcp/` (6 modules) | ✅ Proxy `mcp` tool, direct tool adapters, config loading (global+project merge), server lifecycle (lazy connect, idle timeout), persistent metadata cache, tool renderers. |
 | provider | `yoagent::provider::*` + `rab::provider::RabOpenAiCompatProvider` + `rab::provider::RabAnthropicProvider` | ✅ Multi-protocol: RabOpenAiCompatProvider (OpenAiCompletions), RabAnthropicProvider (AnthropicMessages), OpenAiResponsesProvider, GoogleProvider. Auto-detection by model config's `ApiProtocol`. |
 | `beforeToolCall` / `afterToolCall` | `ToolDefinition.before_tool_call` / `.after_tool_call` + global hook system | ✅ Per-tool hooks + global `Extension::tool_hooks()` registration for blocking/preprocessing/postprocessing |
@@ -374,18 +388,18 @@ file search tools (grep/find/ls), file mutation queue, lifecycle management, and
 | Theme system | `src/agent/ui/theme.rs` | ✅ JSON theme system with resolution, fallback, detection (~794 lines) |
 | Resource loading (AGENTS.md/CLAUDE.md) | `src/agent/context_files.rs` | ✅ AGENTS.md/CLAUDE.md discovery, `<project_context>` wrapping |
 | Skills | `yoagent::skills::SkillSet` + `SystemPromptBuilder.skills()` | ✅ Skill loading, frontmatter, prompt formatting, /skill:name expansion |
-| Image support (Kitty protocol) | `src/tui/components/image.rs` + markdown.rs hyperlinks | ✅ Image display via Kitty protocol with dedicated Image component. Input (clipboard paste) TBD. |
+| Image support (Kitty protocol) | `tui/src/components/image.rs` + markdown.rs hyperlinks | ✅ Image display via Kitty protocol with dedicated Image component. Input (clipboard paste) TBD. |
 | Config files | `~/.rab/` | ✅ Same schema as pi. Auth at `~/.rab/agent/auth.json`. |
 | Footer data (git branch, extensions) | `src/agent/footer_data_provider.rs` | ✅ Git branch resolution (worktree/reftable support), extension statuses, provider count. |
 | File mutation queue | `src/builtin/file_mutation_queue.rs` | ✅ Per-file serialization using tokio::sync::Notify, same pattern as pi |
 | MCP extension | `src/extensions/mcp/` (6 mods) | ✅ Proxy `mcp` tool, direct tools, config loading, server lifecycle, cache, renderers |
 | Export/Import | `src/builtin/export.rs` | ✅ `/export` (HTML/JSONL), `/import` with embedded template assets |
 | Prompt templates | `src/agent/prompt_templates.rs` | ✅ `/name` commands from `.md` files, frontmatter, placeholder expansion |
-| Path utilities | `src/util/paths.rs` | ✅ Canonicalization, resolution, display (cross-platform) |
-| OAuth | `src/provider/oauth/` | ✅ Device code flow (RFC 8628), GitHub Copilot provider, credential storage. Token refresh on each turn. |
+| Path utilities | `util/src/paths.rs` | ✅ Canonicalization, resolution, display (cross-platform) |
+| OAuth | `provider/src/oauth/` | ✅ Device code flow (RFC 8628), GitHub Copilot provider, credential storage. Token refresh on each turn. |
 | Interactive fork /settings menu | `fork_selector.rs`, `settings_list.rs`, `settings_selector.rs` | ✅ `/fork` with interactive message selector overlay. `/settings` with SettingsSelector overlay listing all configurable fields. |
 | Settings deep merge | `settings.rs` — `DeepMerge` trait, nested config structs | ✅ Full pi-compatible settings with nested blocks. `ExtensionsConfig` for extension enable/disable. |
-| Auth backend pattern | `src/provider/auth.rs` — `AuthStorageBackend` enum (File/InMemory) | ✅ Lock-based read-modify-write semantics, pi-compatible `AuthStorageBackend` pattern. |
+| Auth backend pattern | `provider/src/auth.rs` — `AuthStorageBackend` enum (File/InMemory) | ✅ Lock-based read-modify-write semantics, pi-compatible `AuthStorageBackend` pattern. |
 | Extension enable/disable | `/extensions` command + `ExtensionsConfig` | ✅ Per-extension toggle, persists to settings.json. `ExtensionDefault::Builtin/Enabled/Disabled`. |
 | Steering / follow-up | `steering_mode`, `follow_up_mode` settings, `/nextTurn` command | ✅ Pi-compatible turn-steering with one-at-a-time, all, manual modes. |
 | Tree-sitter | `src/extensions/tree_sitter/` | ✅ Skeleton implementation for AST-aware tools. |
@@ -460,7 +474,7 @@ Tool calls and results shown prefixed with colored indicators. 120s timeout.
 
 ---
 
-## Core type system (`src/agent/types.rs` + `src/extension/types.rs`)
+## Core type system (`src/agent/types.rs` + `extension/src/types.rs`)
 
 ### yoagent types (re-exported from `agent/types.rs`)
 
@@ -733,7 +747,7 @@ before (collect entries → prepare messages → call provider → append entry)
 
 ---
 
-## Provider layer (`src/provider/`)
+## Provider layer (`provider/src/`)
 
 ### ProviderRegistry (`mod.rs`)
 
@@ -767,7 +781,7 @@ per-model provider name from `ModelConfig` (for correct cost tracking and displa
 
 ---
 
-## Extension system (`src/extension/`)
+## Extension system (`extension/src/`)
 
 The old `src/agent/extension.rs` (~1191 lines) was split into 5 modules:
 
@@ -1017,7 +1031,7 @@ Built via `SystemPromptBuilder`:
 
 ---
 
-## Auth (`src/provider/auth.rs`)
+## Auth (`provider/src/auth.rs`)
 
 Pi-compatible credential store using the `AuthStorageBackend` pattern
 (File / InMemory variants) with file locking and OAuth auto-refresh.
@@ -1169,7 +1183,7 @@ Key dependency changes from earlier versions:
 - **Source modules**: 113 `*.rs` files
 - **Total lines**: ~53,176
 - **Tests**: ~688 `#[test]` annotations
-- **TUI modules**: 31 `src/tui/` + 28 `src/agent/ui/` = 59 modules (~28.5K lines)
+- **TUI modules**: 31 `tui/src/` + 28 `src/agent/ui/` = 59 modules (~28.5K lines)
 
 ---
 
@@ -1195,7 +1209,7 @@ Not yet fully wired.
 
 ### Models.json — ✅ IMPLEMENTED
 
-Built-in catalog at `src/provider/models.json` (~17910 lines). User overrides
+Built-in catalog at `provider/src/models.json` (~17910 lines). User overrides
 merge via `~/.rab/agent/models.json`. The `rab generate-models` subcommand
 fetches the latest models from `models.dev` and updates the built-in catalog.
 
