@@ -1,5 +1,5 @@
-use crate::agent::extension::{AutocompleteItem, CommandHandler, CommandResult, SlashCommand};
 use crate::builtin::export::{ExportCommand, ImportCommand};
+use crate::extension::{AutocompleteItem, CommandHandler, CommandResult, SlashCommand};
 use std::sync::Mutex;
 
 /// Build all built-in slash commands.

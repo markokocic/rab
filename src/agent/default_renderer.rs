@@ -4,7 +4,7 @@
 //! text output on the result. Also exports shared helper functions used by
 //! the MCP renderer and other simple renderers.
 
-use crate::agent::extension::{ToolRenderContext, ToolRenderer};
+use crate::extension::{ToolRenderContext, ToolRenderer};
 use crate::tui::Style;
 use crate::tui::components::StyledSegment;
 use crate::tui::{Component, Theme};

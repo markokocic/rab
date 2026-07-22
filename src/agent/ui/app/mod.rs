@@ -7,16 +7,16 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use crate::agent::extension::ToolRenderer;
+use crate::extension::ToolRenderer;
 use yoagent::types::AgentTool;
 
 use crate::agent::AgentSession;
-use crate::agent::extension::{CommandResult, Extension};
 use crate::agent::footer_data_provider::FooterDataProvider;
-use crate::auth;
 use crate::builtin::export;
+use crate::extension::{CommandResult, Extension};
 use crate::provider;
 use crate::provider::ProviderRegistry;
+use crate::provider::auth;
 use yoagent::types::AgentMessage;
 
 use crate::agent::ui::chat_editor::{ChatEditor, InputAction};
@@ -140,7 +140,7 @@ pub struct AppConfig {
     pub hide_thinking: bool,
     pub collapse_tool_output: bool,
     pub interactive: bool,
-    pub settings: crate::agent::settings::Settings,
+    pub settings: crate::settings::Settings,
     /// Context files (AGENTS.md / CLAUDE.md) loaded for the session.
     pub context_files: Vec<String>,
 
@@ -308,7 +308,7 @@ pub struct App {
     auto_compact: bool,
 
     /// Settings reference for persisting toggle changes.
-    settings: crate::agent::settings::Settings,
+    settings: crate::settings::Settings,
 
     /// Header component (welcome/onboarding). Stored as `Rc<RefCell>` so
     /// handle_tools_expand can toggle its expanded state (matching pi's
@@ -530,8 +530,7 @@ impl App {
             .extensions
             .iter()
             .map(|e| {
-                let enabled =
-                    crate::agent::extension::is_extension_enabled(e.as_ref(), &config.settings);
+                let enabled = crate::extension::is_extension_enabled(e.as_ref(), &config.settings);
                 (e.name().to_string(), enabled)
             })
             .collect();
@@ -2438,13 +2437,13 @@ fn show_oauth_login_dialog(app: &mut App, tui: &mut TUI, provider_id: &str) {
 
         match oauth_provider.login(&mut callbacks).await {
             Ok(credentials) => {
-                let cred = crate::auth::AuthCredential::Oauth {
+                let cred = crate::provider::auth::AuthCredential::Oauth {
                     access: credentials.access.clone(),
                     refresh: Some(credentials.refresh.clone()),
                     expires: Some(credentials.expires),
                     enterprise_url: credentials.enterprise_url.clone(),
                 };
-                match crate::auth::login_oauth(&pid, &cred) {
+                match crate::provider::auth::login_oauth(&pid, &cred) {
                     Ok(_) => {
                         let _ = tx4.send(yoagent::types::AgentEvent::ProgressMessage {
                             tool_call_id: String::new(),
@@ -2849,8 +2848,7 @@ fn open_extensions_selector(app: &mut App, tui: &mut TUI) {
             let default_state = ext.default_state();
 
             // Determine current enabled state
-            let enabled =
-                crate::agent::extension::is_extension_enabled(ext.as_ref(), &app.settings);
+            let enabled = crate::extension::is_extension_enabled(ext.as_ref(), &app.settings);
 
             ExtensionInfo {
                 name,
@@ -2927,8 +2925,8 @@ fn open_extensions_selector(app: &mut App, tui: &mut TUI) {
 /// - `/extensions` toggle (extension enablement changed)
 /// - `/reload` handler (files on disk may have changed)
 fn refresh_agent_config(app: &mut App) {
-    fn is_enabled(ext: &dyn Extension, settings: &crate::agent::settings::Settings) -> bool {
-        crate::agent::extension::is_extension_enabled(ext, settings)
+    fn is_enabled(ext: &dyn Extension, settings: &crate::settings::Settings) -> bool {
+        crate::extension::is_extension_enabled(ext, settings)
     }
 
     // ── Collect tools from enabled extensions ────────────────────
@@ -2939,7 +2937,7 @@ fn refresh_agent_config(app: &mut App) {
         .map(|b| b.as_ref())
         .collect();
 
-    let all_tools: Vec<crate::agent::extension::ToolDefinition> =
+    let all_tools: Vec<crate::extension::ToolDefinition> =
         enabled_exts.iter().flat_map(|ext| ext.tools()).collect();
     let tool_snippets: Vec<crate::agent::ToolSnippet> = all_tools
         .iter()
@@ -2958,13 +2956,13 @@ fn refresh_agent_config(app: &mut App) {
     let has_read_tool = tool_snippets.iter().any(|t| t.name == "read");
 
     // ── Re-register hooks from enabled extensions ────────────────
-    use crate::agent::extension::HookRegistration;
+    use crate::extension::HookRegistration;
     let enabled_hooks: Vec<HookRegistration> = enabled_exts
         .iter()
         .flat_map(|ext| ext.tool_hooks())
         .collect();
-    crate::agent::extension::clear_tool_hooks();
-    crate::agent::extension::register_tool_hooks(&enabled_hooks);
+    crate::extension::clear_tool_hooks();
+    crate::extension::register_tool_hooks(&enabled_hooks);
 
     // ── Collect skills: disk-loaded + enabled extensions ─────────
     let mut all_skills = yoagent::skills::SkillSet::load(&app.skill_dirs).unwrap_or_default();
@@ -3079,7 +3077,7 @@ fn refresh_agent_config(app: &mut App) {
     // Update header context file display names
     let context_file_list: Vec<String> = context_files
         .iter()
-        .map(|cf| crate::paths::format_for_display(&cf.path, &app.cwd))
+        .map(|cf| crate::util::paths::format_for_display(&cf.path, &app.cwd))
         .collect();
     app.context_files = context_file_list;
 
@@ -3461,7 +3459,7 @@ fn submit_message(app: &mut App, message: String) {
 }
 
 /// Build a `yoagent::RetryConfig` from rab's user-facing settings.
-fn retry_config_from_settings(settings: &crate::agent::settings::Settings) -> yoagent::RetryConfig {
+fn retry_config_from_settings(settings: &crate::settings::Settings) -> yoagent::RetryConfig {
     let Some(r) = &settings.retry else {
         return yoagent::RetryConfig::default();
     };
@@ -3528,7 +3526,7 @@ fn build_fresh_agent(
     let tools: Vec<Box<dyn yoagent::types::AgentTool>> = app
         .extensions
         .iter()
-        .filter(|ext| crate::agent::extension::is_extension_enabled(ext.as_ref(), &app.settings))
+        .filter(|ext| crate::extension::is_extension_enabled(ext.as_ref(), &app.settings))
         .flat_map(|ext| ext.tools())
         .map(|twm| Box::new(twm) as Box<dyn yoagent::types::AgentTool>)
         .collect();
@@ -3640,7 +3638,7 @@ async fn start_agent_loop(
     let fresh_oauth_key = {
         let provider = app.current_provider.clone();
         if crate::provider::oauth::is_built_in(&provider) {
-            crate::auth::refresh_oauth_token(&provider).await
+            crate::provider::auth::refresh_oauth_token(&provider).await
         } else {
             None
         }
@@ -3870,8 +3868,8 @@ fn handle_slash_command(app: &mut App, input: &str) {
     };
 
     // Helper: is the extension that owns this command enabled?
-    fn is_ext_enabled(ext: &dyn Extension, settings: &crate::agent::settings::Settings) -> bool {
-        crate::agent::extension::is_extension_enabled(ext, settings)
+    fn is_ext_enabled(ext: &dyn Extension, settings: &crate::settings::Settings) -> bool {
+        crate::extension::is_extension_enabled(ext, settings)
     }
 
     // Find the command handler first (before mutable borrow on app)
@@ -4062,10 +4060,8 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
                     .extensions
                     .iter()
                     .map(|e| {
-                        let enabled = crate::agent::extension::is_extension_enabled(
-                            e.as_ref(),
-                            &app.settings,
-                        );
+                        let enabled =
+                            crate::extension::is_extension_enabled(e.as_ref(), &app.settings);
                         (e.name().to_string(), enabled)
                     })
                     .collect();
@@ -4482,7 +4478,7 @@ fn handle_command_result(app: &mut App, result: CommandResult) {
 
 /// Look up a tool renderer by name from extensions (bundled in ToolDefinition.renderer).
 pub(super) fn find_tool_renderer(
-    extensions: &[Box<dyn crate::agent::extension::Extension>],
+    extensions: &[Box<dyn crate::extension::Extension>],
     name: &str,
 ) -> Option<Arc<dyn ToolRenderer>> {
     for ext in extensions {
@@ -4659,7 +4655,7 @@ pub fn rebuild_chat_from_messages(
     cwd: &str,
     hide_thinking: bool,
     _collapse_tool_output: bool,
-    extensions: &[Box<dyn crate::agent::extension::Extension>],
+    extensions: &[Box<dyn crate::extension::Extension>],
 ) {
     chat.clear();
     use std::collections::HashMap;

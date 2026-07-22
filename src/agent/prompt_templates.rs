@@ -104,7 +104,7 @@ fn push_template_from_path(path: &Path, source: &str, all: &mut Vec<PromptTempla
         description,
         argument_hint,
         content: body,
-        file_path: crate::paths::canonicalize(path),
+        file_path: crate::util::paths::canonicalize(path),
         source: source.to_string(),
     });
 }

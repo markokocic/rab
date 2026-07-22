@@ -13,7 +13,7 @@ mod renderer;
 pub mod server;
 pub mod types;
 
-use crate::agent::extension::{Extension, ToolDefinition};
+use crate::extension::{Extension, ToolDefinition};
 use cache::{has_valid_cache, load_cache, update_cache_entry};
 use renderer::{McpProxyToolRenderer, McpToolRenderer};
 use server::ServerManager;

@@ -4,8 +4,8 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use crate::agent::default_renderer::DefaultToolRenderer;
-use crate::agent::extension::{ToolRenderContext, ToolRenderer};
 use crate::agent::ui::theme::{RabTheme, current_theme};
+use crate::extension::{ToolRenderContext, ToolRenderer};
 use crate::tui::Component;
 use crate::tui::Style;
 use crate::tui::component::{RenderCache, RenderCacheKey};

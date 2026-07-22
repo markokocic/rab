@@ -1,4 +1,4 @@
-use crate::agent::extension::{Extension, ToolDefinition, ToolRenderContext, ToolRenderer};
+use crate::extension::{Extension, ToolDefinition, ToolRenderContext, ToolRenderer};
 use crate::tui::Style;
 use crate::tui::components::StyledSegment;
 use crate::tui::{Component, Theme, ThemeKey};
@@ -159,8 +159,8 @@ impl Extension for FileSearchExtension {
         self
     }
 
-    fn default_state(&self) -> crate::agent::ExtensionDefault {
-        crate::agent::ExtensionDefault::Disabled
+    fn default_state(&self) -> crate::extension::ExtensionDefault {
+        crate::extension::ExtensionDefault::Disabled
     }
 
     fn tools(&self) -> Vec<ToolDefinition> {
@@ -892,7 +892,7 @@ fn which(name: &str) -> Option<PathBuf> {
 }
 
 fn resolve_path(path: &str, cwd: &Path) -> PathBuf {
-    crate::paths::resolve_path(path, cwd)
+    crate::util::paths::resolve_path(path, cwd)
 }
 
 fn relativize_path(path: &str, search_root: &Path) -> String {
@@ -915,7 +915,7 @@ fn truncate_line(line: &str, max_chars: usize) -> String {
 }
 
 fn shorten_path_str(path: &str) -> String {
-    crate::paths::shorten_path(path)
+    crate::util::paths::shorten_path(path)
 }
 
 // =====================================================================

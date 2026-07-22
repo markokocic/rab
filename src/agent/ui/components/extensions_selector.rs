@@ -4,9 +4,9 @@
 //! Builtin extensions are display-only. Other extensions can be toggled
 //! enabled/disabled. Save actions persist to global or project settings.
 
-use crate::agent::ExtensionDefault;
 use crate::agent::ui::components::settings_list::{SettingItem, SettingsList};
 use crate::agent::ui::theme::current_theme;
+use crate::extension::ExtensionDefault;
 use crate::tui::Component;
 use crate::tui::util::truncate_to_width;
 use crossterm::event::KeyEvent;

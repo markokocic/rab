@@ -8,7 +8,7 @@ pub mod read;
 pub mod write;
 
 // Re-export centralized path utilities for backward compatibility.
-pub use crate::paths::{resolve_path, shorten_path};
+pub use crate::util::paths::{resolve_path, shorten_path};
 
 use std::path::Path;
 

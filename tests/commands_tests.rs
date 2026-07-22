@@ -1,5 +1,5 @@
-use rab::agent::extension::{CommandResult, Extension as _};
 use rab::builtin::extension::BuiltinExtension;
+use rab::extension::{CommandResult, Extension as _};
 
 fn test_ext() -> BuiltinExtension {
     BuiltinExtension::new(std::path::PathBuf::from("."))

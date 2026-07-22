@@ -2,7 +2,7 @@
 //! Mirrors pi-mcp-adapter's McpLifecycleManager + McpServerManager pattern.
 
 use crate::extensions::mcp::types::ServerEntry;
-use crate::tls;
+use crate::util::tls;
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;

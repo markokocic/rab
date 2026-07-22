@@ -5,8 +5,8 @@ use crate::agent::footer_data_provider::FooterDataProvider;
 use crate::agent::session::Session;
 use crate::agent::ui::theme::RabTheme;
 use crate::agent::ui::theme::ThemeKey;
-use crate::paths;
 use crate::tui::util::{truncate_to_width, visible_width};
+use crate::util::paths;
 
 // ── Helpers matching pi's footer.ts ──────────────────────────────
 

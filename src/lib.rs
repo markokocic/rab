@@ -1,8 +1,9 @@
 pub mod agent;
-pub mod auth;
 pub mod builtin;
+pub mod cli;
+pub mod extension;
 pub mod extensions;
-pub mod paths;
 pub mod provider;
-pub mod tls;
+pub mod settings;
 pub mod tui;
+pub mod util;

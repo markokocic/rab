@@ -3,12 +3,12 @@
 //! Consolidates the former ReadExtension, WriteExtension, BashExtension,
 //! EditExtension, and CommandsExtension into a single Extension implementation.
 
-use crate::agent::extension::{Extension, SlashCommand, ToolDefinition};
 use crate::builtin::bash::{BashToolOptions, make_bash_tool};
 use crate::builtin::commands::make_commands;
 use crate::builtin::edit::{EditOperations, make_edit_tool};
 use crate::builtin::read::{ReadOperations, make_read_tool};
 use crate::builtin::write::{WriteOperations, make_write_tool};
+use crate::extension::{Extension, SlashCommand, ToolDefinition};
 
 use std::borrow::Cow;
 use std::path::PathBuf;
@@ -130,8 +130,8 @@ impl Extension for BuiltinExtension {
         self
     }
 
-    fn default_state(&self) -> crate::agent::ExtensionDefault {
-        crate::agent::ExtensionDefault::Builtin
+    fn default_state(&self) -> crate::extension::ExtensionDefault {
+        crate::extension::ExtensionDefault::Builtin
     }
 
     fn tools(&self) -> Vec<ToolDefinition> {

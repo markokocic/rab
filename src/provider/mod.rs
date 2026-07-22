@@ -14,6 +14,7 @@ use yoagent::types::Usage;
 use crate::provider::compat::RabOpenAiCompat;
 
 pub mod anthropic;
+pub mod auth;
 pub mod compat;
 pub mod generate_models;
 pub mod models;
@@ -37,7 +38,7 @@ pub struct ResolvedModel {
 pub struct ProviderRegistry {
     entries: Vec<models::ProviderEntry>,
     /// Auth storage for API key lookups.
-    auth_storage: crate::auth::AuthStorage,
+    auth_storage: crate::provider::auth::AuthStorage,
 }
 
 impl ProviderRegistry {
@@ -53,7 +54,7 @@ impl ProviderRegistry {
         let user = models::load_user(&user_path)?;
 
         let entries = models::merge(builtin, user);
-        let auth_storage = crate::auth::AuthStorage::create()?;
+        let auth_storage = crate::provider::auth::AuthStorage::create()?;
 
         Ok(Self {
             entries,
@@ -116,9 +117,10 @@ impl ProviderRegistry {
                         self.auth_storage
                             .oauth_credential(&entry.id)
                             .and_then(|c| match c {
-                                crate::auth::AuthCredential::Oauth { enterprise_url, .. } => {
-                                    enterprise_url
-                                }
+                                crate::provider::auth::AuthCredential::Oauth {
+                                    enterprise_url,
+                                    ..
+                                } => enterprise_url,
                                 _ => None,
                             });
                     let derived = crate::provider::oauth::github_copilot::get_copilot_base_url(
@@ -177,7 +179,9 @@ impl ProviderRegistry {
                 .auth_storage
                 .oauth_credential(provider_id)
                 .and_then(|c| match c {
-                    crate::auth::AuthCredential::Oauth { enterprise_url, .. } => enterprise_url,
+                    crate::provider::auth::AuthCredential::Oauth { enterprise_url, .. } => {
+                        enterprise_url
+                    }
                     _ => None,
                 });
             let derived = crate::provider::oauth::github_copilot::get_copilot_base_url(

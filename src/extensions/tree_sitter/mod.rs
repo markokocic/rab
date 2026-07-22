@@ -6,7 +6,7 @@
 //! Currently a skeleton: hooks validate nothing (always pass). The full
 //! implementation is planned in `tree-sitter.md`.
 
-use crate::agent::extension::{BeforeHook, Extension, ExtensionDefault, HookRegistration};
+use crate::extension::{BeforeHook, Extension, ExtensionDefault, HookRegistration};
 use std::borrow::Cow;
 
 /// Tree-sitter extension: validates syntax on write/edit, provides semantic tools.

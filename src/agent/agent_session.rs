@@ -81,7 +81,7 @@ pub struct AgentSession {
     /// Whether overflow recovery has already been attempted (prevents loops).
     overflow_recovery_attempted: bool,
     /// Cancellation token for in-progress compaction (pi-compatible abort).
-    compaction_cancel: crate::agent::extension::Cancel,
+    compaction_cancel: crate::extension::Cancel,
     /// Provider registry for resolving model cost configs per message (pi-style).
     registry: Option<Arc<ProviderRegistry>>,
 }
@@ -116,7 +116,7 @@ impl AgentSession {
             thinking_level: yoagent::types::ThinkingLevel::Off,
             event_listeners: Vec::new(),
             overflow_recovery_attempted: false,
-            compaction_cancel: crate::agent::extension::Cancel::new(),
+            compaction_cancel: crate::extension::Cancel::new(),
             registry: None,
         }
     }
@@ -204,7 +204,7 @@ impl AgentSession {
     }
 
     /// Apply compaction settings from the user's settings config.
-    pub fn apply_compaction_config(&mut self, config: &crate::agent::settings::CompactionConfig) {
+    pub fn apply_compaction_config(&mut self, config: &crate::settings::CompactionConfig) {
         if let Some(enabled) = config.enabled {
             self.compaction_settings.enabled = enabled;
         }
@@ -274,7 +274,7 @@ impl AgentSession {
     /// (matches pi's _overflowRecoveryAttempted reset in message_start for user role).
     pub fn reset_overflow_recovery(&mut self) {
         self.overflow_recovery_attempted = false;
-        self.compaction_cancel = crate::agent::extension::Cancel::new();
+        self.compaction_cancel = crate::extension::Cancel::new();
     }
 
     /// Check if a provider error indicates context overflow.
@@ -390,7 +390,7 @@ impl AgentSession {
         self.last_model = None;
         self.last_thinking_level = String::new();
         self.last_active_tools = None;
-        self.compaction_cancel = crate::agent::extension::Cancel::new();
+        self.compaction_cancel = crate::extension::Cancel::new();
     }
 
     /// Append a user message to the session (pi-compatible: persists immediately).
@@ -598,7 +598,7 @@ impl AgentSession {
             return Ok(None);
         }
 
-        self.compaction_cancel = crate::agent::extension::Cancel::new();
+        self.compaction_cancel = crate::extension::Cancel::new();
         let cancel = self.compaction_cancel.clone();
 
         self.emit_compaction_event(&CompactionEvent::Start {

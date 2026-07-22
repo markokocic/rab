@@ -5,7 +5,7 @@
 //!
 //! All-or-nothing: any error aborts before writing.
 
-use crate::tls;
+use crate::util::tls;
 use serde_json::Value;
 
 const MODELS_DEV_URL: &str = "https://models.dev/api.json";

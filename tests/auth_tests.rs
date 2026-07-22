@@ -1,4 +1,4 @@
-use rab::auth::AuthStorage;
+use rab::provider::auth::AuthStorage;
 
 fn write_file(path: &std::path::Path, json: &str) {
     if let Some(parent) = path.parent() {
@@ -63,7 +63,7 @@ fn malformed_json_is_error() {
 
 #[test]
 fn oauth_credential_roundtrip() {
-    use rab::auth::AuthCredential;
+    use rab::provider::auth::AuthCredential;
 
     // Use isolated in-memory backend — no filesystem, no race with other tests.
     let auth = AuthStorage::in_memory();
@@ -107,7 +107,7 @@ fn oauth_credential_roundtrip() {
 
 #[test]
 fn oauth_write_survives_file_lock() {
-    use rab::auth::AuthCredential;
+    use rab::provider::auth::AuthCredential;
 
     // Use isolated file-backed backend in a temp dir.
     let tmp = tmp_dir();
@@ -149,7 +149,7 @@ fn oauth_write_survives_file_lock() {
 
 #[test]
 fn oauth_credential_pi_format() {
-    use rab::auth::AuthCredential;
+    use rab::provider::auth::AuthCredential;
 
     // Test that pi's format is readable using in-memory backend
     // Pi's format with enterpriseUrl: null
@@ -206,7 +206,7 @@ fn api_key_roundtrip() {
 
 #[test]
 fn oauth_expired_token() {
-    use rab::auth::AuthCredential;
+    use rab::provider::auth::AuthCredential;
 
     let auth = AuthStorage::in_memory();
 
@@ -265,7 +265,7 @@ fn clear_all_removes_all() {
 
 #[test]
 fn modify_credential_insert_update_delete() {
-    use rab::auth::AuthCredential;
+    use rab::provider::auth::AuthCredential;
 
     let auth = AuthStorage::in_memory();
 

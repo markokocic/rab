@@ -9,7 +9,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::paths;
+use crate::util::paths;
 
 /// A discovered AGENTS.md or CLAUDE.md file with its content.
 #[derive(Debug, Clone)]

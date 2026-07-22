@@ -1,5 +1,5 @@
-use crate::agent::extension::Cancel;
-use crate::agent::extension::{ToolDefinition, ToolRenderContext, ToolRenderer};
+use crate::extension::Cancel;
+use crate::extension::{ToolDefinition, ToolRenderContext, ToolRenderer};
 use crate::tui::Style;
 use crate::tui::components::StyledSegment;
 use crate::tui::visual_truncate::truncate_to_visual_lines;

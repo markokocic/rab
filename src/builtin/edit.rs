@@ -1,5 +1,5 @@
-use crate::agent::extension::ToolDefinition;
-use crate::agent::extension::{ToolRenderContext, ToolRenderer};
+use crate::extension::ToolDefinition;
+use crate::extension::{ToolRenderContext, ToolRenderer};
 use crate::tui::Style;
 use crate::tui::components::StyledSegment;
 use crate::tui::{Component, Theme, ThemeKey};

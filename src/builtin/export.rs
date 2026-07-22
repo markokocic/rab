@@ -12,8 +12,8 @@
 // assets (template.html, template.css, template.js, marked.min.js,
 // highlight.min.js), with session data embedded as base64 JSON.
 
-use crate::agent::extension::{CommandHandler, CommandResult};
 use crate::agent::session::Session;
+use crate::extension::{CommandHandler, CommandResult};
 use std::path::{Path, PathBuf};
 
 // ── Template assets ────────────────────────────────────────────────

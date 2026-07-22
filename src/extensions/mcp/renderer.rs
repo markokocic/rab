@@ -5,7 +5,7 @@
 //! that formats the operation type differently.
 
 use crate::agent::default_renderer::{format_jsonish, has_useful_args, render_compact_result};
-use crate::agent::extension::{ToolRenderContext, ToolRenderer};
+use crate::extension::{ToolRenderContext, ToolRenderer};
 use crate::tui::Style;
 use crate::tui::components::StyledSegment;
 use crate::tui::{Component, Theme};
