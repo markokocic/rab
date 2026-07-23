@@ -93,11 +93,6 @@ pub fn open_settings(app: &mut App, tui: &mut TUI) {
             .warnings
             .as_ref()
             .and_then(|w| w.anthropic_extra_usage),
-        &app.settings.shell_command_prefix,
-        &app.settings.shell_path,
-        &app.settings.external_editor,
-        &app.settings.http_proxy,
-        &app.settings.session_dir,
     );
 
     let change_signal = app.pending_settings_change.clone();

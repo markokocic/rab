@@ -51,11 +51,6 @@ impl SettingsSelector {
         clear_on_shrink: &Option<bool>,
         show_terminal_progress: &Option<bool>,
         anthropic_extra_usage: &Option<bool>,
-        shell_command_prefix: &Option<String>,
-        shell_path: &Option<String>,
-        external_editor: &Option<String>,
-        http_proxy: &Option<String>,
-        session_dir: &Option<String>,
     ) -> Vec<SettingItem> {
         let mut items: Vec<SettingItem> = Vec::new();
 
@@ -350,14 +345,6 @@ impl SettingsSelector {
             values: Some(vec!["true".into(), "false".into()]),
         });
 
-        items.push(SettingItem {
-            id: "show-images".into(),
-            label: "Show images (n/a)".into(),
-            description: Some("Render images inline in terminal".into()),
-            current_value: "(n/a)".into(),
-            values: None,
-        });
-
         // ── Warnings ──────────────────────────────────────────────
         let current_warn = match anthropic_extra_usage {
             Some(true) => "true",
@@ -372,50 +359,6 @@ impl SettingsSelector {
             ),
             current_value: current_warn.into(),
             values: Some(vec!["true".into(), "false".into()]),
-        });
-
-        // ── Shell / Editor (display-only, n/a) ────────────────────
-        items.push(SettingItem {
-            id: "shell-command-prefix".into(),
-            label: "Shell command prefix".into(),
-            description: Some("Prefix prepended to every bash command (n/a in menu)".into()),
-            current_value: shell_command_prefix
-                .as_deref()
-                .map(|s| format!("\"{}\"", s))
-                .unwrap_or_else(|| "(n/a)".into()),
-            values: None,
-        });
-
-        items.push(SettingItem {
-            id: "shell-path".into(),
-            label: "Shell path".into(),
-            description: Some("Path to the shell executable (n/a in menu)".into()),
-            current_value: shell_path.as_deref().unwrap_or("(n/a)").to_string(),
-            values: None,
-        });
-
-        items.push(SettingItem {
-            id: "external-editor".into(),
-            label: "External editor".into(),
-            description: Some("External editor command (n/a in menu)".into()),
-            current_value: external_editor.as_deref().unwrap_or("(n/a)").to_string(),
-            values: None,
-        });
-
-        items.push(SettingItem {
-            id: "http-proxy".into(),
-            label: "HTTP proxy".into(),
-            description: Some("HTTP proxy URL (n/a in menu)".into()),
-            current_value: http_proxy.as_deref().unwrap_or("(n/a)").to_string(),
-            values: None,
-        });
-
-        items.push(SettingItem {
-            id: "session-dir".into(),
-            label: "Session directory".into(),
-            description: Some("Custom session storage directory (n/a in menu)".into()),
-            current_value: session_dir.as_deref().unwrap_or("(n/a)").to_string(),
-            values: None,
         });
 
         items

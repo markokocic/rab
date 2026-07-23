@@ -28,27 +28,10 @@ pub struct CompactionConfig {
 #[serde(rename_all = "camelCase")]
 pub struct TerminalConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub show_images: Option<bool>,
-
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub image_width_cells: Option<u32>,
-
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub clear_on_shrink: Option<bool>,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub show_terminal_progress: Option<bool>,
-}
-
-/// Image processing settings (pi's `images` block).
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct ImageConfig {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub auto_resize: Option<bool>,
-
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub block_images: Option<bool>,
 }
 
 /// Retry settings (pi's `retry` block).
@@ -82,70 +65,12 @@ pub struct ProviderRetryConfig {
     pub max_retry_delay_ms: Option<u64>,
 }
 
-/// Markdown rendering settings (pi's `markdown` block).
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct MarkdownConfig {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub code_block_indent: Option<String>,
-}
-
 /// Warning toggles (pi's `warnings` block).
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct WarningConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub anthropic_extra_usage: Option<bool>,
-}
-
-/// Branch summary settings (pi's `branchSummary` block).
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct BranchSummaryConfig {
-    /// Tokens reserved for prompt + LLM response.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reserve_tokens: Option<u64>,
-
-    /// When true, skips "Summarize branch?" prompt and defaults to no summary.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub skip_prompt: Option<bool>,
-}
-
-/// Custom token budgets for thinking levels (pi's `thinkingBudgets`).
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct ThinkingBudgetsConfig {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub minimal: Option<u64>,
-
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub low: Option<u64>,
-
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub medium: Option<u64>,
-
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub high: Option<u64>,
-}
-
-// ── Package source type ────────────────────────────────────────────────
-
-/// A package source (npm/git). Either a string URL or an object with filters.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum PackageSource {
-    String(String),
-    Object {
-        source: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        extensions: Option<Vec<String>>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        skills: Option<Vec<String>>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        prompts: Option<Vec<String>>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        themes: Option<Vec<String>>,
-    },
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────
@@ -191,22 +116,11 @@ impl DeepMerge for CompactionConfig {
 impl DeepMerge for TerminalConfig {
     fn deep_merge(self, o: Self) -> Self {
         Self {
-            show_images: merge_opt(self.show_images, o.show_images),
-            image_width_cells: merge_opt(self.image_width_cells, o.image_width_cells),
             clear_on_shrink: merge_opt(self.clear_on_shrink, o.clear_on_shrink),
             show_terminal_progress: merge_opt(
                 self.show_terminal_progress,
                 o.show_terminal_progress,
             ),
-        }
-    }
-}
-
-impl DeepMerge for ImageConfig {
-    fn deep_merge(self, o: Self) -> Self {
-        Self {
-            auto_resize: merge_opt(self.auto_resize, o.auto_resize),
-            block_images: merge_opt(self.block_images, o.block_images),
         }
     }
 }
@@ -232,38 +146,10 @@ impl DeepMerge for ProviderRetryConfig {
     }
 }
 
-impl DeepMerge for MarkdownConfig {
-    fn deep_merge(self, o: Self) -> Self {
-        Self {
-            code_block_indent: merge_opt(self.code_block_indent, o.code_block_indent),
-        }
-    }
-}
-
 impl DeepMerge for WarningConfig {
     fn deep_merge(self, o: Self) -> Self {
         Self {
             anthropic_extra_usage: merge_opt(self.anthropic_extra_usage, o.anthropic_extra_usage),
-        }
-    }
-}
-
-impl DeepMerge for BranchSummaryConfig {
-    fn deep_merge(self, o: Self) -> Self {
-        Self {
-            reserve_tokens: merge_opt(self.reserve_tokens, o.reserve_tokens),
-            skip_prompt: merge_opt(self.skip_prompt, o.skip_prompt),
-        }
-    }
-}
-
-impl DeepMerge for ThinkingBudgetsConfig {
-    fn deep_merge(self, o: Self) -> Self {
-        Self {
-            minimal: merge_opt(self.minimal, o.minimal),
-            low: merge_opt(self.low, o.low),
-            medium: merge_opt(self.medium, o.medium),
-            high: merge_opt(self.high, o.high),
         }
     }
 }
@@ -386,19 +272,9 @@ pub struct Settings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shell_path: Option<String>,
 
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub external_editor: Option<String>,
-
     /// Prefix prepended to every bash command (e.g. "shopt -s expand_aliases" for alias support).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shell_command_prefix: Option<String>,
-
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        rename = "npmCommand"
-    )]
-    pub npm_command: Option<Vec<String>>,
 
     // ── Project trust ──────────────────────────────────────────────
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -409,70 +285,19 @@ pub struct Settings {
     pub terminal: Option<TerminalConfig>,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub images: Option<ImageConfig>,
-
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retry: Option<RetryConfig>,
-
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub markdown: Option<MarkdownConfig>,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub warnings: Option<WarningConfig>,
 
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub branch_summary: Option<BranchSummaryConfig>,
-
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub thinking_budgets: Option<ThinkingBudgetsConfig>,
-
-    // ── Extensions / Packages ──────────────────────────────────────
-    /// Extension script paths to load (user extensions).
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub extensions: Vec<String>,
-
+    // ── Extensions ─────────────────────────────────────────────────
     /// Extension enable/disable overrides (managed by /extensions command).
     #[serde(default, skip_serializing_if = "is_default_extensions")]
     pub extensions_config: ExtensionsConfig,
 
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub skills: Vec<String>,
-
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub prompts: Vec<String>,
-
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub themes: Vec<String>,
-
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub packages: Vec<PackageSource>,
-
-    // ── Pi compat stubs (n/a) ────────────────────────────────────────
-    /// (n/a) pi version tracking, not used by rab.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_changelog_version: Option<String>,
-
-    /// (n/a) pi analytics opt-in, not used by rab.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub enable_analytics: Option<bool>,
-
-    /// (n/a) pi analytics tracking ID, not used by rab.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tracking_id: Option<String>,
-
     // ── Network ────────────────────────────────────────────────────
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub http_proxy: Option<String>,
-
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub http_idle_timeout_ms: Option<u64>,
-
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub websocket_connect_timeout_ms: Option<u64>,
-
-    // ── Session ────────────────────────────────────────────────────
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub session_dir: Option<String>,
 
     /// Tracks which fields were explicitly modified during this session.
     /// Only modified fields are written when saving. Dot-separated paths
@@ -713,8 +538,6 @@ impl Settings {
                 project.show_hardware_cursor,
             ),
             shell_path: merge_opt(global.shell_path, project.shell_path),
-            external_editor: merge_opt(global.external_editor, project.external_editor),
-            npm_command: merge_opt(global.npm_command, project.npm_command),
             shell_command_prefix: merge_opt(
                 global.shell_command_prefix,
                 project.shell_command_prefix,
@@ -724,53 +547,12 @@ impl Settings {
                 project.default_project_trust,
             ),
             terminal: merge_nested(global.terminal, project.terminal),
-            images: merge_nested(global.images, project.images),
             retry: merge_nested(global.retry, project.retry),
-            markdown: merge_nested(global.markdown, project.markdown),
             warnings: merge_nested(global.warnings, project.warnings),
-            branch_summary: merge_nested(global.branch_summary, project.branch_summary),
-            thinking_budgets: merge_nested(global.thinking_budgets, project.thinking_budgets),
-            extensions: if project.extensions.is_empty() {
-                global.extensions
-            } else {
-                project.extensions
-            },
-            skills: if project.skills.is_empty() {
-                global.skills
-            } else {
-                project.skills
-            },
-            prompts: if project.prompts.is_empty() {
-                global.prompts
-            } else {
-                project.prompts
-            },
-            themes: if project.themes.is_empty() {
-                global.themes
-            } else {
-                project.themes
-            },
-            packages: if project.packages.is_empty() {
-                global.packages
-            } else {
-                project.packages
-            },
-            http_proxy: merge_opt(global.http_proxy, project.http_proxy),
             http_idle_timeout_ms: merge_opt(
                 global.http_idle_timeout_ms,
                 project.http_idle_timeout_ms,
             ),
-            websocket_connect_timeout_ms: merge_opt(
-                global.websocket_connect_timeout_ms,
-                project.websocket_connect_timeout_ms,
-            ),
-            session_dir: merge_opt(global.session_dir, project.session_dir),
-            last_changelog_version: merge_opt(
-                global.last_changelog_version,
-                project.last_changelog_version,
-            ),
-            enable_analytics: merge_opt(global.enable_analytics, project.enable_analytics),
-            tracking_id: merge_opt(global.tracking_id, project.tracking_id),
             modified_fields: HashSet::new(),
         }
     }
@@ -1609,31 +1391,13 @@ mod tests {
     fn test_deserialize_terminal_config() {
         let json = serde_json::json!({
             "terminal": {
-                "showImages": false,
-                "imageWidthCells": 80,
                 "clearOnShrink": true
             }
         });
         let s: Settings = serde_json::from_value(json).unwrap();
         let t = s.terminal.unwrap();
-        assert_eq!(t.show_images, Some(false));
-        assert_eq!(t.image_width_cells, Some(80));
         assert_eq!(t.clear_on_shrink, Some(true));
         assert_eq!(t.show_terminal_progress, None);
-    }
-
-    #[test]
-    fn test_deserialize_images_config() {
-        let json = serde_json::json!({
-            "images": {
-                "autoResize": false,
-                "blockImages": true
-            }
-        });
-        let s: Settings = serde_json::from_value(json).unwrap();
-        let im = s.images.unwrap();
-        assert_eq!(im.auto_resize, Some(false));
-        assert_eq!(im.block_images, Some(true));
     }
 
     #[test]
@@ -1672,75 +1436,6 @@ mod tests {
     }
 
     #[test]
-    fn test_deserialize_branch_summary_config() {
-        let json = serde_json::json!({
-            "branchSummary": {
-                "reserveTokens": 8192,
-                "skipPrompt": true
-            }
-        });
-        let s: Settings = serde_json::from_value(json).unwrap();
-        let b = s.branch_summary.unwrap();
-        assert_eq!(b.reserve_tokens, Some(8192));
-        assert_eq!(b.skip_prompt, Some(true));
-    }
-
-    #[test]
-    fn test_deserialize_thinking_budgets() {
-        let json = serde_json::json!({
-            "thinkingBudgets": {
-                "low": 2048,
-                "high": 32768
-            }
-        });
-        let s: Settings = serde_json::from_value(json).unwrap();
-        let tb = s.thinking_budgets.unwrap();
-        assert_eq!(tb.low, Some(2048));
-        assert_eq!(tb.high, Some(32768));
-        assert_eq!(tb.minimal, None);
-        assert_eq!(tb.medium, None);
-    }
-
-    #[test]
-    fn test_deserialize_package_string() {
-        let json = serde_json::json!({
-            "packages": ["npm:@scope/package", "git:https://example.com/repo.git"]
-        });
-        let s: Settings = serde_json::from_value(json).unwrap();
-        assert_eq!(s.packages.len(), 2);
-        match &s.packages[0] {
-            PackageSource::String(v) => assert_eq!(v, "npm:@scope/package"),
-            _ => panic!("expected string"),
-        }
-    }
-
-    #[test]
-    fn test_deserialize_package_object() {
-        let json = serde_json::json!({
-            "packages": [{
-                "source": "npm:some-package",
-                "extensions": ["ext1"],
-                "skills": ["skill1"]
-            }]
-        });
-        let s: Settings = serde_json::from_value(json).unwrap();
-        assert_eq!(s.packages.len(), 1);
-        match &s.packages[0] {
-            PackageSource::Object {
-                source,
-                extensions,
-                skills,
-                ..
-            } => {
-                assert_eq!(source, "npm:some-package");
-                assert_eq!(extensions.as_deref(), Some(&["ext1".to_string()][..]));
-                assert_eq!(skills.as_deref(), Some(&["skill1".to_string()][..]));
-            }
-            _ => panic!("expected object"),
-        }
-    }
-
-    #[test]
     fn test_deserialize_transport() {
         let json = serde_json::json!({ "transport": "websocket" });
         let s: Settings = serde_json::from_value(json).unwrap();
@@ -1762,11 +1457,8 @@ mod tests {
             "autocompleteMaxVisible": 10,
             "showHardwareCursor": true,
             "shellPath": "/bin/zsh",
-            "externalEditor": "code",
             "defaultProjectTrust": "ask",
-            "httpProxy": "http://proxy:8080",
-            "httpIdleTimeoutMs": 300000,
-            "sessionDir": "~/.rab/sessions"
+            "httpIdleTimeoutMs": 300000
         });
         let s: Settings = serde_json::from_value(json).unwrap();
         assert_eq!(s.steering_mode.as_deref(), Some("one-at-a-time"));
@@ -1781,11 +1473,8 @@ mod tests {
         assert_eq!(s.autocomplete_max_visible, Some(10));
         assert_eq!(s.show_hardware_cursor, Some(true));
         assert_eq!(s.shell_path.as_deref(), Some("/bin/zsh"));
-        assert_eq!(s.external_editor.as_deref(), Some("code"));
         assert_eq!(s.default_project_trust.as_deref(), Some("ask"));
-        assert_eq!(s.http_proxy.as_deref(), Some("http://proxy:8080"));
         assert_eq!(s.http_idle_timeout_ms, Some(300000));
-        assert_eq!(s.session_dir.as_deref(), Some("~/.rab/sessions"));
     }
 
     // ── Model ──────────────────────────────────────────────────────
