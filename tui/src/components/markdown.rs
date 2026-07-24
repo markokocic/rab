@@ -1158,21 +1158,13 @@ fn split_newline_apply(text: &str, apply: &dyn Fn(&str) -> String) -> String {
         .collect()
 }
 
-// ── Syntax Highlighting (feature-gated) ─────────────────────────
+// ── Syntax Highlighting ────────────────────────────────────────
 
 /// Create a syntax highlighting function.
 pub fn create_highlight_fn() -> Option<HighlightFn> {
-    #[cfg(feature = "syntect")]
-    {
-        Some(Arc::new(highlight_code))
-    }
-    #[cfg(not(feature = "syntect"))]
-    {
-        None
-    }
+    Some(Arc::new(highlight_code))
 }
 
-#[cfg(feature = "syntect")]
 pub fn highlight_code(code: &str, lang: Option<&str>) -> Vec<String> {
     use std::sync::LazyLock;
 

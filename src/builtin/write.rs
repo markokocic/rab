@@ -129,12 +129,9 @@ struct WriteHighlightCache {
 
 /// Highlight a single line (uses full highlight on the single line, returns first result).
 fn highlight_single_line(line: &str, lang: &str) -> String {
-    #[cfg(feature = "syntect")]
-    {
-        let hl = crate::tui::components::highlight_code(line, Some(lang));
-        if !hl.is_empty() {
-            return hl[0].clone();
-        }
+    let hl = crate::tui::components::highlight_code(line, Some(lang));
+    if !hl.is_empty() {
+        return hl[0].clone();
     }
     line.to_string()
 }
@@ -151,23 +148,13 @@ fn refresh_highlight_prefix(cache: &mut WriteHighlightCache) {
         .map(|s| s.as_str())
         .collect();
     let prefix_text = prefix_source.join("\n");
-    #[cfg(feature = "syntect")]
-    {
-        let prefix_highlighted =
-            crate::tui::components::highlight_code(&prefix_text, Some(&cache.lang));
-        for i in 0..prefix_count {
-            cache.highlighted_lines[i] = prefix_highlighted
-                .get(i)
-                .cloned()
-                .unwrap_or_else(|| highlight_single_line(&cache.normalized_lines[i], &cache.lang));
-        }
-    }
-    #[cfg(not(feature = "syntect"))]
-    {
-        let _ = prefix_text;
-        for i in 0..prefix_count {
-            cache.highlighted_lines[i] = cache.normalized_lines[i].clone();
-        }
+    let prefix_highlighted =
+        crate::tui::components::highlight_code(&prefix_text, Some(&cache.lang));
+    for i in 0..prefix_count {
+        cache.highlighted_lines[i] = prefix_highlighted
+            .get(i)
+            .cloned()
+            .unwrap_or_else(|| highlight_single_line(&cache.normalized_lines[i], &cache.lang));
     }
 }
 
@@ -185,10 +172,7 @@ fn rebuild_highlight_cache(
     let normalized = display_content.replace('\t', "   ");
     let normalized_lines: Vec<String> = normalized.lines().map(|l| l.to_string()).collect();
 
-    #[cfg(feature = "syntect")]
     let highlighted_lines = crate::tui::components::highlight_code(&normalized, Some(&lang));
-    #[cfg(not(feature = "syntect"))]
-    let highlighted_lines = normalized_lines.clone();
 
     Some(WriteHighlightCache {
         raw_path: raw_path.map(|s| s.to_string()),
@@ -467,17 +451,10 @@ impl ToolRenderer for WriteRenderer {
                     cache.highlighted_lines.clone()
                 } else if lang.is_some() {
                     let normalized = text.replace('\r', "").replace('\t', "   ");
-                    #[cfg(feature = "syntect")]
-                    {
-                        let hl = crate::tui::components::highlight_code(&normalized, lang);
-                        if !hl.is_empty() {
-                            hl
-                        } else {
-                            normalized.lines().map(|l| l.to_string()).collect()
-                        }
-                    }
-                    #[cfg(not(feature = "syntect"))]
-                    {
+                    let hl = crate::tui::components::highlight_code(&normalized, lang);
+                    if !hl.is_empty() {
+                        hl
+                    } else {
                         normalized.lines().map(|l| l.to_string()).collect()
                     }
                 } else {

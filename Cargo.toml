@@ -40,7 +40,7 @@ libc = "0.2"
 unicode-normalization = "0.1"
 rustls = "0.23"
 webpki-root-certs = "1"
-syntect = { version = "5.3.0", optional = true }
+syntect = "5.3.0"
 rab-tui = { path = "tui" }
 regex = "1.12.4"
 base64 = "0.23"
@@ -57,6 +57,3 @@ fs2 = "0.4"
 [target.'cfg(not(target_os = "android"))'.dependencies]
 tree-sitter = { version = "0.26", features = ["wasm"] }
 
-[features]
-default = ["syntect"]
-syntect = ["dep:syntect", "rab-tui/syntect"]

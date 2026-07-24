@@ -8,7 +8,6 @@ pub mod markdown;
 pub mod rc_ref_cell_component;
 pub use markdown::{DefaultTextStyle, Markdown, MarkdownTheme, StyleFn, path_to_language};
 
-#[cfg(feature = "syntect")]
 pub use markdown::highlight_code;
 pub use rc_ref_cell_component::RcRefCellComponent;
 pub mod select_list;

@@ -773,27 +773,18 @@ impl ToolRenderer for ReadRenderer {
         // Pi: start with blank line (`\n` before content)
         let mut result = vec![String::new()];
 
-        // Pi: apply syntax highlighting when a language is detected (syntect feature)
-        #[cfg(feature = "syntect")]
-        {
-            if let Some(lang) = lang {
-                let combined = display_lines.join("\n");
-                let highlighted = crate::tui::components::highlight_code(&combined, Some(lang));
-                for line in highlighted {
-                    result.push(line.replace('\t', "   "));
-                }
-            } else {
-                for line in &display_lines {
-                    let processed = line.replace('\t', "   ");
-                    result.push(output_style.apply(&processed));
-                }
+        // Apply syntax highlighting when a language is detected.
+        if let Some(lang) = lang {
+            let combined = display_lines.join("\n");
+            let highlighted = crate::tui::components::highlight_code(&combined, Some(lang));
+            for line in highlighted {
+                result.push(line.replace('\t', "   "));
             }
-        }
-
-        #[cfg(not(feature = "syntect"))]
-        for line in &display_lines {
-            let processed = line.replace('\t', "   ");
-            result.push(output_style.apply(&processed));
+        } else {
+            for line in &display_lines {
+                let processed = line.replace('\t', "   ");
+                result.push(output_style.apply(&processed));
+            }
         }
 
         // Pi: remaining lines hint

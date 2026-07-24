@@ -8,12 +8,9 @@
 //! a summary (name + line count + path) when collapsed.
 
 use crate::extension::{ToolRenderContext, ToolRenderer};
-use crate::tui::components::{StyledSegment, Text};
-use crate::tui::{Component, Style, Theme};
-
-#[cfg(feature = "syntect")]
-use crate::tui::components::highlight_code;
 use crate::tui::components::path_to_language;
+use crate::tui::components::{StyledSegment, Text, highlight_code};
+use crate::tui::{Component, Style, Theme};
 
 /// Renderer for tree-sitter semantic tools.
 ///
@@ -189,23 +186,20 @@ impl TreeSitterToolRenderer {
                 .filter(|l| !l.is_empty())
         });
 
-        #[cfg(feature = "syntect")]
-        {
-            let highlighted = highlight_code(body, lang);
-            if !highlighted.is_empty() && highlighted.iter().any(|l| !l.is_empty()) {
-                let segments: Vec<StyledSegment> = highlighted
-                    .into_iter()
-                    .map(|line| StyledSegment {
-                        text: if line.is_empty() {
-                            line
-                        } else {
-                            format!("{}\n", line)
-                        },
-                        style: None, // ANSI codes are embedded by syntect
-                    })
-                    .collect();
-                return Box::new(Text::from_segments(segments, 0, 0, None));
-            }
+        let highlighted = highlight_code(body, lang);
+        if !highlighted.is_empty() && highlighted.iter().any(|l| !l.is_empty()) {
+            let segments: Vec<StyledSegment> = highlighted
+                .into_iter()
+                .map(|line| StyledSegment {
+                    text: if line.is_empty() {
+                        line
+                    } else {
+                        format!("{}\n", line)
+                    },
+                    style: None, // ANSI codes are embedded by syntect
+                })
+                .collect();
+            return Box::new(Text::from_segments(segments, 0, 0, None));
         }
 
         // Fallback: no syntect or empty result — show raw body
