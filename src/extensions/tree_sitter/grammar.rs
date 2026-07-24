@@ -7,10 +7,10 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
-use std::sync::{OnceLock, RwLock};
+use std::sync::{Mutex, OnceLock, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use tree_sitter::{Language, WasmStore, wasmtime::Engine};
+use tree_sitter::{Language, Parser, WasmStore, wasmtime::Engine};
 
 // ── Types ────────────────────────────────────────────────────────────────
 
@@ -345,6 +345,9 @@ pub struct GrammarManager {
     /// Serializes first-time downloads to prevent double fetch.
     /// `tokio::sync::Mutex` so it can be held across `.await`.
     download_lock: tokio::sync::Mutex<()>,
+    /// Per-language Parser cache (WasmStore is embedded inside the Parser).
+    /// Creating a WasmStore is expensive — reuse the parser across parses of the same language.
+    parser_cache: Mutex<HashMap<String, Parser>>,
 }
 
 impl GrammarManager {
@@ -355,6 +358,7 @@ impl GrammarManager {
             language_cache: RwLock::new(HashMap::new()),
             engine: OnceLock::new(),
             download_lock: tokio::sync::Mutex::new(()),
+            parser_cache: Mutex::new(HashMap::new()),
         }
     }
 
@@ -405,6 +409,9 @@ impl GrammarManager {
     }
 
     /// Run an adapter function with a Parser that has the WasmStore and Language configured.
+    ///
+    /// Reuses the cached Parser (with its WasmStore) for the language so that
+    /// the expensive WasmStore creation happens at most once per language.
     pub fn with_parser<T>(
         &self,
         ext: &str,
@@ -424,19 +431,16 @@ impl GrammarManager {
             .ok_or_else(|| format!("language {key} not loaded (call ensure first)"))?
             .clone(); // Language is Clone (ref-counted)
 
-        let engine = self.engine.get_or_init(Engine::default);
-        let store =
-            WasmStore::new(engine).map_err(|e| format!("failed to create WasmStore: {e}"))?;
-
-        let mut parser = tree_sitter::Parser::new();
-        parser
-            .set_wasm_store(store)
-            .map_err(|e| format!("set_wasm_store: {e}"))?;
-        parser
-            .set_language(&language)
-            .map_err(|e| format!("set_language: {e}"))?;
-
-        let result = f(&mut parser)?;
+        let mut cache = self.parser_cache.lock().unwrap();
+        let parser = cache.entry(key).or_insert_with(|| {
+            let engine = self.engine.get_or_init(Engine::default);
+            let store = WasmStore::new(engine).expect("failed to create WasmStore");
+            let mut p = Parser::new();
+            p.set_wasm_store(store).expect("set_wasm_store");
+            p.set_language(&language).expect("set_language");
+            p
+        });
+        let result = f(parser)?;
         Ok(Some(result))
     }
 
@@ -457,12 +461,13 @@ impl GrammarManager {
 
     /// Parse source code with the grammar for the given extension.
     /// The grammar must have been loaded via [`ensure`] first.
+    ///
+    /// Reuses the cached Parser so WasmStore creation is a one-time cost per language.
     pub fn parse(&self, ext: &str, source: &str) -> Result<Option<tree_sitter::Tree>, String> {
         let entry = match entry_for_ext(ext) {
             Some(e) => e,
             None => return Ok(None),
         };
-
         let key = format!("{}/{}", entry.pkg, entry.wasm);
 
         let language = self
@@ -473,18 +478,15 @@ impl GrammarManager {
             .ok_or_else(|| format!("language {key} not loaded (call ensure first)"))?
             .clone();
 
-        let engine = self.engine.get_or_init(Engine::default);
-        let store =
-            WasmStore::new(engine).map_err(|e| format!("failed to create WasmStore: {e}"))?;
-
-        let mut parser = tree_sitter::Parser::new();
-        parser
-            .set_wasm_store(store)
-            .map_err(|e| format!("set_wasm_store: {e}"))?;
-        parser
-            .set_language(&language)
-            .map_err(|e| format!("set_language: {e}"))?;
-
+        let mut cache = self.parser_cache.lock().unwrap();
+        let parser = cache.entry(key).or_insert_with(|| {
+            let engine = self.engine.get_or_init(Engine::default);
+            let store = WasmStore::new(engine).expect("failed to create WasmStore");
+            let mut p = Parser::new();
+            p.set_wasm_store(store).expect("set_wasm_store");
+            p.set_language(&language).expect("set_language");
+            p
+        });
         let tree = parser.parse(source, None);
         Ok(tree)
     }
