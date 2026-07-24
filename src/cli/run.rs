@@ -179,8 +179,12 @@ pub async fn build_extensions(cwd: &std::path::Path) -> Vec<Box<dyn Extension>> 
     mcp_ext.bootstrap_direct_tools().await;
     extensions.push(Box::new(mcp_ext));
 
-    let ts_ext = crate::extensions::tree_sitter::TreeSitterExtension::new();
-    extensions.push(Box::new(ts_ext));
+    // Tree-sitter extension not available on Android (cranelift-codegen rustc parser bug).
+    #[cfg(not(target_os = "android"))]
+    {
+        let ts_ext = crate::extensions::tree_sitter::TreeSitterExtension::new();
+        extensions.push(Box::new(ts_ext));
+    }
 
     extensions
 }

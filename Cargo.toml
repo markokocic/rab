@@ -52,9 +52,11 @@ futures = "0.3"
 tracing = "0.1"
 url = "2.5.8"
 fs2 = "0.4"
+
+# Tree-sitter with WASM — excluded on Android where cranelift-codegen hits a rustc parser bug.
+[target.'cfg(not(target_os = "android"))'.dependencies]
 tree-sitter = { version = "0.26", features = ["wasm"] }
 
 [features]
 default = ["syntect"]
 syntect = ["dep:syntect", "rab-tui/syntect"]
-

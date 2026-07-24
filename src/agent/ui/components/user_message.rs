@@ -64,7 +64,7 @@ impl Component for UserMessageComponent {
 
         let mut lines = self.box_component.render(width);
         if !lines.is_empty() {
-            lines[0] = format!("{}{}", OSC133_ZONE_START, &lines[0]);
+            lines[0] = format!("{}{}", OSC133_ZONE_START, lines[0]);
             if let Some(last) = lines.last_mut() {
                 last.push_str(OSC133_ZONE_END);
                 last.push_str(OSC133_ZONE_FINAL);
