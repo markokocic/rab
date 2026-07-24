@@ -234,6 +234,27 @@ pub fn register_hooks(extensions: &[Box<dyn Extension>], settings: &Settings) {
 
 // ── Skills loading ─────────────────────────────────────────────
 
+/// Collect directories for a given subdirectory name, walking from agent_dir,
+/// home `.agents`, and up the directory tree from cwd.
+fn collect_subdirs(
+    agent_dir: &std::path::Path,
+    cwd: &std::path::Path,
+    subdir: &str,
+) -> Vec<std::path::PathBuf> {
+    let mut dirs = Vec::new();
+    dirs.push(agent_dir.join(subdir));
+    if let Some(home) = directories::BaseDirs::new().map(|d| d.home_dir().to_path_buf()) {
+        dirs.push(home.join(".agents").join(subdir));
+    }
+    let mut current = Some(cwd.to_path_buf());
+    while let Some(dir) = current {
+        dirs.push(dir.join(".rab").join(subdir));
+        dirs.push(dir.join(".agents").join(subdir));
+        current = dir.parent().filter(|p| *p != dir).map(|p| p.to_path_buf());
+    }
+    dirs
+}
+
 pub fn load_skills(
     agent_dir: &std::path::Path,
     cwd: &std::path::Path,
@@ -244,21 +265,7 @@ pub fn load_skills(
     yoagent::skills::SkillSet,
     Vec<yoagent::skills::Skill>,
 ) {
-    let mut skill_dirs = Vec::new();
-    skill_dirs.push(agent_dir.join("skills"));
-    if let Some(home) = directories::BaseDirs::new().map(|d| d.home_dir().to_path_buf()) {
-        skill_dirs.push(home.join(".agents").join("skills"));
-    }
-    let mut current = Some(cwd.to_path_buf());
-    while let Some(dir) = current {
-        skill_dirs.push(dir.join(".rab").join("skills"));
-        skill_dirs.push(dir.join(".agents").join("skills"));
-        let parent = match dir.parent() {
-            Some(p) if p != dir => p.to_path_buf(),
-            _ => break,
-        };
-        current = Some(parent);
-    }
+    let skill_dirs = collect_subdirs(agent_dir, cwd, "skills");
 
     let mut skill_set = yoagent::skills::SkillSet::load(&skill_dirs).unwrap_or_default();
     for ext in extensions
@@ -281,21 +288,7 @@ pub fn load_prompt_templates(
     Vec<std::path::PathBuf>,
     Vec<crate::agent::prompt_templates::PromptTemplate>,
 ) {
-    let mut prompt_template_dirs = Vec::new();
-    prompt_template_dirs.push(agent_dir.join("prompts"));
-    if let Some(home) = directories::BaseDirs::new().map(|d| d.home_dir().to_path_buf()) {
-        prompt_template_dirs.push(home.join(".agents").join("prompts"));
-    }
-    let mut current = Some(cwd.to_path_buf());
-    while let Some(dir) = current {
-        prompt_template_dirs.push(dir.join(".rab").join("prompts"));
-        prompt_template_dirs.push(dir.join(".agents").join("prompts"));
-        let parent = match dir.parent() {
-            Some(p) if p != dir => p.to_path_buf(),
-            _ => break,
-        };
-        current = Some(parent);
-    }
+    let prompt_template_dirs = collect_subdirs(agent_dir, cwd, "prompts");
     let templates = crate::agent::prompt_templates::load_prompt_templates(&prompt_template_dirs);
     (prompt_template_dirs, templates)
 }

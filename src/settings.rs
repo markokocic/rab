@@ -103,56 +103,45 @@ trait DeepMerge: Sized {
     fn deep_merge(self, overrides: Self) -> Self;
 }
 
-impl DeepMerge for CompactionConfig {
-    fn deep_merge(self, o: Self) -> Self {
-        Self {
-            enabled: merge_opt(self.enabled, o.enabled),
-            reserve_tokens: merge_opt(self.reserve_tokens, o.reserve_tokens),
-            keep_recent_tokens: merge_opt(self.keep_recent_tokens, o.keep_recent_tokens),
+macro_rules! impl_deep_merge {
+    ($t:ty, { $($field:ident => $merge_fn:ident),+ $(,)? }) => {
+        impl DeepMerge for $t {
+            fn deep_merge(self, o: Self) -> Self {
+                Self {
+                    $( $field: $merge_fn(self.$field, o.$field), )+
+                }
+            }
         }
-    }
+    };
 }
 
-impl DeepMerge for TerminalConfig {
-    fn deep_merge(self, o: Self) -> Self {
-        Self {
-            clear_on_shrink: merge_opt(self.clear_on_shrink, o.clear_on_shrink),
-            show_terminal_progress: merge_opt(
-                self.show_terminal_progress,
-                o.show_terminal_progress,
-            ),
-        }
-    }
-}
+impl_deep_merge!(CompactionConfig, {
+    enabled => merge_opt,
+    reserve_tokens => merge_opt,
+    keep_recent_tokens => merge_opt,
+});
 
-impl DeepMerge for RetryConfig {
-    fn deep_merge(self, o: Self) -> Self {
-        Self {
-            enabled: merge_opt(self.enabled, o.enabled),
-            max_retries: merge_opt(self.max_retries, o.max_retries),
-            base_delay_ms: merge_opt(self.base_delay_ms, o.base_delay_ms),
-            provider: merge_nested(self.provider, o.provider),
-        }
-    }
-}
+impl_deep_merge!(TerminalConfig, {
+    clear_on_shrink => merge_opt,
+    show_terminal_progress => merge_opt,
+});
 
-impl DeepMerge for ProviderRetryConfig {
-    fn deep_merge(self, o: Self) -> Self {
-        Self {
-            timeout_ms: merge_opt(self.timeout_ms, o.timeout_ms),
-            max_retries: merge_opt(self.max_retries, o.max_retries),
-            max_retry_delay_ms: merge_opt(self.max_retry_delay_ms, o.max_retry_delay_ms),
-        }
-    }
-}
+impl_deep_merge!(RetryConfig, {
+    enabled => merge_opt,
+    max_retries => merge_opt,
+    base_delay_ms => merge_opt,
+    provider => merge_nested,
+});
 
-impl DeepMerge for WarningConfig {
-    fn deep_merge(self, o: Self) -> Self {
-        Self {
-            anthropic_extra_usage: merge_opt(self.anthropic_extra_usage, o.anthropic_extra_usage),
-        }
-    }
-}
+impl_deep_merge!(ProviderRetryConfig, {
+    timeout_ms => merge_opt,
+    max_retries => merge_opt,
+    max_retry_delay_ms => merge_opt,
+});
+
+impl_deep_merge!(WarningConfig, {
+    anthropic_extra_usage => merge_opt,
+});
 
 // ── Extensions Config ──────────────────────────────────────────
 
@@ -478,16 +467,24 @@ impl Settings {
     /// when set. For nested objects (Option<T>), merges field-by-field when
     /// both are Some. Arrays are replaced entirely.
     fn merge(global: Settings, project: Settings) -> Self {
+        macro_rules! m {
+            ($f:ident) => {
+                merge_opt(global.$f, project.$f)
+            };
+        }
+        macro_rules! n {
+            ($f:ident) => {
+                merge_nested(global.$f, project.$f)
+            };
+        }
+
         Self {
-            default_provider: merge_opt(global.default_provider, project.default_provider),
-            default_model: merge_opt(global.default_model, project.default_model),
-            default_thinking_level: merge_opt(
-                global.default_thinking_level,
-                project.default_thinking_level,
-            ),
-            transport: merge_opt(global.transport, project.transport),
-            steering_mode: merge_opt(global.steering_mode, project.steering_mode),
-            follow_up_mode: merge_opt(global.follow_up_mode, project.follow_up_mode),
+            default_provider: m!(default_provider),
+            default_model: m!(default_model),
+            default_thinking_level: m!(default_thinking_level),
+            transport: m!(transport),
+            steering_mode: m!(steering_mode),
+            follow_up_mode: m!(follow_up_mode),
             extensions_config: ExtensionsConfig {
                 states: project
                     .extensions_config
@@ -503,56 +500,29 @@ impl Settings {
                     )
                     .collect(),
             },
-            theme: merge_opt(global.theme, project.theme),
+            theme: m!(theme),
             verbose: project.verbose || global.verbose,
-            hide_thinking: merge_opt(global.hide_thinking, project.hide_thinking),
-            collapse_tool_output: merge_opt(
-                global.collapse_tool_output,
-                project.collapse_tool_output,
-            ),
-            compaction: merge_nested(global.compaction, project.compaction),
-            enabled_models: merge_opt(global.enabled_models, project.enabled_models),
-            quiet_startup: merge_opt(global.quiet_startup, project.quiet_startup),
-            collapse_changelog: merge_opt(global.collapse_changelog, project.collapse_changelog),
-            enable_skill_commands: merge_opt(
-                global.enable_skill_commands,
-                project.enable_skill_commands,
-            ),
-            enable_install_telemetry: merge_opt(
-                global.enable_install_telemetry,
-                project.enable_install_telemetry,
-            ),
-            double_escape_action: merge_opt(
-                global.double_escape_action,
-                project.double_escape_action,
-            ),
-            tree_filter_mode: merge_opt(global.tree_filter_mode, project.tree_filter_mode),
-            editor_padding_x: merge_opt(global.editor_padding_x, project.editor_padding_x),
-            output_pad: merge_opt(global.output_pad, project.output_pad),
-            autocomplete_max_visible: merge_opt(
-                global.autocomplete_max_visible,
-                project.autocomplete_max_visible,
-            ),
-            show_hardware_cursor: merge_opt(
-                global.show_hardware_cursor,
-                project.show_hardware_cursor,
-            ),
-            shell_path: merge_opt(global.shell_path, project.shell_path),
-            shell_command_prefix: merge_opt(
-                global.shell_command_prefix,
-                project.shell_command_prefix,
-            ),
-            default_project_trust: merge_opt(
-                global.default_project_trust,
-                project.default_project_trust,
-            ),
-            terminal: merge_nested(global.terminal, project.terminal),
-            retry: merge_nested(global.retry, project.retry),
-            warnings: merge_nested(global.warnings, project.warnings),
-            http_idle_timeout_ms: merge_opt(
-                global.http_idle_timeout_ms,
-                project.http_idle_timeout_ms,
-            ),
+            hide_thinking: m!(hide_thinking),
+            collapse_tool_output: m!(collapse_tool_output),
+            compaction: n!(compaction),
+            enabled_models: m!(enabled_models),
+            quiet_startup: m!(quiet_startup),
+            collapse_changelog: m!(collapse_changelog),
+            enable_skill_commands: m!(enable_skill_commands),
+            enable_install_telemetry: m!(enable_install_telemetry),
+            double_escape_action: m!(double_escape_action),
+            tree_filter_mode: m!(tree_filter_mode),
+            editor_padding_x: m!(editor_padding_x),
+            output_pad: m!(output_pad),
+            autocomplete_max_visible: m!(autocomplete_max_visible),
+            show_hardware_cursor: m!(show_hardware_cursor),
+            shell_path: m!(shell_path),
+            shell_command_prefix: m!(shell_command_prefix),
+            default_project_trust: m!(default_project_trust),
+            terminal: n!(terminal),
+            retry: n!(retry),
+            warnings: n!(warnings),
+            http_idle_timeout_ms: m!(http_idle_timeout_ms),
             modified_fields: HashSet::new(),
         }
     }
@@ -632,37 +602,61 @@ impl Settings {
 
 // ── File I/O helpers with flock ─────────────────────────────────────
 
-/// Read a file with a shared (read) lock via flock on the `.json.lock` file.
-/// Falls back to an unlocked read if the lock file cannot be opened.
-fn read_file_with_shared_lock(path: &std::path::Path) -> anyhow::Result<String> {
+/// Acquire a flock on a `.json.lock` file, run a closure, then release the lock.
+fn with_flock_lock<R>(
+    path: &std::path::Path,
+    exclusive: bool,
+    f: impl FnOnce() -> anyhow::Result<R>,
+) -> anyhow::Result<R> {
     let lock_path = path.with_extension("json.lock");
-    if let Ok(_lock_file) = std::fs::OpenOptions::new()
+    let _lock_file = std::fs::OpenOptions::new()
         .create(true)
         .truncate(false)
         .read(true)
         .write(true)
         .open(&lock_path)
+        .with_context(|| format!("Failed to open lock file {}", lock_path.display()))?;
+
+    #[cfg(unix)]
     {
-        #[cfg(unix)]
-        {
-            use std::os::unix::io::AsRawFd;
-            unsafe {
-                libc::flock(_lock_file.as_raw_fd(), libc::LOCK_SH);
-            }
+        use std::os::unix::io::AsRawFd;
+        let op = if exclusive {
+            libc::LOCK_EX
+        } else {
+            libc::LOCK_SH
+        };
+        if unsafe { libc::flock(_lock_file.as_raw_fd(), op) } != 0 {
+            let err = std::io::Error::last_os_error();
+            anyhow::bail!("Failed to lock {}: {}", lock_path.display(), err);
         }
-        let content = std::fs::read_to_string(path)
-            .with_context(|| format!("Failed to read {}", path.display()))?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::io::AsRawFd;
-            unsafe {
-                libc::flock(_lock_file.as_raw_fd(), libc::LOCK_UN);
-            }
+    }
+
+    let result = f();
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::io::AsRawFd;
+        unsafe {
+            libc::flock(_lock_file.as_raw_fd(), libc::LOCK_UN);
         }
-        Ok(content)
-    } else {
-        // Lock file cannot be opened — fall back to unlocked read.
+    }
+
+    result
+}
+
+/// Read a file with a shared (read) lock via flock on the `.json.lock` file.
+/// Falls back to an unlocked read if the lock file cannot be opened.
+fn read_file_with_shared_lock(path: &std::path::Path) -> anyhow::Result<String> {
+    let result = with_flock_lock(path, false, || {
         std::fs::read_to_string(path).with_context(|| format!("Failed to read {}", path.display()))
+    });
+    match result {
+        Ok(content) => Ok(content),
+        Err(_) => {
+            // Lock file cannot be opened — fall back to unlocked read.
+            std::fs::read_to_string(path)
+                .with_context(|| format!("Failed to read {}", path.display()))
+        }
     }
 }
 
@@ -736,54 +730,28 @@ fn atomic_write_with_lock(path: &std::path::Path, content: &str) -> anyhow::Resu
         std::fs::create_dir_all(parent)?;
     }
 
-    // Open (or create) the lock file and acquire an exclusive lock.
-    let lock_path = path.with_extension("json.lock");
-    let _lock_file = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .open(&lock_path)
-        .with_context(|| format!("Failed to open lock file {}", lock_path.display()))?;
+    with_flock_lock(path, true, || {
+        // Atomic write: temp file + rename.
+        let tmp_path = path.with_extension("json.tmp");
+        std::fs::write(&tmp_path, content)
+            .with_context(|| format!("Failed to write {}", tmp_path.display()))?;
+        std::fs::rename(&tmp_path, path).with_context(|| {
+            format!(
+                "Failed to rename {} to {}",
+                tmp_path.display(),
+                path.display()
+            )
+        })?;
 
-    #[cfg(unix)]
-    {
-        use std::os::unix::io::AsRawFd;
-        if unsafe { libc::flock(_lock_file.as_raw_fd(), libc::LOCK_EX) } != 0 {
-            let err = std::io::Error::last_os_error();
-            anyhow::bail!("Failed to lock {}: {}", lock_path.display(), err);
+        // Ensure data is on disk before releasing the lock.
+        if let Some(parent) = path.parent()
+            && let Ok(f) = std::fs::File::open(parent)
+        {
+            let _ = f.sync_all();
         }
-    }
 
-    // Atomic write: temp file + rename.
-    let tmp_path = path.with_extension("json.tmp");
-    std::fs::write(&tmp_path, content)
-        .with_context(|| format!("Failed to write {}", tmp_path.display()))?;
-    std::fs::rename(&tmp_path, path).with_context(|| {
-        format!(
-            "Failed to rename {} to {}",
-            tmp_path.display(),
-            path.display()
-        )
-    })?;
-
-    // Ensure data is on disk before releasing the lock.
-    if let Some(parent) = path.parent()
-        && let Ok(f) = std::fs::File::open(parent)
-    {
-        let _ = f.sync_all();
-    }
-
-    // Release the lock (also happens on drop of _lock_file).
-    #[cfg(unix)]
-    {
-        use std::os::unix::io::AsRawFd;
-        unsafe {
-            libc::flock(_lock_file.as_raw_fd(), libc::LOCK_UN);
-        }
-    }
-
-    Ok(())
+        Ok(())
+    })
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────

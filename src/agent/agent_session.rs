@@ -632,85 +632,80 @@ impl AgentSession {
             return Ok(None);
         };
 
-        let result = {
-            // Build prompts using compaction module, call provider directly
-            let (summary_text, _details) = if prep.is_split_turn
-                && !prep.turn_prefix_messages.is_empty()
-            {
-                // History summary
-                let history_prompt = compaction_mod::build_summarization_prompt(
-                    &prep.messages_to_summarize,
-                    prep.previous_summary.as_deref(),
-                    custom_instructions,
-                );
-                let (history_text, _history_usage) = self
-                    .call_provider_for_summary(
-                        compaction_mod::SUMMARIZATION_SYSTEM_PROMPT,
-                        &history_prompt,
-                    )
-                    .await?;
-
-                // Turn prefix summary
-                let prefix_conversation =
-                    compaction_mod::serialize_conversation(&prep.turn_prefix_messages);
-                let prefix_prompt = format!(
-                    "<conversation>\n{}\n</conversation>\n\n{}",
-                    prefix_conversation,
-                    "This is the PREFIX of a turn that was too large to keep. The SUFFIX (recent work) is retained.\n\n\
-                     Summarize the prefix to provide context for the retained suffix:\n\n\
-                     ## Original Request\n\
-                     [What did the user ask for in this turn?]\n\n\
-                     ## Early Progress\n\
-                     - [Key decisions and work done in the prefix]\n\n\
-                     ## Context for Suffix\n\
-                     - [Information needed to understand the retained recent work]\n\n\
-                     Be concise. Focus on what's needed to understand the kept suffix."
-                );
-                let (prefix_text, _prefix_usage) = self
-                    .call_provider_for_summary(
-                        compaction_mod::SUMMARIZATION_SYSTEM_PROMPT,
-                        &prefix_prompt,
-                    )
-                    .await?;
-
-                let combined = format!(
-                    "{}\n\n---\n\n**Turn Context (split turn):**\n\n{}",
-                    history_text, prefix_text
-                );
-                (combined, None::<serde_json::Value>)
-            } else {
-                let prompt = compaction_mod::build_summarization_prompt(
-                    &prep.messages_to_summarize,
-                    prep.previous_summary.as_deref(),
-                    custom_instructions,
-                );
-                let (text, _usage) = self
-                    .call_provider_for_summary(compaction_mod::SUMMARIZATION_SYSTEM_PROMPT, &prompt)
-                    .await?;
-                (text, None::<serde_json::Value>)
-            };
-
-            // Append file operations to summary
-            let (read_files, modified_files) = compaction_mod::compute_file_lists(&prep.file_ops);
-            let summary_with_files = format!(
-                "{}{}",
-                summary_text,
-                compaction_mod::format_file_operations(&read_files, &modified_files)
+        // Generate summary text — split-turn vs single path differ only in prompt construction
+        let summary_text = if prep.is_split_turn && !prep.turn_prefix_messages.is_empty() {
+            // History summary
+            let history_prompt = compaction_mod::build_summarization_prompt(
+                &prep.messages_to_summarize,
+                prep.previous_summary.as_deref(),
+                custom_instructions,
             );
+            let (history_text, _history_usage) = self
+                .call_provider_for_summary(
+                    compaction_mod::SUMMARIZATION_SYSTEM_PROMPT,
+                    &history_prompt,
+                )
+                .await?;
 
-            let details = serde_json::to_value(compaction_mod::CompactionDetails {
-                read_files,
-                modified_files,
-            })
-            .ok();
+            // Turn prefix summary
+            let prefix_conversation =
+                compaction_mod::serialize_conversation(&prep.turn_prefix_messages);
+            let prefix_prompt = format!(
+                "<conversation>\n{}\n</conversation>\n\n{}",
+                prefix_conversation,
+                "This is the PREFIX of a turn that was too large to keep. The SUFFIX (recent work) is retained.\n\n\
+                 Summarize the prefix to provide context for the retained suffix:\n\n\
+                 ## Original Request\n\
+                 [What did the user ask for in this turn?]\n\n\
+                 ## Early Progress\n\
+                 - [Key decisions and work done in the prefix]\n\n\
+                 ## Context for Suffix\n\
+                 - [Information needed to understand the retained recent work]\n\n\
+                 Be concise. Focus on what's needed to understand the kept suffix."
+            );
+            let (prefix_text, _prefix_usage) = self
+                .call_provider_for_summary(
+                    compaction_mod::SUMMARIZATION_SYSTEM_PROMPT,
+                    &prefix_prompt,
+                )
+                .await?;
 
-            CompactionResult {
-                summary: summary_with_files,
-                first_kept_entry_id: prep.first_kept_entry_id.clone(),
-                tokens_before: prep.tokens_before,
-                estimated_tokens_after: None,
-                details,
-            }
+            format!(
+                "{}\n\n---\n\n**Turn Context (split turn):**\n\n{}",
+                history_text, prefix_text
+            )
+        } else {
+            let prompt = compaction_mod::build_summarization_prompt(
+                &prep.messages_to_summarize,
+                prep.previous_summary.as_deref(),
+                custom_instructions,
+            );
+            let (text, _usage) = self
+                .call_provider_for_summary(compaction_mod::SUMMARIZATION_SYSTEM_PROMPT, &prompt)
+                .await?;
+            text
+        };
+
+        // Shared post-processing: compute file ops, build CompactionResult, persist, emit events
+        let (read_files, modified_files) = compaction_mod::compute_file_lists(&prep.file_ops);
+        let summary_with_files = format!(
+            "{}{}",
+            summary_text,
+            compaction_mod::format_file_operations(&read_files, &modified_files)
+        );
+
+        let details = serde_json::to_value(compaction_mod::CompactionDetails {
+            read_files,
+            modified_files,
+        })
+        .ok();
+
+        let result = CompactionResult {
+            summary: summary_with_files,
+            first_kept_entry_id: prep.first_kept_entry_id.clone(),
+            tokens_before: prep.tokens_before,
+            estimated_tokens_after: None,
+            details,
         };
 
         // Append the compaction entry to the session

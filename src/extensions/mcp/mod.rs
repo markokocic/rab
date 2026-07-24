@@ -543,37 +543,9 @@ impl McpProxyTool {
 
     /// Execute the list operation: list tools for a specific server.
     async fn execute_list(&self, server_name: &str) -> ToolResult {
-        // Ensure connected
-        let connected = {
-            let mut manager = self.manager.lock().await;
-            manager.ensure_connected(server_name).await
-        };
-
-        if connected {
-            // Cache tools after connecting
-            let manager = self.manager.lock().await;
-            let client = manager.get_client(server_name);
-            drop(manager);
-
-            if let Some(client) = client {
-                let client = client.lock().await;
-                if let Ok(tools) = client.list_tools().await {
-                    let config_hash = self
-                        .config
-                        .lock()
-                        .unwrap()
-                        .mcp_servers
-                        .get(server_name)
-                        .map(config::compute_server_config_hash)
-                        .unwrap_or(0);
-
-                    let mut tool_cache = self.tool_cache.lock().await;
-                    tool_cache.insert(server_name.to_string(), tools.clone());
-                    drop(tool_cache);
-
-                    update_cache_entry(server_name, config_hash, &tools);
-                }
-            }
+        // Ensure connected and cache tools
+        if self.ensure_connected(server_name).await {
+            self.cache_tools(server_name).await;
         }
 
         let tool_cache = self.tool_cache.lock().await;
