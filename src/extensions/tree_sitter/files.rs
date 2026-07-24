@@ -6,9 +6,24 @@ use crate::extensions::tree_sitter::adapters::all_extensions;
 
 /// Directories to skip when walking the project tree.
 const IGNORE_DIRS: &[&str] = &[
-    "node_modules", ".git", ".svn", ".hg", "target", "build", "dist",
-    ".next", ".cache", "__pycache__", "venv", ".venv", ".tox",
-    "vendor", ".bundle", "elm-stuff", ".gradle", "coverage",
+    "node_modules",
+    ".git",
+    ".svn",
+    ".hg",
+    "target",
+    "build",
+    "dist",
+    ".next",
+    ".cache",
+    "__pycache__",
+    "venv",
+    ".venv",
+    ".tox",
+    "vendor",
+    ".bundle",
+    "elm-stuff",
+    ".gradle",
+    "coverage",
 ];
 
 /// Find all files with known extensions under `dir`, up to `max_files`.
@@ -21,7 +36,9 @@ pub fn find_project_files(dir: &Path, max_files: usize) -> Vec<std::path::PathBu
         if results.len() >= max_files {
             break;
         }
-        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
         for entry in entries.flatten() {
             if results.len() >= max_files {
                 break;
@@ -33,12 +50,13 @@ pub fn find_project_files(dir: &Path, max_files: usize) -> Vec<std::path::PathBu
                     dirs.push(path);
                 }
             } else if path.is_file()
-                && let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-                    let ext = format!(".{ext}");
-                    if exts.iter().any(|e| *e == ext) {
-                        results.push(path);
-                    }
+                && let Some(ext) = path.extension().and_then(|e| e.to_str())
+            {
+                let ext = format!(".{ext}");
+                if exts.iter().any(|e| *e == ext) {
+                    results.push(path);
                 }
+            }
         }
     }
 

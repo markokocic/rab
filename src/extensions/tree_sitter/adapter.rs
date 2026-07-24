@@ -2,8 +2,6 @@
 
 #![allow(dead_code)]
 
-use tree_sitter::Language;
-
 use tree_sitter::StreamingIterator;
 
 // ── Core types ──────────────────────────────────────────────────────────
@@ -82,11 +80,13 @@ pub struct Callee {
 // ── Adapter entry (pi-tree-sitter style) ────────────────────────────────
 
 /// A language adapter: pure functions that extract symbols and callees
-/// from source code using a tree-sitter grammar.
+/// from source code using a pre-configured tree-sitter parser.
 pub struct AdapterEntry {
     pub extensions: &'static [&'static str],
-    pub extract: fn(source: &str, lang: &Language) -> Result<ExtractedFile, String>,
-    pub find_callees: fn(source: &str, lang: &Language, range: &ByteRange) -> Vec<Callee>,
+    pub extract:
+        fn(source: &str, parser: &mut tree_sitter::Parser) -> Result<ExtractedFile, String>,
+    pub find_callees:
+        fn(source: &str, parser: &mut tree_sitter::Parser, range: &ByteRange) -> Vec<Callee>,
 }
 
 // ── Helpers shared by adapters ──────────────────────────────────────────
@@ -113,15 +113,19 @@ pub fn node_signature(node: tree_sitter::Node, source: &str) -> String {
     source[node.start_byte()..end].trim().to_string()
 }
 
-/// Run a tree-sitter query and return named captures.
+/// Run a tree-sitter query on a pre-configured parser and return named captures.
 pub fn query_captures(
+    parser: &mut tree_sitter::Parser,
     source: &str,
-    lang: &Language,
     query_source: &str,
     capture_name: &str,
     range: Option<&ByteRange>,
 ) -> Vec<Callee> {
-    let query = match tree_sitter::Query::new(lang, query_source) {
+    let lang = match parser.language() {
+        Some(l) => l,
+        None => return vec![],
+    };
+    let query = match tree_sitter::Query::new(&lang, query_source) {
         Ok(q) => q,
         Err(_) => return vec![],
     };
@@ -129,11 +133,9 @@ pub fn query_captures(
         Some(i) => i,
         None => return vec![],
     };
-    let mut parser = tree_sitter::Parser::new();
-    if parser.set_language(lang).is_err() {
+    let Some(tree) = parser.parse(source, None) else {
         return vec![];
-    }
-    let Some(tree) = parser.parse(source, None) else { return vec![] };
+    };
     let root = tree.root_node();
     let mut cursor = tree_sitter::QueryCursor::new();
     let mut matches = cursor.matches(&query, root, source.as_bytes());
@@ -144,9 +146,10 @@ pub fn query_captures(
                 continue;
             }
             if let Some(r) = range
-                && (c.node.start_byte() < r.start_byte || c.node.start_byte() > r.end_byte) {
-                    continue;
-                }
+                && (c.node.start_byte() < r.start_byte || c.node.start_byte() > r.end_byte)
+            {
+                continue;
+            }
             let name = node_text(c.node, source).to_string();
             let line = c.node.start_position().row + 1;
             results.push(Callee { name, line });

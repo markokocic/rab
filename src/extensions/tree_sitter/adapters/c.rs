@@ -1,10 +1,10 @@
 //! C language adapter.
 
-use tree_sitter::{Language, Node};
+use tree_sitter::Node;
 
 use crate::extensions::tree_sitter::adapter::{
-    node_range, node_signature, node_text, query_captures, AdapterEntry, ByteRange, Callee,
-    ExtractedFile, Symbol, SymbolKind,
+    AdapterEntry, ByteRange, Callee, ExtractedFile, Symbol, SymbolKind, node_range, node_signature,
+    node_text, query_captures,
 };
 
 pub(super) const ENTRY: AdapterEntry = AdapterEntry {
@@ -13,32 +13,38 @@ pub(super) const ENTRY: AdapterEntry = AdapterEntry {
     find_callees,
 };
 
-fn extract(source: &str, lang: &Language) -> Result<ExtractedFile, String> {
-    let mut parser = tree_sitter::Parser::new();
-    parser.set_language(lang).map_err(|e| format!("set_language: {e}"))?;
+fn extract(source: &str, parser: &mut tree_sitter::Parser) -> Result<ExtractedFile, String> {
     let tree = parser.parse(source, None).ok_or("parse returned None")?;
     let root = tree.root_node();
 
     let mut symbols = Vec::new();
 
     for i in 0..root.named_child_count() as u32 {
-        let Some(child) = root.named_child(i) else { continue };
+        let Some(child) = root.named_child(i) else {
+            continue;
+        };
         match child.kind() {
             "function_definition" => {
                 if let Some(name) = c_func_name(child, source) {
                     symbols.push(Symbol {
-                        kind: SymbolKind::Function, name,
-                        range: node_range(child), signature: node_signature(child, source),
-                        is_exported: true, parent_class: None,
+                        kind: SymbolKind::Function,
+                        name,
+                        range: node_range(child),
+                        signature: node_signature(child, source),
+                        is_exported: true,
+                        parent_class: None,
                     });
                 }
             }
             "struct_specifier" | "union_specifier" | "enum_specifier" => {
                 if let Some(nn) = child.child_by_field_name("name") {
                     symbols.push(Symbol {
-                        kind: SymbolKind::Class, name: node_text(nn, source).to_string(),
-                        range: node_range(child), signature: node_signature(child, source),
-                        is_exported: true, parent_class: None,
+                        kind: SymbolKind::Class,
+                        name: node_text(nn, source).to_string(),
+                        range: node_range(child),
+                        signature: node_signature(child, source),
+                        is_exported: true,
+                        parent_class: None,
                     });
                 }
             }
@@ -46,11 +52,21 @@ fn extract(source: &str, lang: &Language) -> Result<ExtractedFile, String> {
         }
     }
 
-    Ok(ExtractedFile { symbols, imports: Vec::new(), exports: Vec::new() })
+    Ok(ExtractedFile {
+        symbols,
+        imports: Vec::new(),
+        exports: Vec::new(),
+    })
 }
 
-fn find_callees(source: &str, lang: &Language, range: &ByteRange) -> Vec<Callee> {
-    query_captures(source, lang, "(call_expression function: (identifier) @callee)", "callee", Some(range))
+fn find_callees(source: &str, parser: &mut tree_sitter::Parser, range: &ByteRange) -> Vec<Callee> {
+    query_captures(
+        parser,
+        source,
+        "(call_expression function: (identifier) @callee)",
+        "callee",
+        Some(range),
+    )
 }
 
 fn c_func_name(node: Node, source: &str) -> Option<String> {
@@ -67,9 +83,10 @@ fn c_func_name(node: Node, source: &str) -> Option<String> {
         }
         for j in 0..n.named_child_count() as u32 {
             if let Some(c) = n.named_child(j)
-                && c.kind() == "identifier" {
-                    return Some(node_text(c, source).to_string());
-                }
+                && c.kind() == "identifier"
+            {
+                return Some(node_text(c, source).to_string());
+            }
         }
         break;
     }

@@ -116,62 +116,86 @@ fn snippet_for(node: tree_sitter::Node, source: &str) -> String {
 // delimiter imbalance with comment/string awareness.
 
 const BALANCE_RULES: &[(&str, BalanceRule)] = &[
-    (".janet", BalanceRule {
-        line_comment: "#",
-        block_comment: None,
-        strings: &[("\"", "\"", true)],
-        char_backslash: false,
-        backtick_long: true,
-    }),
-    (".jdn", BalanceRule {
-        line_comment: "#",
-        block_comment: None,
-        strings: &[("\"", "\"", true)],
-        char_backslash: false,
-        backtick_long: true,
-    }),
-    (".fnl", BalanceRule {
-        line_comment: ";",
-        block_comment: None,
-        strings: &[("\"", "\"", true)],
-        char_backslash: true,
-        backtick_long: false,
-    }),
-    (".scm", BalanceRule {
-        line_comment: ";",
-        block_comment: Some(("#|", "|#")),
-        strings: &[("\"", "\"", true)],
-        char_backslash: true,
-        backtick_long: false,
-    }),
-    (".ss", BalanceRule {
-        line_comment: ";",
-        block_comment: Some(("#|", "|#")),
-        strings: &[("\"", "\"", true)],
-        char_backslash: true,
-        backtick_long: false,
-    }),
-    (".rkt", BalanceRule {
-        line_comment: ";",
-        block_comment: Some(("#|", "|#")),
-        strings: &[("\"", "\"", true)],
-        char_backslash: true,
-        backtick_long: false,
-    }),
-    (".lisp", BalanceRule {
-        line_comment: ";",
-        block_comment: Some(("#|", "|#")),
-        strings: &[("\"", "\"", true)],
-        char_backslash: true,
-        backtick_long: false,
-    }),
-    (".el", BalanceRule {
-        line_comment: ";",
-        block_comment: None,
-        strings: &[("\"", "\"", true)],
-        char_backslash: true, // for ?\X
-        backtick_long: false,
-    }),
+    (
+        ".janet",
+        BalanceRule {
+            line_comment: "#",
+            block_comment: None,
+            strings: &[("\"", "\"", true)],
+            char_backslash: false,
+            backtick_long: true,
+        },
+    ),
+    (
+        ".jdn",
+        BalanceRule {
+            line_comment: "#",
+            block_comment: None,
+            strings: &[("\"", "\"", true)],
+            char_backslash: false,
+            backtick_long: true,
+        },
+    ),
+    (
+        ".fnl",
+        BalanceRule {
+            line_comment: ";",
+            block_comment: None,
+            strings: &[("\"", "\"", true)],
+            char_backslash: true,
+            backtick_long: false,
+        },
+    ),
+    (
+        ".scm",
+        BalanceRule {
+            line_comment: ";",
+            block_comment: Some(("#|", "|#")),
+            strings: &[("\"", "\"", true)],
+            char_backslash: true,
+            backtick_long: false,
+        },
+    ),
+    (
+        ".ss",
+        BalanceRule {
+            line_comment: ";",
+            block_comment: Some(("#|", "|#")),
+            strings: &[("\"", "\"", true)],
+            char_backslash: true,
+            backtick_long: false,
+        },
+    ),
+    (
+        ".rkt",
+        BalanceRule {
+            line_comment: ";",
+            block_comment: Some(("#|", "|#")),
+            strings: &[("\"", "\"", true)],
+            char_backslash: true,
+            backtick_long: false,
+        },
+    ),
+    (
+        ".lisp",
+        BalanceRule {
+            line_comment: ";",
+            block_comment: Some(("#|", "|#")),
+            strings: &[("\"", "\"", true)],
+            char_backslash: true,
+            backtick_long: false,
+        },
+    ),
+    (
+        ".el",
+        BalanceRule {
+            line_comment: ";",
+            block_comment: None,
+            strings: &[("\"", "\"", true)],
+            char_backslash: true, // for ?\X
+            backtick_long: false,
+        },
+    ),
 ];
 
 struct BalanceRule {
@@ -183,7 +207,10 @@ struct BalanceRule {
 }
 
 fn balance_rule_for_ext(ext: &str) -> Option<&'static BalanceRule> {
-    BALANCE_RULES.iter().find(|(e, _)| *e == ext).map(|(_, r)| r)
+    BALANCE_RULES
+        .iter()
+        .find(|(e, _)| *e == ext)
+        .map(|(_, r)| r)
 }
 
 /// Check delimiter balance. Returns an actionable error message, or None if balanced.
@@ -231,22 +258,23 @@ pub fn check_delimiter_balance(path: &Path, content: &str) -> Option<String> {
 
         // Block comment
         if let Some((open, close)) = rules.block_comment
-            && bytes[i..].starts_with(open.as_bytes()) {
-                advance(bytes, &mut i, &mut line, &mut col, open.len());
-                let mut depth = 1;
-                while i < n && depth > 0 {
-                    if bytes[i..].starts_with(open.as_bytes()) {
-                        depth += 1;
-                        advance(bytes, &mut i, &mut line, &mut col, open.len());
-                    } else if bytes[i..].starts_with(close.as_bytes()) {
-                        depth -= 1;
-                        advance(bytes, &mut i, &mut line, &mut col, close.len());
-                    } else {
-                        advance(bytes, &mut i, &mut line, &mut col, 1);
-                    }
+            && bytes[i..].starts_with(open.as_bytes())
+        {
+            advance(bytes, &mut i, &mut line, &mut col, open.len());
+            let mut depth = 1;
+            while i < n && depth > 0 {
+                if bytes[i..].starts_with(open.as_bytes()) {
+                    depth += 1;
+                    advance(bytes, &mut i, &mut line, &mut col, open.len());
+                } else if bytes[i..].starts_with(close.as_bytes()) {
+                    depth -= 1;
+                    advance(bytes, &mut i, &mut line, &mut col, close.len());
+                } else {
+                    advance(bytes, &mut i, &mut line, &mut col, 1);
                 }
-                continue;
             }
+            continue;
+        }
 
         // Strings
         for &(open, close, esc) in rules.strings {
@@ -378,7 +406,8 @@ mod tests {
     #[test]
     fn render_names_expected_token() {
         let e = SyntaxError {
-            line: 5, column: 1,
+            line: 5,
+            column: 1,
             snippet: "}".into(),
             is_missing: true,
             expected: Some("}".into()),
@@ -386,7 +415,8 @@ mod tests {
         assert_eq!(e.render(), "  missing `}` at 5:1: }");
 
         let e2 = SyntaxError {
-            line: 1, column: 1,
+            line: 1,
+            column: 1,
             snippet: "@@@".into(),
             is_missing: false,
             expected: None,

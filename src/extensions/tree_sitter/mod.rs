@@ -12,11 +12,13 @@ use crate::extension::{
 };
 
 use self::grammar::GrammarManager;
+use self::renderer::TreeSitterToolRenderer;
 
 mod adapter;
 mod adapters;
 mod files;
 mod grammar;
+mod renderer;
 pub(crate) mod tools;
 mod validate;
 
@@ -65,31 +67,56 @@ impl Extension for TreeSitterExtension {
                 tool: Box::new(tools::ListSymbolsTool::new(manager.clone())),
                 snippet: "List symbols (functions, classes, methods) in a file or project",
                 guidelines: &["Use list_symbols for code structure queries instead of grep."],
-                prepare_arguments: None, before_tool_call: None, after_tool_call: None, renderer: None,
+                prepare_arguments: None,
+                before_tool_call: None,
+                after_tool_call: None,
+                renderer: Some(std::sync::Arc::new(TreeSitterToolRenderer::new(
+                    "list_symbols",
+                ))),
             },
             ToolDefinition {
                 tool: Box::new(tools::FindDefinitionTool::new(manager.clone())),
                 snippet: "Find where a symbol is defined across the project",
                 guidelines: &["Use find_definition for precise AST-based definition lookup."],
-                prepare_arguments: None, before_tool_call: None, after_tool_call: None, renderer: None,
+                prepare_arguments: None,
+                before_tool_call: None,
+                after_tool_call: None,
+                renderer: Some(std::sync::Arc::new(TreeSitterToolRenderer::new(
+                    "find_definition",
+                ))),
             },
             ToolDefinition {
                 tool: Box::new(tools::GetSymbolBodyTool::new(manager.clone())),
                 snippet: "Get full source of a named symbol from a file",
                 guidelines: &["Use get_symbol_body to extract by AST byte range."],
-                prepare_arguments: None, before_tool_call: None, after_tool_call: None, renderer: None,
+                prepare_arguments: None,
+                before_tool_call: None,
+                after_tool_call: None,
+                renderer: Some(std::sync::Arc::new(TreeSitterToolRenderer::new(
+                    "get_symbol_body",
+                ))),
             },
             ToolDefinition {
                 tool: Box::new(tools::FindCallersTool::new(manager.clone())),
                 snippet: "Find all call sites of a function or method",
                 guidelines: &["Use find_callers for AST-based caller analysis."],
-                prepare_arguments: None, before_tool_call: None, after_tool_call: None, renderer: None,
+                prepare_arguments: None,
+                before_tool_call: None,
+                after_tool_call: None,
+                renderer: Some(std::sync::Arc::new(TreeSitterToolRenderer::new(
+                    "find_callers",
+                ))),
             },
             ToolDefinition {
                 tool: Box::new(tools::FindCalleesTool::new(manager)),
                 snippet: "Find what a function/method calls",
                 guidelines: &["Use find_callees for AST-based callee analysis."],
-                prepare_arguments: None, before_tool_call: None, after_tool_call: None, renderer: None,
+                prepare_arguments: None,
+                before_tool_call: None,
+                after_tool_call: None,
+                renderer: Some(std::sync::Arc::new(TreeSitterToolRenderer::new(
+                    "find_callees",
+                ))),
             },
         ]
     }
@@ -111,7 +138,10 @@ impl Extension for TreeSitterExtension {
 
             // 1. Try delimiter-balance check first (no grammar needed)
             if let Some(msg) = validate::check_delimiter_balance(&path_buf, content) {
-                return Some(BeforeToolCallResult { block: true, reason: msg });
+                return Some(BeforeToolCallResult {
+                    block: true,
+                    reason: msg,
+                });
             }
 
             // 2. Try full tree-sitter validation (sync, loads grammar from cache)
@@ -120,8 +150,9 @@ impl Extension for TreeSitterExtension {
                 None => return None,
             };
 
-            // If grammar not cached yet, attempt to fetch (can fail, skip validation)
-            manager.ensure(&ext).unwrap_or(None)?;
+            // Skip validation if grammar isn't cached yet.
+            // The download happens asynchronously when tools are invoked.
+            manager.check_cached(&ext).ok()??;
 
             let tree = match manager.parse(&ext, content) {
                 Ok(Some(t)) => t,
@@ -134,7 +165,10 @@ impl Extension for TreeSitterExtension {
             }
 
             let msg = validate::format_errors(&path_buf, content, &errors);
-            Some(BeforeToolCallResult { block: true, reason: msg })
+            Some(BeforeToolCallResult {
+                block: true,
+                reason: msg,
+            })
         });
 
         let edit_hook: BeforeHook = Arc::new(move |args: &serde_json::Value| {
@@ -150,8 +184,16 @@ impl Extension for TreeSitterExtension {
         });
 
         vec![
-            HookRegistration { tool_name: "write", before: Some(write_hook), after: None },
-            HookRegistration { tool_name: "edit", before: Some(edit_hook), after: None },
+            HookRegistration {
+                tool_name: "write",
+                before: Some(write_hook),
+                after: None,
+            },
+            HookRegistration {
+                tool_name: "edit",
+                before: Some(edit_hook),
+                after: None,
+            },
         ]
     }
 }
