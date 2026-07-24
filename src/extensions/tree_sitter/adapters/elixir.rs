@@ -23,7 +23,7 @@ fn extract(source: &str, lang: &Language) -> Result<ExtractedFile, String> {
     let root = tree.root_node();
     let mut symbols = Vec::new();
     elixir_walk_block(root, source, &mut symbols, None);
-    Ok(ExtractedFile { symbols })
+    Ok(ExtractedFile { symbols, imports: Vec::new(), exports: Vec::new() })
 }
 
 fn find_callees(source: &str, lang: &Language, range: &ByteRange) -> Vec<Callee> {

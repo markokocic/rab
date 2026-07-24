@@ -8,7 +8,7 @@ use crate::extensions::tree_sitter::adapter::{
 };
 
 pub(super) const ENTRY: AdapterEntry = AdapterEntry {
-    extensions: &[".cpp", ".cc", ".cxx", ".hpp", ".hh", ".hxx"],
+    extensions: &[".cpp", ".cc", ".cxx", ".hpp", ".hh", ".hxx", ".h"],
     extract,
     find_callees,
 };
@@ -64,7 +64,7 @@ fn extract(source: &str, lang: &Language) -> Result<ExtractedFile, String> {
         }
     }
 
-    Ok(ExtractedFile { symbols })
+    Ok(ExtractedFile { symbols, imports: Vec::new(), exports: Vec::new() })
 }
 
 fn find_callees(source: &str, lang: &Language, range: &ByteRange) -> Vec<Callee> {

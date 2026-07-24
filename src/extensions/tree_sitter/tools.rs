@@ -10,7 +10,7 @@ use async_trait::async_trait;
 use yoagent::types::{AgentTool, ToolContext, ToolError, ToolResult};
 
 use crate::extensions::tree_sitter::adapter::{Callee, Symbol};
-use crate::extensions::tree_sitter::adapters::adapter_for_ext;
+use crate::extensions::tree_sitter::adapters::adapter_for_path;
 use crate::extensions::tree_sitter::files::{find_project_files, read_file_safe};
 use crate::extensions::tree_sitter::grammar::GrammarManager;
 
@@ -20,10 +20,9 @@ fn extract_file(
     path: &Path,
     manager: &GrammarManager,
 ) -> Option<(String, Vec<Symbol>)> {
-    let ext = path.extension()?;
-    let ext = format!(".{}", ext.to_str()?);
-    let entry = adapter_for_ext(&ext)?;
+    let entry = adapter_for_path(path)?;
     let source = read_file_safe(path)?;
+    let ext = format!(".{}", path.extension()?.to_str()?);
 
     manager.ensure(&ext).ok()??;
 
@@ -38,9 +37,9 @@ fn callees_for_symbol(
     sym: &Symbol,
     manager: &GrammarManager,
 ) -> Option<Vec<Callee>> {
-    let ext = format!(".{}", path.extension()?.to_str()?);
-    let entry = adapter_for_ext(&ext)?;
+    let entry = adapter_for_path(path)?;
     let source = read_file_safe(path)?;
+    let ext = format!(".{}", path.extension()?.to_str()?);
 
     let result = manager.with_lang(&ext, |lang| Ok((entry.find_callees)(&source, lang, &sym.range)));
     result.ok()?

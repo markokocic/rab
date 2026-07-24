@@ -1,5 +1,7 @@
 //! Core types and helpers for language adapters.
 
+#![allow(dead_code)]
+
 use tree_sitter::Language;
 
 use tree_sitter::StreamingIterator;
@@ -47,9 +49,28 @@ pub struct Symbol {
     pub parent_class: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ImportKind {
+    /// C/C++ `#include` — local or system header.
+    Header,
+    /// Single-token module names: Go's "fmt", Python's os.path.
+    Module,
+    /// Fully-qualified: Java's java.util.List, Rust's std::sync::Arc, TS paths.
+    Qualified,
+}
+
+#[derive(Debug, Clone)]
+pub struct Import {
+    pub names: Vec<String>,
+    pub source: String,
+    pub kind: ImportKind,
+}
+
 #[derive(Debug, Clone)]
 pub struct ExtractedFile {
     pub symbols: Vec<Symbol>,
+    pub imports: Vec<Import>,
+    pub exports: Vec<String>,
 }
 
 #[derive(Debug, Clone)]

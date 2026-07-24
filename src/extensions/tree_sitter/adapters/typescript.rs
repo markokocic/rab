@@ -4,7 +4,7 @@ use tree_sitter::{Language, Node};
 
 use crate::extensions::tree_sitter::adapter::{
     node_range, node_signature, node_text, query_captures, AdapterEntry, ByteRange, Callee,
-    ExtractedFile, Symbol, SymbolKind,
+    ExtractedFile, Import, ImportKind, Symbol, SymbolKind,
 };
 
 pub(super) const ENTRY: AdapterEntry = AdapterEntry {
@@ -20,10 +20,17 @@ fn extract(source: &str, lang: &Language) -> Result<ExtractedFile, String> {
     let root = tree.root_node();
 
     let mut symbols = Vec::new();
+    let mut imports = Vec::new();
+    let mut exports = Vec::new();
 
     for i in 0..root.named_child_count() as u32 {
         let Some(child) = root.named_child(i) else { continue };
         match child.kind() {
+            "import_statement" => {
+                if let Some(imp) = ts_extract_import(child, source) {
+                    imports.push(imp);
+                }
+            }
             "function_declaration" => {
                 if let Some(nn) = child.child_by_field_name("name") {
                     symbols.push(Symbol {
@@ -74,9 +81,15 @@ fn extract(source: &str, lang: &Language) -> Result<ExtractedFile, String> {
             }
             _ => {}
         }
+        // Collect exports from top-level exported symbols
+        if let Some(nn) = child.child_by_field_name("name")
+            && is_ts_exported(child)
+        {
+            exports.push(node_text(nn, source).to_string());
+        }
     }
 
-    Ok(ExtractedFile { symbols })
+    Ok(ExtractedFile { symbols, imports, exports })
 }
 
 fn find_callees(source: &str, lang: &Language, range: &ByteRange) -> Vec<Callee> {
@@ -85,6 +98,40 @@ fn find_callees(source: &str, lang: &Language, range: &ByteRange) -> Vec<Callee>
         "(call_expression function: (identifier) @callee)",
         "callee", Some(range),
     )
+}
+
+/// Extract import names+source from an `import_statement` node.
+fn ts_extract_import(node: tree_sitter::Node, source: &str) -> Option<Import> {
+    let source_node = node.child_by_field_name("source")?;
+    let module_path = node_text(source_node, source);
+    let module_path = module_path.trim_matches(&['\'', '"'][..]).to_string();
+
+    let mut names = Vec::new();
+    if let Some(clause) = node.child_by_field_name("import") {
+        if let Some(name_node) = clause.child_by_field_name("name") {
+            names.push(node_text(name_node, source).to_string());
+        }
+        for i in 0..clause.named_child_count() as u32 {
+            if let Some(child) = clause.named_child(i)
+                && child.kind() == "named_imports"
+            {
+                for j in 0..child.named_child_count() as u32 {
+                    if let Some(spec) = child.named_child(j)
+                        && spec.kind() == "import_specifier"
+                        && let Some(n) = spec.child_by_field_name("name")
+                    {
+                        names.push(node_text(n, source).to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    Some(Import {
+        names,
+        source: module_path,
+        kind: ImportKind::Qualified,
+    })
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────
