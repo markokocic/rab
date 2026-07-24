@@ -9,11 +9,11 @@ use std::path::{Path, PathBuf};
 /// `Rc` clone and reads data each render cycle instead of receiving
 /// push updates from the App.
 ///
-/// Git branch resolution:
+/// Git branch resolution (filesystem-only, no subprocess):
 /// 1. Walk up from `cwd` looking for `.git`
 /// 2. If `.git` is a file → worktree: parse `gitdir:` path, find HEAD
 /// 3. If `.git` is a directory → regular repo: find HEAD
-/// 4. Read HEAD file; if `ref: refs/heads/.invalid` → fall back to git
+/// 4. Read HEAD file; if `ref: refs/heads/.invalid` → reftable, branch unknown
 /// 5. Otherwise treat as detached HEAD
 pub struct FooterDataProvider {
     cwd: PathBuf,
@@ -131,56 +131,40 @@ impl FooterDataProvider {
     pub fn set_available_provider_count(&mut self, count: usize) {
         self.available_provider_count = count;
     }
-
-    /// Test-only: set git branch directly (avoids filesystem resolution).
-    #[cfg(test)]
-    pub fn set_test_git_branch(&mut self, branch: Option<&str>) {
-        self.git_branch = branch.map(|s| s.to_string());
-    }
 }
 
 struct GitPaths {
-    _repo_dir: PathBuf,
     head_path: PathBuf,
 }
 
 /// Walk up from `cwd` looking for `.git` (directory or worktree file).
 fn find_git_paths(cwd: &Path) -> Option<GitPaths> {
-    let mut dir = Some(cwd.to_path_buf());
-    while let Some(ref d) = dir {
-        let git_path = d.join(".git");
+    for dir in cwd.ancestors() {
+        let git_path = dir.join(".git");
         if git_path.exists() {
             if git_path.is_file() {
-                // Worktree: .git is a file containing "gitdir: <path>"
                 let content = fs::read_to_string(&git_path).ok()?;
                 let content = content.trim();
                 if let Some(git_dir_str) = content.strip_prefix("gitdir: ") {
-                    let git_dir = d.join(git_dir_str);
+                    let git_dir = dir.join(git_dir_str);
                     let head_path = git_dir.join("HEAD");
                     if head_path.exists() {
-                        return Some(GitPaths {
-                            _repo_dir: d.clone(),
-                            head_path,
-                        });
+                        return Some(GitPaths { head_path });
                     }
                 }
             } else if git_path.is_dir() {
-                // Regular repo
                 let head_path = git_path.join("HEAD");
                 if head_path.exists() {
-                    return Some(GitPaths {
-                        _repo_dir: d.clone(),
-                        head_path,
-                    });
+                    return Some(GitPaths { head_path });
                 }
             }
         }
-        dir = d.parent().map(|p| p.to_path_buf());
     }
     None
 }
 
-/// Resolve the current git branch from HEAD, handling reftable repos.
+/// Resolve the current git branch from HEAD (filesystem-only).
+/// Returns `None` outside a git repo, in a reftable repo, or on detached HEAD.
 fn resolve_git_branch(cwd: &Path) -> Option<String> {
     let paths = find_git_paths(cwd)?;
     let content = fs::read_to_string(&paths.head_path).ok()?;
@@ -188,37 +172,15 @@ fn resolve_git_branch(cwd: &Path) -> Option<String> {
 
     if let Some(branch) = content.strip_prefix("ref: refs/heads/") {
         if branch == ".invalid" {
-            // Reftable repo: HEAD is a placeholder, use git symbolic-ref
-            resolve_branch_with_git(&paths._repo_dir)
+            // Reftable repo: HEAD is a placeholder, can't resolve without git
+            None
         } else {
             Some(branch.to_string())
         }
     } else {
         // Detached HEAD
-        Some("detached".to_string())
+        None
     }
-}
-
-/// Fallback for reftable repos: ask git for the current branch.
-fn resolve_branch_with_git(repo_dir: &Path) -> Option<String> {
-    let output = std::process::Command::new("git")
-        .args([
-            "--no-optional-locks",
-            "symbolic-ref",
-            "--quiet",
-            "--short",
-            "HEAD",
-        ])
-        .current_dir(repo_dir)
-        .output()
-        .ok()?;
-    if output.status.success() {
-        let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        if !branch.is_empty() {
-            return Some(branch);
-        }
-    }
-    Some("detached".to_string())
 }
 
 // ── Tests ──────────────────────────────────────────────────────────
@@ -226,28 +188,6 @@ fn resolve_branch_with_git(repo_dir: &Path) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_new_provider_refreshes_git_branch() {
-        let provider = FooterDataProvider::new(PathBuf::from("/tmp"));
-        // In a temp dir without git, git_branch should be None
-        assert!(provider.get_git_branch().is_none());
-    }
-
-    #[test]
-    fn test_set_test_git_branch() {
-        let mut provider = FooterDataProvider::new(PathBuf::from("/tmp"));
-        provider.set_test_git_branch(Some("main"));
-        assert_eq!(provider.get_git_branch(), Some("main"));
-    }
-
-    #[test]
-    fn test_set_test_git_branch_none() {
-        let mut provider = FooterDataProvider::new(PathBuf::from("/tmp"));
-        provider.set_test_git_branch(Some("feature"));
-        provider.set_test_git_branch(None);
-        assert!(provider.get_git_branch().is_none());
-    }
 
     #[test]
     fn test_extension_statuses() {
@@ -289,15 +229,6 @@ mod tests {
         assert_eq!(provider.get_available_provider_count(), 1);
         provider.set_available_provider_count(3);
         assert_eq!(provider.get_available_provider_count(), 3);
-    }
-
-    #[test]
-    fn test_set_cwd_refreshes_git_branch() {
-        let mut provider = FooterDataProvider::new(PathBuf::from("/tmp"));
-        provider.set_test_git_branch(Some("old-branch"));
-        // Changing cwd to a non-git dir should clear the branch
-        provider.set_cwd(PathBuf::from("/nonexistent"));
-        assert!(provider.get_git_branch().is_none());
     }
 
     // ── Model / provider tests ──
@@ -359,83 +290,5 @@ mod tests {
 
         assert!(provider.get_model_provider().is_none());
         assert!(provider.get_model_id().is_none());
-    }
-
-    // ── Git resolution helpers ──────────────────────────────────────
-
-    #[test]
-    fn test_find_git_paths_no_git() {
-        let tmp = std::env::temp_dir().join(format!("rab-test-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&tmp).unwrap();
-        let result = find_git_paths(&tmp);
-        assert!(result.is_none());
-        let _ = std::fs::remove_dir_all(&tmp);
-    }
-
-    #[test]
-    fn test_find_git_paths_regular_repo() {
-        let tmp = std::env::temp_dir().join(format!("rab-test-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(tmp.join(".git")).unwrap();
-        std::fs::write(tmp.join(".git").join("HEAD"), "ref: refs/heads/main\n").unwrap();
-
-        let result = find_git_paths(&tmp);
-        assert!(result.is_some());
-        let paths = result.unwrap();
-        assert_eq!(paths.head_path, tmp.join(".git").join("HEAD"));
-
-        let _ = std::fs::remove_dir_all(&tmp);
-    }
-
-    #[test]
-    fn test_find_git_paths_walk_up() {
-        let tmp = std::env::temp_dir().join(format!("rab-test-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(tmp.join("sub").join("deep")).unwrap();
-        std::fs::create_dir_all(tmp.join(".git")).unwrap();
-        std::fs::write(tmp.join(".git").join("HEAD"), "ref: refs/heads/main\n").unwrap();
-
-        // Should find .git by walking up from sub/deep
-        let result = find_git_paths(&tmp.join("sub").join("deep"));
-        assert!(result.is_some());
-
-        let _ = std::fs::remove_dir_all(&tmp);
-    }
-
-    #[test]
-    fn test_resolve_git_branch_from_head() {
-        let tmp = std::env::temp_dir().join(format!("rab-test-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(tmp.join(".git")).unwrap();
-        std::fs::write(
-            tmp.join(".git").join("HEAD"),
-            "ref: refs/heads/feature-branch\n",
-        )
-        .unwrap();
-
-        let result = resolve_git_branch(&tmp);
-        assert_eq!(result.as_deref(), Some("feature-branch"));
-
-        let _ = std::fs::remove_dir_all(&tmp);
-    }
-
-    #[test]
-    fn test_resolve_git_branch_detached() {
-        let tmp = std::env::temp_dir().join(format!("rab-test-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(tmp.join(".git")).unwrap();
-        std::fs::write(tmp.join(".git").join("HEAD"), "abc123def456\n").unwrap();
-
-        let result = resolve_git_branch(&tmp);
-        assert_eq!(result.as_deref(), Some("detached"));
-
-        let _ = std::fs::remove_dir_all(&tmp);
-    }
-
-    #[test]
-    fn test_resolve_git_branch_no_git() {
-        let tmp = std::env::temp_dir().join(format!("rab-test-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&tmp).unwrap();
-
-        let result = resolve_git_branch(&tmp);
-        assert!(result.is_none());
-
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

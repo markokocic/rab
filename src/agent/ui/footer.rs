@@ -497,43 +497,35 @@ mod tests {
     use super::*;
     use crate::tui::Component;
 
-    /// Create a Footer with a fresh provider and test-model set, for tests that
-    /// don't need git branch (most rendering scenarios).
-    fn make_footer() -> Footer {
-        crate::agent::ui::theme::init_theme(Some("dark"), false);
-        let provider = Rc::new(RefCell::new(FooterDataProvider::new(
-            "/home/user/project".into(),
-        )));
-        provider.borrow_mut().set_test_git_branch(Some("main"));
-        let mut footer = Footer::new("/home/user/project", provider);
-        footer.set_model("test-model");
-        footer
-    }
-
     // ── format_cwd_for_footer tests ──
 
     #[test]
     fn test_format_cwd_home() {
-        let result = format_cwd_for_footer("/home/user/project", Some("/home/user"));
-        assert_eq!(result, "~/project");
+        assert_eq!(
+            format_cwd_for_footer("/home/user/project", Some("/home/user")),
+            "~/project"
+        );
     }
 
     #[test]
     fn test_format_cwd_home_exact() {
-        let result = format_cwd_for_footer("/home/user", Some("/home/user"));
-        assert_eq!(result, "~");
+        assert_eq!(format_cwd_for_footer("/home/user", Some("/home/user")), "~");
     }
 
     #[test]
     fn test_format_cwd_outside_home() {
-        let result = format_cwd_for_footer("/opt/app", Some("/home/user"));
-        assert_eq!(result, "/opt/app");
+        assert_eq!(
+            format_cwd_for_footer("/opt/app", Some("/home/user")),
+            "/opt/app"
+        );
     }
 
     #[test]
     fn test_format_cwd_no_home() {
-        let result = format_cwd_for_footer("/some/path", None::<&str>);
-        assert_eq!(result, "/some/path");
+        assert_eq!(
+            format_cwd_for_footer("/some/path", None::<&str>),
+            "/some/path"
+        );
     }
 
     // ── format_tokens tests ──
@@ -573,394 +565,185 @@ mod tests {
         assert_eq!(sanitize_status_text("  spaced  "), "spaced");
     }
 
-    // ── Line 2 (stats/model) tests ──
+    // ── Render tests ──
 
     #[test]
-    fn test_footer_shows_model() {
-        let mut footer = make_footer();
-        let lines = footer.render(80);
-        assert!(lines[1].contains("test-model"), "Should show model name");
-    }
-
-    #[test]
-    fn test_footer_shows_no_model() {
+    fn test_footer_render_model_info() {
         let provider = Rc::new(RefCell::new(FooterDataProvider::new("/path".into())));
+        provider
+            .borrow_mut()
+            .set_test_model_provider(Some("test-provider"));
+
         let mut footer = Footer::new("/path", provider);
+        footer.set_model("my-model");
+        footer.set_thinking_level(Some("high".into()));
+        footer.set_experimental_enabled(true);
+
+        let lines = footer.render(80);
+        assert!(lines[1].contains("my-model"), "should show model name");
+        assert!(lines[1].contains("high"), "should show thinking level");
+        assert!(lines[1].contains("(test-provider)"), "should show provider");
+        assert!(
+            lines[1].contains("xp"),
+            "should show experimental indicator"
+        );
+
+        // no-model fallback
         footer.set_model("");
         let lines = footer.render(80);
         assert!(
             lines[1].contains("no-model"),
-            "Should show 'no-model' when model not set"
+            "should show 'no-model' fallback"
         );
-    }
 
-    #[test]
-    fn test_footer_shows_thinking_level() {
-        let provider = Rc::new(RefCell::new(FooterDataProvider::new(
-            "/home/user/project".into(),
-        )));
-        let mut footer = Footer::new("/home/user/project", provider);
-        footer.set_model("test-model");
-        footer.set_thinking_level(Some("high".into()));
-        let lines = footer.render(80);
-        assert!(lines[1].contains("high"), "Should show thinking level");
-    }
-
-    #[test]
-    fn test_footer_thinking_off_with_reasoning() {
-        let provider = Rc::new(RefCell::new(FooterDataProvider::new(
-            "/home/user/project".into(),
-        )));
-        let mut footer = Footer::new("/home/user/project", provider);
-        footer.set_model("test-model");
+        // thinking off
+        footer.set_model("my-model");
         footer.set_thinking_level(Some("off".into()));
         let lines = footer.render(80);
         assert!(
             lines[1].contains("thinking off"),
-            "Should show 'thinking off' when reasoning model has level off"
+            "should show 'thinking off'"
         );
     }
 
     #[test]
-    fn test_footer_shows_token_usage() {
-        let provider = Rc::new(RefCell::new(FooterDataProvider::new(
-            "/home/user/project".into(),
-        )));
-        let mut footer = Footer::new("/home/user/project", provider);
+    fn test_footer_render_usage_stats() {
+        let provider = Rc::new(RefCell::new(FooterDataProvider::new("/path".into())));
+        let mut footer = Footer::new("/path", provider);
         footer.set_model("test-model");
-        // Simulate what refresh_from_session would compute
+
         footer.total_input = 1500;
         footer.total_output = 500;
-        let lines = footer.render(80);
-        assert!(lines[1].contains("↑"), "Should show input tokens");
-        assert!(lines[1].contains("↓"), "Should show output tokens");
-    }
-
-    #[test]
-    fn test_footer_shows_cache_hit_rate() {
-        let provider = Rc::new(RefCell::new(FooterDataProvider::new(
-            "/home/user/project".into(),
-        )));
-        let mut footer = Footer::new("/home/user/project", provider);
-        footer.set_model("test-model");
         footer.total_cache_read = 200;
         footer.latest_cache_hit_rate = Some(16.7);
+
         let lines = footer.render(80);
-        assert!(
-            lines[1].contains("CH"),
-            "Should show cache hit rate when cache tokens present"
-        );
-        assert!(
-            lines[1].contains("CH16.7%"),
-            "Should show correct cache hit rate"
-        );
+        assert!(lines[1].contains("↑1.5k"), "should show input tokens");
+        assert!(lines[1].contains("↓500"), "should show output tokens");
+        assert!(lines[1].contains("CH16.7%"), "should show cache hit rate");
     }
 
-    // ── Auto-compact indicator tests ──
-
     #[test]
-    fn test_footer_shows_auto_compact_next_to_context() {
-        let provider = Rc::new(RefCell::new(FooterDataProvider::new(
-            "/home/user/project".into(),
-        )));
-        let mut footer = Footer::new("/home/user/project", provider);
+    fn test_footer_render_context() {
+        let provider = Rc::new(RefCell::new(FooterDataProvider::new("/path".into())));
+        let mut footer = Footer::new("/path", provider);
         footer.set_model("test-model");
+
+        // With auto-compact enabled and known percent
         footer.set_auto_compact(true);
         footer.context_window = 64000;
         footer.context_percent = Some(50.0);
         let lines = footer.render(80);
         assert!(
-            lines[1].contains("(auto)"),
-            "Should show (auto) next to context percentage"
-        );
-        assert!(
             lines[1].contains("50.0%/64k (auto)"),
-            "Should show context percent with auto compact"
+            "context with auto-compact"
         );
-    }
 
-    #[test]
-    fn test_footer_hides_auto_compact_when_disabled() {
-        let provider = Rc::new(RefCell::new(FooterDataProvider::new(
-            "/home/user/project".into(),
-        )));
-        let mut footer = Footer::new("/home/user/project", provider);
-        footer.set_model("test-model");
+        // Auto-compact disabled
         footer.set_auto_compact(false);
         footer.context_window = 128000;
         footer.context_percent = Some(50.0);
         let lines = footer.render(80);
-        assert!(
-            !lines[1].contains("(auto)"),
-            "Should NOT show (auto) when disabled"
-        );
-    }
+        assert!(!lines[1].contains("(auto)"), "hide (auto) when disabled");
 
-    // ── Context percent colors ──
-
-    #[test]
-    fn test_footer_context_percent_high() {
-        let provider = Rc::new(RefCell::new(FooterDataProvider::new(
-            "/home/user/project".into(),
-        )));
-        let mut footer = Footer::new("/home/user/project", provider);
-        footer.set_model("test-model");
-        footer.context_window = 64000;
+        // High context (danger color)
         footer.context_percent = Some(95.0);
+        footer.context_window = 64000;
         let lines = footer.render(80);
-        assert!(lines[1].contains("95"), "Should show context percent");
-        assert!(
-            lines[1].contains("64k"),
-            "Should show formatted window size"
-        );
         assert!(
             lines[1].contains("\x1b[38;2;"),
-            "Should have ANSI color for high context"
+            "high context should have ANSI color"
         );
-    }
 
-    #[test]
-    fn test_footer_context_without_percent() {
-        let provider = Rc::new(RefCell::new(FooterDataProvider::new(
-            "/home/user/project".into(),
-        )));
-        let mut footer = Footer::new("/home/user/project", provider);
-        footer.set_model("test-model");
-        footer.context_window = 64000;
+        // Unknown context
         footer.context_percent = None;
         let lines = footer.render(80);
-        assert!(lines[1].contains("?"), "Should show unknown context");
-        assert!(lines[1].contains("64k"), "Should show context window size");
-    }
-
-    // ── Extension status line tests ──
-
-    #[test]
-    fn test_footer_shows_extension_statuses() {
-        let provider = Rc::new(RefCell::new(FooterDataProvider::new(
-            "/home/user/project".into(),
-        )));
-        provider
-            .borrow_mut()
-            .set_extension_status("ext1", Some("ready"));
-        let mut footer = Footer::new("/home/user/project", provider);
-        footer.set_model("test-model");
-        let lines = footer.render(80);
-        assert!(lines.len() >= 3, "Should have 3 lines");
-        assert!(lines[2].contains("ready"), "Should show extension status");
+        assert!(lines[1].contains("?"), "unknown context should show '?'");
+        assert!(lines[1].contains("64k"), "should show window size");
     }
 
     #[test]
-    fn test_footer_extension_status_sorted() {
-        let provider = Rc::new(RefCell::new(FooterDataProvider::new(
-            "/home/user/project".into(),
-        )));
+    fn test_footer_render_extension_statuses() {
+        let provider = Rc::new(RefCell::new(FooterDataProvider::new("/path".into())));
         provider
             .borrow_mut()
             .set_extension_status("z_last", Some("last"));
         provider
             .borrow_mut()
             .set_extension_status("a_first", Some("first"));
-        let mut footer = Footer::new("/home/user/project", provider);
+
+        let provider_render = Rc::clone(&provider);
+        let mut footer = Footer::new("/path", provider);
         footer.set_model("test-model");
         let lines = footer.render(80);
-        if lines.len() >= 3 {
-            let first_idx = lines[2].find("first");
-            let last_idx = lines[2].find("last");
-            assert!(
-                first_idx < last_idx,
-                "Extension statuses should be sorted by key"
-            );
-        }
-    }
 
-    #[test]
-    fn test_footer_extension_status_sanitized() {
-        let provider = Rc::new(RefCell::new(FooterDataProvider::new(
-            "/home/user/project".into(),
-        )));
-        provider
+        assert!(lines.len() >= 3, "should have 3+ lines");
+        let ext_line = &lines[2];
+        assert!(ext_line.contains("first"), "should show first extension");
+        assert!(ext_line.contains("last"), "should show last extension");
+        assert!(
+            ext_line.find("first") < ext_line.find("last"),
+            "extension statuses should be sorted"
+        );
+        assert!(
+            visible_width(ext_line) < 80,
+            "extension line should not be padded"
+        );
+
+        // Sanitization
+        provider_render
             .borrow_mut()
             .set_extension_status("ext1", Some("hello\nworld\ttab"));
-        let mut footer = Footer::new("/home/user/project", provider);
-        footer.set_model("test-model");
         let lines = footer.render(80);
         if lines.len() >= 3 {
-            assert!(
-                !lines[2].contains('\n'),
-                "Extension status should not contain newlines"
-            );
-            assert!(
-                !lines[2].contains('\t'),
-                "Extension status should not contain tabs"
-            );
+            assert!(!lines[2].contains('\n'), "should sanitize newlines");
+            assert!(!lines[2].contains('\t'), "should sanitize tabs");
         }
-    }
 
-    #[test]
-    fn test_footer_extension_status_removed() {
-        let provider = Rc::new(RefCell::new(FooterDataProvider::new(
-            "/home/user/project".into(),
-        )));
-        provider
+        // Removal
+        provider_render
             .borrow_mut()
-            .set_extension_status("ext1", Some("ready"));
-        provider.borrow_mut().set_extension_status("ext1", None);
-        let mut footer = Footer::new("/home/user/project", provider);
-        footer.set_model("test-model");
+            .set_extension_status("ext1", None);
         let lines = footer.render(80);
         assert!(
             lines.len() < 3 || !lines[2].contains("ready"),
-            "Extension status should be removed"
+            "removed status should not appear"
         );
     }
 
-    // ── Narrow terminal tests ──
-
     #[test]
-    fn test_footer_handles_narrow_terminal() {
-        let provider = Rc::new(RefCell::new(FooterDataProvider::new(
-            "/home/user/project".into(),
-        )));
-        let mut footer = Footer::new("/home/user/project", provider);
+    fn test_footer_render_widths() {
+        let provider = Rc::new(RefCell::new(FooterDataProvider::new("/path".into())));
+        let mut footer = Footer::new("/path", provider);
         footer.set_model("test-model");
         footer.set_thinking_level(Some("high".into()));
-        footer.total_input = 100000;
-        footer.total_output = 50000;
-        footer.total_cache_read = 10000;
-        footer.context_window = 128000;
-        footer.context_percent = Some(12.0);
+
+        // Very narrow: width < 4
+        assert!(footer.render(3).is_empty(), "width 3 should return empty");
+
+        // Narrow: width 10 — must render within bounds
         let lines = footer.render(10);
-        assert!(!lines.is_empty(), "Should render even at width 10");
+        assert!(!lines.is_empty(), "width 10 should not be empty");
         for line in &lines {
-            assert!(
-                visible_width(line) <= 10,
-                "Line '{}' exceeds width 10",
-                line
-            );
+            assert!(visible_width(line) <= 10, "line exceeds width 10");
         }
-    }
 
-    #[test]
-    fn test_footer_handles_very_narrow_terminal() {
-        let provider = Rc::new(RefCell::new(FooterDataProvider::new(
-            "/home/user/project".into(),
-        )));
-        let mut footer = Footer::new("/home/user/project", provider);
-        let lines = footer.render(3);
-        assert!(lines.is_empty(), "Should return empty at width 3");
-    }
-
-    #[test]
-    fn test_footer_line2_exact_width() {
-        let provider = Rc::new(RefCell::new(FooterDataProvider::new(
-            "/home/user/project".into(),
-        )));
-        let mut footer = Footer::new("/home/user/project", provider);
-        footer.set_model("test-model");
-        let lines = footer.render(80);
-        for line in &lines {
-            let vw = visible_width(line);
-            assert!(vw <= 80, "Line width {} > 80", vw);
-        }
-    }
-
-    #[test]
-    fn test_footer_line2_padded_correctly() {
-        let provider = Rc::new(RefCell::new(FooterDataProvider::new(
-            "/home/user/project".into(),
-        )));
-        let mut footer = Footer::new("/home/user/project", provider);
-        footer.set_model("test-model");
+        // Width bounds across several sizes
         for w in [40, 60, 80, 120] {
             let lines = footer.render(w);
             for line in &lines {
-                let vw = visible_width(line);
-                assert!(vw <= w, "At width {}: line width {} exceeds", w, vw);
+                assert!(visible_width(line) <= w, "at width {}: line exceeds", w);
             }
         }
-    }
 
-    #[test]
-    fn test_footer_model_with_provider_prefix() {
-        let provider = Rc::new(RefCell::new(FooterDataProvider::new(
-            "/home/user/project".into(),
-        )));
-        let mut footer = Footer::new("/home/user/project", provider);
-        footer.set_model("opencode-go/deepseek-v4-flash");
-        let lines = footer.render(80);
-        assert!(
-            lines[1].contains("opencode-go/deepseek-v4-flash"),
-            "Should show provider/model format"
-        );
-    }
-
-    #[test]
-    fn test_footer_provider_prefix_when_multiple_providers() {
-        let provider = Rc::new(RefCell::new(FooterDataProvider::new(
-            "/home/user/project".into(),
-        )));
-        provider.borrow_mut().set_available_provider_count(2);
-        provider
-            .borrow_mut()
-            .set_test_model_provider(Some("opencode-go"));
-        let mut footer = Footer::new("/home/user/project", provider);
-        footer.set_model("test-model");
-        let lines = footer.render(80);
-        assert!(
-            lines[1].contains("(opencode-go)"),
-            "Should show provider name in parentheses"
-        );
-    }
-
-    #[test]
-    fn test_footer_experimental_indicator() {
-        let provider = Rc::new(RefCell::new(FooterDataProvider::new(
-            "/home/user/project".into(),
-        )));
-        let mut footer = Footer::new("/home/user/project", provider);
-        footer.set_model("test-model");
-        footer.set_experimental_enabled(true);
-        let lines = footer.render(80);
-        assert!(
-            lines[1].contains("xp"),
-            "Should show experimental indicator"
-        );
-    }
-
-    #[test]
-    fn test_pwd_line_not_padded() {
-        let provider = Rc::new(RefCell::new(FooterDataProvider::new("/home/user".into())));
-        let mut footer = Footer::new("/home/user", provider);
-        footer.set_model("test-model");
-        let lines = footer.render(80);
-        assert!(visible_width(&lines[0]) <= 80, "Pwd line exceeds width");
+        // Pwd line not padded
+        let provider2 = Rc::new(RefCell::new(FooterDataProvider::new("/home/user".into())));
+        let mut footer2 = Footer::new("/home/user", provider2);
+        footer2.set_model("test-model");
+        let lines = footer2.render(80);
         assert!(
             visible_width(&lines[0]) < 80,
-            "Pwd line should not be padded to full width (pi behavior)"
+            "pwd line should not be padded"
         );
-    }
-
-    #[test]
-    fn test_extension_line_not_padded() {
-        let provider = Rc::new(RefCell::new(FooterDataProvider::new(
-            "/home/user/project".into(),
-        )));
-        provider
-            .borrow_mut()
-            .set_extension_status("ext1", Some("short"));
-        let mut footer = Footer::new("/home/user/project", provider);
-        footer.set_model("test-model");
-        let lines = footer.render(80);
-        if lines.len() >= 3 {
-            assert!(
-                visible_width(&lines[2]) <= 80,
-                "Extension line exceeds width"
-            );
-            assert!(
-                visible_width(&lines[2]) < 80,
-                "Extension line should not be padded to full width (pi behavior)"
-            );
-        }
     }
 }
