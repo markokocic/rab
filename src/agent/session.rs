@@ -13,10 +13,11 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use yoagent::Session as YoagentSession;
-use yoagent::types::{AgentMessage, ExtensionMessage};
+use yoagent::types::{AgentMessage, Content, ExtensionMessage, Message, StopReason};
 
 // ── Extension kinds for metadata entries ──────────────────────────
 
@@ -621,7 +622,7 @@ impl Session {
         }
 
         // Build messages list, handling compaction.
-        let messages = if let (Some(summary), Some(first_kept)) =
+        let mut messages = if let (Some(summary), Some(first_kept)) =
             (&compaction_summary, &first_kept_id)
         {
             let mut msgs = Vec::new();
@@ -669,6 +670,8 @@ impl Session {
             }
             msgs
         };
+
+        cleanup_dangling_tool_calls(&mut messages);
 
         SessionContext {
             messages,
@@ -1111,6 +1114,117 @@ fn get_path_to_root(
 // Re-export yoagent's SessionEntry for convenience.
 pub use yoagent::session::SessionEntry;
 
+// ── Helpers ──────────────────────────────────────────────────────────
+
+/// Insert synthetic `ToolResult` messages for orphaned tool calls.
+///
+/// When the user interrupts the agent mid-tool-execution (e.g. pressing
+/// Escape) the session may have `Assistant` messages with `ToolCall`
+/// content blocks that never received a matching `ToolResult`. Sending
+/// such messages to an LLM API would produce an invalid conversation
+/// history and cause an "Upstream request failed" error.
+///
+/// Pi-compatible: mirrors pi's `transform-messages.ts` second pass.
+/// Also skips errored/aborted assistant messages (partial/incomplete).
+fn cleanup_dangling_tool_calls(messages: &mut Vec<AgentMessage>) {
+    use std::collections::HashSet;
+
+    let mut result: Vec<AgentMessage> = Vec::with_capacity(messages.len());
+    let mut pending_tool_calls: Vec<(String, String)> = Vec::new();
+    let mut existing_result_ids: HashSet<String> = HashSet::new();
+
+    for msg in messages.drain(..) {
+        match &msg {
+            AgentMessage::Llm(Message::Assistant {
+                content,
+                stop_reason,
+                ..
+            }) => {
+                // Flush pending orphaned tool calls before next assistant.
+                insert_synthetic_results(
+                    &mut result,
+                    &mut pending_tool_calls,
+                    &mut existing_result_ids,
+                );
+
+                // Skip errored/aborted assistant messages — partial/incomplete.
+                if matches!(stop_reason, StopReason::Error | StopReason::Aborted) {
+                    continue;
+                }
+
+                // Track tool calls from this assistant message.
+                let tool_calls: Vec<(String, String)> = content
+                    .iter()
+                    .filter_map(|c| {
+                        if let Content::ToolCall { id, name, .. } = c {
+                            Some((id.clone(), name.clone()))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+
+                if !tool_calls.is_empty() {
+                    pending_tool_calls = tool_calls;
+                    existing_result_ids = HashSet::new();
+                }
+
+                result.push(msg);
+            }
+            AgentMessage::Llm(Message::ToolResult { tool_call_id, .. }) => {
+                existing_result_ids.insert(tool_call_id.clone());
+                result.push(msg);
+            }
+            AgentMessage::Llm(Message::User { .. }) => {
+                // User message interrupts tool flow — insert synthetic results.
+                insert_synthetic_results(
+                    &mut result,
+                    &mut pending_tool_calls,
+                    &mut existing_result_ids,
+                );
+                result.push(msg);
+            }
+            _ => {
+                result.push(msg);
+            }
+        }
+    }
+
+    // Handle any remaining unresolved tool calls at the end of conversation.
+    insert_synthetic_results(
+        &mut result,
+        &mut pending_tool_calls,
+        &mut existing_result_ids,
+    );
+
+    *messages = result;
+}
+
+/// Insert synthetic error tool results for all pending orphaned tool calls.
+fn insert_synthetic_results(
+    result: &mut Vec<AgentMessage>,
+    pending: &mut Vec<(String, String)>,
+    existing: &mut HashSet<String>,
+) {
+    if pending.is_empty() {
+        return;
+    }
+    for (id, name) in pending.drain(..) {
+        if !existing.contains(&id) {
+            result.push(AgentMessage::Llm(Message::ToolResult {
+                tool_call_id: id,
+                tool_name: name,
+                content: vec![Content::Text {
+                    text: "No result provided".into(),
+                }],
+                is_error: true,
+                timestamp: yoagent::types::now_ms(),
+            }));
+        }
+    }
+    existing.clear();
+}
+
 // ── get_default_session_dir ─────────────────────────────────────
 
 /// Get the default session directory for a cwd.
@@ -1447,5 +1561,261 @@ mod tests {
             "file should contain assistant response"
         );
         assert!(content2.len() > content.len(), "file should have grown");
+    }
+
+    // ── cleanup_dangling_tool_calls tests ──────────────────────
+
+    fn asst_with_tool_call(id: &str, name: &str) -> AgentMessage {
+        AgentMessage::Llm(
+            Message::assistant(
+                vec![
+                    yoagent::types::Content::Text {
+                        text: "Let me calculate that".into(),
+                    },
+                    yoagent::types::Content::tool_call(
+                        id,
+                        name,
+                        serde_json::json!({ "expression": "2 + 2" }),
+                    ),
+                ],
+                yoagent::types::StopReason::ToolUse,
+                "test-model",
+                "test-provider",
+                yoagent::types::Usage::default(),
+            )
+            .with_timestamp(yoagent::types::now_ms()),
+        )
+    }
+
+    fn tool_result_msg(tool_call_id: &str) -> AgentMessage {
+        AgentMessage::Llm(Message::ToolResult {
+            tool_call_id: tool_call_id.into(),
+            tool_name: "test-tool".into(),
+            content: vec![yoagent::types::Content::Text {
+                text: "4".into(),
+            }],
+            is_error: false,
+            timestamp: yoagent::types::now_ms(),
+        })
+    }
+
+    #[test]
+    fn test_cleanup_dangling_tool_call_inserts_synthetic_result() {
+        // Assistant makes a tool call, user responds without providing result.
+        let mut msgs = vec![
+            user_msg("calculate 2+2"),
+            asst_with_tool_call("call_123", "calculate"),
+            user_msg("never mind, what's your name?"),
+        ];
+
+        cleanup_dangling_tool_calls(&mut msgs);
+
+        // Should have 4 messages: user, assistant (tool call), synthetic tool result, user
+        assert_eq!(msgs.len(), 4);
+
+        // The synthetic tool result should be an error with "No result provided"
+        if let AgentMessage::Llm(Message::ToolResult {
+            tool_call_id,
+            is_error,
+            content,
+            ..
+        }) = &msgs[2]
+        {
+            assert_eq!(tool_call_id, "call_123");
+            assert!(*is_error);
+            if let yoagent::types::Content::Text { text } = &content[0] {
+                assert_eq!(text, "No result provided");
+            } else {
+                panic!("expected text content");
+            }
+        } else {
+            panic!("expected synthetic ToolResult at index 2");
+        }
+    }
+
+    #[test]
+    fn test_cleanup_preserves_matching_tool_result() {
+        // Normal flow: assistant makes tool call, tool result is provided.
+        let mut msgs = vec![
+            user_msg("calculate 2+2"),
+            asst_with_tool_call("call_456", "calculate"),
+            tool_result_msg("call_456"),
+            user_msg("thanks"),
+        ];
+
+        cleanup_dangling_tool_calls(&mut msgs);
+
+        // Should be unchanged — the tool call has a matching result.
+        assert_eq!(msgs.len(), 4);
+        if let AgentMessage::Llm(Message::ToolResult {
+            tool_call_id, is_error, ..
+        }) = &msgs[2]
+        {
+            assert_eq!(tool_call_id, "call_456");
+            assert!(!*is_error, "original result should not be marked error");
+        } else {
+            panic!("expected ToolResult at index 2");
+        }
+    }
+
+    #[test]
+    fn test_cleanup_skips_errored_assistant() {
+        // Errored/aborted assistant messages should be removed entirely.
+        let mut msgs = vec![
+            user_msg("hello"),
+            AgentMessage::Llm(Message::assistant(
+                vec![],
+                yoagent::types::StopReason::Error,
+                "test-model",
+                "test-provider",
+                yoagent::types::Usage::default(),
+            )
+            .with_timestamp(yoagent::types::now_ms())),
+            user_msg("hello again"),
+        ];
+
+        cleanup_dangling_tool_calls(&mut msgs);
+
+        // The errored assistant should be removed.
+        assert_eq!(msgs.len(), 2);
+        assert!(
+            matches!(&msgs[0], AgentMessage::Llm(Message::User { .. })),
+            "first msg should be user"
+        );
+        assert!(
+            matches!(&msgs[1], AgentMessage::Llm(Message::User { .. })),
+            "second msg should be user"
+        );
+    }
+
+    #[test]
+    fn test_cleanup_handles_end_of_conversation() {
+        // Conversation ends with assistant tool calls (user interrupted mid-execution).
+        let mut msgs = vec![
+            user_msg("do something"),
+            asst_with_tool_call("call_789", "some_tool"),
+        ];
+
+        cleanup_dangling_tool_calls(&mut msgs);
+
+        // Should have 3 messages: user, assistant, synthetic tool result.
+        assert_eq!(msgs.len(), 3);
+        if let AgentMessage::Llm(Message::ToolResult {
+            tool_call_id, is_error, ..
+        }) = &msgs[2]
+        {
+            assert_eq!(tool_call_id, "call_789");
+            assert!(*is_error);
+        } else {
+            panic!("expected synthetic ToolResult at end");
+        }
+    }
+
+    #[test]
+    fn test_cleanup_consecutive_assistants() {
+        // Two assistant messages in a row (usually shouldn't happen, but be safe).
+        let mut msgs = vec![
+            user_msg("hello"),
+            asst_with_tool_call("call_111", "tool_a"),
+            // Second assistant without resolving first tool call
+            asst_msg("actually let me just answer"),
+        ];
+
+        cleanup_dangling_tool_calls(&mut msgs);
+
+        // Should have 4: user, first asst, synthetic result, second asst.
+        assert_eq!(msgs.len(), 4);
+        if let AgentMessage::Llm(Message::ToolResult {
+            tool_call_id, is_error, ..
+        }) = &msgs[2]
+        {
+            assert_eq!(tool_call_id, "call_111");
+            assert!(*is_error);
+        } else {
+            panic!("expected synthetic ToolResult at index 2");
+        }
+    }
+
+    #[test]
+    fn test_cleanup_handles_aborted_assistant() {
+        // Aborted assistant messages should be skipped like errored ones.
+        let mut msgs = vec![
+            user_msg("hello"),
+            AgentMessage::Llm(Message::assistant(
+                vec![],
+                yoagent::types::StopReason::Aborted,
+                "test-model",
+                "test-provider",
+                yoagent::types::Usage::default(),
+            )
+            .with_timestamp(yoagent::types::now_ms())),
+            user_msg("continue"),
+        ];
+
+        cleanup_dangling_tool_calls(&mut msgs);
+
+        assert_eq!(msgs.len(), 2);
+        assert!(
+            matches!(&msgs[0], AgentMessage::Llm(Message::User { .. })),
+            "first msg should be user"
+        );
+        assert!(
+            matches!(&msgs[1], AgentMessage::Llm(Message::User { .. })),
+            "second msg should be user"
+        );
+    }
+
+    #[test]
+    fn test_cleanup_multiple_orphaned_tool_calls() {
+        // Assistant makes multiple tool calls, none are resolved.
+        let mut msgs = vec![
+            user_msg("do everything"),
+            AgentMessage::Llm(
+                Message::assistant(
+                    vec![
+                        yoagent::types::Content::Text {
+                            text: "Running all tools".into(),
+                        },
+                        yoagent::types::Content::tool_call(
+                            "call_1",
+                            "tool_a",
+                            serde_json::json!({}),
+                        ),
+                        yoagent::types::Content::tool_call(
+                            "call_2",
+                            "tool_b",
+                            serde_json::json!({}),
+                        ),
+                    ],
+                    yoagent::types::StopReason::ToolUse,
+                    "test-model",
+                    "test-provider",
+                    yoagent::types::Usage::default(),
+                )
+                .with_timestamp(yoagent::types::now_ms()),
+            ),
+            user_msg("actually stop"),
+        ];
+
+        cleanup_dangling_tool_calls(&mut msgs);
+
+        // Should have: user, assistant, synthetic result for call_1, synthetic result for call_2, user
+        assert_eq!(msgs.len(), 5);
+
+        // Check both synthetic results exist
+        let synthetic_ids: Vec<&str> = msgs
+            .iter()
+            .filter_map(|msg| {
+                if let AgentMessage::Llm(Message::ToolResult {
+                    tool_call_id, is_error, ..
+                }) = msg
+                {
+                    if *is_error { Some(tool_call_id.as_str()) } else { None }
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(synthetic_ids, vec!["call_1", "call_2"]);
     }
 }

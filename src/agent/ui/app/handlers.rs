@@ -73,8 +73,11 @@ pub fn compose_ui(app: &mut App, width: usize) {
     // ── Transient status text (pi-style) ──
     let mut status_lines = Vec::new();
     if let Some(ref status) = app.status_text {
-        let line = app.theme.fg(color::Dim, &format!(" {}", status));
-        status_lines.push(crate::agent::ui::render_utils::pad_to_width(&line, width));
+        let prefixed = format!(" {}", status);
+        let styled = app.theme.fg(color::Dim, &prefixed);
+        for line in crate::tui::util::wrap_text_with_ansi(&styled, width) {
+            status_lines.push(line);
+        }
     }
     app.status_section.borrow_mut().set_lines(status_lines);
 

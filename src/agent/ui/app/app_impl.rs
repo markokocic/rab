@@ -1269,7 +1269,7 @@ pub async fn run(config: AppConfig, session: AgentSession) -> anyhow::Result<()>
                         Some(&app.cwd),
                     );
                     app.switch_to_session(new_session);
-                    app.status_text = Some(format!("Switched to session: {}", path.display()));
+                    show_status(&mut app, format!("Switched to session: {}", path.display()));
                 }
                 _ => {}
             }
