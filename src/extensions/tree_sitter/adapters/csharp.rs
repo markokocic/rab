@@ -30,16 +30,15 @@ fn extract(source: &str, parser: &mut tree_sitter::Parser) -> Result<ExtractedFi
                         parent_class: None,
                     });
                     if let Some(body) = child.child_by_field_name("body") {
-                        for j in 0..body.named_child_count() as u32 {
-                            if let Some(m) = body.named_child(j)
-                                && m.kind() == "method_declaration"
-                                && let Some(mn) = m.child_by_field_name("name")
+                        for child in named_children(body) {
+                            if child.kind() == "method_declaration"
+                                && let Some(mn) = child.child_by_field_name("name")
                             {
                                 symbols.push(Symbol {
                                     kind: SymbolKind::Method,
                                     name: node_text(mn, source).to_string(),
-                                    range: node_range(m),
-                                    signature: node_signature(m, source),
+                                    range: node_range(child),
+                                    signature: node_signature(child, source),
                                     is_exported: false,
                                     parent_class: Some(name.clone()),
                                 });

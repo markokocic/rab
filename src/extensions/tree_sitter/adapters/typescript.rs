@@ -126,13 +126,10 @@ fn ts_extract_import(node: tree_sitter::Node, source: &str) -> Option<Import> {
         if let Some(name_node) = clause.child_by_field_name("name") {
             names.push(node_text(name_node, source).to_string());
         }
-        for i in 0..clause.named_child_count() as u32 {
-            if let Some(child) = clause.named_child(i)
-                && child.kind() == "named_imports"
-            {
-                for j in 0..child.named_child_count() as u32 {
-                    if let Some(spec) = child.named_child(j)
-                        && spec.kind() == "import_specifier"
+        for child in named_children(clause) {
+            if child.kind() == "named_imports" {
+                for spec in named_children(child) {
+                    if spec.kind() == "import_specifier"
                         && let Some(n) = spec.child_by_field_name("name")
                     {
                         names.push(node_text(n, source).to_string());
@@ -194,10 +191,7 @@ fn ts_walk_export_decl(node: Node, source: &str, symbols: &mut Vec<Symbol>) {
 }
 
 fn ts_walk_var_decls(node: Node, source: &str, symbols: &mut Vec<Symbol>, exported: bool) {
-    for j in 0..node.named_child_count() as u32 {
-        let Some(decl) = node.named_child(j) else {
-            continue;
-        };
+    for decl in named_children(node) {
         if decl.kind() != "variable_declarator" {
             continue;
         }
@@ -222,10 +216,7 @@ fn ts_walk_var_decls(node: Node, source: &str, symbols: &mut Vec<Symbol>, export
 }
 
 fn ts_class_body(body: Node, source: &str, symbols: &mut Vec<Symbol>, class_name: &str) {
-    for i in 0..body.named_child_count() as u32 {
-        let Some(child) = body.named_child(i) else {
-            continue;
-        };
+    for child in named_children(body) {
         if child.kind() != "method_definition" {
             continue;
         }

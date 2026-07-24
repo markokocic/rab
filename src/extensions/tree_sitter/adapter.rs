@@ -134,6 +134,36 @@ pub fn extracted_file(symbols: Vec<Symbol>) -> ExtractedFile {
     }
 }
 
+/// First line of a multi-line string — used for signatures.
+pub fn first_line(s: &str) -> String {
+    s.lines().next().unwrap_or(s).to_string()
+}
+
+/// Extract a C/C++ function name from a function_definition declarator.
+pub fn c_func_name(node: tree_sitter::Node, source: &str) -> Option<String> {
+    let decl = node.child_by_field_name("declarator")?;
+    let mut cursor: Option<tree_sitter::Node> = Some(decl);
+    for _ in 0..5 {
+        let n = cursor?;
+        if let Some(nn) = n.child_by_field_name("name") {
+            return Some(node_text(nn, source).to_string());
+        }
+        if let Some(inner) = n.child_by_field_name("declarator") {
+            cursor = Some(inner);
+            continue;
+        }
+        for j in 0..n.named_child_count() as u32 {
+            if let Some(c) = n.named_child(j)
+                && c.kind() == "identifier"
+            {
+                return Some(node_text(c, source).to_string());
+            }
+        }
+        break;
+    }
+    None
+}
+
 /// Get the text of a tree-sitter node.
 pub fn node_text<'a>(node: tree_sitter::Node, source: &'a str) -> &'a str {
     &source[node.start_byte()..node.end_byte()]

@@ -90,10 +90,7 @@ fn py_is_exported(name: &str) -> bool {
 }
 
 fn py_class_body(body: Node, source: &str, symbols: &mut Vec<Symbol>, class_name: &str) {
-    for i in 0..body.named_child_count() as u32 {
-        let Some(child) = body.named_child(i) else {
-            continue;
-        };
+    for child in named_children(body) {
         match child.kind() {
             "function_definition" => {
                 if let Some(nn) = child.child_by_field_name("name") {

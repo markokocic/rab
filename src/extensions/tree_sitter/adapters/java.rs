@@ -67,10 +67,7 @@ fn find_callees(source: &str, parser: &mut tree_sitter::Parser, range: &ByteRang
 }
 
 fn java_walk_class_body(body: Node, source: &str, symbols: &mut Vec<Symbol>, parent: &str) {
-    for i in 0..body.named_child_count() as u32 {
-        let Some(child) = body.named_child(i) else {
-            continue;
-        };
+    for child in named_children(body) {
         match child.kind() {
             "method_declaration" | "constructor_declaration" => {
                 if let Some(nn) = child.child_by_field_name("name") {
@@ -85,15 +82,14 @@ fn java_walk_class_body(body: Node, source: &str, symbols: &mut Vec<Symbol>, par
                 }
             }
             "field_declaration" => {
-                for j in 0..child.named_child_count() as u32 {
-                    if let Some(decl) = child.named_child(j)
-                        && decl.kind() == "variable_declarator"
-                        && let Some(nn) = decl.child_by_field_name("name")
+                for child2 in named_children(child) {
+                    if child2.kind() == "variable_declarator"
+                        && let Some(nn) = child2.child_by_field_name("name")
                     {
                         symbols.push(Symbol {
                             kind: SymbolKind::Variable,
                             name: node_text(nn, source).to_string(),
-                            range: node_range(decl),
+                            range: node_range(child2),
                             signature: node_signature(child, source),
                             is_exported: true,
                             parent_class: Some(parent.to_string()),

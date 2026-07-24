@@ -1,7 +1,7 @@
 //! Clojure language adapter.
 
 use crate::extensions::tree_sitter::adapter::{
-    AdapterEntry, ByteRange, Callee, ExtractedFile, Symbol, SymbolKind, extracted_file,
+    AdapterEntry, ByteRange, Callee, ExtractedFile, Symbol, SymbolKind, extracted_file, first_line,
     named_children, node_range, node_text, parse_source, query_captures,
 };
 
@@ -65,9 +65,8 @@ fn extract(source: &str, parser: &mut tree_sitter::Parser) -> Result<ExtractedFi
                     parent_class: None,
                 });
                 // Walk protocol methods
-                for j in 2u32..child.named_child_count() as u32 {
-                    if let Some(m) = child.named_child(j)
-                        && m.kind() == "list_lit"
+                for m in named_children(child).skip(2) {
+                    if m.kind() == "list_lit"
                         && let Some(mn) = m.named_child(0)
                         && mn.kind() == "sym_lit"
                     {
@@ -120,8 +119,4 @@ fn find_callees(source: &str, parser: &mut tree_sitter::Parser, range: &ByteRang
         "callee",
         Some(range),
     )
-}
-
-fn first_line(s: &str) -> String {
-    s.lines().next().unwrap_or(s).to_string()
 }

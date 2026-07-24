@@ -127,20 +127,15 @@ fn kt_is_interface(node: Node, source: &str) -> bool {
 }
 
 fn kt_walk_class_bodies(node: Node, source: &str, symbols: &mut Vec<Symbol>, parent: &str) {
-    for i in 0..node.named_child_count() as u32 {
-        if let Some(body) = node.named_child(i)
-            && (body.kind() == "class_body" || body.kind() == "enum_class_body")
-        {
+    for body in named_children(node) {
+        if body.kind() == "class_body" || body.kind() == "enum_class_body" {
             kt_walk_class_body(body, source, symbols, parent);
         }
     }
 }
 
 fn kt_walk_class_body(body: Node, source: &str, symbols: &mut Vec<Symbol>, parent: &str) {
-    for i in 0..body.named_child_count() as u32 {
-        let Some(child) = body.named_child(i) else {
-            continue;
-        };
+    for child in named_children(body) {
         match child.kind() {
             "function_declaration" => {
                 if let Some(nn) = child.child_by_field_name("name") {

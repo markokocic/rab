@@ -3,7 +3,7 @@
 use tree_sitter::Node;
 
 use crate::extensions::tree_sitter::adapter::{
-    AdapterEntry, ByteRange, Callee, ExtractedFile, Symbol, SymbolKind, extracted_file,
+    AdapterEntry, ByteRange, Callee, ExtractedFile, Symbol, SymbolKind, extracted_file, first_line,
     named_children, node_range, node_signature, node_text, parse_source, query_captures,
 };
 
@@ -90,18 +90,13 @@ fn find_callees(source: &str, parser: &mut tree_sitter::Parser, range: &ByteRang
     results
 }
 
-fn first_line(s: &str) -> String {
-    s.lines().next().unwrap_or(s).to_string()
-}
 fn go_is_exported(name: &str) -> bool {
     name.starts_with(|c: char| c.is_uppercase())
 }
 
 fn go_receiver_type(node: Node, source: &str) -> Option<String> {
-    for i in 0..node.named_child_count() as u32 {
-        if let Some(c) = node.named_child(i)
-            && c.kind() == "type_identifier"
-        {
+    for c in named_children(node) {
+        if c.kind() == "type_identifier" {
             return Some(node_text(c, source).to_string());
         }
     }
@@ -109,10 +104,7 @@ fn go_receiver_type(node: Node, source: &str) -> Option<String> {
 }
 
 fn go_walk_specs(node: Node, source: &str, symbols: &mut Vec<Symbol>) {
-    for i in 0..node.named_child_count() as u32 {
-        let Some(child) = node.named_child(i) else {
-            continue;
-        };
+    for child in named_children(node) {
         match child.kind() {
             "var_spec_list" | "const_spec_list" => go_walk_specs(child, source, symbols),
             "var_spec" | "const_spec" => {

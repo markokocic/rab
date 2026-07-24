@@ -3,8 +3,8 @@
 use tree_sitter::Node;
 
 use crate::extensions::tree_sitter::adapter::{
-    AdapterEntry, ByteRange, Callee, ExtractedFile, Symbol, SymbolKind, extracted_file, node_range,
-    node_signature, node_text, parse_source, query_captures,
+    AdapterEntry, ByteRange, Callee, ExtractedFile, Symbol, SymbolKind, extracted_file,
+    named_children, node_range, node_signature, node_text, parse_source, query_captures,
 };
 
 pub(super) const ENTRY: AdapterEntry = AdapterEntry {
@@ -66,10 +66,8 @@ fn elixir_mod_name(call: Node, source: &str) -> Option<String> {
     match first.kind() {
         "alias" | "identifier" => Some(node_text(first, source).to_string()),
         _ => {
-            for i in 0..first.named_child_count() as u32 {
-                if let Some(c) = first.named_child(i)
-                    && (c.kind() == "alias" || c.kind() == "identifier")
-                {
+            for c in named_children(first) {
+                if c.kind() == "alias" || c.kind() == "identifier" {
                     return Some(node_text(c, source).to_string());
                 }
             }
@@ -79,21 +77,11 @@ fn elixir_mod_name(call: Node, source: &str) -> Option<String> {
 }
 
 fn elixir_do_block(call: Node) -> Option<Node> {
-    for i in 0..call.named_child_count() as u32 {
-        if let Some(c) = call.named_child(i)
-            && c.kind() == "do_block"
-        {
-            return Some(c);
-        }
-    }
-    None
+    named_children(call).find(|c| c.kind() == "do_block")
 }
 
 fn elixir_walk_block(block: Node, source: &str, symbols: &mut Vec<Symbol>, parent: Option<&str>) {
-    for i in 0..block.named_child_count() as u32 {
-        let Some(c) = block.named_child(i) else {
-            continue;
-        };
+    for c in named_children(block) {
         if c.kind() != "call" {
             continue;
         }
