@@ -579,6 +579,17 @@ pub fn interrupt_streaming(app: &mut App) {
     app.working.stop();
     app.footer.borrow_mut().set_streaming(false);
 
+    // If the session ended with an orphaned user message (no assistant
+    // response), prune it to avoid sending consecutive user messages
+    // to the LLM on the next turn (causes HTTP 400 on strict providers).
+    if let Some(ref mut s) = app.session {
+        let session = s.session_mut();
+        let pruned = session.prune_orphan_user_message();
+        if pruned {
+            s.ensure_flushed();
+        }
+    }
+
     if let Some(ref s) = app.session {
         let ctx = s.session().build_context();
         let mut chat = app.chat_container.borrow_mut();

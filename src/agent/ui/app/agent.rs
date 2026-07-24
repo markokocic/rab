@@ -258,6 +258,15 @@ pub async fn start_agent_loop(
     app.working.start();
     app.footer.borrow_mut().set_streaming(true);
 
+    // Prune any orphaned user message that may remain from a cancelled turn.
+    // This prevents sending consecutive user messages on strict providers.
+    if let Some(ref mut s) = app.session {
+        let session = s.session_mut();
+        if session.prune_orphan_user_message() {
+            s.ensure_flushed();
+        }
+    }
+
     // Build or reuse agent. On the first turn the session has no messages;
     // on subsequent turns the reused agent already has messages restored
     // by agent.finish() — no need to sync from session here.

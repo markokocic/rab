@@ -413,6 +413,40 @@ impl Session {
         self.inner.seek(id).map_err(|e| e.to_string())
     }
 
+    /// If the current branch ends with a user message that has no
+    /// corresponding assistant response (an orphan from a cancelled turn),
+    /// remove it by rebuilding the session tree without it.
+    /// Returns `true` if a message was pruned.
+    pub fn prune_orphan_user_message(&mut self) -> bool {
+        let head_id = match self.inner.head() {
+            Some(id) => id.to_string(),
+            None => return false,
+        };
+        let is_user = self.inner.entry(&head_id).is_some_and(|e| {
+            matches!(
+                &e.message,
+                yoagent::types::AgentMessage::Llm(yoagent::types::Message::User { .. })
+            )
+        });
+        if !is_user {
+            return false;
+        }
+        // Rebuild the session from JSONL, dropping the last line.
+        let jsonl = self.inner.to_jsonl();
+        let lines: Vec<&str> = jsonl.lines().collect();
+        if lines.is_empty() {
+            return false;
+        }
+        let new_jsonl = lines[..lines.len() - 1].join("\n");
+        match yoagent::Session::from_jsonl(&new_jsonl) {
+            Ok(new_inner) => {
+                self.inner = new_inner;
+                true
+            }
+            Err(_) => false,
+        }
+    }
+
     // ── Entry access ─────────────────────────────────────────
 
     /// All entries (all branches) in insertion order.
