@@ -46,12 +46,13 @@ regex = "1.12.4"
 base64 = "0.23"
 tokio-util = "0.7"
 yoagent = "0.13.1"
-reqwest = { version = "0.13", default-features = false, features = ["json", "stream", "rustls", "socks", "form"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "stream", "rustls", "socks", "form", "blocking"] }
 reqwest-eventsource = { package = "kameleoon-reqwest-eventsource", version = "0.6" }
 futures = "0.3"
 tracing = "0.1"
 url = "2.5.8"
 fs2 = "0.4"
+tree-sitter = { version = "0.26", features = ["wasm"] }
 
 [features]
 default = ["syntect"]
