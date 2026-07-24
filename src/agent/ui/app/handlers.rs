@@ -585,6 +585,13 @@ pub fn interrupt_streaming(app: &mut App) {
     app.working.stop();
     app.footer.borrow_mut().set_streaming(false);
 
+    // Drain stale events from the agent channel — these were buffered
+    // before the forwarding task was aborted. Processing them after
+    // the chat has been rebuilt below would add orphaned components
+    // (ToolExecutionStart, MessageUpdate) to the freshly rebuilt chat,
+    // corrupting its state.
+    while app.event_rx.try_recv().is_ok() {}
+
     // If the session ended with an orphaned user message (no assistant
     // response), prune it to avoid sending consecutive user messages
     // to the LLM on the next turn (causes HTTP 400 on strict providers).

@@ -1313,11 +1313,16 @@ pub async fn run(config: AppConfig, session: AgentSession) -> anyhow::Result<()>
             app.pending_tools.remove(&id);
         }
 
-        // Compose and render only when state has changed
+        // Compose and render only when state has changed.
+        // On render error, quit gracefully instead of early-returning
+        // (which skips terminal cleanup and leaves it in raw mode).
         if dirty {
             compose_ui(&mut app, cols as usize);
             tui.set_dimensions(cols as usize, rows as usize);
-            tui.render(cols as usize, rows as usize, &mut stdout)?;
+            if let Err(e) = tui.render(cols as usize, rows as usize, &mut stdout) {
+                eprintln!("render error: {e}");
+                app.should_quit = true;
+            }
             dirty = false;
         }
 

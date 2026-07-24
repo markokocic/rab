@@ -1591,9 +1591,7 @@ mod tests {
         AgentMessage::Llm(Message::ToolResult {
             tool_call_id: tool_call_id.into(),
             tool_name: "test-tool".into(),
-            content: vec![yoagent::types::Content::Text {
-                text: "4".into(),
-            }],
+            content: vec![yoagent::types::Content::Text { text: "4".into() }],
             is_error: false,
             timestamp: yoagent::types::now_ms(),
         })
@@ -1648,7 +1646,9 @@ mod tests {
         // Should be unchanged — the tool call has a matching result.
         assert_eq!(msgs.len(), 4);
         if let AgentMessage::Llm(Message::ToolResult {
-            tool_call_id, is_error, ..
+            tool_call_id,
+            is_error,
+            ..
         }) = &msgs[2]
         {
             assert_eq!(tool_call_id, "call_456");
@@ -1663,14 +1663,16 @@ mod tests {
         // Errored/aborted assistant messages should be removed entirely.
         let mut msgs = vec![
             user_msg("hello"),
-            AgentMessage::Llm(Message::assistant(
-                vec![],
-                yoagent::types::StopReason::Error,
-                "test-model",
-                "test-provider",
-                yoagent::types::Usage::default(),
-            )
-            .with_timestamp(yoagent::types::now_ms())),
+            AgentMessage::Llm(
+                Message::assistant(
+                    vec![],
+                    yoagent::types::StopReason::Error,
+                    "test-model",
+                    "test-provider",
+                    yoagent::types::Usage::default(),
+                )
+                .with_timestamp(yoagent::types::now_ms()),
+            ),
             user_msg("hello again"),
         ];
 
@@ -1701,7 +1703,9 @@ mod tests {
         // Should have 3 messages: user, assistant, synthetic tool result.
         assert_eq!(msgs.len(), 3);
         if let AgentMessage::Llm(Message::ToolResult {
-            tool_call_id, is_error, ..
+            tool_call_id,
+            is_error,
+            ..
         }) = &msgs[2]
         {
             assert_eq!(tool_call_id, "call_789");
@@ -1726,7 +1730,9 @@ mod tests {
         // Should have 4: user, first asst, synthetic result, second asst.
         assert_eq!(msgs.len(), 4);
         if let AgentMessage::Llm(Message::ToolResult {
-            tool_call_id, is_error, ..
+            tool_call_id,
+            is_error,
+            ..
         }) = &msgs[2]
         {
             assert_eq!(tool_call_id, "call_111");
@@ -1741,14 +1747,16 @@ mod tests {
         // Aborted assistant messages should be skipped like errored ones.
         let mut msgs = vec![
             user_msg("hello"),
-            AgentMessage::Llm(Message::assistant(
-                vec![],
-                yoagent::types::StopReason::Aborted,
-                "test-model",
-                "test-provider",
-                yoagent::types::Usage::default(),
-            )
-            .with_timestamp(yoagent::types::now_ms())),
+            AgentMessage::Llm(
+                Message::assistant(
+                    vec![],
+                    yoagent::types::StopReason::Aborted,
+                    "test-model",
+                    "test-provider",
+                    yoagent::types::Usage::default(),
+                )
+                .with_timestamp(yoagent::types::now_ms()),
+            ),
             user_msg("continue"),
         ];
 
@@ -1807,10 +1815,16 @@ mod tests {
             .iter()
             .filter_map(|msg| {
                 if let AgentMessage::Llm(Message::ToolResult {
-                    tool_call_id, is_error, ..
+                    tool_call_id,
+                    is_error,
+                    ..
                 }) = msg
                 {
-                    if *is_error { Some(tool_call_id.as_str()) } else { None }
+                    if *is_error {
+                        Some(tool_call_id.as_str())
+                    } else {
+                        None
+                    }
                 } else {
                     None
                 }
