@@ -1093,6 +1093,19 @@ pub async fn run(config: AppConfig, session: AgentSession) -> anyhow::Result<()>
         // Handle pending agent submission (async)
         if !app.is_streaming {
             let agent_ready = app.agent.as_ref().is_none_or(|a| !a.is_streaming());
+
+            // Auto-trigger next turn from /nextTurn queued messages (pi-compatible).
+            // After the agent finishes, if messages were queued via /nextTurn, start
+            // a new turn with them automatically instead of waiting for the user to
+            // type another message.
+            if agent_ready && app.pending_submit.is_none() && !app.next_turn_queue.is_empty() {
+                let first = app.next_turn_queue.remove(0);
+                let text = crate::agent::types::message_text(&first);
+                let remaining = std::mem::take(&mut app.next_turn_queue);
+                app.pending_preloaded_msgs = Some(remaining);
+                app.pending_submit = Some(text);
+            }
+
             if agent_ready && let Some(text) = app.pending_submit.take() {
                 let preloaded = app.pending_preloaded_msgs.take();
                 start_agent_loop(&mut app, text, preloaded).await;
