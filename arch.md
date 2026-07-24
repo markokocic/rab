@@ -3,22 +3,21 @@
 A lightweight, extensible Rust coding agent inspired by [pi-coding-agent](https://pi.dev).
 rab delegates the core agent loop, types, and provider abstraction to the **yoagent** crate
 (MIT, published crate 0.13.1), providing the session layer, TUI, built-in tools, slash commands,
-file search tools (grep/find/ls), file mutation queue, lifecycle management, and a
-**custom provider layer** with a model registry and rich OpenAI-compatible streaming support.
+file search tools (grep/find/ls), file mutation queue, lifecycle management, a **custom provider
+layer** with a model registry and rich OpenAI-compatible streaming support, and a full **tree-sitter**
+extension for AST-aware code analysis.
 
-The project is a **Cargo workspace** with five crates:
+The project is a **Cargo workspace** with two crates:
 
 | Crate | Directory | Lines | Purpose |
 |-------|-----------|-------|---------|
-| `rab-agent` | `src/` | ~37K | Agent loop, CLI, built-in tools, settings, agent UI |
-| `rab-tui` | `tui/` | ~15K | Reusable terminal UI framework (Component, Theme, editor, markdown) |
-| `rab-extension` | `extension/` | ~1.5K | Extension + ToolRenderer traits, types, hooks, JSON Schema coerce |
-| `rab-provider` | `provider/` | ~3.8K | Provider registry, auth, OAuth, model catalog, streaming providers |
-| `rab-util` | `util/` | ~307 | Path utilities, TLS client (Android/Termux compat) |
+| `rab-agent` | `src/` | ~52K | Agent loop, CLI, built-in tools, settings, TUI, agent UI, extensions (MCP, tree-sitter, file-search), provider layer, auth |
+| `rab-tui` | `tui/` | ~5.6K | Reusable terminal UI framework (Component, Theme, editor, markdown, image) |
 
-Thin wrapper modules in `src/extension/`, `src/provider/`, `src/util/` re-export
-their respective crates so existing `crate::extension::*`, `crate::provider::*`,
-`crate::util::*`, and `crate::tui::*` references continue to work.
+> **Note:** `extension/`, `provider/`, and `util/` are no longer separate crates. They are
+> directories under `src/` with their own `mod.rs`, re-exported as `crate::extension::*`,
+> `crate::provider::*`, and `crate::util::*`. This simplified the workspace while keeping
+> clean module boundaries.
 
 ---
 
@@ -68,7 +67,7 @@ their respective crates so existing `crate::extension::*`, `crate::provider::*`,
 │  │  - Event-driven message persistence                          │   │
 │  │  - Model/thinking/tool change detection & recording          │   │
 │  │  - Auto/manual compaction (compaction.rs)                    │   │
-│  │  - Branch summarization (branch_summary.rs)                  │   │
+│  │  - Branch summarization (merged into compaction.rs)          │   │
 │  │  - Branch navigation (set_branch)                            │   │
 │  │  - Pi-compatible persist_message_end pattern                 │   │
 │  │  - Compaction cancellation (Cancel token)                    │   │
@@ -77,13 +76,13 @@ their respective crates so existing `crate::extension::*`, `crate::provider::*`,
 │             │                                                       │
 │  ┌──────────▼───────────────────────────────────────────────────┐   │
 │  │              Session (agent/session.rs)                       │   │
-│  │  Simplified: wraps yoagent::Session directly                 │   │
+│  │  Wraps yoagent::Session directly                             │   │
 │  │  - Costs stored as ExtensionMessage entries in JSONL stream  │   │
 │  │  - Metadata as ExtensionMessage (model_change, compaction,   │   │
 │  │    thinking_level_change, etc.)                              │   │
 │  │  - No SessionStorage trait, no InMemory/Jsonl distinction    │   │
 │  │  - No SessionManager, no lazy write                          │   │
-│  │  - ~1424 lines                                               │   │
+│  │  - ~1835 lines                                               │   │
 │  │                                                              │   │
 │  │  Format (yoagent JSONL):                                     │   │
 │  │    Line 1: metadata JSON (id, cwd, createdAt, name, ...)    │   │
@@ -92,58 +91,61 @@ their respective crates so existing `crate::extension::*`, `crate::provider::*`,
 │                                                                      │
 │  ┌────▼──┐ ┌────▼──┐ ┌────▼──┐ ┌────▼──┐ ┌────▼──┐ ┌────▼──┐      │
 │  │builtin│ │  tui/ │ │commands│ │extens-│ │settings│ │ auth  │      │
-│  │read   │ │ agent/ │ │.rs     │ │ions/  │ │.rs     │ │.rs    │      │
-│  │write  │ │ ui/    │ │22 slash│ ┌──────────────┐ │~/.rab/ │ │API    │
-│  │edit   │ │screen  │ │commands│ │file_search (3)│ │settings│ │keys,  │
-│  │bash   │ │editor  │ │+ /ext. │ │mcp/ (6 mods)  │ │AGENTS  │ │OAuth  │
-│  |file_  | │list    │ │/nextTurn│ │tree_sitter/   │ │.md     │ │       │
-│  │mutation│ └───────┘ │        │ │AGENTS.md       │ │skills  │ │       │
-│  │_queue │            │        │ │skills          │ │        │ │       │
-│  │cancel │            │        │ │prompts/        │ │        │ │       │
-│  └──┬────┘            │        │ │prompt_templ.rs │ │        │ │       │
-│     │                 │        │ └──────────────┘ └───────┘ └───────┘      │
-│     │                 │        │                                     │
-│     │     impl Extension trait + yoagent::types::AgentTool          │
-│     │                                                               │
-│  ┌──▼──────────────────────────────────────────────────────────┐   │
-│  │              extension/src/ (Extension trait + types)         │   │
-│  │  Split from the old agent/extension.rs into 5 modules:       │   │
-│  │                                                              │   │
-│  │  ┌──────────────────────────────────────────────────────┐   │   │
-│  │  │           traits.rs — pub trait Extension              │   │   │
+│  │read   │ │ agent/│ │.rs     │ │ions/  │ │.rs     │ │.rs    │      │
+│  │write  │ │ screen│ │22 slash│ ┌──────────────┐ │~/.rab/ │ │API    │
+│  │edit   │ │editor │ │commands│ │file_search (3)│ │settings│ │keys,  │
+│  │bash   │ │ list  │ │+ /ext. │ │mcp/ (6 mods)  │ │AGENTS  │ │OAuth  │
+│  |file_  | │       │ │/nextTurn│ │tree_sitter/  │ │.md     │ │       │
+│  │mutation│ │       │ │        │ │  (12 mods,   │ │skills  │ │       │
+│  │_queue  │ │       │ │        │ │  20 adapters) │ │        │ │       │
+│  │cancel  │ │       │ │        │ │AGENTS.md     │ │        │ │       │
+│  └──┬────┘ │       │ │        │ │skills        │ │        │ │       │
+│     │      │       │ │        │ │prompts/      │ │        │ │       │
+│     │      │       │ │        │ │prompt_templ  │ │        │ │       │
+│     │      └───────┘ │        │ └──────────────┘ └───────┘ └───────┘  │
+│     │                │        │                                        │
+│     │     impl Extension trait + yoagent::types::AgentTool            │
+│     │                                                                  │
+│  ┌──▼───────────────────────────────────────────────────────────┐   │
+│  │              src/extension/ (Extension trait + types)          │   │
+│  │  5 modules (mod.rs, traits.rs, types.rs, hooks.rs, coerce.rs) │   │
+│  │                                                               │   │
+│  │  ┌───────────────────────────────────────────────────────┐   │   │
+│  │  │           traits.rs — pub trait Extension               │   │   │
 │  │  │  ExtensionDefault (Builtin/Enabled/Disabled)          │   │   │
 │  │  │  is_extension_enabled()                               │   │   │
 │  │  │  ToolRenderer trait (pi-compatible render_call/       │   │   │
 │  │  │    render_result/render_self)                         │   │   │
 │  │  │  Lifecycle: on_reload, on_session_shutdown,           │   │   │
 │  │  │    on_session_start                                   │   │   │
-│  │  └──────────────────────────────────────────────────────┘   │   │
-│  │  ┌──────────────────────────────────────────────────────┐   │   │
-│  │  │           types.rs — ToolDefinition, SlashCommand,    │   │   │
-│  │  │  CommandResult, HookRegistration, BeforeHook/AfterHook│   │   │
-│  │  │  AfterToolCallResult, BeforeToolCallResult, Cancel    │   │   │
-│  │  │  ToolRenderContext, AutocompleteItem                  │   │   │
-│  │  │  ToolDefinition::execute() with coercion + validation │   │   │
-│  │  └──────────────────────────────────────────────────────┘   │   │
-│  │  ┌──────────────────────────────────────────────────────┐   │   │
-│  │  │           hooks.rs — Global extension hook registry   │   │   │
+│  │  └───────────────────────────────────────────────────────┘   │   │
+│  │  ┌───────────────────────────────────────────────────────┐   │   │
+│  │  │           types.rs — ToolDefinition, SlashCommand,     │   │   │
+│  │  │  CommandResult, HookRegistration, BeforeHook/AfterHook │   │   │
+│  │  │  AfterToolCallResult, BeforeToolCallResult, Cancel     │   │   │
+│  │  │  ToolRenderContext, AutocompleteItem                   │   │   │
+│  │  │  ToolDefinition::execute() with coercion + validation  │   │   │
+│  │  └───────────────────────────────────────────────────────┘   │   │
+│  │  ┌───────────────────────────────────────────────────────┐   │   │
+│  │  │           hooks.rs — Global extension hook registry    │   │   │
 │  │  │  register_tool_hooks(), clear_tool_hooks(),           │   │   │
 │  │  │  run_before_hooks(), run_after_hooks()                │   │   │
 │  │  │  Global RwLock<HashMap<tool_name, ToolHookSet>>       │   │   │
-│  │  └──────────────────────────────────────────────────────┘   │   │
-│  │  ┌──────────────────────────────────────────────────────┐   │   │
-│  │  │           coerce.rs — coerce_with_json_schema(),      │   │   │
-│  │  │  validate_tool_arguments(), ValidationError           │   │   │
-│  │  └──────────────────────────────────────────────────────┘   │   │
-│  │                                                              │   │
+│  │  └───────────────────────────────────────────────────────┘   │   │
+│  │  ┌───────────────────────────────────────────────────────┐   │   │
+│  │  │           coerce.rs — coerce_with_json_schema(),       │   │   │
+│  │  │  validate_tool_arguments(), ValidationError            │   │   │
+│  │  └───────────────────────────────────────────────────────┘   │   │
+│  │                                                               │   │
 │  │  Builtin + user extensions share this trait                  │   │
-│  └──────────────────────────────────────────────────────────────┘   │
+│  └───────────────────────────────────────────────────────────────┘   │
 │                       │                                              │
 │  ┌────────────────────▼─────────────────────────────────────────┐   │
-│  │              rab Provider Layer (provider/src/)               │   │
+│  │              rab Provider Layer (src/provider/)               │   │
+│  │  11 modules, not a separate crate                            │   │
 │  │                                                              │   │
 │  │  ┌──────────────────────────────────────────────────────┐   │   │
-│  │  │           ProviderRegistry (mod.rs)                   │   │   │
+│  │  │           ProviderRegistry (registry.rs)              │   │   │
 │  │  │  Loads built-in + user models.json → ProviderEntry[]  │   │   │
 │  │  │  resolve(model_id, preferred_provider) → ResolvedModel│   │   │
 │  │  │  list_models(), list_providers(), count_providers     │   │   │
@@ -208,10 +210,9 @@ their respective crates so existing `crate::extension::*`, `crate::provider::*`,
 │  │  │  Writes provider/src/models.json                    │   │   │
 │  │  └──────────────────────────────────────────────────────┘   │   │
 │  │  ┌──────────────────────────────────────────────────────┐   │   │
-│  │  │           auth.rs (provider/src/auth.rs)             │   │   │
-│  │  │  Moved from src/auth.rs to provider module.          │   │   │
+│  │  │           auth.rs (src/provider/auth.rs)             │   │   │
 │  │  │  Pi-compatible credential store, AuthStorageBackend  │   │   │
-│  │  │  pattern (File/InMemory), file locking, OAuth refresh│   │   │
+│  │  │  pattern (File/InMemory), file locking, OAuth refresh │   │   │
 │  │  └──────────────────────────────────────────────────────┘   │   │
 │  │                                                              │   │
 │  └──────────────────────────────────────────────────────────────┘   │
@@ -265,17 +266,18 @@ their respective crates so existing `crate::extension::*`, `crate::provider::*`,
 │  └──────────────────────────────────────────────────────────────┘   │
 │                                                                      │
 │  ┌──────────────────────────────────────────────────────────────┐   │
-│  │  TUI (tui/src/ + src/agent/ui/) — 59 source modules,         │   │
-│  │  ~28.5K lines, ~688 tests                                    │   │
+│  │  TUI (tui/src/ + src/agent/ui/) — 50+ modules,               │   │
+│  │  ~9K lines total                                              │   │
 │  │  Direct Rust port on crossterm 0.29                          │   │
 │  │  Image (Kitty protocol), TerminalColors (OSC 11 detection),  │   │
-│  │  TreeSelector, ConfirmOverlay, LoginDialog, OAuthSelector,   │   │
-│  │  ScopedModelsSelector, ForkSelector, SettingsList,           │   │
-│  │  SettingsSelector                                            │   │
+│  │  kill ring, undo stack, TreeSelector, ConfirmOverlay,        │   │
+│  │  LoginDialog, OAuthSelector, ScopedModelsSelector,           │   │
+│  │  ForkSelector, SettingsList, SettingsSelector,               │   │
+│  │  ExtensionsSelector, SessionPicker                           │   │
 │  └──────────────────────────────────────────────────────────────┘   │
 │                                                                      │
 │  ┌──────────────────────────────────────────────────────────────┐   │
-│  │  Utility (util/src/) — paths.rs, tls.rs, mod.rs              │   │
+│  │  Utility (src/util/) — paths.rs, tls.rs, mod.rs               │   │
 │  │  Centralized path handling (canonicalize, resolve, display)  │   │
 │  │  TLS platform verification patched for Android/Termux        │   │
 │  └──────────────────────────────────────────────────────────────┘   │
@@ -287,11 +289,15 @@ their respective crates so existing `crate::extension::*`, `crate::provider::*`,
 - **yoagent is the core dependency**, not genai. rab delegates the agent loop,
   provider abstraction, message types, and session tree model to yoagent 0.13.1
   (published crate). rab provides the session layer, TUI, built-in tools,
-  file search tools, slash commands, lifecycle management, and a custom provider
-  layer on top.
+  file search tools, tree-sitter tools, slash commands, lifecycle management,
+  and a custom provider layer on top.
+
+- **Two-crate workspace** — `rab-agent` (src/) and `rab-tui` (tui/). Extension,
+  provider, and util are directories under src/ rather than separate crates.
+  This greatly simplified the build while keeping clean module boundaries.
 
 - **Custom provider layer over yoagent** — rab has its own `ProviderRegistry` that
-  loads a built-in model catalog (`provider/src/models.json`, ~17910 lines)
+  loads a built-in model catalog (`src/provider/models.json`, ~17910 lines)
   merged with user overrides (`~/.rab/agent/models.json`). On top of yoagent's
   providers, rab also provides:
   - `RabOpenAiCompatProvider` — custom streaming provider that handles DeepSeek
@@ -303,7 +309,7 @@ their respective crates so existing `crate::extension::*`, `crate::provider::*`,
 - **`rab generate-models` subcommand** — fetches `https://models.dev/api.json`,
   applies pi-style corrections (DeepSeek, Qwen, Grok, Kimi, Anthropic Messages API
   compat flags for GitHub Copilot Claude models), and writes
-  `provider/src/models.json`. All-or-nothing: any error aborts before writing.
+  `src/provider/models.json`. All-or-nothing: any error aborts before writing.
   Preserves user edits to non-target providers (currently targets: github-copilot,
   opencode, opencode-go, deepseek).
 
@@ -312,7 +318,7 @@ their respective crates so existing `crate::extension::*`, `crate::provider::*`,
   Metadata entries (model changes, compaction, thinking level changes) and costs
   are stored as `ExtensionMessage` entries in the JSONL stream. No traits, no
   separate storage implementations, no lazy write mechanism — persistence is
-  straightforward file I/O through yoagent.
+  straightforward file I/O through yoagent. Session is ~1835 lines.
 
 - **Multi-protocol agent selection** — `main.rs` resolves the model via
   `ProviderRegistry`, then selects the appropriate yoagent provider based on
@@ -334,7 +340,7 @@ their respective crates so existing `crate::extension::*`, `crate::provider::*`,
   `after_tool_call` hooks (pi-compatible), and automatic JSON Schema argument
   coercion + validation.
 
-- **Global hook system** — `extension/src/hooks.rs` provides a global registry
+- **Global hook system** — `src/extension/hooks.rs` provides a global registry
   for before/after tool hooks. Extensions register hooks at startup via
   `Extension::tool_hooks()`, and they are invoked by `run_before_hooks()` /
   `run_after_hooks()` during tool execution.
@@ -344,7 +350,14 @@ their respective crates so existing `crate::extension::*`, `crate::provider::*`,
   (e.g. `ReadOperations`, `BashOperations`, `GrepOperations`, `FindOperations`,
   `LsOperations`), making it possible to replace local execution with remote (SSH) execution.
 
-- **OAuth support** — `provider/src/oauth/` implements pi's `OAuthProviderInterface`
+- **Tree-sitter extension** (fully implemented, not skeleton) — provides 5 semantic
+  tools: `list_symbols`, `find_definition`, `find_callers`, `get_symbol_body`,
+  `find_callees`. 20 language adapters (Rust, TypeScript, Python, Go, Java, C, C++,
+  C#, Scala, Swift, Zig, Bash, Clojure, Dart, Elixir, Kotlin, Lua, PHP, Ruby, etc.).
+  Downloads WASM grammars from jsDelivr CDN on first use. Registers before-hooks on
+  `write` and `edit` tools for syntax validation (delimiter balance + tree-sitter parse).
+
+- **OAuth support** — `src/provider/oauth/` implements pi's `OAuthProviderInterface`
   with device code flow (RFC 8628) for headless authentication. The GitHub Copilot
   OAuth provider fetches available models after login and auto-enables them. OAuth
   tokens are refreshed on each agent turn.
@@ -369,22 +382,27 @@ their respective crates so existing `crate::extension::*`, `crate::provider::*`,
   `follow_up_mode` settings (configurable per-session), and the `/nextTurn`
   slash command for queueing messages during a turn.
 
+- **Branch summarization** — merged into `compaction.rs` (~930 lines, no separate
+  `branch_summary.rs`). When navigating branches, abandoned branches are summarized
+  and injected as context.
+
 ---
 
 ## Pi component mapping
 
 | pi component | rab equivalent | Status |
 |---|---|---|
-| `pi-tui` (terminal UI, components, editor) | `tui/src/` + `src/agent/ui/` | ✅ Complete — 59 modules, ~28.5K lines, ~688 tests. Direct Rust port on crossterm 0.29. Includes Image (Kitty), TerminalColors (OSC 11), TreeSelector, ConfirmOverlay, LoginDialog, OAuthSelector, ScopedModelsSelector, ForkSelector, SettingsList, SettingsSelector. |
-| `pi-agent-core` (agent loop, session, compaction, skills) | Delegated to **yoagent** (agent loop, types, provider, session tree, skills) + rab's `AgentSession` (session lifecycle, compaction, branching) | ✅ Agent loop in yoagent (`yoagent::agent::Agent`). ✅ Simplified Session in `agent/session.rs` (~1424 lines), wraps `yoagent::Session`. ✅ Compaction in `compaction.rs` (~946 lines). ✅ Branch summarization (~455 lines). ✅ Skills loaded via `yoagent::skills::SkillSet`. |
-| `coding-agent` (CLI, extensions, tools, settings, commands) | `main.rs`, `cli/`, `builtin/`, `extensions/`, `settings.rs`, `provider/auth.rs`, `extension/src/` | ✅ CLI args in `cli/args.rs`, startup in `cli/run.rs`, print mode in `cli/print_mode.rs`. ✅ Tools (read/write/edit/bash/grep/find/ls), settings, auth, CLI done. ✅ 22 slash commands including `/export`, `/import`, `/settings`, `/extensions`, `/nextTurn`, `/stop`. ✅ Prompt templates as `/name` commands. ✅ Extension trait with tools, commands, renderers, skills, hooks. |
+| `pi-tui` (terminal UI, components, editor) | `tui/src/` + `src/agent/ui/` | ✅ Complete — 50+ modules, ~9K lines. Direct Rust port on crossterm 0.29. Includes Image (Kitty), kill ring, undo stack, TerminalColors (OSC 11), TreeSelector, ConfirmOverlay, LoginDialog, OAuthSelector, ScopedModelsSelector, ForkSelector, SettingsList, SettingsSelector, ExtensionsSelector, SessionPicker. |
+| `pi-agent-core` (agent loop, session, compaction, skills) | Delegated to **yoagent** (agent loop, types, provider, session tree, skills) + rab's `AgentSession` (session lifecycle, compaction, branching) | ✅ Agent loop in yoagent (`yoagent::agent::Agent`). ✅ Session in `agent/session.rs` (~1835 lines), wraps `yoagent::Session`. ✅ Compaction in `compaction.rs` (~930 lines) with branch summarization merged in. ✅ Skills loaded via `yoagent::skills::SkillSet`. |
+| `coding-agent` (CLI, extensions, tools, settings, commands) | `main.rs`, `cli/`, `builtin/`, `extensions/`, `settings.rs`, `provider/auth.rs`, `src/extension/` | ✅ CLI args in `cli/args.rs`, startup in `cli/run.rs`, print mode in `cli/print_mode.rs`. ✅ Tools (read/write/edit/bash/grep/find/ls), settings, auth, CLI done. ✅ 22 slash commands including `/export`, `/import`, `/settings`, `/extensions`, `/nextTurn`, `/stop`. ✅ Prompt templates as `/name` commands. ✅ Extension trait with tools, commands, renderers, skills, hooks. |
 | `GrepTool`, `FindTool`, `LsTool` (pi agent tools) | `src/extensions/file_search.rs` | ✅ grep (ripgrep/grep fallback), find (fd/find fallback), ls — all with pluggable operations. |
-| provider registry + model catalog | `provider/src/` | ✅ `ProviderRegistry` loading built-in + user models.json. ✅ `RabOpenAiCompatProvider` for rich OpenAI-compatible streaming. ✅ `RabAnthropicProvider` (thin wrapper). ✅ OAuth support (device code flow, GitHub Copilot). ✅ `rab generate-models` subcommand. |
+| provider registry + model catalog | `src/provider/` | ✅ `ProviderRegistry` loading built-in + user models.json. ✅ `RabOpenAiCompatProvider` for rich OpenAI-compatible streaming. ✅ `RabAnthropicProvider` (thin wrapper). ✅ OAuth support (device code flow, GitHub Copilot). ✅ `rab generate-models` subcommand. |
 | MCP adapter (pi-mcp-adapter) | `src/extensions/mcp/` (6 modules) | ✅ Proxy `mcp` tool, direct tool adapters, config loading (global+project merge), server lifecycle (lazy connect, idle timeout), persistent metadata cache, tool renderers. |
+| tree-sitter tools (pi-tree-sitter) | `src/extensions/tree_sitter/` (12 modules, 20 adapters) | ✅ `list_symbols`, `find_definition`, `find_callers`, `get_symbol_body`, `find_callees`. 20 language adapters. WASM grammar download + caching. Before-hooks for write/edit syntax validation. |
 | provider | `yoagent::provider::*` + `rab::provider::RabOpenAiCompatProvider` + `rab::provider::RabAnthropicProvider` | ✅ Multi-protocol: RabOpenAiCompatProvider (OpenAiCompletions), RabAnthropicProvider (AnthropicMessages), OpenAiResponsesProvider, GoogleProvider. Auto-detection by model config's `ApiProtocol`. |
 | `beforeToolCall` / `afterToolCall` | `ToolDefinition.before_tool_call` / `.after_tool_call` + global hook system | ✅ Per-tool hooks + global `Extension::tool_hooks()` registration for blocking/preprocessing/postprocessing |
-| `validateToolArguments` | `extension::coerce::validate_tool_arguments()` | ✅ Full JSON Schema validation with pi-compatible error paths |
-| Argument coercion | `extension::coerce::coerce_with_json_schema()` | ✅ Type coercion matching pi's `Value.Convert` + `coerceWithJsonSchema` |
+| `validateToolArguments` | `src/extension/coerce::validate_tool_arguments()` | ✅ Full JSON Schema validation with pi-compatible error paths |
+| Argument coercion | `src/extension/coerce::coerce_with_json_schema()` | ✅ Type coercion matching pi's `Value.Convert` + `coerceWithJsonSchema` |
 | Theme system | `src/agent/ui/theme.rs` | ✅ JSON theme system with resolution, fallback, detection (~794 lines) |
 | Resource loading (AGENTS.md/CLAUDE.md) | `src/agent/context_files.rs` | ✅ AGENTS.md/CLAUDE.md discovery, `<project_context>` wrapping |
 | Skills | `yoagent::skills::SkillSet` + `SystemPromptBuilder.skills()` | ✅ Skill loading, frontmatter, prompt formatting, /skill:name expansion |
@@ -395,21 +413,20 @@ their respective crates so existing `crate::extension::*`, `crate::provider::*`,
 | MCP extension | `src/extensions/mcp/` (6 mods) | ✅ Proxy `mcp` tool, direct tools, config loading, server lifecycle, cache, renderers |
 | Export/Import | `src/builtin/export.rs` | ✅ `/export` (HTML/JSONL), `/import` with embedded template assets |
 | Prompt templates | `src/agent/prompt_templates.rs` | ✅ `/name` commands from `.md` files, frontmatter, placeholder expansion |
-| Path utilities | `util/src/paths.rs` | ✅ Canonicalization, resolution, display (cross-platform) |
-| OAuth | `provider/src/oauth/` | ✅ Device code flow (RFC 8628), GitHub Copilot provider, credential storage. Token refresh on each turn. |
+| Path utilities | `src/util/paths.rs` | ✅ Canonicalization, resolution, display (cross-platform) |
+| OAuth | `src/provider/oauth/` | ✅ Device code flow (RFC 8628), GitHub Copilot provider, credential storage. Token refresh on each turn. |
 | Interactive fork /settings menu | `fork_selector.rs`, `settings_list.rs`, `settings_selector.rs` | ✅ `/fork` with interactive message selector overlay. `/settings` with SettingsSelector overlay listing all configurable fields. |
 | Settings deep merge | `settings.rs` — `DeepMerge` trait, nested config structs | ✅ Full pi-compatible settings with nested blocks. `ExtensionsConfig` for extension enable/disable. |
-| Auth backend pattern | `provider/src/auth.rs` — `AuthStorageBackend` enum (File/InMemory) | ✅ Lock-based read-modify-write semantics, pi-compatible `AuthStorageBackend` pattern. |
+| Auth backend pattern | `src/provider/auth.rs` — `AuthStorageBackend` enum (File/InMemory) | ✅ Lock-based read-modify-write semantics, pi-compatible `AuthStorageBackend` pattern. |
 | Extension enable/disable | `/extensions` command + `ExtensionsConfig` | ✅ Per-extension toggle, persists to settings.json. `ExtensionDefault::Builtin/Enabled/Disabled`. |
 | Steering / follow-up | `steering_mode`, `follow_up_mode` settings, `/nextTurn` command | ✅ Pi-compatible turn-steering with one-at-a-time, all, manual modes. |
-| Tree-sitter | `src/extensions/tree_sitter/` | ✅ Skeleton implementation for AST-aware tools. |
 | WASM plugin system | Not started | ⬜ Phase 2 |
 
 ---
 
 ## CLI (`src/cli/`) — extracted from main.rs
 
-The CLI module was factored out of `main.rs` for testability:
+The CLI module was factored out of `main.rs` for testability.
 
 ### args.rs — `CliArgs` struct + `parse_args()`
 
@@ -474,7 +491,7 @@ Tool calls and results shown prefixed with colored indicators. 120s timeout.
 
 ---
 
-## Core type system (`src/agent/types.rs` + `extension/src/types.rs`)
+## Core type system (`src/agent/types.rs` + `src/extension/types.rs`)
 
 ### yoagent types (re-exported from `agent/types.rs`)
 
@@ -510,7 +527,7 @@ pub fn extension_message_with_details(kind: &str, text: &str, display: bool, det
 pub fn base_model_config(config: &ModelConfig) -> BaseModelConfig;
 ```
 
-### Extension types (`extension/types.rs`)
+### Extension types (`src/extension/types.rs`)
 
 ```rust
 pub struct ToolDefinition {
@@ -549,7 +566,7 @@ pub struct Cancel { ... }  // shared cancellation flag
 
 ---
 
-## Agent lifecycle (`src/agent/agent_session.rs`) — ~839 lines
+## Agent lifecycle (`src/agent/agent_session.rs`) — ~834 lines
 
 The `AgentSession` struct is the primary entry point for session management.
 It owns a `Session` directly (not `SessionManager`) plus app-level config.
@@ -586,8 +603,8 @@ pub struct AgentSession {
    entries only when values differ from last known (diff-based).
 4. **Auto-compaction** — `check_auto_compact()` runs after agent finishes a turn.
 5. **Manual compaction** — `run_manual_compact()` for `/compact`.
-6. **Branch summarization** — `summarize_branch_navigation()` summarises abandoned
-   branches. `set_branch()` moves the leaf pointer.
+6. **Branch summarization** — `summarize_branch_navigation()` (in compaction.rs)
+   summarises abandoned branches. `set_branch()` moves the leaf pointer.
 7. **Overflow recovery** — `reset_overflow_recovery()` / `overflow_recovery_attempted`.
 
 ### Typical usage in print mode
@@ -618,7 +635,7 @@ agent_session.check_auto_compact().await;
 
 ---
 
-## Session layer (`src/agent/session.rs`) — ~1424 lines
+## Session layer (`src/agent/session.rs`) — ~1835 lines
 
 Simplified compared to the old architecture. Wraps `yoagent::Session` directly.
 
@@ -669,11 +686,7 @@ pub fn continue_recent(cwd: &Path, dir: &Path) -> Self;  // latest or new
 pub fn fork_from(source: &Self, ...) -> Self;      // forks session tree
 ```
 
----
-
-## Session repo (`src/agent/session.rs` — functions, not trait)
-
-Session listing/deletion/forking is handled by free functions in `session.rs`:
+### Session repo (free functions)
 
 ```rust
 pub fn get_default_session_dir(cwd: &Path) -> PathBuf;
@@ -703,7 +716,7 @@ pub struct SessionInfo {
 
 ---
 
-## Compaction (`src/agent/compaction.rs`) — ~946 lines ✅ IMPLEMENTED
+## Compaction (`src/agent/compaction.rs`) — ~930 lines ✅ IMPLEMENTED
 
 When the conversation approaches the model's context window, older messages
 are summarized to free space. Pi-style compaction using yoagent token estimation.
@@ -737,19 +750,20 @@ mid-way, the session state remains consistent.
 
 Defaults: enabled, 16K reserve, 20K keep recent.
 
+### Branch summarization (merged into compaction.rs)
+
+Branch summarization (previously in a separate `branch_summary.rs` file) has been
+merged into `compaction.rs`. When the user navigates to a different branch in the
+session tree, the abandoned branch is summarized so context is preserved. The
+algorithm is the same: collect entries → prepare messages → call provider →
+append entry. Uses `collect_entries_for_branch_summary()` and
+`build_branch_summary_text()` functions.
+
 ---
 
-## Branch summarization (`src/agent/branch_summary.rs`) — ~455 lines ✅ IMPLEMENTED
+## Provider layer (`src/provider/`) — 11 modules
 
-When the user navigates to a different branch in the session tree, the
-abandoned branch is summarized so context is preserved. Same algorithm as
-before (collect entries → prepare messages → call provider → append entry).
-
----
-
-## Provider layer (`provider/src/`)
-
-### ProviderRegistry (`mod.rs`)
+### ProviderRegistry (`registry.rs`)
 
 The provider registry loads a built-in model catalog and overlays user overrides.
 Each `ResolvedModel` carries `ModelConfig` + `api_key` + `RabOpenAiCompat` +
@@ -781,9 +795,7 @@ per-model provider name from `ModelConfig` (for correct cost tracking and displa
 
 ---
 
-## Extension system (`extension/src/`)
-
-The old `src/agent/extension.rs` (~1191 lines) was split into 5 modules:
+## Extension system (`src/extension/`) — 5 modules
 
 ### Extension trait (`traits.rs`)
 
@@ -914,7 +926,7 @@ Provides a simple text-based display for tool calls and results.
 
 ---
 
-## Settings (`src/settings.rs`) — ~1851 lines
+## Settings (`src/settings.rs`) — ~1508 lines
 
 Same file names and format as pi, under `~/.rab/agent/`. Moved from `src/agent/settings.rs`.
 
@@ -932,33 +944,6 @@ Same file names and format as pi, under `~/.rab/agent/`. Moved from `src/agent/s
 | `~/.pi/agent/sessions/` | `~/.rab/sessions/` | ✅ |
 | `~/.pi/agent/skills/` | `~/.rab/skills/` | ✅ |
 | `~/.pi/agent/themes/` | `~/.rab/themes/` + embedded | ✅ |
-
-### New settings fields since previous version
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `transport` | `Option<String>` | Transport preference: sse, websocket, websocket-cached, auto |
-| `steering_mode` | `Option<String>` | Turn steering mode: one-at-a-time, all, manual |
-| `follow_up_mode` | `Option<String>` | Follow-up queue processing mode: all, manual |
-| `quiet_startup` | `Option<bool>` | Suppress startup screen |
-| `collapse_changelog` | `Option<bool>` | Collapse changelog on startup |
-| `enable_skill_commands` | `Option<bool>` | Enable `/skill:name` expansions |
-| `enable_install_telemetry` | `Option<bool>` | Install telemetry opt-in |
-| `double_escape_action` | `Option<String>` | Action on double Escape |
-| `tree_filter_mode` | `Option<String>` | Session tree filter mode |
-| `editor_padding_x` | `Option<i32>` | Horizontal editor padding |
-| `output_pad` | `Option<i32>` | Output padding |
-| `autocomplete_max_visible` | `Option<i32>` | Max visible autocomplete items |
-| `show_hardware_cursor` | `Option<bool>` | Use hardware cursor |
-| `default_project_trust` | `Option<String>` | Default project trust decision |
-| `npm_command` | `Option<Vec<String>>` | NPM command for extensions |
-| `websocket_connect_timeout_ms` | `Option<u64>` | WebSocket connect timeout |
-| `extensions` | `Vec<String>` | Extension script paths |
-| `extensions_config` | `ExtensionsConfig` | Extension enable/disable overrides |
-| `skills` | `Vec<String>` | Additional skill paths |
-| `prompts` | `Vec<String>` | Additional prompt paths |
-| `themes` | `Vec<String>` | Additional theme paths |
-| `packages` | `Vec<PackageSource>` | Package sources (npm/git) |
 
 ### Settings schema
 
@@ -1015,7 +1000,7 @@ Same file names and format as pi, under `~/.rab/agent/`. Moved from `src/agent/s
 
 ---
 
-## System prompt (`src/agent/system_prompt.rs`) — ~400 lines
+## System prompt (`src/agent/system_prompt.rs`) — ~410 lines
 
 Built via `SystemPromptBuilder`:
 
@@ -1031,30 +1016,38 @@ Built via `SystemPromptBuilder`:
 
 ---
 
-## Auth (`provider/src/auth.rs`)
+## Auth (`src/provider/auth.rs`)
 
 Pi-compatible credential store using the `AuthStorageBackend` pattern
 (File / InMemory variants) with file locking and OAuth auto-refresh.
-Moved from `src/auth.rs` to the provider module.
+Moved from the old `src/auth.rs` to `src/provider/auth.rs`.
 
 ---
 
-## Prompt templates (`src/agent/prompt_templates.rs`) — ~570 lines
+## Prompt templates (`src/agent/prompt_templates.rs`) — ~612 lines
 
 Loads `.md` files from `~/.rab/agent/prompts/` (global) and `.rab/prompts/` (project)
 and registers them as `/name` commands. Pi-compatible frontmatter and placeholder expansion.
 
 ---
 
-## App layer (`src/agent/ui/app/`) — split from single app.rs
+## App layer (`src/agent/ui/app/`) — 11 files, ~5535 lines
 
-The former `app.rs` (~5K+ lines) was split into:
+The former monolithic `app.rs` (~5K+ lines) was split into:
 
-| File | Description |
-|------|-------------|
-| `mod.rs` | Main `App` struct, `TUI` event loop, `compose_ui()`, overlay lifecycle, route_input, message queuing |
-| `events.rs` | `handle_agent_event()` — processes `AgentEvent` stream for UI updates and persistence |
-| `helpers.rs` | `parse_bang_command()`, `xml_escape()`, `strip_frontmatter()`, skill formatting helpers |
+| File | Lines | Description |
+|------|-------|-------------|
+| `mod.rs` | 43 | Main `App` struct, `TUI` event loop, `compose_ui()`, overlay lifecycle, route_input, message queuing |
+| `app_impl.rs` | 1352 | `App` struct definition, `AppConfig`, constructor, `run()`, `compose_ui()`, overlay rendering |
+| `events.rs` | 295 | `handle_agent_event()` — processes `AgentEvent` stream for UI updates and persistence |
+| `handlers.rs` | 620 | Keyboard input handling and event dispatch |
+| `command_handlers.rs` | 651 | Slash command dispatch and result handling |
+| `chat.rs` | 470 | Chat rendering utilities (message layout, scrolling, rendering) |
+| `auth.rs` | 548 | Authentication dialogs and login/logout flows |
+| `agent.rs` | 503 | Agent lifecycle (submission, agent creation, compaction trigger) |
+| `overlays.rs` | 868 | Overlay openers (model selector, settings selector, fork selector, etc.) |
+| `helpers.rs` | 132 | `parse_bang_command()`, `xml_escape()`, `strip_frontmatter()`, skill formatting |
+| `types.rs` | 53 | Shared types (`OverlayResult`, `PendingLabelChanges`) |
 
 ### Keybinding actions
 
@@ -1091,6 +1084,53 @@ All bindings customizable via `~/.rab/keybindings.json`.
 
 ---
 
+## Tree-sitter extension (`src/extensions/tree_sitter/`) — 12 modules, 20 adapters ✅ FULLY IMPLEMENTED
+
+The tree-sitter extension provides AST-aware code analysis tools and syntax validation hooks.
+It is disabled by default (`ExtensionDefault::Disabled`) and can be enabled via `/extensions`.
+
+### Semantic tools
+
+| Tool | Description |
+|------|-------------|
+| `list_symbols` | List symbols (functions, classes, methods) in a file or project. Kind filter support. |
+| `find_definition` | Find where a symbol is defined across the project. Returns file, line, column. |
+| `find_callers` | Find all call sites of a function or method across the project. |
+| `get_symbol_body` | Get full source of a named symbol from a file. Extracts by AST byte range. |
+| `find_callees` | Find what a function/method calls. Returns internal, external, and macro calls. |
+
+### Language adapters (20)
+
+Rust, TypeScript, Python, Go, Java, C, C++, C#, Scala, Swift, Zig, Bash,
+Clojure, Dart, Elixir, Kotlin, Lua, PHP, Ruby, and more.
+
+### Grammar management
+
+- Downloads WASM grammars from jsDelivr CDN on first use per extension.
+- Caches to `~/.cache/rab/tree-sitter/`.
+- `GrammarManager` provides async `ensure()`, sync `check_cached()`, `with_parser()`, `parse()`.
+
+### Syntax validation hooks
+
+- **`write` hook** — checks delimiter balance, then full tree-sitter parse for errors.
+  Blocks write if syntax errors are found.
+- **`edit` hook** — skeleton, currently only delimiter balance check.
+
+---
+
+## MCP extension (`src/extensions/mcp/`) — 6 modules ✅ IMPLEMENTED
+
+| Module | Description |
+|--------|-------------|
+| `config.rs` | Config loading from `~/.rab/agent/mcp.json` + `.rab/mcp.json` project overrides |
+| `server.rs` | Server lifecycle (lazy connect, idle timeout, shutdown) |
+| `cache.rs` | Persistent metadata cache for tool definitions |
+| `types.rs` | Transport types (SSE, WebSocket), MCP tool registration |
+| `renderer.rs` | Custom tool renderers for MCP tools |
+| `mod.rs` | Extension entry point, tool registration |
+
+---
+
 ## Storage layout (`~/.rab/`)
 
 ```
@@ -1124,66 +1164,82 @@ All bindings customizable via `~/.rab/keybindings.json`.
 
 ---
 
+## Module count
+
+- **Source modules**: 204 `*.rs` files (excludes target/, tests/)
+- **Total lines**: ~57,617
+- **Tests**: ~696 `#[test]` annotations (across unit + integration tests)
+- **TUI modules**: 31 `tui/src/` files + ~25 `src/agent/ui/` files
+- **Integration tests**: `tests/` directory with 4 test files (auth, commands, settings, common)
+
+### Per-area line counts
+
+| Area | Lines | Files |
+|------|-------|-------|
+| Agent (session, compaction, types, system_prompt, etc.) | ~5,778 | 10 |
+| Agent UI (app, components, theme, render, etc.) | ~13,028 | 31 |
+| Built-in tools (read, write, edit, bash, export, extension, etc.) | ~3,200+ | 8 |
+| CLI (args, run, print_mode, session) | ~1,100+ | 4 |
+| Extensions (file_search, mcp, tree_sitter) | ~6,500+ | 27 |
+| Provider layer (models, auth, oauth, openai_compat, etc.) | ~5,800+ | 11 |
+| Extension module (traits, types, hooks, coerce) | ~1,300+ | 5 |
+| Settings | ~1,508 | 1 |
+| Utility (paths, tls) | ~500+ | 3 |
+| lib.rs + main.rs | ~191 | 2 |
+| TUI (rab-tui crate) | ~5,600 | 31 |
+
+---
+
 ## Dependency tree
 
 ```
 rab (EPL-2.0)
-├── yoagent 0.13.1        (MIT)                - agent loop, provider, types, session tree,
-│                                                 skills, MCP types
-│   └── reqwest          (Apache 2.0)           - HTTP client (inside yoagent)
-├── tokio 1              (MIT)                  - async runtime
-├── tokio-util 0.7       (MIT)                  - CancellationToken
-├── serde + serde_json 1 (MIT)                  - JSON serialization
-├── uuid 1               (MIT)                  - message/session IDs
-├── chrono 0.4           (MIT)                  - timestamps
-├── directories 6        (MIT)                  - XDG paths
-├── anyhow 1             (MIT)                  - error handling
-├── futures 0.3          (MIT)                  - StreamExt
-├── async-trait 0.1      (MIT)                  - trait async fn
-├── colored 3            (MPL-2.0)              - terminal colors
-├── crossterm 0.29       (MIT)                  - terminal I/O
-├── unicode-segmentation 1 (MIT)                - grapheme-aware cursor movement
-├── unicode-width 0.2    (MIT)                  - character display width
-├── unicode-normalization 0.1 (MIT)             - Unicode normalization
-├── comrak 0.54          (MIT)                  - markdown parsing (GFM)
-├── syntect 5.3          (MIT/MPL 2.0, optional) - syntax highlighting
-├── base64 0.22          (MIT)                  - image data URL encoding
-├── regex 1.12           (MIT)                  - regex
-├── reqwest 0.13         (MIT/Apache 2.0)       - HTTP client (rustls-tls, socks)
+├── rab-tui 0.1.1          (EPL-2.0)        - TUI framework (crossterm components)
+│   ├── comrak 0.54       (MIT)             - markdown parsing (GFM)
+│   ├── syntect 5.3       (MIT/MPL 2.0, opt) - syntax highlighting
+│   └── crossterm 0.29    (MIT)             - terminal I/O
+├── yoagent 0.13.1        (MIT)             - agent loop, provider, types, session tree,
+│                                               skills, MCP types
+│   └── reqwest 0.13     (Apache 2.0)       - HTTP client
+├── tokio 1              (MIT)              - async runtime
+├── tokio-util 0.7       (MIT)              - CancellationToken
+├── serde + serde_json 1 (MIT)              - JSON serialization
+├── uuid 1               (MIT)              - message/session IDs
+├── chrono 0.4           (MIT)              - timestamps
+├── directories 6        (MIT)              - XDG paths
+├── anyhow 1             (MIT)              - error handling
+├── futures 0.3          (MIT)              - StreamExt
+├── async-trait 0.1      (MIT)              - trait async fn
+├── colored 3            (MPL-2.0)          - terminal colors
+├── regex 1.12           (MIT)              - regex
+├── unicode-normalization 0.1 (MIT)         - Unicode normalization
+├── base64 0.23          (MIT)              - image data URL encoding
+├── reqwest 0.13         (MIT/Apache 2.0)   - HTTP client (rustls-tls, socks)
 ├── kameleoon-reqwest-eventsource 0.6 (Apache 2.0) - SSE streaming
-├── tracing 0.1          (MIT)                  - diagnostic logging
-├── fs2 0.4              (MIT)                  - cross-platform file locks
-├── rustls 0.23          (Apache 2.0/ISC)       - TLS (replaces rustls-platform-verifier)
-├── webpki-root-certs 1  (Apache 2.0)           - root certificate store for Android/Termux
-├── libc 0.2             (MIT)                  - system calls
-├── url 2.5              (MIT)                  - URL parsing
-# wasmtime 26+ (Phase 2, Apache 2.0)
-# notify 7    (Phase 2, CC0-1.0)
-# rmcp 1      (Phase 2, MIT)
+├── tracing 0.1          (MIT)              - diagnostic logging
+├── fs2 0.4              (MIT)              - cross-platform file locks
+├── rustls 0.23          (Apache 2.0/ISC)   - TLS (replaces rustls-platform-verifier)
+├── webpki-root-certs 1  (Apache 2.0)       - root certificate store for Android/Termux
+├── libc 0.2             (MIT)              - system calls
+├── url 2.5              (MIT)              - URL parsing
+├── tree-sitter 0.26     (MIT)              - AST parsing with WASM grammars
+└── tempfile 3           (MIT/Apache 2.0)   - dev-only, temp files for tests
 ```
 
 No GPL dependencies. All permissive (MIT / Apache 2.0 / MPL-2.0), fully
-compatible with EPL-2.0. Phase 2 dependencies (wasmtime, notify, rmcp) are
-gated behind Cargo features: `plugins` and `mcp`. MVP compiles without them.
+compatible with EPL-2.0.
 
-Key dependency changes from earlier versions:
-- `reqwest` upgraded from 0.12 to 0.13 (rustls-tls, socks)
-- `reqwest-eventsource` replaced with `kameleoon-reqwest-eventsource` 0.6
+Key dependency changes:
+- `reqwest` 0.13 (rustls-tls, socks)
+- `reqwest-eventsource` → `kameleoon-reqwest-eventsource` 0.6
 - `openssl-sys` removed (fully rustls-based)
 - `rustls-platform-verifier` replaced with `rustls` + `webpki-root-certs` for Android/Termux fix
-- `comrak` upgraded from 0.53 to 0.54
-- `edition = "2024"` (Rust 1.96.0) for `impl Trait` in const contexts and RPIT lifetime capture
+- `comrak` 0.54
+- `base64` 0.23
+- `edition = "2024"` (Rust 1.96.0+)
 - `yoagent` is a published crate at version 0.13.1
 - `fs2` 0.4 added for cross-platform file locking
-
----
-
-## Module count
-
-- **Source modules**: 113 `*.rs` files
-- **Total lines**: ~53,176
-- **Tests**: ~688 `#[test]` annotations
-- **TUI modules**: 31 `tui/src/` + 28 `src/agent/ui/` = 59 modules (~28.5K lines)
+- `tree-sitter` 0.26 with `wasm` feature for AST tools
 
 ---
 
@@ -1193,25 +1249,7 @@ Key dependency changes from earlier versions:
 
 Planned: WASM components via wasmtime, loaded from `~/.rab/extensions/`.
 Same `Extension` trait used by builtins — plugins implement it via WIT
-bindings. Hot reload via file watcher.
-
-### MCP adapter — ✅ IMPLEMENTED
-
-The `src/extensions/mcp/` module (6 modules, ~1200+ lines) provides a full MCP
-adapter matching pi-mcp-adapter's architecture. Configured via `~/.rab/agent/mcp.json`
-(global) and `.rab/mcp.json` (project-local overrides). See the MCP section in the
-diagram for details.
-
-### Tree-sitter — 🟡 SKELETON
-
-`src/extensions/tree_sitter/mod.rs` — skeleton implementation for AST-aware tools.
-Not yet fully wired.
-
-### Models.json — ✅ IMPLEMENTED
-
-Built-in catalog at `provider/src/models.json` (~17910 lines). User overrides
-merge via `~/.rab/agent/models.json`. The `rab generate-models` subcommand
-fetches the latest models from `models.dev` and updates the built-in catalog.
+bindings. Hot reload via file watcher (notify 7).
 
 ### User extensions (compile-time)
 
@@ -1231,3 +1269,6 @@ Already possible today — implement the `Extension` trait and register in
 - **Multi-model cycling** — Ctrl+P model switching uses a scoped-models list.
   A full model registry with metadata (context window, costs) is already
   implemented via `ProviderRegistry` and `ScopedModelsSelector`.
+- **Tree-sitter edit validation** — the edit hook currently only does
+  delimiter balance check. Full tree-sitter validation with file content
+  reconstruction is planned.
