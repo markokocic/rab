@@ -1,4 +1,4 @@
-use crate::agent::session::{SessionInfo, list_all_sessions, list_sessions};
+use crate::agent::session::{SessionInfo, list_sessions};
 use crate::agent::ui::theme::color;
 use crate::tui::Theme;
 use std::path::{Path, PathBuf};
@@ -89,9 +89,13 @@ impl SessionPicker {
 
         // Load current-project sessions first
         if let Some(cwd) = cwd {
-            let dir = session_dir
-                .map(|d| d.to_path_buf())
-                .unwrap_or_else(|| crate::agent::session::get_default_session_dir(cwd));
+            // Use session_dir if it's non-empty, otherwise fall back to default
+            let has_session_dir = session_dir.is_some_and(|d| !d.as_os_str().is_empty());
+            let dir = if has_session_dir {
+                session_dir.unwrap().to_path_buf()
+            } else {
+                crate::agent::session::get_default_session_dir(cwd)
+            };
             let current_sessions = list_sessions(&dir);
 
             for s in current_sessions {
@@ -102,36 +106,8 @@ impl SessionPicker {
             }
         }
 
-        // Collect paths we already have to avoid duplication
-        let existing_paths: std::collections::HashSet<PathBuf> =
-            all_sessions.iter().map(|gs| gs.info.path.clone()).collect();
-
-        // Load sessions from all project directories
-        let session_base = directories::BaseDirs::new()
-            .map(|d| d.home_dir().join(".rab").join("sessions"))
-            .unwrap_or_else(|| std::path::PathBuf::from("/tmp/.rab/sessions"));
-        let all_loaded = list_all_sessions(&session_base, None);
-
-        for s in all_loaded {
-            if !existing_paths.contains(&s.path) {
-                let group = if let Some(cwd) = cwd {
-                    if s.cwd == cwd.to_string_lossy().as_ref() {
-                        SessionGroup::CurrentProject
-                    } else {
-                        SessionGroup::OtherProjects
-                    }
-                } else {
-                    SessionGroup::OtherProjects
-                };
-                all_sessions.push(GroupedSession { info: s, group });
-            }
-        }
-
-        // Sort: current project first, then other projects
-        all_sessions.sort_by_key(|gs| match gs.group {
-            SessionGroup::CurrentProject => 0,
-            SessionGroup::OtherProjects => 1,
-        });
+        // Sort current-project sessions by creation time (newest first)
+        all_sessions.sort_by_key(|gs| std::cmp::Reverse(gs.info.created));
 
         self.sessions = all_sessions;
         self.loading = false;

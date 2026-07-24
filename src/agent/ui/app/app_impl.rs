@@ -1259,6 +1259,18 @@ pub async fn run(config: AppConfig, session: AgentSession) -> anyhow::Result<()>
                         );
                     }
                 }
+                CommandResult::SessionSwitched { path } => {
+                    // Derive session_dir from the session file's parent directory
+                    // so that subsequent /resume calls find sessions in the right place.
+                    let session_dir = path.parent().map(|p| p.to_path_buf());
+                    let new_session = crate::agent::AgentSession::open(
+                        &path,
+                        session_dir.as_deref(),
+                        Some(&app.cwd),
+                    );
+                    app.switch_to_session(new_session);
+                    app.status_text = Some(format!("Switched to session: {}", path.display()));
+                }
                 _ => {}
             }
             dirty = true;

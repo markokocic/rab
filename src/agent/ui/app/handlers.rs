@@ -59,8 +59,11 @@ pub fn available_thinking_levels(app: &App) -> Vec<&'static str> {
 pub fn compose_ui(app: &mut App, width: usize) {
     // ── Session picker ──
     if let Some(ref picker) = app.session_picker {
-        let (_lines, _cursor_y) = picker.render(width, &app.theme as &dyn crate::tui::Theme);
+        let (lines, _cursor_y) = picker.render(width, &app.theme as &dyn crate::tui::Theme);
         app.chat_container.borrow_mut().clear();
+        let mut dl = crate::tui::components::DynamicLines::new();
+        dl.set_lines(lines);
+        app.chat_container.borrow_mut().add_child(Box::new(dl));
         app.pending_section.borrow_mut().set_lines(vec![]);
         app.status_section.borrow_mut().set_lines(vec![]);
         app.working_section.borrow_mut().set_lines(vec![]);
