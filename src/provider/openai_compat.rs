@@ -7,9 +7,9 @@
 //! - All pi `OpenAICompletionsCompat` flags
 
 use super::compat::{RabMaxTokensField, RabOpenAiCompat, RabThinkingFormat};
+use crate::util::tls;
 use async_trait::async_trait;
 use futures::StreamExt;
-use rab_util::tls;
 use reqwest_eventsource::EventSource;
 use serde::Deserialize;
 use tokio::sync::mpsc;

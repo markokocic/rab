@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "tui", "extension", "util", "provider"]
+members = [".", "tui"]
 resolver = "2"
 
 [package]
@@ -38,16 +38,20 @@ directories = "6"
 crossterm = "0.29"
 libc = "0.2"
 unicode-normalization = "0.1"
+rustls = "0.23"
+webpki-root-certs = "1"
 syntect = { version = "5.3.0", optional = true }
 rab-tui = { path = "tui" }
-rab-extension = { path = "extension" }
-rab-util = { path = "util" }
-rab-provider = { path = "provider" }
 regex = "1.12.4"
-base64 = "0.22"
+base64 = "0.23"
 tokio-util = "0.7"
 yoagent = "0.13.1"
 reqwest = { version = "0.13", default-features = false, features = ["json", "stream", "rustls", "socks", "form"] }
+reqwest-eventsource = { package = "kameleoon-reqwest-eventsource", version = "0.6" }
+futures = "0.3"
+tracing = "0.1"
+url = "2.5.8"
+fs2 = "0.4"
 
 [features]
 default = ["syntect"]

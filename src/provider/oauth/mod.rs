@@ -111,7 +111,7 @@ pub fn is_built_in(id: &str) -> bool {
 pub fn register_builtins() {
     static INIT: std::sync::Once = std::sync::Once::new();
     INIT.call_once(|| {
-        let gh = crate::oauth::github_copilot::GitHubCopilotOAuth;
+        let gh = crate::provider::oauth::github_copilot::GitHubCopilotOAuth;
         register(Arc::new(gh));
     });
 }

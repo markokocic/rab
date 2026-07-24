@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 use std::sync::RwLock;
 
-use crate::types::{
+use crate::extension::types::{
     AfterHook, AfterToolCallResult, BeforeHook, BeforeToolCallResult, HookRegistration,
 };
 

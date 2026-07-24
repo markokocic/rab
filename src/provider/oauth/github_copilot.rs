@@ -5,9 +5,9 @@
 
 use std::collections::HashMap;
 
+use crate::util::tls;
 use async_trait::async_trait;
 use base64::Engine;
-use rab_util::tls;
 
 use super::device_code::{PollOptions, PollStatus, poll_device_code_flow};
 use super::{DeviceCodeInfo, OAuthCredentials, OAuthLoginCallbacks, OAuthPrompt, OAuthProvider};

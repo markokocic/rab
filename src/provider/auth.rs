@@ -597,7 +597,7 @@ pub async fn refresh_oauth_token(provider: &str) -> Option<String> {
         }
     }
 
-    let oauth_provider = crate::oauth::get(provider)?;
+    let oauth_provider = crate::provider::oauth::get(provider)?;
 
     // Build OAuthCredentials for the refresh call
     let oauth_creds = match &oauth_cred {
@@ -607,7 +607,7 @@ pub async fn refresh_oauth_token(provider: &str) -> Option<String> {
             expires,
             enterprise_url,
             ..
-        } => crate::oauth::OAuthCredentials {
+        } => crate::provider::oauth::OAuthCredentials {
             access: access.clone(),
             refresh: refresh.clone().unwrap_or_default(),
             expires: expires.unwrap_or(0),

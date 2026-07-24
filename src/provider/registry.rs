@@ -11,8 +11,8 @@ use anyhow::bail;
 use yoagent::provider::model::{CostConfig, ModelConfig};
 use yoagent::types::Usage;
 
-use crate::compat::RabOpenAiCompat;
-use crate::models;
+use crate::provider::compat::RabOpenAiCompat;
+use crate::provider::models;
 
 /// Status information for a provider (matching pi's AuthStatus interface).
 #[derive(Debug, Clone)]
@@ -39,14 +39,14 @@ pub struct ResolvedModel {
 pub struct ProviderRegistry {
     entries: Vec<models::ProviderEntry>,
     /// Auth storage for API key lookups.
-    auth_storage: crate::auth::AuthStorage,
+    auth_storage: crate::provider::auth::AuthStorage,
 }
 
 impl ProviderRegistry {
     /// Load the provider registry from built-in + user models.json.
     pub fn load(agent_dir: &Path) -> anyhow::Result<Self> {
         // Register built-in OAuth providers once
-        crate::oauth::register_builtins();
+        crate::provider::oauth::register_builtins();
 
         let builtin_json = include_str!("models.json");
         let builtin = models::load_builtin(builtin_json)?;
@@ -55,7 +55,7 @@ impl ProviderRegistry {
         let user = models::load_user(&user_path)?;
 
         let entries = models::merge(builtin, user);
-        let auth_storage = crate::auth::AuthStorage::create()?;
+        let auth_storage = crate::provider::auth::AuthStorage::create()?;
 
         Ok(Self {
             entries,
@@ -118,12 +118,13 @@ impl ProviderRegistry {
                         self.auth_storage
                             .oauth_credential(&entry.id)
                             .and_then(|c| match c {
-                                crate::auth::AuthCredential::Oauth { enterprise_url, .. } => {
-                                    enterprise_url
-                                }
+                                crate::provider::auth::AuthCredential::Oauth {
+                                    enterprise_url,
+                                    ..
+                                } => enterprise_url,
                                 _ => None,
                             });
-                    let derived = crate::oauth::github_copilot::get_copilot_base_url(
+                    let derived = crate::provider::oauth::github_copilot::get_copilot_base_url(
                         Some(&api_key),
                         enterprise_domain.as_deref(),
                     );
@@ -179,10 +180,12 @@ impl ProviderRegistry {
                 .auth_storage
                 .oauth_credential(provider_id)
                 .and_then(|c| match c {
-                    crate::auth::AuthCredential::Oauth { enterprise_url, .. } => enterprise_url,
+                    crate::provider::auth::AuthCredential::Oauth { enterprise_url, .. } => {
+                        enterprise_url
+                    }
                     _ => None,
                 });
-            let derived = crate::oauth::github_copilot::get_copilot_base_url(
+            let derived = crate::provider::oauth::github_copilot::get_copilot_base_url(
                 Some(&api_key),
                 enterprise_domain.as_deref(),
             );
@@ -307,7 +310,7 @@ impl ProviderRegistry {
             return true;
         }
         // Check if this is an OAuth provider that could be logged in
-        if crate::oauth::is_built_in(provider_id) {
+        if crate::provider::oauth::is_built_in(provider_id) {
             return self.auth_storage.oauth_token(provider_id).is_some();
         }
         // Check env var

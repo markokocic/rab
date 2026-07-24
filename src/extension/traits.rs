@@ -1,9 +1,9 @@
 //! Core traits: [`Extension`], [`ToolRenderer`], and helpers.
 
-use rab_tui::{Component, Theme};
+use crate::tui::{Component, Theme};
 use std::borrow::Cow;
 
-use crate::types::{HookRegistration, SlashCommand, ToolDefinition, ToolRenderContext};
+use crate::extension::types::{HookRegistration, SlashCommand, ToolDefinition, ToolRenderContext};
 
 // ── Extension default state ────────────────────────────────────
 

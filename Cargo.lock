@@ -135,6 +135,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
+name = "base64"
+version = "0.23.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b25655df2c3cdd83c5e5b293b88acd880332b2ddadd7c30ac43144fdc0033da9"
+
+[[package]]
 name = "bincode"
 version = "1.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -907,7 +913,7 @@ version = "0.1.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "96547c2556ec9d12fb1578c4eaf448b04993e7fb79cbaad930a656880a6bdfa0"
 dependencies = [
- "base64",
+ "base64 0.22.1",
  "bytes",
  "futures-channel",
  "futures-util",
@@ -1436,7 +1442,7 @@ version = "1.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7da1d65da6dd5d1e44199ac0f58712d241c0f439f80adea8924d832384087f85"
 dependencies = [
- "base64",
+ "base64 0.22.1",
  "indexmap",
  "quick-xml",
  "serde",
@@ -1564,60 +1570,30 @@ version = "0.3.0"
 dependencies = [
  "anyhow",
  "async-trait",
- "base64",
+ "base64 0.23.0",
  "chrono",
  "colored",
  "crossterm",
  "directories",
+ "fs2",
+ "futures",
+ "kameleoon-reqwest-eventsource",
  "libc",
- "rab-extension",
- "rab-provider",
  "rab-tui",
- "rab-util",
  "regex",
  "reqwest",
+ "rustls",
  "serde",
  "serde_json",
  "syntect",
  "tempfile",
  "tokio",
  "tokio-util",
- "unicode-normalization",
- "uuid",
- "yoagent",
-]
-
-[[package]]
-name = "rab-extension"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "rab-tui",
- "serde",
- "serde_json",
- "tokio",
- "yoagent",
-]
-
-[[package]]
-name = "rab-provider"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "base64",
- "directories",
- "fs2",
- "futures",
- "kameleoon-reqwest-eventsource",
- "rab-util",
- "serde",
- "serde_json",
- "tokio",
- "tokio-util",
  "tracing",
+ "unicode-normalization",
  "url",
+ "uuid",
+ "webpki-root-certs",
  "yoagent",
 ]
 
@@ -1625,7 +1601,7 @@ dependencies = [
 name = "rab-tui"
 version = "0.1.0"
 dependencies = [
- "base64",
+ "base64 0.22.1",
  "comrak",
  "crossterm",
  "regex",
@@ -1634,15 +1610,6 @@ dependencies = [
  "syntect",
  "unicode-segmentation",
  "unicode-width",
-]
-
-[[package]]
-name = "rab-util"
-version = "0.1.0"
-dependencies = [
- "reqwest",
- "rustls",
- "webpki-root-certs",
 ]
 
 [[package]]
@@ -1726,7 +1693,7 @@ version = "0.13.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "219c5811de6525e5416c7d5d53bb656d3afdbc6c5af816e0802bcfa42dbdc1c3"
 dependencies = [
- "base64",
+ "base64 0.22.1",
  "bytes",
  "encoding_rs",
  "futures-core",
@@ -1835,9 +1802,9 @@ dependencies = [
 
 [[package]]
 name = "rustls-pki-types"
-version = "1.15.0"
+version = "1.15.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "764899a24af3980067ee14bc143654f297b22eaebfe3c7b6b211920a5a59b046"
+checksum = "2f4925028c7eb5d1fcdaf196971378ed9d2c1c4efc7dc5d011256f76c99c0a96"
 dependencies = [
  "web-time",
  "zeroize",
@@ -2868,7 +2835,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "21a17c0358e72ceff7fad5a36d05d715d65d7eb1502cd3f893cff1b8dab96bf7"
 dependencies = [
  "async-trait",
- "base64",
+ "base64 0.22.1",
  "futures",
  "kameleoon-reqwest-eventsource",
  "rand",

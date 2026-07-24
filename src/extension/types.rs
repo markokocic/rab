@@ -5,9 +5,9 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
-use crate::coerce::{coerce_with_json_schema, validate_tool_arguments};
-use crate::hooks::{run_after_hooks, run_before_hooks};
-use crate::traits::ToolRenderer;
+use crate::extension::coerce::{coerce_with_json_schema, validate_tool_arguments};
+use crate::extension::hooks::{run_after_hooks, run_before_hooks};
+use crate::extension::traits::ToolRenderer;
 
 // ── Tool hook types ────────────────────────────────────────────
 
@@ -382,7 +382,7 @@ mod tests {
 
 #[cfg(test)]
 mod tool_impl_tests {
-    use crate::coerce::coerce_primitive_by_type;
+    use crate::extension::coerce::coerce_primitive_by_type;
 
     #[test]
     fn test_tool_definition_coerce_delegation() {
