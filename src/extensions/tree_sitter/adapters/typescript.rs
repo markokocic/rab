@@ -4,7 +4,7 @@ use tree_sitter::Node;
 
 use crate::extensions::tree_sitter::adapter::{
     AdapterEntry, ByteRange, Callee, ExtractedFile, Import, ImportKind, Symbol, SymbolKind,
-    node_range, node_signature, node_text, query_captures,
+    named_children, node_range, node_signature, node_text, parse_source, query_captures,
 };
 
 pub(super) const ENTRY: AdapterEntry = AdapterEntry {
@@ -14,17 +14,14 @@ pub(super) const ENTRY: AdapterEntry = AdapterEntry {
 };
 
 fn extract(source: &str, parser: &mut tree_sitter::Parser) -> Result<ExtractedFile, String> {
-    let tree = parser.parse(source, None).ok_or("parse returned None")?;
+    let tree = parse_source(source, parser)?;
     let root = tree.root_node();
 
     let mut symbols = Vec::new();
     let mut imports = Vec::new();
     let mut exports = Vec::new();
 
-    for i in 0..root.named_child_count() as u32 {
-        let Some(child) = root.named_child(i) else {
-            continue;
-        };
+    for child in named_children(root) {
         match child.kind() {
             "import_statement" => {
                 if let Some(imp) = ts_extract_import(child, source) {

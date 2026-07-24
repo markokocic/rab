@@ -91,6 +91,49 @@ pub struct AdapterEntry {
 
 // ── Helpers shared by adapters ──────────────────────────────────────────
 
+/// Parse source and return the root tree. Errors if parse returns None.
+pub fn parse_source(
+    source: &str,
+    parser: &mut tree_sitter::Parser,
+) -> Result<tree_sitter::Tree, String> {
+    parser
+        .parse(source, None)
+        .ok_or_else(|| "parse returned None".to_string())
+}
+
+/// Helper to iterate all named children of a node.
+pub fn named_children(node: tree_sitter::Node) -> impl Iterator<Item = tree_sitter::Node> {
+    (0..node.named_child_count()).filter_map(move |i| node.named_child(i as u32))
+}
+
+/// Convenience constructor for a Symbol — avoids repeating all 6 fields.
+pub fn make_symbol(
+    kind: SymbolKind,
+    name: String,
+    range: ByteRange,
+    signature: String,
+    is_exported: bool,
+    parent_class: Option<String>,
+) -> Symbol {
+    Symbol {
+        kind,
+        name,
+        range,
+        signature,
+        is_exported,
+        parent_class,
+    }
+}
+
+/// Convenience for an ExtractedFile with only symbols (no imports/exports).
+pub fn extracted_file(symbols: Vec<Symbol>) -> ExtractedFile {
+    ExtractedFile {
+        symbols,
+        imports: Vec::new(),
+        exports: Vec::new(),
+    }
+}
+
 /// Get the text of a tree-sitter node.
 pub fn node_text<'a>(node: tree_sitter::Node, source: &'a str) -> &'a str {
     &source[node.start_byte()..node.end_byte()]

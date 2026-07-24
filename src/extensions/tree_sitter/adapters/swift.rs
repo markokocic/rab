@@ -1,8 +1,8 @@
 //! Swift language adapter.
 
 use crate::extensions::tree_sitter::adapter::{
-    AdapterEntry, ByteRange, Callee, ExtractedFile, Symbol, SymbolKind, node_range, node_signature,
-    node_text, query_captures,
+    AdapterEntry, ByteRange, Callee, ExtractedFile, Symbol, SymbolKind, extracted_file,
+    named_children, node_range, node_signature, node_text, parse_source, query_captures,
 };
 
 pub(super) const ENTRY: AdapterEntry = AdapterEntry {
@@ -12,14 +12,11 @@ pub(super) const ENTRY: AdapterEntry = AdapterEntry {
 };
 
 fn extract(source: &str, parser: &mut tree_sitter::Parser) -> Result<ExtractedFile, String> {
-    let tree = parser.parse(source, None).ok_or("parse returned None")?;
+    let tree = parse_source(source, parser)?;
     let root = tree.root_node();
     let mut symbols = Vec::new();
 
-    for i in 0..root.named_child_count() as u32 {
-        let Some(child) = root.named_child(i) else {
-            continue;
-        };
+    for child in named_children(root) {
         match child.kind() {
             "function_declaration" => {
                 if let Some(nn) = child.child_by_field_name("name") {
@@ -60,11 +57,7 @@ fn extract(source: &str, parser: &mut tree_sitter::Parser) -> Result<ExtractedFi
             _ => {}
         }
     }
-    Ok(ExtractedFile {
-        symbols,
-        imports: Vec::new(),
-        exports: Vec::new(),
-    })
+    Ok(extracted_file(symbols))
 }
 
 fn find_callees(source: &str, parser: &mut tree_sitter::Parser, range: &ByteRange) -> Vec<Callee> {

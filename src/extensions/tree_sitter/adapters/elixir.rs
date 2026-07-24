@@ -3,8 +3,8 @@
 use tree_sitter::Node;
 
 use crate::extensions::tree_sitter::adapter::{
-    AdapterEntry, ByteRange, Callee, ExtractedFile, Symbol, SymbolKind, node_range, node_signature,
-    node_text, query_captures,
+    AdapterEntry, ByteRange, Callee, ExtractedFile, Symbol, SymbolKind, extracted_file, node_range,
+    node_signature, node_text, parse_source, query_captures,
 };
 
 pub(super) const ENTRY: AdapterEntry = AdapterEntry {
@@ -24,15 +24,11 @@ const DEF_KWS: &[&str] = &[
 const MOD_KWS: &[&str] = &["defmodule", "defprotocol", "defimpl"];
 
 fn extract(source: &str, parser: &mut tree_sitter::Parser) -> Result<ExtractedFile, String> {
-    let tree = parser.parse(source, None).ok_or("parse returned None")?;
+    let tree = parse_source(source, parser)?;
     let root = tree.root_node();
     let mut symbols = Vec::new();
     elixir_walk_block(root, source, &mut symbols, None);
-    Ok(ExtractedFile {
-        symbols,
-        imports: Vec::new(),
-        exports: Vec::new(),
-    })
+    Ok(extracted_file(symbols))
 }
 
 fn find_callees(source: &str, parser: &mut tree_sitter::Parser, range: &ByteRange) -> Vec<Callee> {
